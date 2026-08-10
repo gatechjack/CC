@@ -1,4 +1,8 @@
-"""Phase-2 tests: MACE management precedence (stop > time > exdiv)."""
+"""Phase-2/4 tests: MACE management precedence (stop > PT > time > exdiv).
+
+The PT branch is the T9 SYNTHETIC profit target (Board ruling 2026-08-10, go-live
+on the T9 basis): no resting-GTC order — the manage tick closes when the
+cost-to-close `mark` has decayed to <= pt_pct_of_credit x credit received."""
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -6,7 +10,9 @@ from pathlib import Path
 
 from trading_corp.mace import strategy as st
 from trading_corp.mace.config import load_mace_config
-from trading_corp.mace.domain import CondorSpec, EXIT_EXDIV, EXIT_STOP, EXIT_TIME, RungState
+from trading_corp.mace.domain import (
+    CondorSpec, EXIT_EXDIV, EXIT_PT, EXIT_STOP, EXIT_TIME, RungState,
+)
 from trading_corp.utils.time import ET
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,3 +116,53 @@ def test_stop_gap_tick_0935():
     d = st.evaluate_management(r, mark=2.5, spot=600, now_et=_now(h=9, mi=35),
                                cfg=CFG, symbol_cfg=SPY, exdiv_within=False)
     assert d.exit_reason == EXIT_STOP
+
+
+# ── T9 SYNTHETIC PROFIT TARGET (mark <= pt_pct_of_credit x credit) ────────────
+# credit=1.0, pt_pct_of_credit=0.50 -> PT target = 0.50; stop = 2.0.
+
+def test_pt_synthetic_fires_below_target():
+    r = _rung(date(2026, 9, 18), credit=1.0)              # far DTE, no time/exdiv
+    d = st.evaluate_management(r, mark=0.40, spot=600, now_et=_now(h=12),
+                               cfg=CFG, symbol_cfg=SPY, exdiv_within=False)
+    assert d.exit_reason == EXIT_PT and d.should_exit
+
+
+def test_pt_boundary_at_target_fires():
+    r = _rung(date(2026, 9, 18), credit=1.0)
+    d = st.evaluate_management(r, mark=0.50, spot=600, now_et=_now(h=12),
+                               cfg=CFG, symbol_cfg=SPY, exdiv_within=False)
+    assert d.exit_reason == EXIT_PT                       # <= target inclusive
+
+
+def test_pt_boundary_above_target_holds():
+    r = _rung(date(2026, 9, 18), credit=1.0)
+    d = st.evaluate_management(r, mark=0.51, spot=600, now_et=_now(h=12),
+                               cfg=CFG, symbol_cfg=SPY, exdiv_within=False)
+    assert d.exit_reason is None                          # just above target -> hold
+
+
+def test_precedence_pt_over_time():
+    # at PT AND time-eligible (DTE 20 @ 15:35): PT wins -> exit is labelled `pt`,
+    # closing at the favorable target rather than a time-forced market exit.
+    r = _rung(date(2026, 9, 1), credit=1.0)
+    d = st.evaluate_management(r, mark=0.40, spot=600, now_et=_now(h=15, mi=35),
+                               cfg=CFG, symbol_cfg=SPY, exdiv_within=False)
+    assert d.exit_reason == EXIT_PT
+
+
+def test_stop_beats_pt_are_mutually_exclusive():
+    # a high mark is a stop, never a PT (stop is evaluated first; the two windows
+    # never overlap for positive credit).
+    r = _rung(date(2026, 9, 18), credit=1.0)
+    d = st.evaluate_management(r, mark=2.5, spot=600, now_et=_now(h=12),
+                               cfg=CFG, symbol_cfg=SPY, exdiv_within=False)
+    assert d.exit_reason == EXIT_STOP
+
+
+def test_pt_needs_a_mark():
+    # unpriceable mark -> no PT (and no stop); falls through to time/exdiv/hold.
+    r = _rung(date(2026, 9, 18), credit=1.0)
+    d = st.evaluate_management(r, mark=None, spot=600, now_et=_now(h=12),
+                               cfg=CFG, symbol_cfg=SPY, exdiv_within=False)
+    assert d.exit_reason is None

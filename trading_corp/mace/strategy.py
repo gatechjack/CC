@@ -25,7 +25,7 @@ from typing import Callable, Mapping, Sequence
 
 from trading_corp.mace.config import MaceConfig, SymbolConfig
 from trading_corp.mace.domain import (
-    EXIT_EXDIV, EXIT_STOP, EXIT_TIME,
+    EXIT_EXDIV, EXIT_PT, EXIT_STOP, EXIT_TIME,
     IVR_OK, IVR_STALE, IVR_UNAVAILABLE,
     SKIP_BLACKOUT, SKIP_BUDGET, SKIP_CAPACITY, SKIP_COOLDOWN, SKIP_CREDIT_FLOOR,
     SKIP_IVR, SKIP_NO_DELTA_STRIKE, SKIP_NO_EQUITY_SNAPSHOT, SKIP_NO_EXPIRY,
@@ -469,7 +469,7 @@ def route_overflow(primary_results: Sequence[EvalResult], cfg: MaceConfig,
 @dataclass(frozen=True)
 class ManageDecision:
     rung_id: str
-    exit_reason: str | None      # EXIT_STOP | EXIT_TIME | EXIT_EXDIV | None (hold)
+    exit_reason: str | None      # EXIT_STOP | EXIT_PT | EXIT_TIME | EXIT_EXDIV | None (hold)
     detail: str = ""
 
     @property
@@ -480,9 +480,18 @@ class ManageDecision:
 def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
                         now_et: datetime, cfg: MaceConfig, symbol_cfg: SymbolConfig,
                         *, exdiv_within: bool) -> ManageDecision:
-    """Precedence: stop > time > exdiv. `mark` = cost-to-close at mid (net debit
-    to exit). The 09:35 tick IS the gap rule (no separate branch). `exdiv_within`
-    is the calendar side (caller uses mace.exdiv.MaceExDiv)."""
+    """Precedence: stop > PT > time > exdiv. `mark` = cost-to-close at mid (net
+    debit to exit). The 09:35 tick IS the gap rule (no separate branch).
+    `exdiv_within` is the calendar side (caller uses mace.exdiv.MaceExDiv).
+
+    PT is the T9 SYNTHETIC profit target (Board ruling 2026-08-10, on the T9 basis):
+    there is NO resting-GTC PT order — the manage tick IS the PT. When the
+    cost-to-close (`mark`) has decayed to <= pt_pct_of_credit x credit received, we
+    close via the emulated-market exit ladder (reason `pt`); since mark <= the PT
+    target, the ladder's natural debit is already at/under target, so the close
+    books at/inside the profit target. stop (a loss) and PT (a win) are mutually
+    exclusive on `mark`; PT is ordered before time/exdiv so a hit target closes
+    favorably regardless of DTE, and the exit is labelled `pt` (not `time`)."""
     m = cfg.management
     # stop: mark >= stop_multiple x credit received
     if mark is not None and rung.credit_actual is not None:
@@ -490,6 +499,13 @@ def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
             return ManageDecision(rung.rung_id, EXIT_STOP,
                                   f"mark {mark:.2f} >= {m.stop_multiple}x credit "
                                   f"{rung.credit_actual:.2f}")
+    # PT (T9 synthetic): mark <= pt_pct_of_credit x credit received -> lock the win.
+    if mark is not None and rung.credit_actual is not None:
+        pt_target = m.pt_pct_of_credit * rung.credit_actual
+        if mark <= pt_target:
+            return ManageDecision(rung.rung_id, EXIT_PT,
+                                  f"mark {mark:.2f} <= {m.pt_pct_of_credit}x credit "
+                                  f"{rung.credit_actual:.2f} (synthetic PT)")
     # time: DTE <= time_exit_dte AND now >= time_exit_at_et
     dte = (rung.expiry - now_et.date()).days
     if dte <= m.time_exit_dte and now_et.time() >= dtime.fromisoformat(m.time_exit_at_et):

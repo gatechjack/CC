@@ -170,16 +170,19 @@ def _exit_quotes(port: FakePort):
     }
 
 
-def _executor(port, store, chan, *, et_h=15, et_mi=45, risk_gate=None):
+def _executor(port, store, chan, *, et_h=15, et_mi=45, risk_gate=None, resting_pt=True):
     notifier = MaceNotifier(channel=chan, enabled=True)
     # Default to an APPROVING gate — the place-funnel is fail-closed (no gate =>
     # raises), so lifecycle tests inject a passing gate; the risk-chokepoint tests
     # (test_mace_risk_chokepoint.py) inject rejecting / absent gates on purpose.
     if risk_gate is None:
         risk_gate = lambda spec, contracts, direction: True   # noqa: E731
+    # These lifecycle tests were written against the resting-GTC PT path, so they
+    # default resting_pt=True (the seam). The T9 SYNTHETIC PT (production default,
+    # resting_pt=False) is covered by the T9 section at the bottom of this file.
     return ex.MaceExecutor(
         CFG, port, ex.RungStore(store) if isinstance(store, sqlite3.Connection) else store,
-        notifier, risk_gate=risk_gate,
+        notifier, risk_gate=risk_gate, resting_pt=resting_pt,
         now_utc_fn=lambda: datetime(2026, 8, 10, 19, 45, tzinfo=UTC),
         now_et_fn=lambda: datetime(2026, 8, 10, et_h, et_mi, tzinfo=ET),
         poll_interval_s=0.001, poll_timeout_s=0.01)
@@ -546,3 +549,70 @@ def test_round_to_tick_directions():
     assert ex.round_to_tick(1.184, 0.01, "down") == pytest.approx(1.18)  # credit floors down
     assert ex.round_to_tick(2.031, 0.01, "up") == pytest.approx(2.04)    # debit ceilings up
     assert ex.round_to_tick(0.595, 0.01, "nearest") == pytest.approx(0.60)
+
+
+# ── T9 SYNTHETIC PROFIT TARGET (production default: resting_pt=False) ─────────
+# Board ruling 2026-08-10 (go-live on the T9 basis): NO resting-GTC PT order — the
+# manage loop closes when mark <= pt_debit. The resting-GTC path stays a tested
+# seam (the lifecycle tests above default resting_pt=True); these assert the DEFAULT.
+
+def test_executor_default_pt_is_synthetic():
+    conn = _conn()
+    e = ex.MaceExecutor(CFG, FakePort(), ex.RungStore(conn),
+                        MaceNotifier(enabled=False), risk_gate=lambda s, c, d: True)
+    assert e._resting_pt is False        # go-live default = T9 synthetic (no resting order)
+
+
+@pytest.mark.asyncio
+async def test_t9_entry_records_synthetic_pt_no_resting_order():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [_res(bp.STATE_FILLED, "O1")]
+    out = await _executor(port, store, chan, resting_pt=False).run_entry(_ev(), SESSION)
+    assert out.filled
+    r = store.get(RUNG_ID)
+    assert r.status == RUNG_OPEN
+    assert r.pt_debit == pytest.approx(0.59)     # target recorded (0.5 x 1.18)
+    assert r.pt_order_id is None                  # NO resting order placed
+    assert port.resting_calls == []              # place_resting_close never called
+
+
+@pytest.mark.asyncio
+async def test_t9_reconcile_open_no_pt_is_noop():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _open_rung(store, pt=None)                    # open, no resting PT — the T9 norm
+    await _executor(port, store, chan, resting_pt=False).reconcile(SESSION)
+    r = store.get(RUNG_ID)
+    assert r.status == RUNG_OPEN and r.pt_order_id is None   # NOT re-placed
+    assert port.resting_calls == []
+
+
+@pytest.mark.asyncio
+async def test_t9_drain_promote_records_synthetic_target():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    store.insert_submitting(RUNG_ID, SPEC, 1, entry_ts="2026-08-10T19:40:00+00:00",
+                            entry_iso_week=ISO_WK, max_risk_usd=182.0)
+    store.set_pending_credit(RUNG_ID, 1.16)
+    store.set_entry_order(RUNG_ID, "O3")
+    port.status_script = {"O3": _res(bp.STATE_FILLED, "O3")}
+    port.open_orders_ret = []
+    await _executor(port, store, chan, resting_pt=False).reconcile(SESSION)
+    r = store.get(RUNG_ID)
+    assert r.status == RUNG_OPEN and r.credit_actual == pytest.approx(1.16)
+    assert r.pt_order_id is None and r.pt_debit == pytest.approx(0.58)  # 0.5 x 1.16
+    assert port.resting_calls == []
+
+
+@pytest.mark.asyncio
+async def test_t9_close_rung_pt_reason_no_resting_to_cancel():
+    # A synthetic-PT close: the rung has NO resting pt_order_id, so close_rung SKIPS
+    # the cancel-PT block entirely and books the debit ladder with reason `pt`.
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _exit_quotes(port)
+    rung = _open_rung(store, pt=None, pt_debit=0.59)     # T9: target set, no order
+    port.place_script = [_res(bp.STATE_FILLED, "X1")]
+    out = await _executor(port, store, chan, resting_pt=False).close_rung(rung, EXIT_PT)
+    assert out.closed and out.reason == EXIT_PT
+    assert port.cancel_calls == []                        # no resting PT to cancel
+    r = store.get(RUNG_ID)
+    assert r.status == RUNG_CLOSED and r.exit_reason == EXIT_PT

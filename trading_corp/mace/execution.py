@@ -265,6 +265,14 @@ class RungStore:
             (pt_order_id, pt_debit, rung_id),
         )
 
+    def set_pt_target(self, rung_id: str, pt_debit: float) -> None:
+        """T9 SYNTHETIC PT: record the profit-target debit WITHOUT a resting order
+        (pt_order_id stays NULL). The manage loop closes when mark <= pt_debit; the
+        dashboard + entry notification read pt_debit."""
+        self.conn.execute(
+            "UPDATE mace_rung SET pt_debit=? WHERE rung_id=?", (pt_debit, rung_id),
+        )
+
     def clear_pt(self, rung_id: str) -> None:
         self.conn.execute(
             "UPDATE mace_rung SET pt_order_id=NULL WHERE rung_id=?", (rung_id,)
@@ -354,11 +362,19 @@ class MaceExecutor:
         now_et_fn: Callable[[], datetime] = now_et,
         poll_interval_s: float = 1.0,
         poll_timeout_s: float = 30.0,
+        resting_pt: bool = False,
     ) -> None:
         self.cfg = cfg
         self.port = port
         self.store = store
         self.notifier = notifier
+        # PT mechanism (Board ruling 2026-08-10 — go-live on the T9 basis): default
+        # FALSE = the T9 SYNTHETIC PT (no resting-GTC order; the manage loop closes
+        # when mark <= pt_debit). True = the resting-GTC PT (place_resting_close +
+        # reconcile poll). The seam is deliberately contained to a single flag: the
+        # cancel-path fix (2026-08-10) proved the LADDER cancel, not a resting order,
+        # so resting-GTC PT stays OFF until it is separately proven + re-ruled.
+        self._resting_pt = resting_pt
         # The per-leg risk gate: risk_gate(spec, contracts, direction) -> bool.
         # REQUIRED for any placement — None is fail-closed (see _require_risk).
         # The manager builds it from RiskAgent.evaluate over every leg.
@@ -636,9 +652,23 @@ class MaceExecutor:
             pt=pt_debit, max_risk=max_risk)
         self._audit("mace_entry_fill", rung_id=rung_id, credit=credit,
                     order_id=res.order_id, attempts=attempts, max_risk=max_risk)
-        await self._ensure_pt(rung_id, spec, contracts, credit, pt_debit=pt_debit)
+        await self._register_pt(rung_id, spec, contracts, credit, pt_debit=pt_debit)
         return EntryOutcome(rung_id, True, credit=credit, attempts=attempts,
                             order_id=res.order_id)
+
+    async def _register_pt(self, rung_id: str, spec: CondorSpec, contracts: int,
+                           credit: float, *, pt_debit: Optional[float] = None) -> None:
+        """Set up the profit target after a fill. resting_pt=True places the
+        resting-GTC buy-to-close (+ reconcile poll); default (T9 basis) records the
+        synthetic target only (pt_order_id stays NULL) and the manage tick closes
+        when mark <= pt_debit. Single seam so entry-fill and drain-promote agree."""
+        if pt_debit is None:
+            pt_debit = self._pt_debit_for(credit)
+        if self._resting_pt:
+            await self._ensure_pt(rung_id, spec, contracts, credit, pt_debit=pt_debit)
+        else:
+            self.store.set_pt_target(rung_id, pt_debit)
+            self._audit("mace_pt_synthetic", rung_id=rung_id, pt_debit=pt_debit)
 
     # -- RESTING-GTC PROFIT TARGET -------------------------------------------
     async def _ensure_pt(self, rung_id: str, spec: CondorSpec, contracts: int,
@@ -844,6 +874,10 @@ class MaceExecutor:
                 self.notifier.error(loop="reconcile", exc=exc)
 
     async def _reconcile_open_pt(self, rung: RungState) -> None:
+        if not self._resting_pt:
+            # T9 SYNTHETIC PT: there is NO resting order to poll or re-place — the
+            # manage loop owns the PT (mark <= pt_debit). Nothing to reconcile here.
+            return
         if not rung.pt_order_id:
             # open with no resting PT (e.g. a prior placement failed) -> place one.
             if rung.credit_actual:
@@ -920,7 +954,7 @@ class MaceExecutor:
                 contracts=rung.contracts, credit=credit, floor=self._floor_for(rung.spec),
                 pt=self._pt_debit_for(credit), max_risk=max_risk)
             self._audit("mace_drain_promote", rung_id=rid, credit=credit, order_id=filled.order_id)
-            await self._ensure_pt(rid, rung.spec, rung.contracts, credit)
+            await self._register_pt(rid, rung.spec, rung.contracts, credit)
             return
 
         if any_working or matched_working:
