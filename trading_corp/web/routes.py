@@ -211,6 +211,10 @@ def register(app: FastAPI) -> None:
     # shadow-logger rows + news sentiment + outcome per trade. Honest-empty; verdict gated at n>=30.
     from trading_corp.web import sfp_llm_analysis_view
     sfp_llm_analysis_view.register(app)
+    # Robinhood MACE cockpit (zero-HITL condor engine) at /mace. Observability
+    # only — no approve/reject controls. Honest-empty until real rows exist.
+    from trading_corp.web import mace_view
+    mace_view.register(app)
 
     # ── PWA: serve service worker + manifest at root scope ─────────────
     # The service worker MUST be served from the root path (`/sw.js`),

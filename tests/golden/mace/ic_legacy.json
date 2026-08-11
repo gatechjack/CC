@@ -1,0 +1,42 @@
+{
+  "account_number": "ACCT-123",
+  "direction": "credit",
+  "price": 1.2,
+  "quantity": 1,
+  "spread": [
+    {
+      "action": "sell",
+      "effect": "open",
+      "expirationDate": "2026-06-19",
+      "optionType": "put",
+      "ratio_quantity": 1,
+      "strike": 430.0
+    },
+    {
+      "action": "buy",
+      "effect": "open",
+      "expirationDate": "2026-06-19",
+      "optionType": "put",
+      "ratio_quantity": 1,
+      "strike": 427.0
+    },
+    {
+      "action": "sell",
+      "effect": "open",
+      "expirationDate": "2026-06-19",
+      "optionType": "call",
+      "ratio_quantity": 1,
+      "strike": 470.0
+    },
+    {
+      "action": "buy",
+      "effect": "open",
+      "expirationDate": "2026-06-19",
+      "optionType": "call",
+      "ratio_quantity": 1,
+      "strike": 473.0
+    }
+  ],
+  "symbol": "SPY",
+  "timeInForce": "gfd"
+}

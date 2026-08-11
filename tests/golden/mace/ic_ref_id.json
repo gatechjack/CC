@@ -1,0 +1,41 @@
+{
+  "payload": {
+    "account": "https://api.robinhood.com/accounts/ACCT-123/",
+    "direction": "credit",
+    "legs": [
+      {
+        "option": "https://api.robinhood.com/options/instruments/OID-SPY-2026-06-19-430.0-put/",
+        "position_effect": "open",
+        "ratio_quantity": 1,
+        "side": "sell"
+      },
+      {
+        "option": "https://api.robinhood.com/options/instruments/OID-SPY-2026-06-19-427.0-put/",
+        "position_effect": "open",
+        "ratio_quantity": 1,
+        "side": "buy"
+      },
+      {
+        "option": "https://api.robinhood.com/options/instruments/OID-SPY-2026-06-19-470.0-call/",
+        "position_effect": "open",
+        "ratio_quantity": 1,
+        "side": "sell"
+      },
+      {
+        "option": "https://api.robinhood.com/options/instruments/OID-SPY-2026-06-19-473.0-call/",
+        "position_effect": "open",
+        "ratio_quantity": 1,
+        "side": "buy"
+      }
+    ],
+    "override_day_trade_checks": false,
+    "override_dtbp_checks": false,
+    "price": 1.2,
+    "quantity": 1,
+    "ref_id": "golden-ref-1",
+    "time_in_force": "gfd",
+    "trigger": "immediate",
+    "type": "limit"
+  },
+  "url": "https://api.robinhood.com/options/orders/"
+}

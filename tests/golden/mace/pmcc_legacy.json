@@ -1,0 +1,26 @@
+{
+  "account_number": "ACCT-123",
+  "direction": "credit",
+  "price": 1.14,
+  "quantity": 1,
+  "spread": [
+    {
+      "action": "buy",
+      "effect": "close",
+      "expirationDate": "2026-07-24",
+      "optionType": "call",
+      "ratio_quantity": 1,
+      "strike": 74.0
+    },
+    {
+      "action": "sell",
+      "effect": "open",
+      "expirationDate": "2026-07-31",
+      "optionType": "call",
+      "ratio_quantity": 1,
+      "strike": 75.0
+    }
+  ],
+  "symbol": "RKLB",
+  "timeInForce": "gfd"
+}

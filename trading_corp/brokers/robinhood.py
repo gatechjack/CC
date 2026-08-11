@@ -1226,6 +1226,18 @@ class RobinhoodBroker(Broker):
 
         combo = validate_combo_cohesion(orders)
 
+        # MACE-only combo controls, read from leg 0 (additive). PMCC/IC set
+        # NEITHER key, so combo_tif == "gfd" and combo_timeout == the class
+        # default 20.0 — reproducing the exact prior payload + poll window
+        # (golden-payload byte-identical). MACE sets combo_fill_timeout_s to size
+        # its per-ladder fill wait; combo_time_in_force stays "gfd" (day orders —
+        # the resting GTC path is place_multi_leg_resting, not this method).
+        _leg0_extra = orders[0].extra or {}
+        combo_tif = str(_leg0_extra.get("combo_time_in_force", "gfd"))
+        _combo_timeout = _leg0_extra.get("combo_fill_timeout_s")
+        combo_timeout = (float(_combo_timeout) if _combo_timeout is not None
+                         else self._COMBO_FILL_TIMEOUT_S)
+
         # Build the spread[] list in robin_stocks's expected shape.
         spread: list[dict] = []
         for o in orders:
@@ -1258,7 +1270,7 @@ class RobinhoodBroker(Broker):
                 combo.quantity,
                 spread,
                 account_number=acct,
-                timeInForce="gfd",     # day-only — matches PMCC; no resting GTC
+                timeInForce=combo_tif,   # "gfd" default (PMCC/IC unchanged); MACE also gfd here
             )
         else:
             # Deterministic-ref_id path: replicate order_option_spread's payload
@@ -1266,6 +1278,7 @@ class RobinhoodBroker(Broker):
             # of the same combo dedupes at Robinhood instead of double-placing.
             result = await asyncio.to_thread(
                 self._submit_spread_with_ref_id, spread, combo, acct, ref_id,
+                combo_tif,
             )
 
         # Combo accepted? A genuinely-placed combo carries an 'id' (single ref).
@@ -1326,7 +1339,8 @@ class RobinhoodBroker(Broker):
         # acknowledgement. A resting/`confirmed` spread booked as filled desyncs
         # the position tracker from the broker (today's failure). Poll to terminal,
         # then branch. Applies to the IC path too (shared code).
-        final = await self._await_terminal_option_order(result, rh_combo_id)
+        final = await self._await_terminal_option_order(
+            result, rh_combo_id, timeout_s=combo_timeout)
         state = str((final or {}).get("state") or "").lower()
         if state in ("rejected", "cancelled", "canceled", "failed", "voided"):
             raise RobinhoodOrderError(
@@ -1579,18 +1593,23 @@ class RobinhoodBroker(Broker):
     })
 
     async def _await_terminal_option_order(self, submit_result: dict,
-                                           order_id: str) -> dict:
+                                           order_id: str,
+                                           timeout_s: float | None = None) -> dict:
         """Poll an option order to a TERMINAL state (bounded). Returns the latest
         order dict. If the submit response is already terminal (fast fills /
         offline tests) it returns immediately without polling. On timeout it
         returns the last non-terminal dict — the caller treats a non-`filled`
-        result as pending and books nothing."""
+        result as pending and books nothing.
+
+        `timeout_s` overrides the poll window (MACE passes its per-ladder fill
+        wait); None falls back to `_COMBO_FILL_TIMEOUT_S` (the PMCC/IC default)."""
         st = str((submit_result or {}).get("state") or "").lower()
         if st in self._TERMINAL_OPTION_STATES:
             return submit_result or {}
         import robin_stocks.robinhood as rs  # type: ignore
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._COMBO_FILL_TIMEOUT_S
+        deadline = loop.time() + (
+            timeout_s if timeout_s is not None else self._COMBO_FILL_TIMEOUT_S)
         last = submit_result or {}
         while loop.time() < deadline:
             await asyncio.sleep(self._COMBO_FILL_POLL_S)
@@ -1607,7 +1626,8 @@ class RobinhoodBroker(Broker):
                     return info
         return last
 
-    def _submit_spread_with_ref_id(self, spread, combo, acct, ref_id):
+    def _submit_spread_with_ref_id(self, spread, combo, acct, ref_id,
+                                   time_in_force="gfd"):
         """Build + POST an option-spread order with a caller-supplied ref_id.
 
         The pinned `rs.orders.order_option_spread` mints its own `uuid4` ref_id
@@ -1617,6 +1637,10 @@ class RobinhoodBroker(Broker):
         `request_post`) but stamps OUR deterministic ref_id. Runs on a worker
         thread (network I/O). `spread` already carries per-leg expirationDate/
         strike/optionType/effect/action/ratio_quantity.
+
+        `time_in_force` defaults to "gfd" (day order — the prior hardcoded value,
+        so every existing caller is byte-identical); MACE's resting PT passes
+        "gtc".
         """
         import robin_stocks.robinhood.orders as O  # type: ignore
         legs = []
@@ -1634,7 +1658,7 @@ class RobinhoodBroker(Broker):
         payload = {
             "account": O.load_account_profile(account_number=acct, info="url"),
             "direction": combo.direction,
-            "time_in_force": "gfd",
+            "time_in_force": time_in_force,
             "legs": legs,
             "type": "limit",
             "trigger": "immediate",
@@ -1646,6 +1670,73 @@ class RobinhoodBroker(Broker):
         }
         url = O.option_orders_url(account_number=acct)
         return O.request_post(url, payload, json=True, jsonify_data=True)
+
+    async def place_multi_leg_resting(
+        self, orders: list[ProposedOrder], *, ref_id: str,
+        time_in_force: str = "gtc",
+    ) -> str:
+        """Submit a RESTING multi-leg option combo (default GTC) and return its
+        order id WITHOUT polling — the order rests at the venue (MACE's resting
+        profit-target buy-to-close). Distinct from `place_multi_leg`, which polls
+        to a terminal fill and books; a resting order has no fill to book here.
+
+        The spread build is intentionally DUPLICATED from `place_multi_leg`
+        (Board-accepted; the twin-builder consistency test pins the two payloads
+        byte-identical except `time_in_force`). The builders unify when the shared
+        condor core is extracted (plan § Future extraction) — at which point the
+        twin-builder test guards the extraction instead of the duplication.
+
+        No existing caller: PMCC/IC never place resting combos, so this is purely
+        additive.
+        """
+        self._require_connected()
+        if not orders:
+            raise RobinhoodOrderError("place_multi_leg_resting requires at least one leg")
+
+        combo = validate_combo_cohesion(orders)
+
+        spread: list[dict] = []
+        for o in orders:
+            ex = o.extra or {}
+            for required in ("expiration", "strike", "option_type", "position_effect"):
+                if required not in ex:
+                    raise ValueError(
+                        f"leg missing required extra key {required!r} "
+                        f"in combo {combo.combo_id!r}"
+                    )
+            spread.append({
+                "expirationDate": ex["expiration"],
+                "strike": float(ex["strike"]),
+                "optionType": ex["option_type"],
+                "effect": ex["position_effect"],
+                "action": o.side,
+                "ratio_quantity": int(ex.get("ratio_quantity", 1)),
+            })
+
+        acct = self._account_number or None
+        result = await asyncio.to_thread(
+            self._submit_spread_with_ref_id, spread, combo, acct, ref_id, time_in_force,
+        )
+        # Accepted? A resting combo carries an 'id' (single ref). No id ⇒ the venue
+        # did NOT accept it — RAISE (never return a phantom order id).
+        result = result or {}
+        if not result.get("id"):
+            reason = (result.get("non_field_errors") or result.get("detail")
+                      or result or "empty response")
+            raise RobinhoodOrderError(
+                f"Robinhood did not accept the resting {combo.direction} combo on "
+                f"{combo.underlying} x{combo.quantity}: {reason}"
+            )
+        return str(result.get("id"))
+
+    async def get_option_order_status(self, order_id: str) -> dict:
+        """Fetch a single option order's current status dict (MACE reconcile +
+        cancel-race polling). Thin wrapper over `rs.orders.get_option_order_info`;
+        returns {} on a missing/empty response (the caller maps state neutrally)."""
+        self._require_connected()
+        import robin_stocks.robinhood as rs  # type: ignore
+        info = await asyncio.to_thread(rs.orders.get_option_order_info, order_id)
+        return info or {}
 
     async def get_option_quote(
         self, symbol: str, expiration: str, strike: float, option_type: str,

@@ -1915,6 +1915,17 @@ tasty_options_iron_condor:
       - any_neutral_strategy_open_or_close
       - any_action_when_vix_above_30
 
+# ── Robinhood MACE (Phase 4, 2026-08-10) — HOT kill-switches ONLY (T1). Everything
+# else (universe, sizing, management, breakers) is the frozen MaceConfig in
+# config/mace.yaml, loaded once at boot. auto_execute:false halts new placements on
+# the next decision; exits continue. GO-LIVE BLOCKED pending the RH cancel-path fix
+# (3b, 2026-08-10 — brokeback endpoint migration 404s the legacy options-cancel).
+robinhood_mace:
+  enabled: true                  # declarative; divisions.yaml standby:true is the operative gate
+  auto_execute: false            # NOT go-live; no autonomous placements until flipped at go-live
+  division: robinhood_mace
+  config_file: config/mace.yaml  # frozen MaceConfig source (T1)
+
 # Post-Earnings-Announcement-Drift, long-only US equities on the agentic
 # Robinhood account (680725082). Autonomous (no per-trade approval) once the
 # Board blesses the strategy; paper-first. Division wiring lands in Phase 2.

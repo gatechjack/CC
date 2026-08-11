@@ -1,0 +1,90 @@
+# MACE (robinhood_mace) — full division config. Plan: planning/mace_v1_plan.md
+# (Board-approved 2026-08-09). Loaded ONCE at boot into a frozen MaceConfig
+# (fail-fast; sha256 hash logged + shown on /mace); RESTART-GATED — the ONLY
+# hot switches are enabled/auto_execute in strategies.yaml (T1 split).
+
+account_number: "116637293063"          # JOINT — Phase-0 resolved, operator-confirmed 2026-08-09
+                                        # [A2026-08-09] must equal divisions.yaml account_filter
+                                        # (startup assertion refuses to arm on mismatch)
+acknowledge_foreign_positions: false    # foreign-position guard override; entries stay disabled
+                                        # while foreign positions/orders exist and this is false
+universe: [SPY]                         # LAUNCH scope (Board memo). Expansion order:
+                                        # SPY, GLD, TLT, USO, EWZ, FXI, IBIT.
+                                        # DO NOT expand past 2 symbols until entry-window
+                                        # serialization work is built (Board ruling 7 / OQ-2).
+max_contracts: 1                        # LAUNCH cap (Board memo)
+
+entry:
+  eval_time_et: "15:45"
+  entry_cutoff_et: "15:58"
+  dte_min: 30
+  dte_max: 45                           # prefer highest DTE in the window
+  short_delta_target: 0.20
+  short_delta_band: [0.15, 0.25]
+  credit_floor_pct_of_width: 0.30
+  risk_band_min_per_width_usd: 50       # min max-risk = 50 * width_dollars (width-scaled:
+                                        # w3=>150 [SPY launch, byte-identical], w2=>100,
+                                        # w1=>50 [FXI fallback viable]). Board ruling
+                                        # risk-band-width-scaling 2026-08-09 (was fixed
+                                        # [150,250], which made ALL width-2 names unenterable)
+  risk_band_max_usd: 250               # absolute max-risk ceiling ((width-credit)*100)
+  enforce_risk_band: true               # "where strike listings allow"
+  ivr_floor: 25                         # 0-100 scale. Tasty rank fields are 0-1 —
+                                        # ivr_provider normalizes x100 BEFORE this compare
+                                        # (SPY 0.272 == IVR 27.2; stage-A probe-proven)
+  weekly_new_rungs_per_symbol: 1        # + refill: closures re-open budget from next session
+  max_rungs_per_symbol: 4
+  stop_cooldown_sessions: 2
+  ibit_overflow_cap: 6
+  overflow_max_per_symbol_session: 1    # T6 Board ruling 2026-08-09
+
+sizing:
+  rung_risk_pct: 0.05
+  deployment_target_pct: 0.80
+  equity_snapshot_time_et: "15:40"      # settled snapshot-E; never intraday buying power
+
+management:
+  check_interval_sec: 300
+  window_et: ["09:35", "15:55"]
+  pt_pct_of_credit: 0.50                # resting GTC buy-to-close (T9 synthetic fallback
+                                        # if stage-B GTC proof fails — contained swap)
+  stop_multiple: 2.0                    # mark >= 2.0x credit; the 09:35 tick IS the gap rule
+  time_exit_dte: 21
+  time_exit_at_et: "15:30"
+  exdiv_guard_sessions: 5
+
+execution:
+  entry_start_offset_usd: 0.02          # attempt 1 limit = fresh mid - 0.02 (credit walks
+                                        # DOWN toward marketability; never below the floor)
+  entry_tick_usd: 0.01
+  entry_fill_wait_sec: 60
+  entry_max_attempts: 5
+  exit_fill_wait_sec: 20
+  exit_max_attempts: 5
+  exit_hard_ceiling_mult_of_width: 1.00 # exit debit ladder hard ceiling (walks UP)
+
+breakers:                               # ALERT-ONLY at launch (Board memo)
+  day_loss_pct: 0.05
+  week_loss_pct: 0.08                   # ISO week
+  hwm_soft_pct: 0.85
+  hwm_hard_pct: 0.75
+  breaker_enforcement: "off"            # off | pause_entries | halt_flat
+                                        # (branches exist + unit-tested, SHIPPED inert)
+
+data:
+  ivr_source: tastytrade_market_metrics # canonical field implied_volatility_index_rank
+                                        # (== tos variant; NEVER tw_ — USO tw=1.0 vs 0.295)
+  iv_snapshot_daily: true               # mace_iv_history self-sufficiency corpus from day 1
+  calendar_refresh_weekday: "SUN"
+
+notifications:
+  daily_summary_time_et: "15:50"
+
+symbols:
+  SPY:  {enabled: true,  width_dollars: 3, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
+  GLD:  {enabled: false, width_dollars: 3, blackout_event_types: [],                    exdiv_guard: false}
+  TLT:  {enabled: false, width_dollars: 2, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
+  USO:  {enabled: false, width_dollars: 2, blackout_event_types: [OPEC],                exdiv_guard: false}  # zero distributions — stage-A verified
+  EWZ:  {enabled: false, width_dollars: 2, blackout_event_types: [COPOM, BR_ELECTION],  exdiv_guard: true}
+  FXI:  {enabled: false, width_dollars: 2, fallback_width_dollars: 1, blackout_event_types: [PBOC, LPR_FIX], exdiv_guard: true}
+  IBIT: {enabled: false, width_dollars: 2, blackout_event_types: [], overflow_only: true, exdiv_guard: false}  # overflow receiver ONLY, never a primary (OQ-3)
