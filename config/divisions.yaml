@@ -91,7 +91,7 @@ divisions:
     benchmark: SPY
     target_annual_return: 0.15      # reporting/tile label only — inert to the engine
     strategy: robinhood_mace
-    standby: true                   # NOT go-live; all four loops no-op until lifted
+    standby: false                  # ARMED 2026-08-11 (MACE go-live): all four loops LIVE
     enabled: true
 
   # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────

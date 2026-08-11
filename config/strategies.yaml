@@ -1922,7 +1922,7 @@ tasty_options_iron_condor:
 # (3b, 2026-08-10 — brokeback endpoint migration 404s the legacy options-cancel).
 robinhood_mace:
   enabled: true                  # declarative; divisions.yaml standby:true is the operative gate
-  auto_execute: false            # NOT go-live; no autonomous placements until flipped at go-live
+  auto_execute: true             # ARMED 2026-08-11 (MACE go-live): autonomous placements ON
   division: robinhood_mace
   config_file: config/mace.yaml  # frozen MaceConfig source (T1)
 
