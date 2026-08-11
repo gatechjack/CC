@@ -12233,3 +12233,26 @@ ssh azureuser@trading.jacksumner.com "cd /home/azureuser/trading_corp && tar xzf
 ```
 
 **Next (separate Wednesday session, before 15:35 ET):** re-glance Gate B on LIVE quotes+IVR → flip `divisions.yaml robinhood_mace standby:false` + `strategies.yaml robinhood_mace auto_execute:true` + add `robinhood_mace` to systemd `--live-divisions` (`TC_LIVE_AUTHORIZED=LIVE` already set) → restart → verify armed (startup assertion account/L3/exclusivity/foreign-position; 4 loops LIVE; `/mace` execution_mode=live + config_hash) → Telegram at the flip. Exclusivity (`robinhood_joint enabled:false`) MUST stay — do not weaken. Kill-switches: `auto_execute:false` hot-halts entries; `standby:true` hot-halts scan/manage; `--live-divisions` removal + restart = full disarm.
+
+## 2026-08-11 — MACE (robinhood_mace) ARMED LIVE — standby:false + auto_execute:true + `--live-divisions` + RESTART (engine 663557); all divisions verified healthy
+
+**Board authorization:** GT_Jack (remote /remote-control) authorized full autonomous **closed-market** arm this session (same day as the inert deploy `014e4cb`). Executed ~16:50 ET (US market CLOSED — first live SPY eval is **tomorrow 15:45 ET, unattended by Board decision**).
+
+**PRE-ARM (all green):** prod-live `014e4cb`, tree clean; deploy-inert intact (pre-flip robinhood_mace standby:true/auto_execute:false; robinhood_joint enabled:false); backup `mace_golive_predeploy_backup.tar.gz` present; no live division mid-critical-op (16:40 ET, US closed; bitunix observing, matched=0); `az` root available; `TC_LIVE_AUTHORIZED=LIVE`.
+
+**ARM changes:**
+- **Config** (git → prod, LF-md5 verified 2/2; prod-live `014e4cb`→`31ee36e`): `divisions.yaml robinhood_mace standby: true→false`; `strategies.yaml robinhood_mace auto_execute: false→true`. **Exclusivity `robinhood_joint enabled:false` UNCHANGED.**
+- **systemd unit** (infra, `az` root; backup `.bak_mace_arm_20260811`): appended `robinhood_mace` to `--live-divisions` on `/etc/systemd/system/trading-corp.service` ExecStart (guarded count==1), `daemon-reload`.
+- **RESTART** (`az` root): MainPID 621536→**663557**, NRestarts=0, active. `init_db` auto-created the 4 mace tables on boot.
+
+**VERIFY ARMED (all pass):**
+- **Startup-assertion components** (read-only probe on live Joint): account `116637293063` present, type `joint_tenancy_with_ros`, **option_level_3**, margin present, deactivated:false; **exclusivity green** (`robinhood_joint` NOT registered as a division — MACE-exclusive on the account); **foreign-position guard CLEAN** (0 open orders, 0 open positions). NO fail-closed / URGENT / entries-disabled trigger.
+- **4 MACE loops online in LIVE**: daily-slots / manage / reconcile / weekly-calendar; `/mace` HTTP 200 with `standby:no`, `auto_execute:yes`, `execution_mode=live`, `config_hash=33c82c4122ae`. Daily-slots catch-up ran snapshot (equity **$4000.12**) + daily_summary (open:0, day_pnl:0, breakers:[]) — NO entry. (The wiring log's "standby-gated / go-live BLOCKED on cancel-path fix" is HARDCODED boilerplate in main.py:2010, same as PEAD's — NOT runtime state; ignore.)
+- **No order on arm**: 0 MACE orders / 0 positions / 0 open rungs.
+- **Other divisions healthy post-restart**: bitunix_sfp + bitunix_futures restart-resume matched=0 + reconciler clean + observer live/armed; robinhood_pead scan+manager+reconciler online (live); robinhood_pmcc scan scheduler + approval reconciler online; kalshi_copy_trading kalshi-live broker paper=False; RobinhoodBroker logged in (3 accounts, no 401); web command center listening :8000. **Pre-existing/benign** (NOT arm-induced, NOT live divisions): Fidelity → paper (known Azure-VM Playwright bot-block, docs/sharp_edges.md); polymarket_copy_trader HTTP 429 throttle (observer).
+
+**★ HEADS-UP (not a fault):** Joint equity snapshot = **$4000.12**; a 1-contract SPY condor needs E ≥ ~$4,100 (max-risk ~$205 vs 0.05·E=$200) → tomorrow's 15:45 eval may size to **0 contracts (budget skip)** — coherent per design, not a bug. Fund to ~$4,100+ for a 1-contract entry.
+
+**Kill-switches (standing):** `auto_execute:false` (strategies.yaml) = hot-halt entries; `standby:true` (divisions.yaml) = hot-halt scan+manage; `--live-divisions` removal (unit) + restart = full disarm. **Rollback:** `tar xzf /home/azureuser/mace_golive_predeploy_backup.tar.gz` (restores 10 files→`55e34c8`) + restore unit `.bak_mace_arm_20260811` + daemon-reload + restart → pre-mace healthy state.
+
+**prod-live:** `31ee36e` (config flip) → this deploy_log entry commit. The systemd unit edit is infra (not repo-tracked) — documented here.
