@@ -12277,3 +12277,34 @@ ssh azureuser@trading.jacksumner.com "cd /home/azureuser/trading_corp && tar xzf
 **★ RAISED PRIORITY (per Board):** the `brokers/robinhood.py:553-554` BP-fallback (`settled_cash = buying_power` **iff** the account `cash` field is absent) is now a **higher-priority hardening item** — with `max_contracts:1` the ACTIVE binding risk bound, a mis-resolved E matters more. Still NOT reachable for a funded account (cash always present; empirically E=$4000.12 = cash-path) and bounded by `max_contracts:1`; harden it to fall back to **portfolio equity, not BP**, before any `max_contracts` increase or universe expansion. (Live BP today = $4045.98 ≈ equity, `margin_buying_power`=None — no 2:1 BP exists on this account now.)
 
 **Rollback:** revert `rung_risk_pct`→0.05 (config_hash back to `33c82c4122ae`) + restart; OR full pre-mace rollback `tar xzf mace_golive_predeploy_backup.tar.gz` + unit `.bak_mace_arm_20260811` + restart. **First live SPY eval unchanged: tomorrow 2026-08-12 15:45 ET, unattended** (now will size to 1 contract if credit ≥ floor).
+
+## 2026-08-12 — MACE +capacity (max_rungs 4→5, weekly 1→2) + GLD online as 2nd symbol (frozen config, RESTART)
+
+**Board directive:** GT_Jack — enable up to **5 concurrent 1-contract condors/symbol** AND bring **GLD online as the 2nd symbol** (expansion order SPY→GLD→…). Joint stays ~$4k; **per-rung risk UNCHANGED (1 contract, `rung_risk_pct` held at 0.055).**
+
+**Changes (`config/mace.yaml`, frozen → restart-gated) — FOUR edits (the 3 requested + the required `universe` addition):**
+- `entry.max_rungs_per_symbol: 4 → 5`
+- `entry.weekly_new_rungs_per_symbol: 1 → 2` (+ refill)
+- `symbols.GLD.enabled: false → true`
+- **`universe: [SPY] → [SPY, GLD]`** ← REQUIRED, not in the operator's 3-edit list: the entry pipeline iterates `cfg.universe` (`manager.py:155`) and boot validation (`config.py:388`) requires every universe symbol enabled — `enabled:true` alone would leave GLD un-evaluated. Flagged to operator + added to achieve the stated goal.
+- **config_hash `b2e0574f9a4e` → `fe177fcd3882`** (sha256 raw bytes; prod file verified == this). Pre-validated locally via `load_mace_config` (no boot error; `universe=('SPY','GLD')`).
+
+**UNCHANGED (per Board):** `rung_risk_pct:0.055`, `max_contracts:1`, `deployment_target_pct:0.80`, `credit_floor:0.30`, `risk_band[50/width, 250]`, `breaker_enforcement:off`, `short_delta:0.20`, all else.
+
+**Risk math (verified):**
+- **Per-rung sizing = exactly 1 contract** (SPY + GLD, width 3, E=$4000.12, budget $220): worst case credit floor $0.90 (risk $210) → floor(220/210)=1.047 → capped at `max_contracts:1` = 1; cannot reach 2 (220/150=1.46 even at the risk-band top). GLD width-3 = identical math.
+- **Full-stack reserve:** 5 SPY + 5 GLD = 10 rungs; worst case (risk $210) = **$2,100 = 52.5%** of $4k, under the 80% cap ($3,200), ~$1,100 headroom. Capacity (5/symbol) binds first at ~52%; the reserve gate remains the ultimate bound but is not approached.
+- **OQ-2:** universe now at the 2-symbol ceiling. **No `len(universe)≤2` code cap** — the ceiling is the runbook/config-review rule (Ruling 7, documented in the mace.yaml `universe` comment). A 3rd symbol is NOT enabled.
+- **`robinhood.py:553` BP-fallback NOT triggered** (`max_contracts` stays 1; E-derivation path untouched).
+
+**Restart (`az` root, closed-market 01:24 ET — OUTSIDE the 15:40–15:58 window):** pre-change safety glance clean (nothing in-flight; last event a completed kalshi_copy fill ~1h prior). MainPID **666233 → 668773**, NRestarts=0, active. Boot ~2.5 min.
+
+**VERIFY (all pass):**
+- `config_hash=fe177fcd3882` live (wiring log + `/mace`); `/mace` HTTP 200 `standby:no`/`auto_execute:yes`/`execution_mode=live`, **`>GLD<` shown**. NO config-INVALID / validation error.
+- Startup-assertion components green (Joint `116637293063`/`option_level_3`/margin/exclusivity/foreign-clean); **0 open orders / 0 positions**.
+- 4 loops LIVE. **No entry eval this boot — correct:** at 01:27 ET the 15:40/15:45/15:50 slots are ~14h in the future, so the daily-slots catch-up (which fired on the evening restarts) does NOT run; the loop evaluates **SPY + GLD** at today's 15:45 ET slot.
+- Other divisions healthy post-restart: bitunix sfp+futures restart-resume matched=0 + reconciler clean; PEAD live; PMCC scheduler online; kalshi_copy live; RH logged in (3 accts, no 401); web :8000. Pre-existing/benign: fidelity→paper, polymarket 429.
+
+**Diversification note:** GLD (gold ETF) is ~uncorrelated to SPY — the 2nd symbol adds diversification, not concentration; per-trade risk unchanged (1 contract each).
+
+**Rollback:** revert the 4 lines (universe→[SPY], GLD enabled→false, max_rungs→4, weekly→1; config_hash back to `b2e0574f9a4e`) + restart; OR full pre-mace rollback via `mace_golive_predeploy_backup.tar.gz` + unit `.bak_mace_arm_20260811` + restart. **prod-live:** `8d552ae`→`2120f36`→this entry. **First live eval of the 2-symbol universe: today 2026-08-12 15:45 ET, unattended** (SPY + GLD each size to 1 contract if credit ≥ floor).
