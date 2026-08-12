@@ -39,7 +39,7 @@ entry:
   overflow_max_per_symbol_session: 1    # T6 Board ruling 2026-08-09
 
 sizing:
-  rung_risk_pct: 0.05
+  rung_risk_pct: 0.055               # 2026-08-11: admit 1 contract at ~$4k equity (0.055*4000=$220 > $206 max-risk); per-trade risk UNCHANGED — max_contracts:1 is the binding cap
   deployment_target_pct: 0.80
   equity_snapshot_time_et: "15:40"      # settled snapshot-E; never intraday buying power
 
