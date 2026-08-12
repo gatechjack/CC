@@ -12256,3 +12256,24 @@ ssh azureuser@trading.jacksumner.com "cd /home/azureuser/trading_corp && tar xzf
 **Kill-switches (standing):** `auto_execute:false` (strategies.yaml) = hot-halt entries; `standby:true` (divisions.yaml) = hot-halt scan+manage; `--live-divisions` removal (unit) + restart = full disarm. **Rollback:** `tar xzf /home/azureuser/mace_golive_predeploy_backup.tar.gz` (restores 10 files→`55e34c8`) + restore unit `.bak_mace_arm_20260811` + daemon-reload + restart → pre-mace healthy state.
 
 **prod-live:** `31ee36e` (config flip) → this deploy_log entry commit. The systemd unit edit is infra (not repo-tracked) — documented here.
+
+## 2026-08-11 — MACE `rung_risk_pct` 0.05 → 0.055 (frozen config, RESTART) — admit 1 contract at ~$4k equity; per-trade risk UNCHANGED
+
+**Board directive:** GT_Jack — keeping the Joint at **~$4,000 (NOT funding to $5k)** and raising `rung_risk_pct` so the one permitted contract isn't budget-floored to zero. At 0.05, budget = 0.05·4000 = $200 < ~$206 SPY max-risk ⇒ floor→**0 contracts**. At 0.055, budget = $220 ⇒ floor(220/206) = **1**. **Per-trade risk UNCHANGED — `max_contracts:1` is the binding cap: still one condor, ~$206 max loss.** This only stops the budget from flooring the single permitted contract to zero.
+
+**Arithmetic (verified across the legal credit band; E=$4000.12, width 3):** worst case = credit floor $0.90 (risk $210) → 220.01/210 = 1.047 → 1 contract; every credit from the $0.90 floor through the risk-band top ($1.50/risk $150) sizes to exactly 1 — no nickel-drift skip. Headroom: 1 contract needs E ≥ $210/0.055 = **$3,818** at the $0.90 worst case (at $4,000.12 now).
+
+**Change (frozen mace.yaml → restart-gated):** one line, `config/mace.yaml sizing.rung_risk_pct: 0.05 → 0.055`. **config_hash `33c82c4122ae` → `b2e0574f9a4e`** (sha256 of raw bytes, `config.py:157`). **UNCHANGED:** `max_contracts:1`, `deployment_target_pct:0.80`, `credit_floor_pct_of_width:0.30`, `risk_band_min_per_width_usd:50`, `risk_band_max_usd:250`, `breaker_enforcement:off`, all else. Deployed git→prod (LF-md5; prod sha256 == `b2e0574f9a4e`); prod-live `8087add`→`f18b4bd`→this entry.
+
+**Restart (`az` root, closed-market 20:53 ET):** pre-change safety glance clean (engine 663557 active; NO live-division order/fill/position in 5h — bitunix only stale-bar rejections). MainPID **663557 → 666233**, NRestarts=0, active.
+
+**VERIFY (all pass — same battery as the arm):**
+- `config_hash=b2e0574f9a4e` live (wiring log + `/mace`) → new `rung_risk_pct` loaded.
+- **★ Live proof the change works:** the daily-slots catch-up ran the entry eval and **SIZED SPY to `contracts:1`** (rung `mace-SPY-2026-09-25-737-734-801-804`) — at 0.05 this was a 0/budget-skip — then **stood down on `cutoff` (`attempts:0`) → NO order placed** (past 15:58 ET).
+- **0 open orders / 0 positions on the Joint** (probe); startup-assertion components green (acct `116637293063` / `option_level_3` / margin / exclusivity [robinhood_joint not registered] / foreign-clean).
+- 4 loops LIVE; `/mace` HTTP 200 `standby:no`/`auto_execute:yes`/`execution_mode=live`.
+- Other divisions healthy post-restart: bitunix sfp+futures restart-resume matched=0 + reconciler clean; PEAD scan+manager+reconciler online; PMCC scan scheduler online; kalshi_copy live; RH logged in (3 accts, no 401); web :8000. Pre-existing/benign: fidelity→paper, polymarket 429, `pykalshi 404` market-lookup miss.
+
+**★ RAISED PRIORITY (per Board):** the `brokers/robinhood.py:553-554` BP-fallback (`settled_cash = buying_power` **iff** the account `cash` field is absent) is now a **higher-priority hardening item** — with `max_contracts:1` the ACTIVE binding risk bound, a mis-resolved E matters more. Still NOT reachable for a funded account (cash always present; empirically E=$4000.12 = cash-path) and bounded by `max_contracts:1`; harden it to fall back to **portfolio equity, not BP**, before any `max_contracts` increase or universe expansion. (Live BP today = $4045.98 ≈ equity, `margin_buying_power`=None — no 2:1 BP exists on this account now.)
+
+**Rollback:** revert `rung_risk_pct`→0.05 (config_hash back to `33c82c4122ae`) + restart; OR full pre-mace rollback `tar xzf mace_golive_predeploy_backup.tar.gz` + unit `.bak_mace_arm_20260811` + restart. **First live SPY eval unchanged: tomorrow 2026-08-12 15:45 ET, unattended** (now will size to 1 contract if credit ≥ floor).
