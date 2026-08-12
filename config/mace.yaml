@@ -8,7 +8,7 @@ account_number: "116637293063"          # JOINT — Phase-0 resolved, operator-c
                                         # (startup assertion refuses to arm on mismatch)
 acknowledge_foreign_positions: false    # foreign-position guard override; entries stay disabled
                                         # while foreign positions/orders exist and this is false
-universe: [SPY]                         # LAUNCH scope (Board memo). Expansion order:
+universe: [SPY, GLD]                    # 2026-08-12: GLD added as 2nd symbol (OQ-2 2-symbol ceiling). Expansion order:
                                         # SPY, GLD, TLT, USO, EWZ, FXI, IBIT.
                                         # DO NOT expand past 2 symbols until entry-window
                                         # serialization work is built (Board ruling 7 / OQ-2).
@@ -32,8 +32,8 @@ entry:
   ivr_floor: 25                         # 0-100 scale. Tasty rank fields are 0-1 —
                                         # ivr_provider normalizes x100 BEFORE this compare
                                         # (SPY 0.272 == IVR 27.2; stage-A probe-proven)
-  weekly_new_rungs_per_symbol: 1        # + refill: closures re-open budget from next session
-  max_rungs_per_symbol: 4
+  weekly_new_rungs_per_symbol: 2        # 2026-08-12: 2/week (+refill) — per-rung still 1 contract
+  max_rungs_per_symbol: 5               # 2026-08-12: 5 concurrent rungs/symbol (was 4)
   stop_cooldown_sessions: 2
   ibit_overflow_cap: 6
   overflow_max_per_symbol_session: 1    # T6 Board ruling 2026-08-09
@@ -82,7 +82,7 @@ notifications:
 
 symbols:
   SPY:  {enabled: true,  width_dollars: 3, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
-  GLD:  {enabled: false, width_dollars: 3, blackout_event_types: [],                    exdiv_guard: false}
+  GLD:  {enabled: true,  width_dollars: 3, blackout_event_types: [],                    exdiv_guard: false}
   TLT:  {enabled: false, width_dollars: 2, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
   USO:  {enabled: false, width_dollars: 2, blackout_event_types: [OPEC],                exdiv_guard: false}  # zero distributions — stage-A verified
   EWZ:  {enabled: false, width_dollars: 2, blackout_event_types: [COPOM, BR_ELECTION],  exdiv_guard: true}
