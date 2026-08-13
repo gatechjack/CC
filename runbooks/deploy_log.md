@@ -12308,3 +12308,39 @@ ssh azureuser@trading.jacksumner.com "cd /home/azureuser/trading_corp && tar xzf
 **Diversification note:** GLD (gold ETF) is ~uncorrelated to SPY — the 2nd symbol adds diversification, not concentration; per-trade risk unchanged (1 contract each).
 
 **Rollback:** revert the 4 lines (universe→[SPY], GLD enabled→false, max_rungs→4, weekly→1; config_hash back to `b2e0574f9a4e`) + restart; OR full pre-mace rollback via `mace_golive_predeploy_backup.tar.gz` + unit `.bak_mace_arm_20260811` + restart. **prod-live:** `8d552ae`→`2120f36`→this entry. **First live eval of the 2-symbol universe: today 2026-08-12 15:45 ET, unattended** (SPY + GLD each size to 1 contract if credit ≥ floor).
+
+## 2026-08-13 — PEAD off-hours exit gate: manage() gated to market hours, placement deferred to open (RESTART)
+
+**Triggered by:** GT_Jack — kill the overnight "canceled sell" churn (confirmed 2026-08-12: 6 GFD market SELLs fired ~01:27–01:37 ET on genuinely-held names, cancelled at the 90s poll, re-firing nightly, NO audit_event). Read-only investigation → fix branched off prod-live → autonomous gated deploy.
+
+**Backup tag:** `pead_strategy.py.bak_offhours_gate_20260813` (single file; original LF-md5 `ac7c465b…`)
+
+**Files deployed (3):**
+- `trading_corp/agents/strategies/pead_strategy.py` — market-hours gate on the exit engine (LF-md5 `ac7c465b15a5…` → `9b9cfdadf8a8…`)
+- `tests/test_pead_offhours_gate.py` — window-state classification (11 cases)
+- `tests/test_pead_offhours_single_outcome.py` — deferred-then-placed = exactly ONE exit + drift-marker-not-consumed (2 cases)
+
+**Features shipped:**
+- `manage()` evaluates exits only within `[open − 30min, close]` and PLACES only at/after `open+buffer` (~9:31 ET) via new `_exit_window_state(now, cfg)`, reusing the SHARED NYSE calendar (`_session_open_et`/`default_calendar`) the entry path uses. Overnight/weekend/holiday ⇒ full no-op: no eval, no snapshot, no order, **NO cancel**. Half-days shrink the upper bound automatically (calendar close).
+- Pre-open a fired stop/guard/time exit DEFERS (emits `pead_exit_deferred` audit_event — fixes the silent-cancel gap) and places at the open. **DRIFT is evaluated only in-session** so its once-per-daily-bar `_mark_drift_daily` marker is not consumed pre-open then deferred (would else lose the sell).
+- Exit RULES / sizer / dial(60) / entry path UNCHANGED. Two optional cfg keys (`manage_eval_lead_sec`=1800, `manage_open_buffer_sec`=60) default in code ⇒ `strategies.yaml` UNTOUCHED.
+
+**Verification (all pass):**
+- Gate-A: prod pre-deploy md5 == base (`ac7c465b…`); `market_hours.py` == base (untouched); only `pead_strategy.py` runtime file + 2 tests changed; no shared/Kalshi/PMCC file.
+- Prod-venv PEAD tests **31/31 green** before restart (`-p no:pytest_ethereum`).
+- Restart (closed-market **01:29 ET**, `sudo -n systemctl restart`): MainPID **668773 → 681146**, NRestarts=0, active/running, no restart loop, no tracebacks.
+- Boot: `mode=LIVE`/`env_authorized`; RH re-logged-in (KV+MFA, not the 0-byte pickle) + bound PEAD acct `680725082`; bitunix-futures **0 positions**; PEAD manager online; MACE `config_hash=fe177fcd3882` (unchanged, still armed); dial `max_concurrent=60` intact.
+- **★ Gate live (behavioral):** restarted INSIDE the incident window (01:29 ET) → **zero** `pead_exit` / `cancel_stock_order` / `pead_exit_deferred` since boot. Old code would have churned here — it did not.
+- **42 open PEAD positions survived** (count=42); **NWSA & CENX** (both DRIFT 100%) OPEN with no boot cancel — positioned to fire a real sell at the next open, not overnight.
+- Bitunix futures flat / SFP re-attached / PMCC `position` table (32 rows) untouched.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; F=\$BASE/trading_corp/agents/strategies/pead_strategy.py; \
+cat \$F.bak_offhours_gate_20260813 > \$F; \
+rm -f \$BASE/tests/test_pead_offhours_gate.py \$BASE/tests/test_pead_offhours_single_outcome.py; \
+sudo -n systemctl restart trading-corp
+"
+```
+**prod-live:** `b3d18c2` → this entry.

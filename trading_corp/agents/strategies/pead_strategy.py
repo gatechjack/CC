@@ -67,6 +67,8 @@ _DEFAULT_RECONCILE_POLL_SEC = 30                  # reconcile-loop tick while pe
 _DEFAULT_RECONCILE_DEADLINE_AFTER_OPEN_SEC = 300  # wait past the 9:30 ET open before collar-miss cancel
 _DEFAULT_RECONCILE_PARTIAL_WARN_FRAC = 0.90       # warn when realized $ < this fraction of requested
 _DEFAULT_INTENT_BUFFER_SEC = 60        # seconds after open before placing intent orders (~9:31 ET)
+_DEFAULT_MANAGE_EVAL_LEAD_SEC = 1800   # exit engine begins EVALUATING 30 min before the open
+_DEFAULT_MANAGE_OPEN_BUFFER_SEC = _DEFAULT_INTENT_BUFFER_SEC  # hold exit PLACEMENT until open+buffer (~9:31 ET); mirrors the entry path
 
 
 @dataclass
@@ -584,11 +586,47 @@ class PEADStrategy:
         }
 
     # ── EXIT engine (manage) — imports pead_pressures, fires at contract px ──
+    @staticmethod
+    def _exit_window_state(now: datetime, cfg: dict) -> tuple[str, bool]:
+        """Classify `now` (tz-aware) for the exit engine against the SHARED NYSE
+        calendar (default_calendar / _session_open_et — reused read-only, the SAME
+        definition of "market open" the entry/reconcile path uses). Returns
+        (state, placement_open):
+          'closed'   -> outside [open - eval_lead, close]: evaluate nothing and
+                        place/cancel NOTHING (this is what kills the overnight
+                        GFD-sell -> 90s-cancel churn).
+          'pre_open' -> inside the lead window but before open+buffer: evaluate the
+                        rules, but DEFER placement (RH rejects pre-market orders).
+          'session'  -> at/after open+buffer through the close: evaluate AND place.
+        Weekends/holidays -> 'closed' (open_et is None); half-days shrink the upper
+        bound automatically because `close` comes from the calendar."""
+        now_et = now.astimezone(ET)
+        open_et = PEADStrategy._session_open_et(now_et.date().isoformat())
+        if open_et is None:
+            return "closed", False                      # weekend / holiday
+        close_et = default_calendar().close_time_et(now_et)
+        eval_lead = int(cfg.get("manage_eval_lead_sec", _DEFAULT_MANAGE_EVAL_LEAD_SEC))
+        open_buffer = int(cfg.get("manage_open_buffer_sec", _DEFAULT_MANAGE_OPEN_BUFFER_SEC))
+        if now_et < open_et - timedelta(seconds=eval_lead):
+            return "closed", False                      # before the eval window
+        if close_et is not None and now_et >= close_et:
+            return "closed", False                      # after the close
+        if now_et < open_et + timedelta(seconds=open_buffer):
+            return "pre_open", False                    # evaluate, but defer placement
+        return "session", True
+
     async def manage(self, broker) -> tuple[list[ProposedOrder], int]:
         cfg = self._cfg()
         cadence = int(cfg.get("manage_cadence_sec", _DEFAULT_MANAGE_CADENCE_SEC))
         rows = self._open_rows()
         if not rows:
+            return [], cadence
+        # ── Market-hours gate (the off-hours-exit fix) ───────────────────────
+        # Only EVALUATE exits inside [open - eval_lead, close]; only PLACE at/after
+        # open+buffer. Outside the window: no eval, no snapshot, no order, NO cancel.
+        window, placement_open = self._exit_window_state(
+            datetime.now(timezone.utc), cfg)
+        if window == "closed":
             return [], cadence
         today = datetime.now(timezone.utc).date()
         snap = await broker.snapshot()
@@ -616,7 +654,13 @@ class PEADStrategy:
             # uses, OFF the event loop via asyncio.to_thread — no HTTP on the loop.
             drift_close: float | None = None
             drift_evaluated = False
-            if held >= 1:
+            # DRIFT is evaluated ONLY once placement is allowed (regular session):
+            # _mark_drift_daily fires once per completed daily bar, so evaluating it
+            # pre-open would consume that firing and then defer, and the post-open
+            # tick's marker guard would SKIP it -> the drift sell would be lost.
+            # Anchoring drift eval to the open preserves its once-per-bar / act-at-
+            # open semantics (stop/guard/time still evaluate through the whole window).
+            if held >= 1 and placement_open:
                 marker = extra.get("drift_last_daily")
                 # Cheap guard: only touch the RH daily fetcher when a new session may
                 # have completed since we last evaluated (marker != the most-recent
@@ -644,6 +688,19 @@ class PEADStrategy:
             rule = self._fired_rule(pr, d2n, held, drift_evaluated=drift_evaluated)
             if rule is None:
                 continue                              # no exit yet
+            if not placement_open:
+                # Pre-open: a stop/guard/time exit qualifies, but RH rejects pre-
+                # market orders. DEFER to open+buffer (the next post-open tick re-
+                # evaluates on the live quote and places). Emit an audit_event so a
+                # deferred exit is VISIBLE — the old off-hours path cancelled at the
+                # 90s poll and logged NOTHING.
+                log.info("pead_strategy.manage: %s exit '%s' qualifies pre-open — "
+                         "deferred to open+buffer (no pre-market order)", r["symbol"], rule)
+                self.logger_agent.log_event(
+                    self.SLUG, "pead_exit_deferred",
+                    {"strategy": self.SLUG, "division": self.SLUG,
+                     "symbol": r["symbol"], "rule": rule, "reason": "pre_open"})
+                continue
             sell = ProposedOrder(
                 strategy=self.SLUG, symbol=r["symbol"], side="sell", qty=float(r["qty"]),
                 order_type="market", id=f"{r['order_id']}-exit-{rule}", fractional=True,
