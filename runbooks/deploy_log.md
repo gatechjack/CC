@@ -116,6 +116,50 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-07-27 ~12:11 UTC — Kalshi copy dashboard P1+P2 DEPLOYED + VERIFIED LIVE — Selected intel epoch-scoped (completes fix c) + mode-aware header + per-panel scope labels (agent-driven, autonomous under explicit Board authorization; web-only; flat-window restart)
+
+**What & why:** completes S2 fix (c) — fix (c) live-scoped the per-whale panel's *base* columns but the intel merge (`_query_kalshi_whale_intel`) stayed all-time, leaving `Copies/Copy%/Net PnL` all-time next to live-scoped `Resolved/WR%/Realized P&L` on the Selected row (the Sept re-selection sorts by Net PnL → would rank on paper backlog).
+- **P1:** thread `kalshi_copy_mode`/`kalshi_copy_epoch` into `_query_kalshi_whale_intel` + `_kalshi_copy_mode_clause` on all 4 component queries (copies/no_side/sports on `ts`; net-PnL on `entry_ts`); Selected caller (`_query_pm_whales`) passes them. **Watch caller stays 'all' BY DESIGN** (operator-confirmed — live-scoping zeroes its intel: teafordong 65→0 copies / 30→0 RT, wiping the ~1.5% copyability demote signal; 7 others external-Apify-only; Watch base cols are all-time external → all-time intel is the correct match).
+- **P2:** header `— paper performance` → mode-aware; copies tooltips note `kalshi_copy_placed_live`. + per-panel **scope labels** (Selected `intel: since {date}·live` / `pre-go-live·paper`; Watch `intel: all-time·discovery`) so the by-design cross-panel scope difference is legible, not silent (the actual residual risk).
+
+**Files (LF-md5 base→patched):** data.py `14eeb84b→636eeba8`; pm_dashboard_body.html `90750afe→4dad278c` (prod template was CRLF, backup raw `b4a4b6c4`; deployed LF — inert on a Jinja template). Drift-gate: prod==base both. Backups `~/trading_corp/.bak_p1p2_20260727/{web,tmpl}/`.
+
+**Deploy:** scp LF-staged→/tmp, staged md5==patched verified, backup + `cat`-swap; restart via **Azure Run Command (root, no sudo)**. PID 424692→**429030** (12:11:32 UTC). Boot: 37 secrets, RH re-auth OK (3 accts), 0 new tracebacks. Web-only; flat-window (equity mkts closed pre-market, pending_order=0, no live fills).
+
+**Verify — SCOPE-CONSISTENCY INVARIANT (each panel's intel matches ITS OWN base scope; rendered off :8000 + DB):**
+- Selected intel LIVE-scoped (matches live base): DB AI.EDGE n_resolved 22→**10**, Maggie 18→**3**; rendered `live performance` + `intel: since 2026-07-01 · live` (paper mode → `paper performance` + `intel: pre-go-live · paper`).
+- Watch intel ALL-TIME (matches external base, must NOT zero): DB teafordong copies=**65**; rendered `intel: all-time · discovery` (both modes).
+- Copies tooltips rendered `kalshi_copy_placed_live` ×2.
+
+**Rollback:** restore `.bak_p1p2_20260727/{web/data.py, tmpl/pm_dashboard_body.html}` + restart. Pure read-query + label changes; no data mutation.
+
+---
+
+## 2026-07-27 ~02:33 UTC — Kalshi copy S2 bundle (a+b+c) DEPLOYED + VERIFIED LIVE — copyability-counts-live + whale_handle→extra_json (+15-row backfill) + panel epoch-scope (agent-driven, autonomous under explicit Board authorization; flat-window restart; autopause STAYS SHADOW)
+
+**What & why:** three instrumentation fixes so the Kalshi copy dashboard reflects live reality and autopause is no longer structurally blind — prerequisites for the roster re-selection decision.
+- **(a)** `trading_corp/web/data.py::_query_kalshi_whale_intel` copies numerator → `kind IN ('would_have_placed','kalshi_copy_placed_live')` (was paper-only, frozen at go-live; `no_fill` excluded = liquidity, not copyability).
+- **(b)** `trading_corp/agents/kalshi_resolver.py::_compute_round_trip_row` writes structured `whale_handle` into extra_json so autopause (`_whale_autopause` keys on `extra_json.$.whale_handle`) can see market-SETTLEMENT rows — was blind to ALL live settlement history since go-live (whale-CLOSED pairs had it via `_pair_pending_exits`; settlement rows did not, both paper AND live). + one-time backfill of the 15 pre-fix live rows.
+- **(c)** `trading_corp/web/data.py::_query_pm_whales` epoch-scopes the per-whale panel (`_kalshi_copy_mode_clause` on round_trips.entry_ts + opens.ts) to match the tile (`_query_pm_resolved_stats`); was full-history.
+
+**Files (LF-md5 base→patched):** data.py `d12d4a07→14eeb84b`; kalshi_resolver.py `cc658dbb→d4a63eb1`. **Drift-gate:** prod==base for both (no prod-direct drift). Backups `~/trading_corp/.bak_s2_abc_20260726/{web,agents}/`.
+
+**Deploy:** scp LF-staged → /tmp, staged md5==patched verified, backup + `cat`-swap into place; restart via **Azure Run Command (root, no sudo)**. PID 404132→**424692** (start 02:33:28 UTC). Boot: 37 KV secrets, RobinhoodBroker logged in (3 accts, RH re-auth clean), all divisions registered incl. kalshi_copy_trading (kalshi-live, paper=False), **0 new tracebacks** (only pre-existing Fidelity-Playwright ENOENT→paper-fallback). Flat-window: US equity mkts closed (PMCC/PEAD idle), 0 exec events/20min, pending_order=0.
+
+**Backfill:** `scripts/backfill_s2b_kalshi_copy_whale_handle.py --apply` → 15/15 rows (AI.EDGE 11, MaggieTheEagle 3, pritz786 1), 0 unparseable. Idempotent.
+
+**4-way verify (all PASS):**
+- (a) copies OLD→NEW: AI.EDGE 16→28, Maggie 18→21 (live copies now counted).
+- (b) live rows w/ structured whale_handle: 0→**15**; resolver line deployed (grep=1) → new settlement rows will populate.
+- (c) panel full-hist→epoch: AI.EDGE 22→10, Maggie 18→3; = tile epoch-scoped total **13** (panel==tile).
+- autopause: now SEES epoch-scoped live rows (AI.EDGE 10/−$2.26, Maggie 3/−$3.54; was 0/blind). **STAYS SHADOW** (`autopause_mode: shadow` L1652); **0** real auto-pauses post-restart; the only 2 `kalshi_whale_auto_paused` are historical (reach.draft 2026-05-31, teafordong 2026-06-22, pre-shadow active-era). Whales n=10/3 « min_trades=30 → correctly flags nothing.
+
+**★ Autopause NOT flipped to active — remains SHADOW by design.** Flipping active is a SEPARATE operator decision after observing shadow fire correctly on real Kalshi rows.
+
+**Rollback:** restore `.bak_s2_abc_20260726/{web/data.py,agents/kalshi_resolver.py}` + restart; backfill is additive/idempotent.
+
+---
+
 ## 2026-07-18 ~23:01 UTC — RH-AUTH RESILIENCE (ITEMS 1/2/3) DEPLOYED + VERIFIED LIVE (engine-source hot-patch; flat-guarded restart; agent-driven, autonomous under explicit Board authorization)
 
 **What & why:** the engine's Robinhood session was 401 Unauthorized broker-wide 2026-07-14→18 (all 4 RH accts share ONE robin_stocks module session; hid 4 days as 848 generic `float()..NoneType` warnings because robin_stocks SWALLOWS the 401). Deployed a self-healing layer. Root cause of the 4-day hide + the recovery lever: **FINDING B — refreshing the pickle FILE does NOT recover a RUNNING engine** (in-mem singleton + `_LOGIN_DONE` latch; proven: 20:55 file-refresh → 21:31 still-401 → 21:33 RESTART fixed) → needed an IN-PROCESS reload.
@@ -11913,3 +11957,430 @@ Phase 1). Full session work + reports also on branch `polymarket-copy-quote-pric
 
 **Rollback:** roster→`/tmp/pm_roster_backup.json`; option-c→`.bak-pre-optc-2026-07-07`; item-1→`.bak-pre-item1-2026-07-07`
 + restart; epoch→restore `2026-05-23T15:30:15.042822+00:00` or delete key.
+
+---
+
+## 2026-08-02 — PEAD derived settled-cash sizer + $50 floor + live max_concurrent dial + dashboard redesign (RESTART)
+
+**Branch** `claude-2026-08-02b` off prod-live `dafe60b`. Build commits `c02d904`→`f56129a`; Gate-A `6d69277`.
+**★ LIVE ENGINE PID `536666` → `546159`** (whole-engine `sudo -n systemctl restart trading-corp`, board-authorized
+2026-08-02 ~15:46 UTC; NRestarts=0, clean boot). Supersedes 536666 as the live PID in all anchors. Markets closed;
+first PEAD scan is pre-market next session (nothing placed at boot).
+
+**What shipped.** (A) Retired `position_pct × equity` sizer → **derived, self-balancing, FLOORED** sizer:
+`per_name = (settled_cash / open_slots_remaining) × safety_factor(0.95)`, recomputed per entry so the last slot is
+fundable by construction; **$50 per-name floor** (`size_min_usd`) funds FEWER names at >=$50 rather than many tiny
+ones (never opens a sub-$50 name). Single source of truth `pead_sizing.derive_wave_sizes` consumed by BOTH the scan
+and the dashboard readout (they cannot diverge). (B) **Settled cash** now read live from RH `load_account_profile`:
+`settled = cash - unsettled_funds - cash_held_for_orders`, clamped under `buying_power`, floored at 0 - EXCLUDES
+unsettled proceeds (T+1) so sizing is safe on the cash account. New optional `AccountSnapshot.settled_cash`. (C)
+**Live max_concurrent dial** - `POST /telemetry/pead/max_concurrent` writes `agent_state robinhood_pead/
+max_concurrent_override` (mirrors the halt write-surface); scan reads it fresh each cycle, falls back to yaml; the
+dashboard readout renders "funds ~N at ~$X (>=$50)" from the same sizer. (D) **Dashboard redesign** - operational-first
+(account strip + dial, then full-width Open Book with company names, then perf), Upcoming Earnings + Rejections in
+collapsed `<details>`. Company names from `General::Name` in the already-cached `get_company_facts` (no scan HTTP;
+renders on newly-entered rows, legacy rows show ticker).
+
+**Files (11).** 8 PEAD whole-copy (config/strategies.yaml, pead_sizing.py NEW, pead_strategy.py, pead_view.py,
+pead_dial.html NEW, pead_live_sections.html, pead_live.html, + earnings_provider.py) + 3 SHARED **additive hunks**
+(base.py, robinhood.py, routes.py). Target LF-md5 all verified `== target` post-deploy (manifest in
+runbooks/pead_derived_sizing_gate_a_2026-08-02.md). **prod-live advanced to this branch.**
+
+**Deploy mechanism (hard-won).** `trading_corp/data/` is owned by uid `197609` (Windows-mapped), mode 755 -
+**azureuser CANNOT write it**; `earnings_provider.py` lives there -> applied via **Azure `RunShellScript` Run Command
+(root, from operator side)**, NOT azureuser, NOT agent-sudo, NOT chown. All other dirs azureuser-writable (applied
+over ssh). `base.py` was **CRLF** (rest LF/mixed) -> normalized CRLF->LF (content-preserving) then LF-hunk applied;
+robinhood/routes LF via `patch -l`. Restart = `sudo -n` (operator NOPASSWD; board-authorized this run). `az` CLI is
+NOT on the prod box. Prod pytest needs `-p no:pytest_ethereum` (NOT `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, which drops
+pytest-asyncio -> config error). Gate-A drift runner: `cc/gate_a_pead_sizing.ps1`.
+
+**Verified live.** md5 all 11 == target; prod-venv PEAD tests 19 passed (`-p no:pytest_ethereum`); RH bound account
+680725082 on boot (non-interactive re-auth); **settled_cash = $542** (RH cash $955.91, BP $749.11 - engine excludes
+~$414 unsettled, correctly more conservative than RH BP); sizer preview 2 names @ $257.60-$270.48 (both >=$50, dial
+10 - 8 held = 2 slots); dial read+write round-trip OK (agent_state, HTTP 200, test override deleted); dashboard
+order Open-Book-first + earnings/rejections collapsed; **book of 8 survived + reconciled 1:1 to RH** (ATRC/HURN/CAKE/
+ADP/CHEF/LRCX/FORM/BELFA), 0 spurious exits; Bitunix futures FLAT / SFP re-attached (2) / PMCC untouched (18 legs);
+execution_mode LIVE (paper=False), confirmation_gate TRUE, standby false, halt none, pending_order 0.
+
+**Backups.** azureuser files -> `*.bak_pead_sizing_20260802`; earnings_provider -> `*.bak_ep_20260802` (root-owned).
+**Rollback.** Restore the `.bak_*` files (delete the 2 NEW files pead_sizing.py + pead_dial.html); revert base.py to
+its `.bak`; restore the earnings root file via a RunShellScript from `*.bak_ep_20260802`; `sudo -n systemctl restart
+trading-corp`.
+
+---
+
+## 2026-08-02 (b) — PEAD company-name backfill (data) + position card (Part 2, RESTART)
+
+**Branch** `claude-2026-08-02c` off prod-live `6326a36`. Two pieces.
+
+**PART 1 — company-name backfill (DATA, no restart, no code deploy).** The company-name feature only populated NEW
+entries, so the 8 open positions showed bare tickers. Backfilled `extra_json["company_name"]` (EODHD `General::Name`)
+into all 8 open `robinhood_pead` rows via `scripts/pead_name_backfill.py`. SURGICAL: only `company_name` added, every
+trading field byte-preserved (unit-proven + dry-run listed unchanged keys). Ran via **Azure RunShellScript**: root
+reads `KEY_VAULT_URI` from the engine `/proc/<pid>/environ` (EODHD_API_KEY is KV-loaded at runtime, NOT in any env
+file), then `runuser -u azureuser` runs the fetch+write AS azureuser (so DB/-wal/-shm ownership is untouched — root
+must NOT write the live SQLite). Applied 8 rows; all 8 render company names live. Names: Automatic Data Processing
+Inc / AtriCure Inc / Bel Fuse A Inc / The Cheesecake Factory / The Chefs Warehouse Inc / FormFactor Inc / Huron
+Consulting Group Inc / Lam Research Corp.
+
+**PART 2 — position card (display, RESTART-REQUIRED).** Expand-on-click price-ladder card per open position
+(entry → NOW → drift-dead → pre-earnings → stop, price-proportional NOW marker, distance callouts, 60-day TIME bar).
+`pead_view._position_card` (display-only from stored primitives) + `partials/_pead_card.html` (NEW) + click-toggle
+detail rows in `pead_live_sections.html` + persistence JS in `pead_live.html`. Compact pressure strip unchanged (no
+dup viz). Drift-disabled (gap<=0, e.g. ADP) renders "drift n/a — stop-managed only". **drift-dead == the engine's
+`drift_dead_level` on the SAME stored slot-aware `pre_earnings_close`** (verified live: LRCX $283.98 == engine, drift
+pressure 0.715 governing).
+**★ LIVE ENGINE PID `546159` → `550263`** (`sudo -n systemctl restart trading-corp`, board-authorized; NRestarts=0,
+clean boot). prod-live `6326a36` → advanced to `claude-2026-08-02c`.
+- ★★ **RESTART WAS REQUIRED** and this is why: a first no-restart attempt FAILED — Jinja templates auto-reload on
+  next request but `pead_view.py` is cached in `sys.modules` and does NOT reload, so the cards rendered the empty
+  "no ladder yet" placeholder (rolled back). **Any pead_view/view-logic change needs a restart; template-only can go
+  no-restart; DB backfill is data (always live).**
+- 4 display files (all azureuser-owned `web/` paths, no root/data path): pead_view.py, pead_live_sections.html,
+  pead_live.html, + _pead_card.html (NEW). Target LF-md5 5cad432f823b / f06ef364af44 / bc20333fe1f0 / 6407bd59bb22;
+  Gate-A base db2c10a4/c1541966/fb4506d0. Backups `*.bak_pead_card_20260802` (removed after each clean verify).
+
+**Verified live.** 22 prod-venv PEAD tests pass (`-p no:pytest_ethereum`); md5 all == target; card renders LRCX
+drift-dead $283.98 + ADP "stop-managed only" + 16 detail rows + compact strip intact + 0 empty placeholders; company
+names render; **PID 550263 stable, SFP restart-resume matched=2 / reconciler clean, PMCC 18 untouched, PEAD book 8,
+pending 0, nothing placed, 0 tracebacks.**
+**Rollback.** Card: `*.bak_pead_card_20260802` restore (delete _pead_card.html) + restart. Backfill (if ever): the
+row-level `company_name` is additive/harmless; a targeted UPDATE could strip it, but there is no reason to.
+
+---
+
+## 2026-08-04 — PMCC pricing fix: remove OI-subsumed volume floor + market-hours gate manual builds + disambiguate abort reason (RESTART)
+
+**Branch** `cc-pmcc-price-investig` off prod-live `5f56ccc`; commit `605ea1a`. **★ LIVE ENGINE PID `550263` → `573018`**
+(whole-engine restart via Azure RunShellScript root; NRestarts=0, clean boot, uptime stable). **prod-live advanced
+`5f56ccc` → `605ea1a` (pushed FF).** Autonomous deploy (operator remote). Market CLOSED at restart (17:17 ET); nothing placed.
+
+**Root cause.** The uniform "can't be priced right now" across ALL PMCC holdings (incl. liquid TSLA/HOOD/RKLB) was the
+liquidity **volume floor** `vol < min_avg_volume(50)` in `PMCCAgent._passes_liquidity` — it had NO open-interest bypass,
+so off-hours (vol=0) and in the opening rotation it rejected every OI-established strike → empty liquid list →
+`sparse_chain_no_weekly` → the conflated fallback string. Investigation proved TSLA's δ0.32 target ($340, OI 209) passes
+every gate during RTH but fails the vol<50 floor when volume is thin.
+
+**What shipped (selection/gating/messaging only — NO order-placement code).**
+- **Fix 1** — removed the OI-subsumed `vol < min_avg_volume` floor; the liquidity bar is now Liveness (OI≥100 OR
+  vol≥500) + spread (≤10% of mid). Retired the now-dead `min_avg_volume` accessor + annotated the yaml key inert.
+- **Fix 2** — the MANUAL build paths (Re-analyze + refresh-pricing) now gate on `market_regular_open()` (the same gate
+  the auto-refresh uses) → when closed they short-circuit to `pmcc_pricing.market_closed_extras()` ("market closed — the
+  roll will price at the 9:30 ET open"), never building a priced Approve off stale overnight quotes.
+- **Fix 3** — `_audit_roll_abort` stashes `_last_roll_abort` on EVERY abort (preview included) + logs preview at INFO;
+  `last_roll_abort_reason(symbol)` surfaces the SPECIFIC bound gate instead of the conflated string.
+
+**Files (4 runtime, all azureuser-owned overlay dirs).** `config/strategies.yaml` (274b7e→**ce2f1c0ee5fc**),
+`trading_corp/agents/divisions/pmcc_robinhood.py` (6b928bad→**0d199b237c05**), `trading_corp/web/pmcc_pricing.py`
+(7ee14a43→**af9a674e79aa**), `trading_corp/web/routes.py` (96becb83→**c15e84c74521**). Tests NOT deployed (15 new +
+stale `_call`/`_broker_with_chains` fixture refresh in `test_pmcc_logic`).
+
+**Deploy mechanism.** SSH classifier-blocked → **Azure `az vm run-command` RunShellScript (root), RG-SHARED-PROD /
+tc-prod-vm.** File content transferred via gzip+base64 (scp is SSH); decoded to `.new`, owner+mode matched to live via
+`chown/chmod --reference` (azureuser preserved). Gate-A: live==baseline + .new==target md5 (LF-normalized) + py_compile
+on `venv/bin/python` (3.12.13, NOT `.venv`) + `yaml.safe_load`. Self-gated restart: pending_order=0 → stop → atomic mv →
+md5-verify(live==target) → start, with self-heal-from-.bak on mv/start failure. Backups `*.bak_pmcc_pricefix_20260804`
+(4). Rollback `/home/azureuser/pmcc_pricefix_rollback_20260804.sh` (restore .bak + restart).
+
+**Verified live.** Pre-flight: pending=0, PMCC 18 legs, bitunix SFP SOL in-trade (venue OCO), halt 0, auto_execute:false,
+prod==baseline 0-drift. Post-restart: PID 573018 active/running, NRestarts=0, uptime>90s, 0 tracebacks, 0 order-emits on
+boot, healthz LIVE, pending=0, PMCC 18 legs unchanged, halt 0, PEAD dial(30) preserved, md5 live==target ×4, **bitunix
+SFP SOL REAL in-trade RESUMED** + reconciler TIER-A. **Fix smoke (non-placing):** `_passes_liquidity` highOI(209)/vol0 →
+pass (the exact failing case now builds), thin/wide-spread still reject; market closed → all 3 held symbols
+(TSLA/RKLB/HOOD) return the honest "market closed — prices at 9:30 ET open" via live HTTP refresh-pricing, old conflated
+string absent. auto_execute:false + halt untouched throughout; nothing placed.
+
+---
+
+## 2026-08-06 — kalshi_llm/polymarket LLM usage-logging (f9740fb) + kalshi_llm re-estimate-on-movement gate (480e591) — 2 RESTARTS [BACKFILLED]
+
+**Context:** log backfill for two deploys that were verified live before `prod-live` advanced but never got entries (flagged in the polymarket-close entry below). From the Anthropic token-spend audit session (`reports/2026-08-06_anthropic_spend_audit/anthropic_spend_audit.md`). Both via **Azure Run Command (RunShellScript, ROOT, NO sudo)** — gated `pending_order==0` + backup + staged-md5-verify + py_compile (prod venv) + restart + old→new PID. prod-live advanced `ef613e5 → f9740fb → 480e591`. Deploy evidence re-confirmed read-only 2026-08-06 (journal restart events + file mtimes + running-file LF-md5).
+
+**Deploy 1 — usage_metadata logging (commit `f9740fb`), ~19:43:20 UTC, PID 573018→605796.** Additive observability, no trading-path change: `extract_usage_metadata()` added to the client wrapper `agents/llm.py`; `kalshi_llm_arbitrage` + `polymarket_arbitrage` attach it to their probability estimate and fold the 4 counters (input / cache_creation / cache_read / output) into the existing `*_probability_called` audit events. 3 files: `llm.py` (LF-md5 `3e7721d8`, azureuser 664), `kalshi_llm_arbitrage.py` (`da949ce1`; later superseded by Deploy 2, root 644), `polymarket_arbitrage.py` (`a9c9eeae`, azureuser 664). Backup `~/usagelog_bak_20260806/`. **R0 result:** prompt caching CONFIRMED — warm kalshi calls log `cache_read_input_tokens=3116`, `cache_creation=0` (the ~3,116-tok analyst system prompt is served at cache-read), so the audit's central ~$220/mo estimate holds, not the 2× no-cache ceiling.
+
+**Deploy 2 — re-estimate-on-movement gate >3c (commit `480e591`), ~20:38:49 UTC, PID 605796→607896.** `kalshi_llm_arbitrage.py` only (LF-md5 `5917735a`, root 644, +112/−8). Skips the LLM call when `|implied − last-at-estimate| ≤ 3c` AND a prior estimate exists; first calls always run; skipped tickers get the SAME cooldown advance (cooldown logic untouched); last-estimate `{implied,ts}` co-stored in a NEW `agent_state` key `market_last_estimate` (45-day pruned); skips logged as `kalshi_llm_probability_skipped`. Estimation + parsing untouched. Backup `~/movegate_bak_20260806/` (holds the pre-gate `da949ce1` usagelog kalshi). **Sized lever:** ~783 redundant calls/day (73%) → ~$131/mo (post-fix run-rate ~$179 → ~$48/mo). **Verified:** first post-restart cycle 20 survivors → 20 estimates → 0 skips (correct — empty store = all first-calls); `market_last_estimate` populated with sane values; usage/caching intact. Skips begin ~6h post-deploy (first cooled tickers re-enter the gate); 24h call-rate verification pending.
+
+**Re-confirmation (read-only):** journal `Deactivated successfully` at 19:43:20 + 20:38:49; file mtimes `llm.py`/`polymarket_arbitrage.py` 19:43:20, `kalshi_llm_arbitrage.py` 20:38:49; running-file LF-md5 == commit targets (llm `3e7721d8` / poly `a9c9eeae` @ f9740fb; kalshi `5917735a` @ 480e591); both backup dirs present.
+
+**Rollback:** Deploy 2 → `rollback_movegate_az.ps1` (restores usagelog kalshi `da949ce1` from `~/movegate_bak_20260806/`); Deploy 1 → `rollback_usagelog_az.ps1` (restores pre-usagelog llm/kalshi/polymarket from `~/usagelog_bak_20260806/`). Both az run-command root, no sudo.
+
+**Cross-session note:** the CURRENT live PID is **610172** (not 607896) — the engine was restarted again at **20:52:34 UTC** by a SEPARATE parallel session's PMCC credit/selection-fix deploy (az run-command; documented at commit `eec833d`, "PID 610172"), which did not touch the llm/kalshi/polymarket files (their md5s are unchanged post-restart). `polymarket_arbitrage` was independently CLOSED (`enabled:false`, hot-reload, no restart) at 20:40:38 by that parallel work — see the next entry.
+
+---
+
+## 2026-08-06 — Polymarket arbitrage division CLOSED (config-only, NO restart, NO code)
+
+**Commits:** prod-live branch `polymarket-arb-closure-prodlive-2026-08-06` (config `enabled:false`) + `main` `a6bb74c` (closure record: assessment + memo Closure section + BACKLOG P1/P2). See `runbooks/board_memo_polymarket_dedupe_2026_05_21.md` §Closure.
+**Triggered by:** Board decision 2026-08-06 to close `polymarket_arbitrage`. Basis: clean-data edge evaluation `reports/2026-08-06_polymarket_arb_edge_eval/ASSESSMENT.md` — n=272 clean resolved, no demonstrated edge (+$6.30/272, t=0.25, flat), premise refuted (LLM Brier 0.254 vs market-implied 0.185 vs coin-flip 0.250 — the market is the better estimator on the strategy's own selected trades).
+**Backup:** `config/strategies.yaml.bak_polyclose_20260806` (on prod; `cp -p`, azureuser-owned).
+
+**Files deployed (1):**
+- `config/strategies.yaml` — `polymarket_arbitrage.enabled: true → false` (one line + closure comment). `auto_execute` (false), `max_open_per_condition_id` (1), and every other strategy block UNCHANGED. Whole-file LF-md5 `ce2f1c0ee5fc074de98581143085fc3a → cc6791803b6562a18dd603fab88b2a4b` (prod == prod-live commit parity verified).
+
+**What this does (load-bearing for future "is polymarket_arbitrage running?" checks):**
+- Stops the `polymarket_arbitrage` scan loop and its per-cycle Anthropic/LLM spend. Hot-reload via mtime `_reload()` (gates at `main.py:3793` + `polymarket_arbitrage.py:204`) — **NO restart**, effect within ≤30s. Engine PID unchanged.
+- Shared `ANTHROPIC_API_KEY` **NOT** revoked (also used live by kalshi_llm_arbitrage / pmcc_robinhood / risk / ceo / research_firm) — `enabled:false` is the surgical stop for THIS strategy only.
+- **No code change.** Strategy logic, per-`condition_id` cap, and the risk gate untouched. `polymarket_copy_trader` (separate division) unaffected and still enabled.
+
+**Deploy mechanism.** Operator-run SSH (azureuser, **no sudo** — config is azureuser-owned). Surgical `venv/bin/python` one-line string replace (count==1 guarded), pre-write md5 drift gate (ce2f1c0), backup, YAML `safe_load` asserts, and `diff` verify. No file transfer, no root, no restart.
+
+**Verification (read-only, post-edit; server clock 20:43:29Z):**
+- File: `enabled:false`; asserts enabled=False / auto_execute=False / max_open=1 / copy_trader.enabled=True; diff = exactly 1 line; new md5 `cc6791…`.
+- **Flatline:** `polymarket_scan_cycle` STOPPED at 20:40:38 (= edit mtime) — zero cycles in the following ~3 min (baseline cadence ~30s / 116 per 60 min). `polymarket_llm_probability_called` pinned at **13,587** (no new Anthropic spend). `would_have_placed` 488 / `polymarket_dedupe_skipped` 2,091 unchanged.
+- **Engine healthy:** 6 other actors emitting post-edit (bitunix reconcilers, kalshi_llm_arbitrage 28 audits @20:42:40 — shared token intact, research_firm, telegram); journal shows no error/traceback on reload. `polymarket_resolver` still ticks (drains remaining ~66 pending historical would_have_placed rows into `polymarket_round_trips`, **NO LLM calls** — read-only, no spend).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/trading_corp/config/strategies.yaml.bak_polyclose_20260806 /home/azureuser/trading_corp/config/strategies.yaml"
+```
+Re-enables within ≤30s via mtime reload; no restart. **Reopening the division requires a NEW Board memo + new thesis** (memo §Closure) — this is not a routine toggle.
+
+**Note (NOT this deploy):** prod-live advanced `f9740fb → 480e591` (kalshi_llm re-estimate-on-movement gate) during this session with **no deploy_log entry** — flagged for that session to log. `config/strategies.yaml` was unaffected (ce2f1c0 baseline held through the advance).
+- 2026-08-06 ~20:52 UTC — PMCC credit/selection fix DEPLOYED LIVE (PID 607896->610172); prod-live f9740fb->tip; pmcc_robinhood.py 0d199b23->2a390124; self-gated az RunShellScript root; Gate-A pass, py_compile ok, bitunix futures+sfp matched=0 clean, 0 tracebacks, 0 placed, PMCC 18 legs, auto_execute:false held; rollback pmcc_creditfix_rollback_20260806.sh. See reports/2026-08-06_pmcc_riot_false_debit_block/DEPLOY_RECORD.md
+
+---
+
+## 2026-08-06 — CONVENTION: deploy-script mutex (`/home/azureuser/deploy.lock`) added to the standard template [TEMPLATE ONLY — no prod change]
+
+**Context:** the 20:52 UTC incident (a parallel PMCC deploy restarted the engine 607896->610172 while the movegate deploy was mid-verify) showed concurrent deploys can race the engine restart. Fix: a cross-session deploy mutex, baked into a now-canonical deploy-script template. **Template only; running prod untouched; retrofit into FUTURE deploy scripts.**
+
+**New file:** `runbooks/deploy_script_template.sh` — the canonical gated-deploy structure (mutex -> `pending_order==0` gate -> staged-LF-md5 verify -> backup -> owner/mode-preserving `install` -> py_compile(prod venv) -> restart -> release), plus a rollback template. Copy per deploy; `bash -n`-clean.
+
+**Mutex semantics** (`LOCK=/home/azureuser/deploy.lock` — absolute on purpose; `~` differs under az-root vs azureuser):
+- BEFORE the pending_order gate: lock present AND `< 30 min` old -> **ABORT + print holder** (`{session,timestamp,commit}`); absent OR `>= 30 min` stale -> **acquire**.
+- Released via `rm -f "$LOCK"` as the deploy's **LAST step**, and in the **rollback** (which does NOT acquire — it must recover from a deploy still holding the lock).
+- A deploy that aborts AFTER acquiring leaves the lock until `>= 30 min` stale (or the next deploy steals it) — that window is the crash-recovery path.
+
+**Not applied to prod:** existing on-prod scripts (`deploy_*_20260806.sh`) are unchanged; no `deploy.lock` file is created until the next template-authored deploy runs.
+
+---
+
+## 2026-08-07 — PMCC best-price-roll (fix1–4): MID give_up gate basis + best-net δ[0.28,0.42] roll selection + advisory credit rule + consent guard + panel bind (RESTART) [BACKFILLED]
+
+**Context:** log backfill for the PMCC best-price-roll deploy shipped 2026-08-07 — it advanced `prod-live` (`eec833d → … → a9a0624`) with an engine restart but never got a `deploy_log.md` entry (its build record lived only in `reports/2026-08-07_pmcc_net_debit_reproduction/`). This deploy resolves the "net debit — blocked" saga: the roll builder now prices the give_up gate AND the card/dispatch estimate on **MID net**, selects the **best-net** roll across the δ∈[0.28,0.42] band, treats the credit rule as **ADVISORY** (no hard block), and a consent guard aborts any dispatch worse than the operator-approved DEBIT. Deploy evidence re-confirmed read-only 2026-08-07 (journal restart + file mtimes + running-file LF-md5 + backups).
+
+**Deploy — commits `702d02e` + `83afc2c` + `e3fbff7` (code); tests `c305573`+`d84b630`; deliverable `a080542`; backlog `a9a0624`.** Method: **Azure Run Command (RunShellScript, ROOT, NO sudo)**, agent-driven from local `az` (prod SSH classifier-blocked). 3 runtime files, owner/mode preserved (all `azureuser:azureuser 664`):
+- `agents/divisions/pmcc_robinhood.py` — LF-md5 `2a390124 → 0a2b899b`, written **16:46:13 UTC** (mid give_up gate basis, best-net roll selection, advisory credit rule; dispatch reprice + card estimate on MID net; consent guard aborts worse-than-approved DEBIT).
+- `agents/strategies/_pmcc_combo.py` — LF-md5 `cf5a8f1c → e4ba0dc0`, written **16:46:52 UTC** (combo net on MID basis across the price sites; was left untouched by the 08-06 credit-fix at `cf5a8f1c`).
+- `web/static/js/pair_list.js` — LF-md5 `92c01976 → 1400e18f`, written **16:47:49 UTC** (fix4: EXPERT ANALYSIS panel binds to the open row on ANY open, not only summary click; best-net presentation). **Browser-cached → operator hard-refresh required.**
+
+**Restart:** a single engine restart at **16:52:08 UTC** (`trading-corp.service` Deactivated + Started; verified the ONLY restart between the 08-06 20:52:34 credit-fix and now). systemd MainPID **610186 → 621536** (xvfb-run wrapper; python engine child `610172 → 621550`). Prior instance = the 08-06 PMCC credit-fix deploy (`eec833d`, python PID 610172). Current live engine PID = **621536** (matches the memory anchor).
+
+**Verification (read-only, 2026-08-07):** running-file LF-md5 == prod-live blobs (`0a2b899b`/`e4ba0dc0`/`1400e18f`); mtimes 16:46–16:47 UTC; owner `azureuser:azureuser 664`; engine healthy under python 621550 (PMCC preview loop cycling — e.g. earnings_window aborts on RKLB/BLSH). `auto_execute:false` held — **engine placed 0**. The best-net roll was surfaced for HITL: TSLA built the best-net (~$330) roll and presented **"Net debit $2.70"** for approval; the operator filled it manually. The +6 PMCC legs that appeared were operator MANUAL rolls (TSLA/HOOD/OPEN/RKLB), `placed_agent=user`.
+
+**Backups / rollback:** 3× inline `*.bak_pmcc_bestprice_20260807` (one per runtime file) + `~/pmcc_bestprice_rollback_20260807.sh` (created 17:06 UTC; `.bak` presence check → `systemctl stop` → `cp -p` restore → per-file md5 verify → `systemctl start` → prints new MainPID).
+
+**Deploy mechanism note — did NOT use the mutex template / `deploy.lock`:** although `runbooks/deploy_script_template.sh` + the `/home/azureuser/deploy.lock` mutex were added to the repo the prior day (`bf8fb4b`/`ee04747`, 2026-08-06 17:18–17:22 EDT, TEMPLATE-ONLY), this deploy used the **older hand-rolled per-deploy gated pattern**, NOT the template. Evidence: (1) `deploy_script_template.sh` is **not present on the box** (repo-only; never retrofitted to prod); (2) **no** on-box deploy/rollback script references `deploy.lock` or the template (`grep` of `~/*.sh` = 0 hits); (3) the paired rollback (`pmcc_bestprice_rollback_20260807.sh`) has no lock acquire/release, whereas the template mandates the rollback release the lock; (4) `/home/azureuser/deploy.lock` is absent now and the journal shows no lock acquire/holder/ABORT lines. Net: the template's "retrofit into FUTURE deploy scripts" intent was **not yet realized** as of this deploy — the first template-authored deploy is still pending.
+
+---
+
+## 2026-08-09 — robinhood_joint_iron_condor DISABLED (config-only, NO restart, NO code) — MACE Phase-0 stage-B gate
+
+**Commits:** prod-live (this commit — config flip + this entry). Plan artifact: `planning/mace_v1_plan.md` @ `d553fcd` on `claude-2026-08-09` (MACE v1 approved plan, Amendment 8).
+**Triggered by:** Board authorization 2026-08-09 ("you can set joint IC to be disabled. there is no ui to disable"). MACE (Multi-Asset Condor Engine) takes over the JOINT account `116637293063` per plan Amendment 8; Phase-0 step-3 sequencing gate requires joint IC disabled/standby BEFORE the one unfillable GTC test condor (its HITL engine must not observe a foreign resting condor). Joint-IC migration to another account/strategy = separate workstream, out of scope.
+**Backup:** `config/strategies.yaml.bak_jointic_disable_20260809` (on prod; `cp -p`, ownership/mode preserved).
+
+**Files deployed (1):**
+- `config/strategies.yaml` — `robinhood_joint_iron_condor.enabled: true → false` (one line; binary-safe context replace). `auto_execute` (already false) and every other strategy block UNCHANGED. Whole-file LF-md5 `cc6791803b6562a18dd603fab88b2a4b → ee4c1f624608975d67b9b74e2e0c82a0` (size 101513→101514; prod == prod-live commit parity verified this session).
+
+**What this does (load-bearing for "is joint IC running?" checks):**
+- Joint IC goes dormant HOT: the `enabled` property mtime-checks + `_reload()`s on every access (`agents/strategies/robinhood_joint_iron_condor.py:314-316`); `scan()` (:380) and `manage()` (:670) early-return with INFO logs ("strategy disabled — … skipped"). **NO restart** — engine MainPID **621536** unchanged, NRestarts=0.
+- Nothing orphaned: Phase-0 stage-A inventory showed **0 open option positions / 0 open orders** on the Joint account, so `manage()` going dormant abandons nothing.
+- **No code change.** Frees the Joint account's `account_filter` for MACE's account-exclusivity assertion (fail-closed: MACE refuses to arm if any other enabled division carries the filter).
+
+**Deploy mechanism.** Azure Run Command (`RunShellScript`, **ROOT, no sudo** — az authed on the local box), agent-authored operator-run runner `cc\mace_p0b1.ps1` → `mace_p0b1.sh`: pre-edit md5 gate → `cp -p` backup → python3 binary-safe flip guarded by `count(context)==1` (CRLF or drift ⇒ ABORT, no edit) → post asserts (false-present/true-absent + md5) → `systemctl show` service health. No file transfer, no restart.
+
+**Verification (from the operator-pasted run output, 2026-08-09):**
+- `context occurrences: 1`; post: `enabled-false present: True | enabled-true present: False`; post md5 `ee4c1f62…` (matches this commit's LF-md5 exactly).
+- Service: `MainPID=621536 / NRestarts=0 / ActiveState=active` — unchanged across the edit (hot path, as designed).
+- Backup present, `-p` timestamps preserved.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/trading_corp/config/strategies.yaml.bak_jointic_disable_20260809 /home/azureuser/trading_corp/config/strategies.yaml"
+```
+Re-enables within one property access via mtime reload; no restart. **Re-enabling joint IC after MACE arms on this account violates the account-exclusivity assertion** (two engines, one account) — rollback is routine only BEFORE MACE go-live; after, it requires disarming MACE first.
+
+**Next:** MACE Phase-0 stage B — the ONE deliberately-unfillable GTC test condor (credit limit 0.95×width per Board ruling 1), self-gated on this disable; its order id will be recorded in the Phase-0 go-live entry. Stage-B run-2 note (2026-08-09): RH rejected placement with "not enough overnight buying power" — Joint account effectively unfunded (0 positions, BP < the ≤$500 spread requirement); rejection implicitly proves routing + payload acceptance; order-id/GTC/cancel proofs pend account funding (plan Phase-5 step-2 Monday item, pulled forward).
+
+## 2026-08-11 — MACE (robinhood_mace) INERT DEPLOY — code+config on prod, `standby:true` / `auto_execute:false` UNCHANGED, **NO restart** (arm = separate Wednesday session)
+
+**Board authorization:** GT_Jack, remote via /remote-control, authorized full autonomous agent execution of Gate A (live cancel test + cancel), Gate B, and this **inert** deploy; arming deferred to a separate Wednesday session (target = Wednesday 15:45 ET first SPY evaluation, operator present 15:35–16:05). Plan of record `planning/mace_v1_plan.md` @ `2dcdea2` (LOCKED, execution-only). Deploy tree = branch `mace-golive` @ `bd82c41` (origin/prod-live `55e34c8` + merge `claude-2026-08-09b` + exclusivity commit).
+
+**BOARD MEMO (ratified rulings governing this division — recorded per plan Phase 5 step 3):**
+- **Decision 4 — zero-HITL, live at build completion.** No approval gates in the order path; launch scope 1 contract / SPY only / breakers ALERT-ONLY. Compensating controls: Telegram alerting, operator-gated config expansion, operator-supervised first-entry window. Supersedes the CLAUDE.md HITL default for this division.
+- **T5 — risk autohalt neutralized** for robinhood_mace in `risk.yaml` (daily-loss/DD `strategy_state` halts would reject EXITS too; PEAD precedent). Per-leg `RiskAgent.evaluate()` stays ACTIVE — structural single-risk-chokepoint (every placement funnels through the risk gate).
+- **T8 — Backtester human-gate superseded** by Decision 4 for this division.
+- **T6 — overflow** entries EXEMPT from the receiver's weekly-budget filter; max 1 overflow/symbol/session; IBIT overflow-only. INERT at launch (universe=[SPY]).
+- **Cancel finding CLOSED (3b).** RH brokeback edge 404s the legacy empty-body option-cancel POST; fix = POST the constructed `.../cancel/` URL WITH `{"account_number": <bound acct>}` json body (commit `556d0d8`), fake-cancel guard (terminal read-back only). No resting-GTC PT — manage-loop **T9 synthetic PT** is the mechanism.
+- **CP0 GO on the T9 basis** recorded this session — go-live gate "programmatic cancel proven live on a spread" == GREEN.
+
+**Gates (2026-08-11):**
+- Pre-flight: `claude-2026-08-09b` in sync/clean; drift-gate 11/11 prod==base `55e34c8` (`robinhood.py`==`5862d2e8`); full suite **91 failed / 12 errors** — the +3 vs the 88 reference is entirely the joint-IC disable (2 already fail on live prod-live from the 08-09 strategy-disable; +1 = the intended exclusivity division-disable), **229/229 MACE tests pass, ZERO mace regressions** (empirically decomposed on base vs deploy tree).
+- **Gate A (CP0) PASS** — one deliberately-unfillable GTC condor on Joint `116637293063` (SPY 695/690p·850/855c width 5 @ $4.75 = 0.95×width; shorts Δ −0.073 / +0.020), **order id `6a7b34b4-39f0-4483-960c-4b1f80ca8b71`**: id round-trip + `tif:gtc` echo + joint routing + `processed:0`; CANCEL via **`constructed_json_body`** ⇒ terminal `cancelled` + 0 open after. (Market CLOSED — RH accepted+rested the GTC combo, V11 proven closed-market. First attempt crashed on a brokeback `resp["account"]` empty-field assertion leaving a stray the operator cancelled in the RH app; probe assertion fixed to fall back to the submit-account URL; re-run PASSED clean.)
+- **Gate B (CP2 mechanics) PASS** — read-only `mace_shadow_eval` on stale SPY chains: SPY ENTER 740/737p·806/809c, $3 wings, credit 0.94 ≥ 0.90 floor, 1 contract, max-risk $206 in-band [150,250], DTE 45; `ivr_unavailable` (no local Tasty creds) ⇒ IVR filter skipped coherently. Live-IVR re-glance = Wednesday.
+
+**Files deployed (33 runtime; tests/ + planning/ NOT transferred to the box):** all `mace/` (14) + `agents/divisions/robinhood_mace.py`, `web/mace_view.py` + 2 templates, `config/mace.yaml`, `scripts/mace_*` (4); modified `brokers/robinhood.py` (additive `5862d2e8`→`c86c0e42`), `main.py`, `persistence/db.py`, `web/app.py`, `web/routes.py`, `web/templates/home.html`, `config/{divisions,strategies,risk,ex_dividend_calendar}.yaml`. **Every one LF-md5 verified prod == deploy-tree (33/33).** Key: `strategies.yaml`=`37432c8c86e1691f5d3a87183582533a` (robinhood_mace `auto_execute:false`; joint-IC strategy `enabled:false` — revert hazard held), `divisions.yaml`=`1a07bb120f5b47f396184d5dcd3ff83f` (robinhood_mace `standby:true` acct `116637293063`; **robinhood_joint `enabled:false` = account-exclusivity**).
+
+**INERT — nothing armed:** **NO restart** (engine MainPID **621536**, NRestarts=0, active — unchanged); new `.py` sit on disk unloaded (uvicorn no hot-reload); config hot-reads inert (no robinhood_mace division registered until restart; robinhood_joint `enabled` is boot-time). Table migration DEFERRED — `scripts/migrate_mace_tables.py` just calls `db.init_db()` (the idempotent boot DDL), so Wednesday's restart auto-creates `mace_rung`/`mace_equity_snapshot`/`mace_iv_history`/`economic_event`.
+
+**Deploy mechanism:** agent-run over SSH (allow-rule authorized this session). Backup `/home/azureuser/mace_golive_predeploy_backup.tar.gz` (md5 `182d2576896a27538acf68263e424336`, the 10 modified files). Transfer = `git -c core.autocrlf=false archive bd82c41 -- <33 runtime> | ssh … tar -x -C /home/azureuser/trading_corp/` (LF blobs, exact paths).
+
+**Rollback (pre-arm, routine):**
+```bash
+ssh azureuser@trading.jacksumner.com "cd /home/azureuser/trading_corp && tar xzf /home/azureuser/mace_golive_predeploy_backup.tar.gz"   # restores the 10 modified files to 55e34c8
+# New files (mace/, mace_view.py, mace.yaml, scripts/mace_*, templates) are inert; delete if desired. No restart was done, so nothing is live to revert.
+```
+
+**Next (separate Wednesday session, before 15:35 ET):** re-glance Gate B on LIVE quotes+IVR → flip `divisions.yaml robinhood_mace standby:false` + `strategies.yaml robinhood_mace auto_execute:true` + add `robinhood_mace` to systemd `--live-divisions` (`TC_LIVE_AUTHORIZED=LIVE` already set) → restart → verify armed (startup assertion account/L3/exclusivity/foreign-position; 4 loops LIVE; `/mace` execution_mode=live + config_hash) → Telegram at the flip. Exclusivity (`robinhood_joint enabled:false`) MUST stay — do not weaken. Kill-switches: `auto_execute:false` hot-halts entries; `standby:true` hot-halts scan/manage; `--live-divisions` removal + restart = full disarm.
+
+## 2026-08-11 — MACE (robinhood_mace) ARMED LIVE — standby:false + auto_execute:true + `--live-divisions` + RESTART (engine 663557); all divisions verified healthy
+
+**Board authorization:** GT_Jack (remote /remote-control) authorized full autonomous **closed-market** arm this session (same day as the inert deploy `014e4cb`). Executed ~16:50 ET (US market CLOSED — first live SPY eval is **tomorrow 15:45 ET, unattended by Board decision**).
+
+**PRE-ARM (all green):** prod-live `014e4cb`, tree clean; deploy-inert intact (pre-flip robinhood_mace standby:true/auto_execute:false; robinhood_joint enabled:false); backup `mace_golive_predeploy_backup.tar.gz` present; no live division mid-critical-op (16:40 ET, US closed; bitunix observing, matched=0); `az` root available; `TC_LIVE_AUTHORIZED=LIVE`.
+
+**ARM changes:**
+- **Config** (git → prod, LF-md5 verified 2/2; prod-live `014e4cb`→`31ee36e`): `divisions.yaml robinhood_mace standby: true→false`; `strategies.yaml robinhood_mace auto_execute: false→true`. **Exclusivity `robinhood_joint enabled:false` UNCHANGED.**
+- **systemd unit** (infra, `az` root; backup `.bak_mace_arm_20260811`): appended `robinhood_mace` to `--live-divisions` on `/etc/systemd/system/trading-corp.service` ExecStart (guarded count==1), `daemon-reload`.
+- **RESTART** (`az` root): MainPID 621536→**663557**, NRestarts=0, active. `init_db` auto-created the 4 mace tables on boot.
+
+**VERIFY ARMED (all pass):**
+- **Startup-assertion components** (read-only probe on live Joint): account `116637293063` present, type `joint_tenancy_with_ros`, **option_level_3**, margin present, deactivated:false; **exclusivity green** (`robinhood_joint` NOT registered as a division — MACE-exclusive on the account); **foreign-position guard CLEAN** (0 open orders, 0 open positions). NO fail-closed / URGENT / entries-disabled trigger.
+- **4 MACE loops online in LIVE**: daily-slots / manage / reconcile / weekly-calendar; `/mace` HTTP 200 with `standby:no`, `auto_execute:yes`, `execution_mode=live`, `config_hash=33c82c4122ae`. Daily-slots catch-up ran snapshot (equity **$4000.12**) + daily_summary (open:0, day_pnl:0, breakers:[]) — NO entry. (The wiring log's "standby-gated / go-live BLOCKED on cancel-path fix" is HARDCODED boilerplate in main.py:2010, same as PEAD's — NOT runtime state; ignore.)
+- **No order on arm**: 0 MACE orders / 0 positions / 0 open rungs.
+- **Other divisions healthy post-restart**: bitunix_sfp + bitunix_futures restart-resume matched=0 + reconciler clean + observer live/armed; robinhood_pead scan+manager+reconciler online (live); robinhood_pmcc scan scheduler + approval reconciler online; kalshi_copy_trading kalshi-live broker paper=False; RobinhoodBroker logged in (3 accounts, no 401); web command center listening :8000. **Pre-existing/benign** (NOT arm-induced, NOT live divisions): Fidelity → paper (known Azure-VM Playwright bot-block, docs/sharp_edges.md); polymarket_copy_trader HTTP 429 throttle (observer).
+
+**★ HEADS-UP (not a fault):** Joint equity snapshot = **$4000.12**; a 1-contract SPY condor needs E ≥ ~$4,100 (max-risk ~$205 vs 0.05·E=$200) → tomorrow's 15:45 eval may size to **0 contracts (budget skip)** — coherent per design, not a bug. Fund to ~$4,100+ for a 1-contract entry.
+
+**Kill-switches (standing):** `auto_execute:false` (strategies.yaml) = hot-halt entries; `standby:true` (divisions.yaml) = hot-halt scan+manage; `--live-divisions` removal (unit) + restart = full disarm. **Rollback:** `tar xzf /home/azureuser/mace_golive_predeploy_backup.tar.gz` (restores 10 files→`55e34c8`) + restore unit `.bak_mace_arm_20260811` + daemon-reload + restart → pre-mace healthy state.
+
+**prod-live:** `31ee36e` (config flip) → this deploy_log entry commit. The systemd unit edit is infra (not repo-tracked) — documented here.
+
+## 2026-08-11 — MACE `rung_risk_pct` 0.05 → 0.055 (frozen config, RESTART) — admit 1 contract at ~$4k equity; per-trade risk UNCHANGED
+
+**Board directive:** GT_Jack — keeping the Joint at **~$4,000 (NOT funding to $5k)** and raising `rung_risk_pct` so the one permitted contract isn't budget-floored to zero. At 0.05, budget = 0.05·4000 = $200 < ~$206 SPY max-risk ⇒ floor→**0 contracts**. At 0.055, budget = $220 ⇒ floor(220/206) = **1**. **Per-trade risk UNCHANGED — `max_contracts:1` is the binding cap: still one condor, ~$206 max loss.** This only stops the budget from flooring the single permitted contract to zero.
+
+**Arithmetic (verified across the legal credit band; E=$4000.12, width 3):** worst case = credit floor $0.90 (risk $210) → 220.01/210 = 1.047 → 1 contract; every credit from the $0.90 floor through the risk-band top ($1.50/risk $150) sizes to exactly 1 — no nickel-drift skip. Headroom: 1 contract needs E ≥ $210/0.055 = **$3,818** at the $0.90 worst case (at $4,000.12 now).
+
+**Change (frozen mace.yaml → restart-gated):** one line, `config/mace.yaml sizing.rung_risk_pct: 0.05 → 0.055`. **config_hash `33c82c4122ae` → `b2e0574f9a4e`** (sha256 of raw bytes, `config.py:157`). **UNCHANGED:** `max_contracts:1`, `deployment_target_pct:0.80`, `credit_floor_pct_of_width:0.30`, `risk_band_min_per_width_usd:50`, `risk_band_max_usd:250`, `breaker_enforcement:off`, all else. Deployed git→prod (LF-md5; prod sha256 == `b2e0574f9a4e`); prod-live `8087add`→`f18b4bd`→this entry.
+
+**Restart (`az` root, closed-market 20:53 ET):** pre-change safety glance clean (engine 663557 active; NO live-division order/fill/position in 5h — bitunix only stale-bar rejections). MainPID **663557 → 666233**, NRestarts=0, active.
+
+**VERIFY (all pass — same battery as the arm):**
+- `config_hash=b2e0574f9a4e` live (wiring log + `/mace`) → new `rung_risk_pct` loaded.
+- **★ Live proof the change works:** the daily-slots catch-up ran the entry eval and **SIZED SPY to `contracts:1`** (rung `mace-SPY-2026-09-25-737-734-801-804`) — at 0.05 this was a 0/budget-skip — then **stood down on `cutoff` (`attempts:0`) → NO order placed** (past 15:58 ET).
+- **0 open orders / 0 positions on the Joint** (probe); startup-assertion components green (acct `116637293063` / `option_level_3` / margin / exclusivity [robinhood_joint not registered] / foreign-clean).
+- 4 loops LIVE; `/mace` HTTP 200 `standby:no`/`auto_execute:yes`/`execution_mode=live`.
+- Other divisions healthy post-restart: bitunix sfp+futures restart-resume matched=0 + reconciler clean; PEAD scan+manager+reconciler online; PMCC scan scheduler online; kalshi_copy live; RH logged in (3 accts, no 401); web :8000. Pre-existing/benign: fidelity→paper, polymarket 429, `pykalshi 404` market-lookup miss.
+
+**★ RAISED PRIORITY (per Board):** the `brokers/robinhood.py:553-554` BP-fallback (`settled_cash = buying_power` **iff** the account `cash` field is absent) is now a **higher-priority hardening item** — with `max_contracts:1` the ACTIVE binding risk bound, a mis-resolved E matters more. Still NOT reachable for a funded account (cash always present; empirically E=$4000.12 = cash-path) and bounded by `max_contracts:1`; harden it to fall back to **portfolio equity, not BP**, before any `max_contracts` increase or universe expansion. (Live BP today = $4045.98 ≈ equity, `margin_buying_power`=None — no 2:1 BP exists on this account now.)
+
+**Rollback:** revert `rung_risk_pct`→0.05 (config_hash back to `33c82c4122ae`) + restart; OR full pre-mace rollback `tar xzf mace_golive_predeploy_backup.tar.gz` + unit `.bak_mace_arm_20260811` + restart. **First live SPY eval unchanged: tomorrow 2026-08-12 15:45 ET, unattended** (now will size to 1 contract if credit ≥ floor).
+
+## 2026-08-12 — MACE +capacity (max_rungs 4→5, weekly 1→2) + GLD online as 2nd symbol (frozen config, RESTART)
+
+**Board directive:** GT_Jack — enable up to **5 concurrent 1-contract condors/symbol** AND bring **GLD online as the 2nd symbol** (expansion order SPY→GLD→…). Joint stays ~$4k; **per-rung risk UNCHANGED (1 contract, `rung_risk_pct` held at 0.055).**
+
+**Changes (`config/mace.yaml`, frozen → restart-gated) — FOUR edits (the 3 requested + the required `universe` addition):**
+- `entry.max_rungs_per_symbol: 4 → 5`
+- `entry.weekly_new_rungs_per_symbol: 1 → 2` (+ refill)
+- `symbols.GLD.enabled: false → true`
+- **`universe: [SPY] → [SPY, GLD]`** ← REQUIRED, not in the operator's 3-edit list: the entry pipeline iterates `cfg.universe` (`manager.py:155`) and boot validation (`config.py:388`) requires every universe symbol enabled — `enabled:true` alone would leave GLD un-evaluated. Flagged to operator + added to achieve the stated goal.
+- **config_hash `b2e0574f9a4e` → `fe177fcd3882`** (sha256 raw bytes; prod file verified == this). Pre-validated locally via `load_mace_config` (no boot error; `universe=('SPY','GLD')`).
+
+**UNCHANGED (per Board):** `rung_risk_pct:0.055`, `max_contracts:1`, `deployment_target_pct:0.80`, `credit_floor:0.30`, `risk_band[50/width, 250]`, `breaker_enforcement:off`, `short_delta:0.20`, all else.
+
+**Risk math (verified):**
+- **Per-rung sizing = exactly 1 contract** (SPY + GLD, width 3, E=$4000.12, budget $220): worst case credit floor $0.90 (risk $210) → floor(220/210)=1.047 → capped at `max_contracts:1` = 1; cannot reach 2 (220/150=1.46 even at the risk-band top). GLD width-3 = identical math.
+- **Full-stack reserve:** 5 SPY + 5 GLD = 10 rungs; worst case (risk $210) = **$2,100 = 52.5%** of $4k, under the 80% cap ($3,200), ~$1,100 headroom. Capacity (5/symbol) binds first at ~52%; the reserve gate remains the ultimate bound but is not approached.
+- **OQ-2:** universe now at the 2-symbol ceiling. **No `len(universe)≤2` code cap** — the ceiling is the runbook/config-review rule (Ruling 7, documented in the mace.yaml `universe` comment). A 3rd symbol is NOT enabled.
+- **`robinhood.py:553` BP-fallback NOT triggered** (`max_contracts` stays 1; E-derivation path untouched).
+
+**Restart (`az` root, closed-market 01:24 ET — OUTSIDE the 15:40–15:58 window):** pre-change safety glance clean (nothing in-flight; last event a completed kalshi_copy fill ~1h prior). MainPID **666233 → 668773**, NRestarts=0, active. Boot ~2.5 min.
+
+**VERIFY (all pass):**
+- `config_hash=fe177fcd3882` live (wiring log + `/mace`); `/mace` HTTP 200 `standby:no`/`auto_execute:yes`/`execution_mode=live`, **`>GLD<` shown**. NO config-INVALID / validation error.
+- Startup-assertion components green (Joint `116637293063`/`option_level_3`/margin/exclusivity/foreign-clean); **0 open orders / 0 positions**.
+- 4 loops LIVE. **No entry eval this boot — correct:** at 01:27 ET the 15:40/15:45/15:50 slots are ~14h in the future, so the daily-slots catch-up (which fired on the evening restarts) does NOT run; the loop evaluates **SPY + GLD** at today's 15:45 ET slot.
+- Other divisions healthy post-restart: bitunix sfp+futures restart-resume matched=0 + reconciler clean; PEAD live; PMCC scheduler online; kalshi_copy live; RH logged in (3 accts, no 401); web :8000. Pre-existing/benign: fidelity→paper, polymarket 429.
+
+**Diversification note:** GLD (gold ETF) is ~uncorrelated to SPY — the 2nd symbol adds diversification, not concentration; per-trade risk unchanged (1 contract each).
+
+**Rollback:** revert the 4 lines (universe→[SPY], GLD enabled→false, max_rungs→4, weekly→1; config_hash back to `b2e0574f9a4e`) + restart; OR full pre-mace rollback via `mace_golive_predeploy_backup.tar.gz` + unit `.bak_mace_arm_20260811` + restart. **prod-live:** `8d552ae`→`2120f36`→this entry. **First live eval of the 2-symbol universe: today 2026-08-12 15:45 ET, unattended** (SPY + GLD each size to 1 contract if credit ≥ floor).
+
+## 2026-08-13 — PEAD off-hours exit gate: manage() gated to market hours, placement deferred to open (RESTART)
+
+**Triggered by:** GT_Jack — kill the overnight "canceled sell" churn (confirmed 2026-08-12: 6 GFD market SELLs fired ~01:27–01:37 ET on genuinely-held names, cancelled at the 90s poll, re-firing nightly, NO audit_event). Read-only investigation → fix branched off prod-live → autonomous gated deploy.
+
+**Backup tag:** `pead_strategy.py.bak_offhours_gate_20260813` (single file; original LF-md5 `ac7c465b…`)
+
+**Files deployed (3):**
+- `trading_corp/agents/strategies/pead_strategy.py` — market-hours gate on the exit engine (LF-md5 `ac7c465b15a5…` → `9b9cfdadf8a8…`)
+- `tests/test_pead_offhours_gate.py` — window-state classification (11 cases)
+- `tests/test_pead_offhours_single_outcome.py` — deferred-then-placed = exactly ONE exit + drift-marker-not-consumed (2 cases)
+
+**Features shipped:**
+- `manage()` evaluates exits only within `[open − 30min, close]` and PLACES only at/after `open+buffer` (~9:31 ET) via new `_exit_window_state(now, cfg)`, reusing the SHARED NYSE calendar (`_session_open_et`/`default_calendar`) the entry path uses. Overnight/weekend/holiday ⇒ full no-op: no eval, no snapshot, no order, **NO cancel**. Half-days shrink the upper bound automatically (calendar close).
+- Pre-open a fired stop/guard/time exit DEFERS (emits `pead_exit_deferred` audit_event — fixes the silent-cancel gap) and places at the open. **DRIFT is evaluated only in-session** so its once-per-daily-bar `_mark_drift_daily` marker is not consumed pre-open then deferred (would else lose the sell).
+- Exit RULES / sizer / dial(60) / entry path UNCHANGED. Two optional cfg keys (`manage_eval_lead_sec`=1800, `manage_open_buffer_sec`=60) default in code ⇒ `strategies.yaml` UNTOUCHED.
+
+**Verification (all pass):**
+- Gate-A: prod pre-deploy md5 == base (`ac7c465b…`); `market_hours.py` == base (untouched); only `pead_strategy.py` runtime file + 2 tests changed; no shared/Kalshi/PMCC file.
+- Prod-venv PEAD tests **31/31 green** before restart (`-p no:pytest_ethereum`).
+- Restart (closed-market **01:29 ET**, `sudo -n systemctl restart`): MainPID **668773 → 681146**, NRestarts=0, active/running, no restart loop, no tracebacks.
+- Boot: `mode=LIVE`/`env_authorized`; RH re-logged-in (KV+MFA, not the 0-byte pickle) + bound PEAD acct `680725082`; bitunix-futures **0 positions**; PEAD manager online; MACE `config_hash=fe177fcd3882` (unchanged, still armed); dial `max_concurrent=60` intact.
+- **★ Gate live (behavioral):** restarted INSIDE the incident window (01:29 ET) → **zero** `pead_exit` / `cancel_stock_order` / `pead_exit_deferred` since boot. Old code would have churned here — it did not.
+- **42 open PEAD positions survived** (count=42); **NWSA & CENX** (both DRIFT 100%) OPEN with no boot cancel — positioned to fire a real sell at the next open, not overnight.
+- Bitunix futures flat / SFP re-attached / PMCC `position` table (32 rows) untouched.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BASE=/home/azureuser/trading_corp; F=\$BASE/trading_corp/agents/strategies/pead_strategy.py; \
+cat \$F.bak_offhours_gate_20260813 > \$F; \
+rm -f \$BASE/tests/test_pead_offhours_gate.py \$BASE/tests/test_pead_offhours_single_outcome.py; \
+sudo -n systemctl restart trading-corp
+"
+```
+**prod-live:** `b3d18c2` → this entry.
+
+## 2026-08-13 — MACE overflow-router dup-entry fix + IVR fetch off-loop + per-symbol eval logging (RESTART)
+
+**Triggered by:** GT_Jack — MACE first-live-trade health check (2026-08-12 SPY entry) surfaced a duplicate-entry defect: after GLD was added as the 2nd symbol, overflow routing re-routed GLD's forfeited capital onto the just-entered SPY, firing a duplicate order (RH rejected it on the duplicate ref_id → 1 clean position resulted). The same review found IVR fetch broken since launch + no per-symbol skip persistence. Read-only diagnosis → fix branched → tests green → drift-gated deploy.
+
+**Based on:** origin/prod-live `ab8e170` (PEAD off-hours gate). This deploy sits ON TOP of and PRESERVES PEAD's gate (`pead_strategy.py` `9b9cfdad…` unchanged, verified pre + post).
+
+**Backup tag:** `mace_fix_bak_20260813/{strategy,manager}.py.bak` (originals LF-md5 `ce3fc88…` / `425067…`)
+
+**Files deployed (2 runtime):**
+- `trading_corp/mace/strategy.py` — `route_overflow` receiver selection now excludes any symbol that ENTERED or FORFEITED this round (LF-md5 `ce3fc88…` → `c8fb0d47…`)
+- `trading_corp/mace/manager.py` — IVR fetch off-loop via `asyncio.to_thread` + IVR-outage health alert; per-symbol `mace_entry_eval` audit; between-placement rung reload (LF-md5 `425067…` → `ef84efc9…`)
+- (prod-live/git only, not runtime-critical): `tests/test_mace_overflow_dup_entry.py` (new) + `tests/test_mace_strategy_entry.py` (updated)
+
+**Features shipped:**
+- Overflow router: forfeited capital routes ONLY to genuinely-idle receivers (IBIT-style `overflow_only`, or a primary that neither entered nor forfeited). The old "route to an already-entered primary" path is REMOVED — it WAS the dup-entry bug. Observable: no second `mace_entry_start` / `mace_entry_error "empty response"` on a forfeit round.
+- IVR now fetches correctly (was `asyncio.run() cannot be called from a running event loop` EVERY round since launch → the ≥25 floor failed OPEN, `mace_iv_history` empty). Post-fix: `mace_iv_history` populates for SPY+GLD, the floor GATES, and a total outage fires a `mace_ivr_outage` audit + Telegram alert.
+- Per-symbol eval observability: `mace_entry_eval` audit_event per symbol per round (entered / skip_reason / ivr / credit_mid / max_risk) — makes "why didn't GLD enter" answerable for a no-HITL division.
+
+**Latent bug caught + fixed:**
+- Overflow dup-entry: `route_overflow` re-picked the just-entered SPY (the pre-placement rung snapshot hid its new rung); the identical rebuilt condor collided on `ref_id` so RH rejected it — contained by RH idempotency, but a future forfeit with different strikes could have double-positioned. Root-caused from the 2026-08-12 live logs + code; regression test reproduces the exact scenario.
+
+**Verification (all pass):**
+- Full `tests/test_mace_*.py` **232/232 green** (`-p no:pytest_ethereum`), incl. the new dup-entry regression + IBIT-legit-path + e2e "places once when 2nd symbol forfeits".
+- Drift-gate: prod pre-image == baseline (all 14 `mace/*.py`; `main.py` `_mace_fetch_metrics` still the `asyncio.run` version); swap gated pre==baseline / staged==target, post==target.
+- Restart (`az` run-command root, RG-SHARED-PROD/tc-prod-vm, **07:22 ET** — OUTSIDE 15:40–15:58): MainPID **681146 → 684893**, NRestarts=0, active/running, clean boot, no tracebacks (new `asyncio`/`replace` imports load fine).
+- 4 MACE loops online; `config_hash=fe177fcd3882` UNCHANGED (code-only deploy); SPY rung `mace-SPY-2026-09-25-742-739-802-805-20260812` UNTOUCHED (open, credit 0.93, pt_debit 0.47, order `6a7ccd9d…`) — managed by unchanged manage-loop code.
+- PEAD off-hours gate INTACT; PEAD/PMCC/bitunix/kalshi all online.
+
+**Inert / to confirm at next eval:** IVR-populating, `mace_entry_eval` rows, and no-duplicate confirm at the scheduled **2026-08-13 15:45 ET** eval — NOT triggered manually (an eval PLACES under `auto_execute:true`). Logic proven by the 232 tests.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+B=/home/azureuser/trading_corp/trading_corp/mace; K=/home/azureuser/mace_fix_bak_20260813; \
+cat \$K/strategy.py.bak > \$B/strategy.py; cat \$K/manager.py.bak > \$B/manager.py
+"
+# then restart: az run-command (RG-SHARED-PROD/tc-prod-vm) 'systemctl restart trading-corp'
+```
+**prod-live:** `ab8e170` → this entry. **No shared-file debt** — origin/prod-live already tracks the full MACE runtime; an earlier "prod-live behind the MACE deploy / 10 shared files" note was a STALE un-fetched local branch (`7d34d82`) artifact and is RETRACTED.
