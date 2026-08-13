@@ -12384,3 +12384,19 @@ cat \$K/strategy.py.bak > \$B/strategy.py; cat \$K/manager.py.bak > \$B/manager.
 # then restart: az run-command (RG-SHARED-PROD/tc-prod-vm) 'systemctl restart trading-corp'
 ```
 **prod-live:** `ab8e170` → this entry. **No shared-file debt** — origin/prod-live already tracks the full MACE runtime; an earlier "prod-live behind the MACE deploy / 10 shared files" note was a STALE un-fetched local branch (`7d34d82`) artifact and is RETRACTED.
+## 2026-08-01 — kalshi_llm resolver un-starve (epoch-scope) + Option-B distinct-market read-view + 148-row backfill (PAPER; DEPLOYED + VERIFIED)
+
+**What:** Fixed kalshi_llm_arbitrage resolution MEASUREMENT (paper — no capital risk). Root cause (proven by live `get_market_resolution` probe, NOT the earlier event_ticker theory): resolver STARVATION — `_fetch_unresolved_orders` 50-row/actor budget ordered `expires_at ASC` on a FAKE-EARLY stored expires_at (long-horizon pre-epoch rows e.g. KXSPACEDATACENTER stored 06-03 / real close 2035 clog the front → ~2 booked/10 days). Market-ticker lookup was already correct; deriving the event ticker returns 404 (refuted).
+
+**3 changes (base = prod-live dafe60b == prod d4a63eb1/f3303a9f, drift-gate clean):**
+1. `kalshi_resolver.py` (d4a63eb1 → 360adc81): epoch-scope kalshi_llm candidate rows to `a.ts >= 2026-07-07T16:40` (== DASHBOARD_RT_CUTOFFS). Un-starves post-epoch WITHOUT mass-booking pre-epoch backlog (left unresolved by design). Other actors unaffected (conditional clause).
+2. `web/data.py` (f3303a9f → f090a4e6): NEW `_query_kalshi_distinct_market_stats` (Option-B: canonical = MIN(entry_ts) per full market ticker) + additive PMSummary fields + kalshi single-division wiring. Option A (per-emission) unchanged.
+3. `scripts/backfill_kalshi_llm_settled.py` (NEW): one-shot INSERT-OR-IGNORE backfill of currently-resolved post-epoch settlements, reusing the resolver's compute/insert.
+
+**Deploy (~18:29 UTC):** backup `.bak_llm_dedup_20260801/` (2 runtime files, md5==prod); backfill --apply = 148 rows / 15 distinct markets (0 ignored); deploy 2 files (LF, md5-verified, py_compile OK); restart via az RunShellScript (root). MainPID 527532→536666, NRestarts=0, 0 tracebacks. 32 unit tests pass (prod venv, temp copy).
+
+**Verify:** 5a kalshi_llm RT 2802→2950 (=+148 backfill, +0 restart; the restart tick's resolved=43 were ALL kalshi_arbitrage, 0 llm — verified). 5b/5c/5d live B-view {15 markets, 8W/7L, +$1.76} vs A {148 emissions, 117W/31L, +$123.45}; open 146 emissions/16 markets; 15 resolved + 16 open = 31 distinct; 294 emissions intact. Reconciliation across the live-position bounce: PMCC 18 legs unchanged; bitunix SFP restart-resume matched=2 (ETH+XRP)/orphan=0/clean; futures matched=0/flat/clean; RH bound 680725082 opt-lvl-2; kalshi Karen 505.84/2.16 + shared 531.23 unchanged; all 5 divisions online, flags intact. Pre-existing fidelity_401k playwright error (unrelated).
+
+**First market-level forward data (n=15, NOT a verdict):** 8W/7L. 2Y-Treasury -T10/-T8 no/win; BoK yes/loss; SK-exports mixed. 08-05 Treasury resolved EARLY (outcome fixed at FOMC 07-30).
+
+**Rollback:** restore `.bak_llm_dedup_20260801/{kalshi_resolver.py,data.py}` + `DELETE FROM kalshi_round_trips WHERE division='kalshi_llm_arbitrage' AND id>10434` + restart.
