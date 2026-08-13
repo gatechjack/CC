@@ -436,16 +436,23 @@ def route_overflow(primary_results: Sequence[EvalResult], cfg: MaceConfig,
         v = getattr(rr, "ivr", None) if rr is not None else None
         return v if v is not None else -1.0
 
-    # A symbol that FORFEITED must not receive its own capital back — that would
-    # bypass the filter it just failed (weekly-budget above all, which overflow
-    # exempts). Entered primaries with spare capacity MAY receive (plan: "highest
-    # -IVR primary with capacity").
+    # A receiver must be NEITHER a symbol that ENTERED this round NOR one that
+    # FORFEITED it. Excluding ENTERED is the 2026-08-12 fix: routing forfeited
+    # capital onto a just-placed symbol re-enters it (the pre-placement rung
+    # snapshot hides its new rung) -> a duplicate order fires (live: SPY entered,
+    # GLD forfeited, router re-picked SPY, RH rejected the duplicate ref_id).
+    # Excluding FORFEITED keeps a symbol from receiving its own capital back and
+    # bypassing the filter it just failed. Net: overflow routes only to genuinely
+    # idle receivers (IBIT-style overflow_only, or a primary that neither entered
+    # nor forfeited).
     forfeiting = {r.symbol for r in primary_results
                   if not r.entered and r.skip_reason in _FORFEITING_SKIPS}
+    entered = {r.symbol for r in primary_results if r.entered}
+    excluded = forfeiting | entered
     ibit = [s for s, c in cfg.symbols.items() if c.enabled and c.overflow_only]
     primaries = sorted(
         (s for s, c in cfg.symbols.items()
-         if c.enabled and not c.overflow_only and s not in forfeiting),
+         if c.enabled and not c.overflow_only and s not in excluded),
         key=ivr_of, reverse=True)
     ordered = ibit + primaries
 

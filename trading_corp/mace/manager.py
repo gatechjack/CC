@@ -21,8 +21,9 @@ side effects.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Callable, Optional
 
@@ -129,8 +130,25 @@ class MaceManager:
                 chains[sym] = st.ChainView(sym, None, (), {})
 
         if self._fetch_metrics is not None:
-            ivr_readings = ivr.read_metrics(self._fetch_metrics, symbols,
-                                            now=self._now_utc())
+            # Run the (blocking, internally-async) Tasty fetch OFF the event loop:
+            # read_metrics -> _mace_fetch_metrics calls asyncio.run(), which is
+            # illegal on the running loop (it failed EVERY round since launch, so the
+            # >=25 floor fooled OPEN). to_thread gives the worker a loop-less context
+            # so asyncio.run() is legal.
+            ivr_readings = await asyncio.to_thread(
+                ivr.read_metrics, self._fetch_metrics, symbols, now=self._now_utc())
+            # A TOTAL IVR outage must NOT pass silently — the floor fails open, so a
+            # silent outage means no IVR gate at all. Fires at most once per round.
+            if symbols and all(r.status == ivr.IVR_UNAVAILABLE
+                               for r in ivr_readings.values()):
+                self._audit("mace_ivr_outage", symbols=symbols,
+                            detail=next((r.detail for r in ivr_readings.values()), ""))
+                try:
+                    self.notifier.error(loop="ivr", exc=RuntimeError(
+                        f"IVR unavailable for all {len(symbols)} symbols "
+                        f"(floor fails open)"))
+                except Exception:  # noqa: BLE001 — an alert must never break eval
+                    pass
         else:
             ivr_readings = {s: ivr.IvrReading(
                 s, ivr.IVR_UNAVAILABLE, None, None, None, None,
@@ -155,6 +173,16 @@ class MaceManager:
         primary = [st.evaluate_entry(sym, self.cfg, ctx) for sym in self.cfg.universe]
         overflow = st.route_overflow(primary, self.cfg, ctx)
 
+        # Per-symbol eval record — the ONLY durable "why did X (not) enter" trail for
+        # a no-HITL division (skipped symbols leave no rung). Emitted regardless of
+        # auto_execute so standby/halt rounds are diagnosable too.
+        for r in list(primary) + list(overflow):
+            self._audit("mace_entry_eval", symbol=r.symbol, entered=r.entered,
+                        skip_reason=r.skip_reason, ivr_status=r.ivr_status,
+                        ivr_value=r.ivr_value, credit_mid=r.credit_mid,
+                        contracts=r.contracts, max_risk_usd=r.max_risk_usd,
+                        overflow=r.overflow, detail=r.detail)
+
         auto = bool(self._auto_execute_fn())
         result = EntryRoundResult(session_date=session_date, primary=primary,
                                   overflow=overflow, auto_execute=auto)
@@ -163,12 +191,22 @@ class MaceManager:
                         entered=sum(1 for r in primary + overflow if r.entered))
             return result
 
-        # Re-evaluate capacity/reserve between placements is the manager's job; a
-        # single 1-contract SPY launch never overlaps, so run each ENTER through the
-        # execution entry ladder in order.
+        # Place each ENTER in order, RE-VALIDATING against post-placement state: the
+        # capacity/reserve/duplicate gates depend on `rungs`, so reload it before each
+        # placement (cheap: reuse the round's chains/IVR via dataclasses.replace,
+        # refresh only rungs). Without this, a rung placed earlier this round is
+        # invisible to the next placement's gates (the stale pre-placement snapshot).
         for res in [r for r in primary + overflow if r.entered]:
             try:
-                out = await self.executor.run_entry(res, session_date)
+                recheck = st.evaluate_entry(
+                    res.symbol, self.cfg,
+                    replace(ctx, rungs=self.store.load_all()),
+                    is_overflow=res.overflow)
+                if not recheck.entered:
+                    self._audit("mace_entry_superseded", symbol=res.symbol,
+                                skip_reason=recheck.skip_reason, detail=res.detail)
+                    continue
+                out = await self.executor.run_entry(recheck, session_date)
                 result.outcomes.append(out)
             except Exception as exc:  # noqa: BLE001 — top-level loop guard
                 self._audit("mace_entry_exception", symbol=res.symbol, error=str(exc))

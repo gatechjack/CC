@@ -12344,3 +12344,43 @@ sudo -n systemctl restart trading-corp
 "
 ```
 **prod-live:** `b3d18c2` → this entry.
+
+## 2026-08-13 — MACE overflow-router dup-entry fix + IVR fetch off-loop + per-symbol eval logging (RESTART)
+
+**Triggered by:** GT_Jack — MACE first-live-trade health check (2026-08-12 SPY entry) surfaced a duplicate-entry defect: after GLD was added as the 2nd symbol, overflow routing re-routed GLD's forfeited capital onto the just-entered SPY, firing a duplicate order (RH rejected it on the duplicate ref_id → 1 clean position resulted). The same review found IVR fetch broken since launch + no per-symbol skip persistence. Read-only diagnosis → fix branched → tests green → drift-gated deploy.
+
+**Based on:** origin/prod-live `ab8e170` (PEAD off-hours gate). This deploy sits ON TOP of and PRESERVES PEAD's gate (`pead_strategy.py` `9b9cfdad…` unchanged, verified pre + post).
+
+**Backup tag:** `mace_fix_bak_20260813/{strategy,manager}.py.bak` (originals LF-md5 `ce3fc88…` / `425067…`)
+
+**Files deployed (2 runtime):**
+- `trading_corp/mace/strategy.py` — `route_overflow` receiver selection now excludes any symbol that ENTERED or FORFEITED this round (LF-md5 `ce3fc88…` → `c8fb0d47…`)
+- `trading_corp/mace/manager.py` — IVR fetch off-loop via `asyncio.to_thread` + IVR-outage health alert; per-symbol `mace_entry_eval` audit; between-placement rung reload (LF-md5 `425067…` → `ef84efc9…`)
+- (prod-live/git only, not runtime-critical): `tests/test_mace_overflow_dup_entry.py` (new) + `tests/test_mace_strategy_entry.py` (updated)
+
+**Features shipped:**
+- Overflow router: forfeited capital routes ONLY to genuinely-idle receivers (IBIT-style `overflow_only`, or a primary that neither entered nor forfeited). The old "route to an already-entered primary" path is REMOVED — it WAS the dup-entry bug. Observable: no second `mace_entry_start` / `mace_entry_error "empty response"` on a forfeit round.
+- IVR now fetches correctly (was `asyncio.run() cannot be called from a running event loop` EVERY round since launch → the ≥25 floor failed OPEN, `mace_iv_history` empty). Post-fix: `mace_iv_history` populates for SPY+GLD, the floor GATES, and a total outage fires a `mace_ivr_outage` audit + Telegram alert.
+- Per-symbol eval observability: `mace_entry_eval` audit_event per symbol per round (entered / skip_reason / ivr / credit_mid / max_risk) — makes "why didn't GLD enter" answerable for a no-HITL division.
+
+**Latent bug caught + fixed:**
+- Overflow dup-entry: `route_overflow` re-picked the just-entered SPY (the pre-placement rung snapshot hid its new rung); the identical rebuilt condor collided on `ref_id` so RH rejected it — contained by RH idempotency, but a future forfeit with different strikes could have double-positioned. Root-caused from the 2026-08-12 live logs + code; regression test reproduces the exact scenario.
+
+**Verification (all pass):**
+- Full `tests/test_mace_*.py` **232/232 green** (`-p no:pytest_ethereum`), incl. the new dup-entry regression + IBIT-legit-path + e2e "places once when 2nd symbol forfeits".
+- Drift-gate: prod pre-image == baseline (all 14 `mace/*.py`; `main.py` `_mace_fetch_metrics` still the `asyncio.run` version); swap gated pre==baseline / staged==target, post==target.
+- Restart (`az` run-command root, RG-SHARED-PROD/tc-prod-vm, **07:22 ET** — OUTSIDE 15:40–15:58): MainPID **681146 → 684893**, NRestarts=0, active/running, clean boot, no tracebacks (new `asyncio`/`replace` imports load fine).
+- 4 MACE loops online; `config_hash=fe177fcd3882` UNCHANGED (code-only deploy); SPY rung `mace-SPY-2026-09-25-742-739-802-805-20260812` UNTOUCHED (open, credit 0.93, pt_debit 0.47, order `6a7ccd9d…`) — managed by unchanged manage-loop code.
+- PEAD off-hours gate INTACT; PEAD/PMCC/bitunix/kalshi all online.
+
+**Inert / to confirm at next eval:** IVR-populating, `mace_entry_eval` rows, and no-duplicate confirm at the scheduled **2026-08-13 15:45 ET** eval — NOT triggered manually (an eval PLACES under `auto_execute:true`). Logic proven by the 232 tests.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+B=/home/azureuser/trading_corp/trading_corp/mace; K=/home/azureuser/mace_fix_bak_20260813; \
+cat \$K/strategy.py.bak > \$B/strategy.py; cat \$K/manager.py.bak > \$B/manager.py
+"
+# then restart: az run-command (RG-SHARED-PROD/tc-prod-vm) 'systemctl restart trading-corp'
+```
+**prod-live:** `ab8e170` → this entry. **No shared-file debt** — origin/prod-live already tracks the full MACE runtime; an earlier "prod-live behind the MACE deploy / 10 shared files" note was a STALE un-fetched local branch (`7d34d82`) artifact and is RETRACTED.

@@ -347,9 +347,10 @@ def test_overflow_routes_to_ibit_first(tmp_path):
     assert len(out) == 1 and out[0].symbol == "IBIT" and out[0].overflow is True
 
 
-def test_overflow_falls_back_to_highest_ivr_primary(tmp_path):
-    # 3 primaries: TLT forfeits (creates the forfeit); IBIT capped; eligible
-    # receivers SPY(30) > GLD(28) by IVR -> SPY receives.
+def test_overflow_does_not_reroute_to_entered_primary(tmp_path):
+    # 3 primaries: SPY+GLD entered, TLT forfeits; IBIT capped. Post-2026-08-12,
+    # entered primaries are NOT overflow receivers (routing forfeited capital onto a
+    # just-placed symbol re-enters it -> duplicate order) -> forfeit goes nowhere.
     d = yaml.safe_load(MACE_YAML.read_text(encoding="utf-8"))
     d["entry"]["enforce_risk_band"] = False
     d["universe"] = ["SPY", "GLD", "TLT"]
@@ -371,7 +372,7 @@ def test_overflow_falls_back_to_highest_ivr_primary(tmp_path):
             EvalResult(symbol="GLD", entered=True),
             EvalResult(symbol="TLT", entered=False, skip_reason=SKIP_BLACKOUT)]
     out = st.route_overflow(prim, cfg, ctx_multi(chains, ivrs, rungs=ibit_rungs))
-    assert len(out) == 1 and out[0].symbol == "SPY" and out[0].overflow
+    assert out == []      # entered SPY/GLD excluded; IBIT capped -> no receiver
 
 
 def test_overflow_exempts_weekly_budget(tmp_path):
