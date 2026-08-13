@@ -12400,3 +12400,31 @@ cat \$K/strategy.py.bak > \$B/strategy.py; cat \$K/manager.py.bak > \$B/manager.
 **First market-level forward data (n=15, NOT a verdict):** 8W/7L. 2Y-Treasury -T10/-T8 no/win; BoK yes/loss; SK-exports mixed. 08-05 Treasury resolved EARLY (outcome fixed at FOMC 07-30).
 
 **Rollback:** restore `.bak_llm_dedup_20260801/{kalshi_resolver.py,data.py}` + `DELETE FROM kalshi_round_trips WHERE division='kalshi_llm_arbitrage' AND id>10434` + restart.
+
+
+## 2026-08-13 - PMCC UX-truthfulness (effective_status: tile==panel + LLM-free stored-roll Approve)
+
+**Deployed LIVE** to `trading-corp.service` (tc-prod-vm / RG-SHARED-PROD) via az run-command
+RunShellScript (root, self-gated). Engine restart **684893 -> 697735**, NRestarts=0, 0 tracebacks.
+Display + panel approve-gate ONLY; dispatch / `_pmcc_combo.py` NOT touched (dispatch still
+re-checks earnings + fingerprint + reprice consent). auto_execute:false + halt untouched; nothing placed.
+
+**Reconciliation FIRST (Option 1):** prod's live `web/data.py` carried the unmerged kalshi_llm
+Option-B read-view (`_query_kalshi_distinct_market_stats`, b10a010). SOURCE-PROVEN that
+`(prod-live e113843 + b10a010).data.py` == prod live (`f090a4e6`, byte-for-byte LF), then merged
+b10a010 into origin/prod-live (**e113843 -> 7a72203**, kalshi drift retired) and rebased the PMCC
+branch onto it so the PMCC hunks sit on top of the preserved kalshi block.
+
+**Runtime files (4):** `agents/divisions/_pmcc_status.py` (8e2c16f6), `web/data.py` (76448e33),
+`web/routes.py` (11380749), `web/templates/partials/_pmcc_badge.html` (d2ec9b3b). Gate-A: all 4
+prod-current == base 7a72203 (data.py `f090a4e6` kalshi-preserved), staged .new == HEAD; py_compile +
+template-parse on the prod venv PASS. Backups `*.bak_pmcc_uxtruth_20260813`.
+
+**Verify:** engine active/running uptime stable, 0 placements on boot, pending_order=0, PMCC 34 legs
+reconciled (10 underlyings), bitunix SFP+futures resumed clean (reconciler up, flat as pre-flight,
+no spurious open/close), kalshi/MACE healthy (MACE re-armed execution_mode=live 4 loops), web 200.
+**Smoke (live, non-placing):** BULL earnings-suppressed -> BOTH tile and Expert panel show
+"EARNINGS WINDOW", NO Approve on either, "let the short expire" guidance; record-panel renders
+LLM-free (0 _llm_analyze_position). Suite 341/341 base==HEAD +17 new tests.
+
+**Rollback:** `pmcc_uxtruth_rollback_20260813.sh` (restore `*.bak_pmcc_uxtruth_20260813` + restart).
