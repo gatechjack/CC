@@ -3325,12 +3325,17 @@ async def build_donchian_chart_data(db_url: str, display_bars: int = 50) -> dict
     }
 
 
-def _build_pmcc_tile_status(symbol: str, *, db_url, now, cfg: dict) -> dict:
+def _build_pmcc_tile_status(symbol: str, *, db_url, now, cfg: dict, agent=None, slug=None) -> dict:
     """Resolve the unified tile/expert decision status for one PMCC underlying.
 
     Loads the single per-asset decision record (the SAME one the Expert panel
-    reads, so they can't disagree) and classifies it fresh|stale|none. Returns a
-    render-ready dict; never raises (a status read must not break the page).
+    reads, so they can't disagree) and classifies it fresh|stale|none. The label
+    is the EFFECTIVE post-gate status (via `_pmcc_status.effective_status`) — the raw
+    judgment only when actually actionable; else EARNINGS WINDOW / CAN'T PRICE — so the
+    tile can never show a stale action the downstream gates already suppressed. When
+    `agent`/`slug` are passed it reads the cheap earnings gate + the live pricing cache;
+    without them it degrades to the raw label. Never raises (a status read must not break
+    the page).
     """
     from trading_corp.agents.divisions import _pmcc_status
     cfg = cfg or {}
@@ -3345,9 +3350,42 @@ def _build_pmcc_tile_status(symbol: str, *, db_url, now, cfg: dict) -> dict:
         "urgency": "routine",
         "source": None,
         "age_h": None,
+        "suppressed": False,
+        "reason": None,
+        "actionable": False,
     }
     if state in ("fresh", "stale") and isinstance(rec, dict):
-        out["status_label"] = (rec.get("status") or "—").upper().replace("_", " ")
+        _raw = (rec.get("status") or "").lower()
+        # Gather the SAME effective-status inputs the Expert panel uses — only for a
+        # placeable action (hold/watch have nothing to gate): the cheap earnings gate
+        # (24h-cached) + the live pricing buildability already in the pmcc_pricing cache.
+        _earn_state, _earn_reason = None, None
+        _buildable, _price_reason, _mkt_closed = None, None, False
+        if _raw in _pmcc_status.PLACEABLE_ACTIONS:
+            if agent is not None:
+                try:
+                    _earn_state, _earn_reason = agent._earnings_gate_state(symbol)
+                except Exception:      # noqa: BLE001 — a status read must not break the page
+                    _earn_state, _earn_reason = None, None
+            try:
+                from trading_corp.web import pmcc_pricing
+                _pr = pmcc_pricing.cached(slug, symbol) if slug else None
+                _mkt_closed = (bool(_pr.market_closed) if _pr is not None
+                               else not pmcc_pricing.market_regular_open())
+                # Off-hours the cached `buildable` is stale — treat as unknown so a stale
+                # 'buildable' never reads as actionable once the session is closed.
+                _buildable = None if _mkt_closed else (_pr.buildable if _pr is not None else None)
+                _price_reason = None if _mkt_closed else (_pr.estimate_reason if _pr is not None else None)
+            except Exception:      # noqa: BLE001 — pricing read must not break the page
+                _buildable, _price_reason, _mkt_closed = None, None, False
+        eff = _pmcc_status.effective_status(
+            _raw, earnings_state=_earn_state, earnings_reason=_earn_reason,
+            buildable=_buildable, price_reason=_price_reason, market_closed=_mkt_closed,
+        )
+        out["status_label"] = eff["label"]
+        out["suppressed"] = eff["suppressed"]
+        out["reason"] = eff["reason"]
+        out["actionable"] = eff["actionable"]
         out["urgency"] = rec.get("urgency") or "routine"
         out["source"] = rec.get("source")
         out["age_h"] = _pmcc_status.age_hours(rec, now)
@@ -3475,14 +3513,12 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         if _agent is not None:
             _ts_cfg = (getattr(_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
         _ts_now = datetime.now(timezone.utc)
-        for _p in pmcc_pairs:
-            _p.unified_status = _build_pmcc_tile_status(
-                _p.underlying, db_url=deps.db_url, now=_ts_now, cfg=_ts_cfg,
-            )
         # P1 (2026-07-31): live pricing for ALL tiles — RH-only, NO LLM. Serve the
         # display cache (< TTL) else price (staggered, market-hours-gated inside
         # refresh_division → no pull pre/after-hours). Never blocks the page on a
         # pricing failure; a failure leaves _p.pricing = None (tile shows nothing new).
+        # Runs BEFORE the unified status below so the effective-status gate can read the
+        # CURRENT-load buildability from the just-refreshed pricing cache.
         for _p in pmcc_pairs:
             _p.pricing = None
         if _agent is not None and broker is not None:
@@ -3497,6 +3533,13 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
                         pmcc_pricing.cached(slug, _p.underlying))
             except Exception as e:      # noqa: BLE001 — pricing must never break the page
                 log.warning("pmcc tile pricing failed for %s: %s", slug, e)
+        # Unified EFFECTIVE status (post-gate) — reads the just-refreshed pricing cache +
+        # the cheap earnings gate so the tile can never disagree with the Expert panel.
+        for _p in pmcc_pairs:
+            _p.unified_status = _build_pmcc_tile_status(
+                _p.underlying, db_url=deps.db_url, now=_ts_now, cfg=_ts_cfg,
+                agent=_agent, slug=slug,
+            )
 
     # Activity feed for this division
     activity = _query_division_activity(deps.db_url, slug, division.strategy, limit=20)

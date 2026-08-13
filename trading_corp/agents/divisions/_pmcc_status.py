@@ -201,3 +201,94 @@ def record_pmcc_decision(
     except Exception as e:  # noqa: BLE001
         log.warning("record_pmcc_decision(%s): %s", symbol, e)
         return False
+
+
+# ── Effective (post-gate) status — shared by the tile badge AND the Expert panel ────
+# The stored `status` is the RAW judgment (written pre-order-build, pmcc_robinhood.py).
+# Downstream gates can suppress the action AFTER that write — earnings buffer (B9),
+# sparse-chain / illiquid / can't-price — WITHOUT a write-back, so the raw action and
+# the effective actionable state diverge. The tile and the panel must show the EFFECTIVE
+# state so they can never disagree. `effective_status` is a PURE function of already-
+# fetched inputs (the raw action + the cheap earnings gate + the LIVE pricing
+# buildability from the pmcc_pricing cache); it is computed at RENDER time (never a
+# stale scan snapshot) so it always tracks the live pricing badge.
+
+# Actions the agent can build + place from a stored verdict. roll_leap is advisory
+# (a manual LEAP reallocation) — never an agent-placeable Approve.
+PLACEABLE_ACTIONS = ("roll_short", "roll_short_early", "close_short", "open_short")
+_NON_ACTIONS = ("", "hold", "watch", "none", "—")
+# The operator-facing guidance text for an earnings-buffer suppression (kept verbatim
+# from `PMCCAgent.last_roll_abort_reason` so the tile, the panel, and the log agree).
+_EARNINGS_SUPPRESS_REASON = "earnings within the buffer — roll suppressed (let the short expire)"
+
+
+def _status_display(action: str) -> str:
+    return (action or "—").upper().replace("_", " ")
+
+
+def effective_status(
+    raw_action,
+    *,
+    earnings_state=None,      # 'blocked' | 'clear' | 'data_unavailable' | None
+    earnings_reason=None,     # technical detail (for a tooltip); the label reason stays friendly
+    buildable=None,           # True/False from the live pricing cache; None = not priced / unknown
+    price_reason=None,        # estimate_reason from the cache when NOT buildable
+    market_closed=False,      # options session closed → can't price/act now (NOT a suppression)
+) -> dict:
+    """Compute the EFFECTIVE post-gate status for a PMCC verdict (pure — no I/O).
+
+    Returns a dict:
+      raw_action : the stored judgment action (lower-cased).
+      label      : the display label — the raw action ONLY when actually actionable;
+                   else EARNINGS WINDOW / CAN'T PRICE / the raw label (market closed).
+      reason     : one-line why-suppressed / why-not-actionable (None when actionable).
+      detail     : optional technical detail (e.g. the earnings date) for a tooltip.
+      actionable : buildable AND not hard-suppressed AND agent-placeable — drives the
+                   panel Approve (the caller ANDs this with freshness for rolls).
+      suppressed : a HARD gate blocked the action (earnings-in-buffer / can't-price).
+      advisory   : roll_leap (a manual decision; never an agent Approve).
+      kind       : none|hold|advisory|earnings|actionable|market_closed|cant_price|pending|other.
+
+    A net-DEBIT roll is buildable → ACTIONABLE (presented per the best-price fix); it is
+    NOT a suppression. Precedence: earnings > actionable(buildable) > market-closed >
+    can't-price > pending. `buildable is True` is checked BEFORE market_closed so a
+    concretely-priced build stays approvable regardless of the wall clock.
+    """
+    raw = (raw_action or "").strip().lower()
+    out = {
+        "raw_action": raw, "label": _status_display(raw), "reason": None, "detail": None,
+        "actionable": False, "suppressed": False, "advisory": False, "kind": "other",
+    }
+    if raw in _NON_ACTIONS:
+        out["kind"] = "hold" if raw in ("hold", "watch") else "none"
+        return out
+    if raw == "roll_leap":
+        out["advisory"] = True
+        out["kind"] = "advisory"
+        out["reason"] = "LEAP roll is a manual decision — the agent will not place it"
+        return out
+    if raw in PLACEABLE_ACTIONS:
+        # 1) HARD-SUPPRESS: earnings within the buffer (stable; independent of hours).
+        if earnings_state == "blocked":
+            out.update(label="EARNINGS WINDOW", suppressed=True, kind="earnings",
+                       reason=_EARNINGS_SUPPRESS_REASON, detail=earnings_reason)
+            return out
+        # 2) ACTIONABLE: a concrete live build exists. Checked BEFORE market_closed so a
+        #    priced build (incl. a net-debit roll) stays approvable regardless of hours.
+        if buildable is True:
+            out.update(actionable=True, kind="actionable")
+            return out
+        # 3) Options session closed — the judgment stands; you just can't price/act now.
+        if market_closed:
+            out.update(kind="market_closed",
+                       reason=price_reason or "market closed — the roll prices at the 9:30 ET open")
+            return out
+        # 4) HARD-SUPPRESS: a live pricing attempt could not build (illiquid / sparse chain).
+        if buildable is False:
+            out.update(label="CAN'T PRICE", suppressed=True, kind="cant_price",
+                       reason=price_reason or "the roll can't be priced right now (illiquid or a sparse chain)")
+            return out
+        # 5) Not yet priced — show the judgment, but not approvable without a live build.
+        out["kind"] = "pending"
+        return out
+    return out

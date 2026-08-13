@@ -6,7 +6,16 @@
        drift.
    Context: `us` = pair.unified_status dict {state, urgency, source, age_h,
    status_label, stale_label, no_signal_label}. Render is pure (no I/O). #}
-{% if us and us.state == 'fresh' %}
+{% if us and us.state == 'fresh' and us.suppressed %}
+  {# EFFECTIVE status: a downstream gate suppressed the raw action (EARNINGS WINDOW /
+     CAN'T PRICE). Muted pill + the reason, so the tile shows the SAME effective state
+     as the Expert panel (never a stale action the gate already blocked). #}
+  <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
+               px-1.5 py-0.5 rounded border border-edge bg-edge text-muted"
+        title="{{ us.reason or us.status_label }} — the raw judgment was gated; matches the Expert panel. Click row for full analysis.">
+    {{ us.status_label }}
+  </span>
+{% elif us and us.state == 'fresh' %}
   {% set action_classes = {
     'urgent':   'bg-loss/15 text-loss border border-loss/30',
     'elevated': 'bg-warn/15 text-warn border border-warn/30',

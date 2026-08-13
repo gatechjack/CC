@@ -4527,6 +4527,7 @@ def _render_pair_analysis(
     analysis, recommendation=None, slug: str = "", symbol: str = "",
     show_execute_button: bool = True, status_banner: str = "",
     roll_extras: dict | None = None, preview_token: tuple | None = None,
+    effective: dict | None = None,
 ) -> str:
     """Render a PMCCAnalysis (+ optional TradeRecommendation) as dark-theme HTML.
 
@@ -4756,13 +4757,28 @@ def _render_pair_analysis(
             '</div>'
         )
 
+    # Header status badge — driven by the shared effective_status when the caller passes
+    # it (so the panel header shows the SAME label as the tile: EARNINGS WINDOW / CAN'T
+    # PRICE when a downstream gate suppressed the raw action). Every other caller passes
+    # effective=None and gets the raw action badge, unchanged.
+    if effective is not None:
+        _hdr_label = effective.get("label") or action_str
+        _hdr_class = (
+            'bg-edge text-muted border-edge'
+            if (effective.get("suppressed") or effective.get("advisory"))
+            else urgency_class
+        )
+    else:
+        _hdr_label = action_str
+        _hdr_class = urgency_class
+
     return (
         '<div class="space-y-3">'
         f'{status_banner}'
         f'<div class="flex items-center gap-2 flex-wrap">'
         f'<span class="text-base">{urgency_emoji}</span>'
         f'<span class="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded font-mono '
-        f'border {urgency_class}">{action_str}</span>'
+        f'border {_hdr_class}">{_hdr_label}</span>'
         f'<span class="text-[11px] text-muted font-mono ml-auto">{confidence_pct}% conf</span>'
         '</div>'
         f'<div class="text-sm text-mono font-medium leading-snug">{summary}</div>'
@@ -4859,6 +4875,7 @@ def _pmcc_tile_badge_oob(templates, deps, symbol: str) -> str:
             "tile_status", {}) or {}
         us = _build_pmcc_tile_status(
             sym, db_url=deps.db_url, now=_dt.now(_tz.utc), cfg=cfg,
+            agent=getattr(deps, "pmcc_agent", None), slug="robinhood_pmcc",
         )
         inner = templates.get_template("partials/_pmcc_badge.html").render(us=us)
         return (
@@ -4918,14 +4935,21 @@ async def _render_pmcc_record_panel(deps, slug: str, symbol: str) -> str:
     """Render the Expert panel from the UNIFIED decision record (NO LLM call):
     fresh/stale -> the persisted verdict + freshness banner; none -> awaiting-scan.
 
-    P3 ADDITION 3: an actionable SHORT-side SINGLE-leg verdict (urgent close_short /
-    open_short) gets a PRICED Approve straight from the LLM-FREE `price_and_stash`
-    path — NO Re-analyze, NO _llm_analyze_position — routed through the SAME consent
-    stash+fingerprint machinery as rolls (displayed == Approve-fires). Rolls + any
-    unpriceable verdict keep the stored-only 'Re-analyze to build a live estimate' note.
+    P3 ADDITION 3 (+ roll extension 2026-08-13): an ACTIONABLE placeable verdict gets a
+    PRICED Approve straight from the LLM-FREE `price_and_stash` path — NO Re-analyze, NO
+    _llm_analyze_position — routed through the SAME consent stash+fingerprint machinery
+    (displayed == Approve-fires). This now covers CREDIT ROLLS (roll_short /
+    roll_short_early, FRESH verdicts only) as well as close_short / open_short (any
+    non-none verdict); roll_leap stays advisory. The panel status LABEL + the Approve gate
+    are driven by the SHARED `_pmcc_status.effective_status` — the SAME helper the tile
+    uses — so an earnings-suppressed / can't-price / stale roll shows the effective status
+    (EARNINGS WINDOW / CAN'T PRICE) + reason and NO Approve, and can never disagree with
+    the tile. Dispatch is UNCHANGED and still re-checks earnings + fingerprint + reprice.
     """
+    import html as _html
     from datetime import datetime as _dt, timezone as _tz
     from trading_corp.agents.divisions import _pmcc_status
+    from trading_corp.web import pmcc_pricing
     cfg = (getattr(deps.pmcc_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
     stale_h = float(cfg.get("staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
     rec = _pmcc_status.load_decision(symbol, db_url=deps.db_url)
@@ -4939,48 +4963,86 @@ async def _render_pmcc_record_panel(deps, slug: str, symbol: str) -> str:
     )
     action = (rec.get("status") or "").lower()
 
-    # P3 ADDITION 3 — LLM-FREE priced Approve for a SHORT-side single-leg action.
-    # The urgent close is the most time-critical action; requiring an LLM Re-analyze
-    # just to see the buy-back price re-introduces the waste P1 killed. Price it cheap
-    # + instant via price_and_stash (reconstructs PMCCAnalysis from the stored record —
-    # NO _llm_analyze_position) and write the consent stash from the SAME pull.
-    if action in ("close_short", "open_short"):
-        _broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
-        pr = None
+    # ── Effective-status inputs (the SAME gates the tile reads via
+    # _pmcc_status.effective_status): the cheap earnings gate (24h-cached) + the LIVE
+    # pricing buildability from the LLM-FREE price_and_stash pull. ────────────────────
+    _CLOSE_OPEN = ("close_short", "open_short")
+    _ROLLS = ("roll_short", "roll_short_early")
+
+    _earn_state, _earn_reason = "clear", ""
+    if action in (_CLOSE_OPEN + _ROLLS):
+        try:
+            _earn_state, _earn_reason = deps.pmcc_agent._earnings_gate_state(symbol)
+        except Exception:      # noqa: BLE001 — a status read must never break the panel
+            _earn_state, _earn_reason = "clear", ""
+
+    # P3 ADDITION 3 — LLM-FREE priced Approve for a SHORT-side single-leg action; the
+    # 2026-08-13 extension adds credit ROLLS. price_and_stash reconstructs the PMCCAnalysis
+    # from the STORED judgment (NO _llm_analyze_position), prices live, and writes the
+    # consent stash from the SAME pull. Rolls are FRESH-ONLY (a stale >staleness_hours
+    # judgment falls back to Re-analyze); close/open keep their existing any-verdict
+    # pricing; roll_leap is advisory (never priced here).
+    _do_price = (action in _CLOSE_OPEN) or (action in _ROLLS and state == "fresh")
+    pr = None
+    if _do_price:
+        _data_exec = getattr(deps, "data_exec", None)
+        _broker = _data_exec.brokers.get(slug) if _data_exec is not None else None
         if _broker is not None:
             try:
-                from trading_corp.web import pmcc_pricing
                 pr = await pmcc_pricing.price_and_stash(
                     deps.pmcc_agent, _broker, slug, symbol, deps.db_url)
             except Exception as e:      # noqa: BLE001 — pricing must never break the panel
                 log.warning("record-panel: LLM-free price_and_stash(%s) failed: %s", symbol, e)
                 pr = None
-        if pr is not None and pr.buildable and pr.stash_token is not None:
-            return _render_pair_analysis(
-                _pmcc_analysis_from_record(rec), recommendation=None,
-                slug=slug, symbol=symbol, status_banner=banner,
-                roll_extras={"earnings": pr.earnings, "estimate": pr.estimate,
-                             "estimate_reason": pr.estimate_reason},
-                preview_token=pr.stash_token, show_execute_button=True,
-            )
-        # Unpriceable right now (illiquid / market closed) -> fall through to the note.
 
-    # Stored verdict with no live estimate -> Approve NOT offered; the estimate a
-    # visible Approve carries is guaranteed to be the combo fired.
+    eff = _pmcc_status.effective_status(
+        action, earnings_state=_earn_state, earnings_reason=_earn_reason,
+        buildable=(pr.buildable if pr is not None else None),
+        price_reason=(pr.estimate_reason if pr is not None else None),
+        market_closed=not pmcc_pricing.market_regular_open(),
+    )
+
+    # Approve is offered ONLY when the effective status is ACTIONABLE (buildable + not
+    # hard-suppressed) AND a live consent stash exists — so the strike + legs shown are
+    # the strike + legs fired. Freshness is already enforced for rolls by `_do_price`.
+    if eff["actionable"] and pr is not None and pr.buildable and pr.stash_token is not None:
+        return _render_pair_analysis(
+            _pmcc_analysis_from_record(rec), recommendation=None,
+            slug=slug, symbol=symbol, status_banner=banner,
+            roll_extras={"earnings": pr.earnings, "estimate": pr.estimate,
+                         "estimate_reason": pr.estimate_reason},
+            preview_token=pr.stash_token, show_execute_button=True, effective=eff,
+        )
+
+    # Not approvable — render the stored verdict with the EFFECTIVE status (the SAME label
+    # the tile shows) and NO Approve. A suppressed roll shows WHY (EARNINGS WINDOW / CAN'T
+    # PRICE); any other stored verdict keeps the 'Re-analyze to build a live estimate' note.
     panel = _render_pair_analysis(
         _pmcc_analysis_from_record(rec), recommendation=None,
         slug=slug, symbol=symbol, status_banner=banner,
-        show_execute_button=False,
+        roll_extras={"earnings": (pr.earnings if pr is not None else None),
+                     "estimate": None, "estimate_reason": eff["reason"]},
+        show_execute_button=False, effective=eff,
     )
     if action not in ("", "hold", "watch"):
-        panel += (
-            '<div class="mt-3 rounded-md border border-edge bg-pane-2/40 p-3">'
-            '<div class="text-[11px] font-mono text-muted leading-relaxed">'
-            'Approve isn\'t shown on a stored verdict — it needs a live strike, '
-            'debit, credit &amp; net first. <span class="text-mono">Re-analyze</span> '
-            '(above) to build the live estimate, then approve that exact combo.'
-            '</div></div>'
-        )
+        if eff["suppressed"]:
+            panel += (
+                '<div class="mt-3 rounded-md border border-edge bg-pane-2/40 p-3">'
+                '<div class="text-[11px] font-mono text-muted leading-relaxed">'
+                f'<span class="text-mono uppercase">{_html.escape(eff["label"])}</span> — '
+                f'{_html.escape(eff["reason"] or "action suppressed by a downstream gate")}. '
+                'The stored judgment stands; the tile shows the same effective status.'
+                '</div></div>'
+            )
+        else:
+            panel += (
+                '<div class="mt-3 rounded-md border border-edge bg-pane-2/40 p-3">'
+                '<div class="text-[11px] font-mono text-muted leading-relaxed">'
+                'Approve isn\'t shown on a stored verdict — it needs a live strike, '
+                'debit, credit &amp; net first. <span class="text-mono">Re-analyze</span> '
+                '(above) to build the live estimate, then approve that exact combo.'
+                '</div></div>'
+            )
     return panel
 
 
