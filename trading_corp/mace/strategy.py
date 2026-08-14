@@ -239,6 +239,7 @@ class BuildResult:
     credit_mid: float | None = None
     width: float | None = None
     skip_reason: str | None = None
+    detail: str = ""
 
 
 def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
@@ -259,21 +260,41 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
     if sp_q.mid is None or sc_q.mid is None:      # short selected but unpriceable
         return BuildResult(skip_reason=SKIP_NO_DELTA_STRIKE)
 
-    # UNIVERSAL wing-listing check (Board 2026-08-09 off the $5-grid finding);
-    # FXI additionally retries at fallback_width_dollars.
+    # UNIVERSAL wing-listing check (Board 2026-08-09 off the $5-grid finding).
+    # Fallback-configured symbols (XLE/GDX w2->w1, IWM w3->w2) retry at the
+    # narrower width. A width is ACCEPTED only if its wing lists + prices AND
+    # clears the risk band AND clears the credit floor; otherwise the loop
+    # CONTINUES to the next width.
+    #
+    # 2026-08-14 fix: previously a risk-band failure RETURNED SKIP_RISK_BAND and
+    # a valid-wing width RETURNED its spec with NO credit-floor check (the floor
+    # was tested afterward in evaluate_entry filter 7) — so a primary width that
+    # listed but was out-of-band or below-floor short-circuited without ever
+    # trying the fallback, which has an easier absolute floor (0.30*w1 < 0.30*w2)
+    # and can clear where the primary didn't. Both checks now live INSIDE the
+    # loop and `continue`. If NO width is acceptable, report the reason of the
+    # width that got FURTHEST: credit_floor (a wing listed + in-band but under
+    # floor) > risk_band (a wing listed but every width out of band) > no_wing
+    # (no listed priceable wing at all). Single-width symbols run the loop once
+    # -> outcome identical to the pre-fix behavior.
     widths = [symbol_cfg.width_dollars]
     if symbol_cfg.fallback_width_dollars:
         widths.append(symbol_cfg.fallback_width_dollars)
 
+    saw_wing = False        # >=1 width listed a priceable wing
+    saw_in_band = False     # >=1 width listed + priceable + in the risk band
+    best_cf_detail = ""     # closest-to-clearing credit-floor miss (skip detail)
+    best_cf_gap = None      # credit_mid - floor for that closest miss (<= 0)
     for width in widths:
         long_put = short_put - width
         long_call = short_call + width
         lp_q = chain.get(expiry, "put", long_put)
         lc_q = chain.get(expiry, "call", long_call)
         if lp_q is None or lc_q is None:
-            continue                              # wing unlisted — try fallback
+            continue                              # wing unlisted — try next width
         if lp_q.mid is None or lc_q.mid is None:
-            continue                              # wing unpriceable — try fallback
+            continue                              # wing unpriceable — try next width
+        saw_wing = True
         credit_mid = (sp_q.mid - lp_q.mid) + (sc_q.mid - lc_q.mid)
         if e.enforce_risk_band:
             max_risk = (width - credit_mid) * 100.0
@@ -282,12 +303,25 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
             lo = e.risk_band_min_per_width_usd * width
             hi = e.risk_band_max_usd
             if not (lo <= max_risk <= hi):
-                return BuildResult(skip_reason=SKIP_RISK_BAND)
+                continue                          # out of risk band — try next width
+        saw_in_band = True
+        floor = e.credit_floor_pct_of_width * width
+        if credit_mid < floor:
+            gap = credit_mid - floor              # negative
+            if best_cf_gap is None or gap > best_cf_gap:
+                best_cf_gap = gap
+                best_cf_detail = f"credit {credit_mid:.2f} < floor {floor:.2f}"
+            continue                              # below credit floor — try next width
         spec = CondorSpec(symbol=symbol, expiry=expiry, short_put=short_put,
                           long_put=long_put, short_call=short_call,
                           long_call=long_call, width_dollars=width)
         return BuildResult(spec=spec, credit_mid=credit_mid, width=width)
 
+    # No width produced an enterable condor — report the furthest-progress reason.
+    if saw_in_band:
+        return BuildResult(skip_reason=SKIP_CREDIT_FLOOR, detail=best_cf_detail)
+    if saw_wing:
+        return BuildResult(skip_reason=SKIP_RISK_BAND)
     return BuildResult(skip_reason=SKIP_NO_WING)
 
 
@@ -360,7 +394,10 @@ def evaluate_entry(symbol: str, cfg: MaceConfig, ctx: EntryContext,
                          ivr_value=ivr_value, overflow=is_overflow)
     # IVR_STALE / IVR_UNAVAILABLE: continue (credit floor + blackout still gate)
 
-    # 6. build (expiry / delta strikes / universal wing / FXI fallback / risk band)
+    # 6. build (expiry / delta strikes / universal wing / width fallback /
+    #    risk band / credit floor — build_condor tries the primary then the
+    #    fallback width and returns a spec only when a width clears ALL of them;
+    #    b.detail carries the credit-floor miss when every width is under floor)
     chain = ctx.chains.get(symbol)
     if chain is None:
         return _skip(symbol, SKIP_NO_EXPIRY, ivr_status=ivr_status,
@@ -369,14 +406,11 @@ def evaluate_entry(symbol: str, cfg: MaceConfig, ctx: EntryContext,
     b = build_condor(symbol, sc, chain, cfg, ctx.session_date)
     if b.skip_reason is not None:
         return _skip(symbol, b.skip_reason, ivr_status=ivr_status,
-                     ivr_value=ivr_value, overflow=is_overflow)
+                     ivr_value=ivr_value, overflow=is_overflow, detail=b.detail)
 
-    # 7. credit floor
-    if b.credit_mid < e.credit_floor_pct_of_width * b.width:
-        return _skip(symbol, SKIP_CREDIT_FLOOR, ivr_status=ivr_status,
-                     ivr_value=ivr_value, overflow=is_overflow,
-                     detail=f"credit {b.credit_mid:.2f} < floor "
-                            f"{e.credit_floor_pct_of_width * b.width:.2f}")
+    # 7. credit floor: now enforced INSIDE build_condor's width loop (filter 6)
+    #    so the fallback width is tried when the primary is below floor. A
+    #    returned spec has already cleared the floor at b.width (2026-08-14 fix).
 
     # 8. size
     contracts = size_contracts(ctx.equity, b.width, b.credit_mid,
