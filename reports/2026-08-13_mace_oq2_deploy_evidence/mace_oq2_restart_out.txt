@@ -1,0 +1,13 @@
+﻿Enable succeeded: 
+[stdout]
+restarting trading-corp (boot ~2.5 min: bitunix seeds 1500 closes before web :8000)
+MainPID=707835
+NRestarts=0
+ActiveState=active
+web home HTTP 200
+tracebacks since boot: 0
+
+RESTART RESULT: DONE - now run mace_oq2_verify.ps1
+
+[stderr]
+

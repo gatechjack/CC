@@ -131,6 +131,9 @@
     50%       { background-color: rgba(244, 63, 94, 0.08); }
   }
   .pead-row-danger { animation: row-danger 2s ease-in-out infinite; }
+  /* Collapsible reference panels: hide the native disclosure triangle cross-browser */
+  #pead-live details > summary { list-style: none; }
+  #pead-live details > summary::-webkit-details-marker { display: none; }
 </style>
 {% endblock %}
 
@@ -156,6 +159,63 @@
     }
     tick();
     setInterval(tick, 1000);
+  })();
+
+  // Remember collapsible (<details>) open state within the session so the 15s
+  // htmx poll (which re-renders #pead-live) does not re-collapse an opened panel.
+  // Default is collapsed on first load (empty store); PEAD-only, no server state.
+  (function () {
+    var KEY = 'pead_details_open';
+    function saved() { try { return JSON.parse(sessionStorage.getItem(KEY) || '{}'); } catch (e) { return {}; } }
+    function apply() {
+      var s = saved();
+      document.querySelectorAll('#pead-live details[id]').forEach(function (d) {
+        if (s[d.id]) { d.setAttribute('open', ''); }
+      });
+    }
+    document.addEventListener('toggle', function (e) {
+      var d = e.target;
+      if (!d || d.tagName !== 'DETAILS' || !d.id) return;
+      var s = saved(); s[d.id] = d.open; sessionStorage.setItem(KEY, JSON.stringify(s));
+    }, true);
+    document.body.addEventListener('htmx:afterSettle', apply);
+    apply();
+  })();
+
+  // Expand-on-click position card (Part 2): clicking a book row (desktop) or the
+  // "position card" button (mobile) toggles that symbol's .pead-detail. Open state
+  // persists in sessionStorage so the 15s poll keeps an opened card open. Toggles
+  // BOTH the desktop detail-row and the mobile detail-div for a symbol; only the one
+  // in the active viewport is visible. Display-only, no server round-trip.
+  (function () {
+    var KEY = 'pead_rows_open';
+    function saved() { try { return JSON.parse(sessionStorage.getItem(KEY) || '{}'); } catch (e) { return {}; } }
+    function esc(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/"/g, '\\"'); }
+    function setOpen(sym, open) {
+      var q = '[data-sym="' + esc(sym) + '"]';
+      document.querySelectorAll('.pead-detail' + q).forEach(function (d) { d.hidden = !open; });
+      document.querySelectorAll('.pead-book-row' + q + ' .pead-caret, .pead-mobile-toggle' + q + ' .pead-caret')
+        .forEach(function (cr) { cr.style.transform = open ? 'rotate(90deg)' : ''; });
+    }
+    function apply() {
+      var s = saved();
+      document.querySelectorAll('.pead-detail[data-sym]').forEach(function (d) {
+        setOpen(d.getAttribute('data-sym'), !!s[d.getAttribute('data-sym')]);
+      });
+    }
+    document.addEventListener('click', function (e) {
+      var el = e.target.closest('.pead-book-row') || e.target.closest('.pead-mobile-toggle');
+      if (!el) return;
+      var sym = el.getAttribute('data-sym');
+      if (!sym) return;
+      e.preventDefault();
+      var s = saved(); var open = !s[sym];
+      if (open) { s[sym] = 1; } else { delete s[sym]; }
+      sessionStorage.setItem(KEY, JSON.stringify(s));
+      setOpen(sym, open);
+    });
+    document.body.addEventListener('htmx:afterSettle', apply);
+    apply();
   })();
 </script>
 {% endblock %}

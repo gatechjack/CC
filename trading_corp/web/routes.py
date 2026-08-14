@@ -45,6 +45,12 @@ _LLM_CACHE_TTL_SEC = 300
 _LLM_CACHE: dict[str, tuple[str, float]] = {}     # slug → (html, fetched_at)
 _LLM_LOCK = Lock()
 
+# P1 (2026-07-31): max adverse credit drift (per-share net) tolerated between the
+# APPROVED snapshot and the dispatch reprice before the division dispatch aborts +
+# re-surfaces (shown == fired). A hair above the reprice give_up (0.02) so normal
+# tick noise doesn't bail, but a real quote move does.
+_REPRICE_MAX_ADVERSE_NET = 0.05
+
 # Deferral: when the user clicks "Defer 24h" on a recommendation, we suppress
 # new analysis for that (slug, symbol) for this many hours. Stored as audit
 # events (kind=pair_deferred) so it survives restarts and is auditable.
@@ -205,6 +211,10 @@ def register(app: FastAPI) -> None:
     # shadow-logger rows + news sentiment + outcome per trade. Honest-empty; verdict gated at n>=30.
     from trading_corp.web import sfp_llm_analysis_view
     sfp_llm_analysis_view.register(app)
+    # Robinhood MACE cockpit (zero-HITL condor engine) at /mace. Observability
+    # only — no approve/reject controls. Honest-empty until real rows exist.
+    from trading_corp.web import mace_view
+    mace_view.register(app)
 
     # ── PWA: serve service worker + manifest at root scope ─────────────
     # The service worker MUST be served from the root path (`/sw.js`),
@@ -866,10 +876,17 @@ def register(app: FastAPI) -> None:
                     slug, sym, fresh=False, expires_at=expires_at,
                 ))
 
+        # Unified-record reader: the PMCC Expert panel reflects the ONE
+        # timestamped decision the tile shows (scan or manual expert). The LLM
+        # only re-runs on an explicit Re-analyze (?force=1) below — keeping the
+        # tile and panel in lockstep and cutting per-click Anthropic calls.
+        if slug == "robinhood_pmcc" and deps.pmcc_agent is not None and not force:
+            return HTMLResponse(await _render_pmcc_record_panel(deps, slug, sym))
+
         key = (slug, sym)
         with _LLM_LOCK:
             entry = _pair_cache.get(key)
-            if entry is not None:
+            if entry is not None and not force:   # force=1 (Re-analyze) => fresh
                 html, ts = entry
                 if time.time() - ts < _PAIR_CACHE_TTL_SEC:
                     return HTMLResponse(html)
@@ -934,18 +951,166 @@ def register(app: FastAPI) -> None:
         if analysis is None:
             return HTMLResponse(_pair_unavailable_html(sym, "No matching open position found."))
 
-        # Build the concrete trade recommendation (legs + costs + benefits).
+        # Manual Re-analyze -> persist a fresh source='expert' verdict to the
+        # unified decision record (expert ALWAYS overwrites) so the tile updates
+        # immediately and stays in sync with this panel. Best-effort.
+        try:
+            from trading_corp.agents.divisions import _pmcc_status
+            from datetime import datetime as _dt, timezone as _tz
+            _pmcc_status.record_pmcc_decision(
+                sym, status=analysis.action, source="expert",
+                computed_at=_dt.now(_tz.utc).isoformat(), db_url=deps.db_url,
+                urgency=analysis.urgency, confidence=analysis.confidence,
+                summary=analysis.summary, rationale=analysis.rationale,
+                warnings=analysis.warnings,
+                target_delta_low=getattr(analysis, "target_delta_low", None),
+                target_delta_high=getattr(analysis, "target_delta_high", None),
+                target_dte=getattr(analysis, "target_dte", None),
+            )
+        except Exception as e:
+            log.warning("pmcc expert record write(%s) failed: %s", sym, e)
+
+        # Build the concrete combo ONCE (preview=True: a Re-analyze render is NOT a
+        # dispatch attempt → no ABORTED/earnings exec-alert or audit; invariant
+        # 2026-07-30). Derive the recommendation, the live debit/credit/net consent
+        # estimate, AND the dispatch stash from the SAME order list, so the strike
+        # shown, the estimate shown, and the strike fired are guaranteed identical.
         # Failure here is non-fatal — we still want the textual analysis.
         rec = None
-        try:
-            rec = await deps.pmcc_agent.build_trade_recommendation(broker, sym, analysis)
-        except Exception as e:
-            log.warning("build_trade_recommendation(%s) raised: %s", sym, e)
+        roll_extras = None
+        preview_token = None
+        # FIX 2 (2026-08-04): the manual Re-analyze builds a priced roll directly via
+        # propose_orders_for_pair, bypassing the auto-refresh market-hours gate. Never
+        # build off stale off-hours quotes — guard the build with the SAME
+        # market_regular_open() the auto path uses. When closed, show the specific
+        # "market closed" state (no build → no stale estimate, no priced Approve); the
+        # judgment above already refreshed, only pricing defers to the open.
+        from trading_corp.web import pmcc_pricing
+        if not pmcc_pricing.market_regular_open():
+            roll_extras = pmcc_pricing.market_closed_extras()
+        else:
+            try:
+                orders = await deps.pmcc_agent.propose_orders_for_pair(
+                    broker, sym, analysis, preview=True)
+                if orders:
+                    rec = await deps.pmcc_agent.build_trade_recommendation(
+                        broker, sym, analysis, prebuilt_orders=orders)
+                    import types as _types
+                    from trading_corp.web.pmcc_roll_card import build_pmcc_roll_card_extras
+                    from trading_corp.web import pmcc_preview
+                    roll_extras = await build_pmcc_roll_card_extras(
+                        _types.SimpleNamespace(orders=orders, underlying=sym),
+                        broker, deps.pmcc_agent,
+                    )
+                    # Carry the exact previewed combo forward to the Approve dispatch.
+                    preview_token = pmcc_preview.stash_preview(
+                        slug, sym, orders, action=analysis.action,
+                    )
+            except Exception as e:
+                log.warning("pmcc consent build(%s) raised: %s", sym, e)
+            if roll_extras is None:
+                # FIX 3 (2026-08-04): empty build (a gate aborted) → surface the
+                # SPECIFIC reason instead of the conflated "market closed, illiquid,
+                # or a sparse chain" fallback. No estimate → no priced Approve.
+                try:
+                    _why = deps.pmcc_agent.last_roll_abort_reason(sym)
+                except Exception:      # noqa: BLE001 — reason is best-effort
+                    _why = None
+                if _why:
+                    roll_extras = {"earnings": None, "estimate": None,
+                                   "estimate_reason": _why}
 
-        html = _render_pair_analysis(analysis, recommendation=rec, slug=slug, symbol=sym)
+        html = _render_pair_analysis(
+            analysis, recommendation=rec, slug=slug, symbol=sym,
+            status_banner=_pmcc_status_banner(slug, sym, state="fresh",
+                                              age_h=0.0, source="expert"),
+            roll_extras=roll_extras, preview_token=preview_token,
+        )
         with _LLM_LOCK:
             _pair_cache[key] = (html, time.time())
-        return HTMLResponse(html)
+        # Refresh the left-rail tile badge out-of-band (FIX 2) from the record
+        # this Re-analyze just wrote (line ~950), so tile + panel match with no
+        # full page reload.
+        return HTMLResponse(html + _pmcc_tile_badge_oob(templates, deps, sym))
+
+    @app.post("/division/{slug}/pair/{symbol}/refresh-pricing", response_class=HTMLResponse)
+    async def refresh_pricing(slug: str, symbol: str):
+        """LLM-FREE pricing refresh (P1) — re-price the roll from the STORED judgment's
+        δ band (NO Anthropic call), rewrite the consent stash from the same pull, and
+        re-render the panel. The judgment banner is unchanged (this doesn't re-judge)."""
+        sym = symbol.upper()
+        if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
+            return HTMLResponse(_pair_unavailable_html(sym, "Refresh pricing is wired for Robinhood PMCC only."))
+        broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
+        if broker is None:
+            return HTMLResponse(_pair_unavailable_html(sym, "Broker not registered."))
+        from trading_corp.web import pmcc_pricing
+        from trading_corp.agents.divisions import _pmcc_status
+        from datetime import datetime as _dt, timezone as _tz
+        rec = _pmcc_status.load_decision(sym, db_url=deps.db_url)
+        if not rec:
+            # No stored judgment to price against — send them to Re-analyze.
+            return HTMLResponse(await _render_pmcc_record_panel(deps, slug, sym))
+        analysis = _pmcc_analysis_from_record(rec)
+        # FIX 2 (2026-08-04): refresh-pricing calls price_and_stash directly, bypassing
+        # the auto-refresh market-hours gate. When the options market is CLOSED, do NOT
+        # pull/price — that would build a priced Approve off stale overnight quotes.
+        # Short-circuit to the "market closed" state (no estimate, no stash).
+        if not pmcc_pricing.market_regular_open():
+            roll_extras = pmcc_pricing.market_closed_extras()
+            preview_token = None
+        else:
+            pr = await pmcc_pricing.price_and_stash(deps.pmcc_agent, broker, slug, sym, deps.db_url)
+            preview_token = pr.stash_token
+            roll_extras = None
+            if pr.estimate is not None or pr.estimate_reason is not None or pr.earnings is not None:
+                roll_extras = {"earnings": pr.earnings, "estimate": pr.estimate,
+                               "estimate_reason": pr.estimate_reason}
+        cfg = (getattr(deps.pmcc_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
+        stale_h = float(cfg.get("staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+        _now = _dt.now(_tz.utc)
+        _state = _pmcc_status.classify_freshness(rec, _now, stale_h)
+        html = _render_pair_analysis(
+            analysis, recommendation=None, slug=slug, symbol=sym,
+            status_banner=_pmcc_status_banner(
+                slug, sym, state=_state,
+                age_h=_pmcc_status.age_hours(rec, _now), source=rec.get("source")),
+            roll_extras=roll_extras, preview_token=preview_token,
+        )
+        return HTMLResponse(html + _pmcc_tile_badge_oob(templates, deps, sym))
+
+    @app.get("/division/{slug}/pmcc-pricing", response_class=HTMLResponse)
+    async def division_pmcc_pricing(slug: str):
+        """45s interval pricing refresh (P1) — re-price all cached PMCC tiles (RH-only,
+        NO LLM, market-hours-gated inside refresh_division → no pull off-hours) and
+        rewrite their stashes, returning per-symbol hx-swap-oob spans that update each
+        tile's pricing chip in place. Empty response when off-hours-idle or nothing is
+        cached (nothing to swap; the interval keeps firing cheaply)."""
+        if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
+            return HTMLResponse("")
+        broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
+        if broker is None:
+            return HTMLResponse("")
+        from trading_corp.web import pmcc_pricing
+        syms = pmcc_pricing.symbols_for(slug)
+        if not syms:
+            return HTMLResponse("")
+        try:
+            await pmcc_pricing.refresh_division(
+                deps.pmcc_agent, broker, slug, syms, deps.db_url)
+        except Exception as e:      # noqa: BLE001 — an OOB refresh must never 500
+            log.warning("division_pmcc_pricing(%s) refresh failed: %s", slug, e)
+        parts = []
+        for s in syms:
+            try:
+                pricing = pmcc_pricing.tile_pricing_view(pmcc_pricing.cached(slug, s))
+                inner = templates.get_template("partials/_pmcc_pricing.html").render(pricing=pricing)
+                parts.append(
+                    f'<span id="pmcc-pricing-{s}" hx-swap-oob="true" class="contents">'
+                    f'{inner}</span>')
+            except Exception as e:  # noqa: BLE001
+                log.warning("division_pmcc_pricing(%s) render %s failed: %s", slug, s, e)
+        return HTMLResponse("".join(parts))
 
     @app.post("/division/{slug}/pair/{symbol}/defer", response_class=HTMLResponse)
     async def defer_pair(slug: str, symbol: str):
@@ -993,7 +1158,7 @@ def register(app: FastAPI) -> None:
         return await division_pair_analysis(slug, symbol, request)
 
     @app.post("/division/{slug}/pair/{symbol}/execute", response_class=HTMLResponse)
-    async def execute_pair_orders(slug: str, symbol: str):
+    async def execute_pair_orders(slug: str, symbol: str, request: Request):
         """Approve & execute the LLM-recommended action for one pair.
 
         Translates the cached analysis into ProposedOrders, runs each through
@@ -1006,6 +1171,33 @@ def register(app: FastAPI) -> None:
         for clean web UX (loading spinner → result inline).
         """
         sym = symbol.upper()
+        # AUTONOMY SEAM (P3b, source-parameterized): this handler is the HITL panel
+        # gate — the operator's click IS the approval, so source='board'. The dispatch
+        # cores below (single-leg place / combo place_combo) thread `source` and hard-
+        # code NO HITL, so a future autonomous loop can call the same cores with
+        # source='auto' after applying _check_auto_execute's caps (max_close_debit /
+        # VIX — RETAINED in ceo_graph as the AUTO-path safety layer, DORMANT on this
+        # HITL path). Flipping auto_execute:true + moving the trigger from click to loop
+        # is then the only change — no execution re-plumbing.
+        source = "board"
+        # Dashboard Approve = USER-INITIATED: mark the origin so exec-alerts
+        # (build-abort + place_combo outcome) BYPASS dedupe — every click gets a
+        # guaranteed ping even if identical to a prior one in-window.
+        try:
+            from trading_corp.comms.exec_alert import mark_user_origin
+            mark_user_origin()
+        except Exception:
+            pass
+        # Consent token from the Approve form (present when the operator approved a
+        # Re-analyze render): the previewed combo's id + shape fingerprint.
+        preview_id = None
+        approved_fp = None
+        try:
+            _form = await request.form()
+            preview_id = _form.get("preview_id") or None
+            approved_fp = _form.get("fingerprint") or None
+        except Exception:
+            pass
         if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
             return HTMLResponse(_exec_error_html(sym, "Approve & Execute is wired for Robinhood PMCC only."))
         broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
@@ -1019,24 +1211,83 @@ def register(app: FastAPI) -> None:
         except Exception:
             regime = "unknown"
 
-        # Fetch the current LLM analysis (uses cache if fresh)
+        # ── Consent + display source (FORK 2, 2026-07-30) ────────────────────
+        # The Approve form carries the previewed combo's id + shape fingerprint.
+        #   HIT  → fire those exact legs AND synthesize the dispatch view from the
+        #          stash: NO analyze_symbol (LLM) call, so the Approve click carries
+        #          no LLM latency and the view can't contradict the approved rec.
+        #          The dispatch reprice still re-quotes the PRICE (strike/legs fixed).
+        #   MISS → a genuine from-scratch dispatch: regenerate the LLM analysis
+        #          (needed to rebuild the combo) and rebuild, fingerprint-guarding
+        #          against a drifted contract.
+        # `regime` above is a cheap trend read (not the LLM) and is kept for risk eval.
+        from trading_corp.web import pmcc_preview
+        orders = None
         analysis = None
-        try:
-            analysis = await deps.pmcc_agent.analyze_symbol(broker, sym, regime=regime)
-        except Exception as e:
-            log.warning("execute: analyze_symbol(%s) raised: %s", sym, e)
-
-        if analysis is None:
-            return HTMLResponse(_exec_error_html(sym, "Could not regenerate analysis."))
-
-        # Build the concrete orders
-        try:
-            orders = await deps.pmcc_agent.propose_orders_for_pair(broker, sym, analysis)
-        except Exception as e:
-            log.warning("execute: propose_orders_for_pair(%s) raised: %s", sym, e)
-            return HTMLResponse(_exec_error_html(sym, str(e)[:160]))
+        hit = pmcc_preview.load_preview(slug, sym, preview_id, approved_fp)
+        if hit is not None:
+            orders = hit.orders
+            analysis = _synth_analysis_from_stash(hit.action)   # display only; no LLM
+            # A clicked Approve IS a genuine dispatch attempt — re-check the earnings
+            # gate here (the stash is up to 15 min old). Blocked → bail + ABORTED
+            # alert (fires because this IS a dispatch), position untouched.
+            try:
+                _earn = deps.pmcc_agent.earnings_card_state(sym)
+            except Exception:
+                _earn = None
+            if _earn is not None and _earn.get("kind") == "blocked":
+                try:
+                    from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+                    emit_exec_alert(ExecOutcome(
+                        tier="ABORTED", symbol=sym, strategy="robinhood_pmcc",
+                        reason=("earnings within buffer at approval — roll not placed; "
+                                "let the short expire, roll after the print"),
+                        position_changed=False,
+                    ))
+                except Exception:
+                    pass
+                deps.logger_agent.log_event(
+                    actor="board", kind="pmcc_consent_earnings_block",
+                    payload={"symbol": sym, "via": "web_button",
+                             "date": _earn.get("date")},
+                )
+                return HTMLResponse(_exec_abort_html(
+                    sym, analysis, {"reason": "earnings within buffer at approval"}))
+        if orders is None:
+            try:
+                analysis = await deps.pmcc_agent.analyze_symbol(broker, sym, regime=regime)
+            except Exception as e:
+                log.warning("execute: analyze_symbol(%s) raised: %s", sym, e)
+            if analysis is None:
+                return HTMLResponse(_exec_error_html(sym, "Could not regenerate analysis."))
+            try:
+                orders = await deps.pmcc_agent.propose_orders_for_pair(broker, sym, analysis)
+            except Exception as e:
+                log.warning("execute: propose_orders_for_pair(%s) raised: %s", sym, e)
+                return HTMLResponse(_exec_error_html(sym, str(e)[:160]))
+            # If the operator approved a SPECIFIC combo (fingerprint present) but the
+            # live rebuild differs (chain moved, stale page), do NOT silently fire a
+            # different contract — bail + re-surface with the fresh estimate.
+            if approved_fp and orders and pmcc_preview.fingerprint(orders) != approved_fp:
+                deps.logger_agent.log_event(
+                    actor="board", kind="pmcc_consent_fingerprint_mismatch",
+                    payload={"symbol": sym, "via": "web_button",
+                             "approved_fp": approved_fp,
+                             "rebuilt_fp": pmcc_preview.fingerprint(orders)},
+                )
+                return HTMLResponse(_exec_consent_mismatch_html(sym))
 
         if not orders:
+            # A roll/close action that yields NO orders is a B4 atomic abort
+            # (e.g. no liquid weekly to roll into) — NOT "no action needed".
+            # Surface the actual reason from the agent's in-memory diag (set by
+            # `_find_best_weekly`/`_find_best_leap` on abort) instead of the
+            # misleading "action requires no orders" message.
+            act = (analysis.action or "").lower()
+            if act not in ("hold", "watch") and deps.pmcc_agent is not None:
+                diag = (getattr(deps.pmcc_agent, "_last_weekly_diag", None)
+                        or getattr(deps.pmcc_agent, "_last_leap_diag", None))
+                return HTMLResponse(_exec_abort_html(sym, analysis, diag))
             return HTMLResponse(_exec_no_action_html(sym, analysis))
 
         # Account snapshot for the Risk Agent
@@ -1052,9 +1303,137 @@ def register(app: FastAPI) -> None:
         )
         strat_state = StrategyState.from_persistence("robinhood_pmcc", db_url=deps.db_url)
 
-        # Per-order: risk → execute → log
+        # execution_mode reflects the REAL registered broker, stamped BEFORE any
+        # dispatch so the persisted proposed_order row is accurate even when
+        # placement raises (fixes the stale 'paper' label on live-rejected rows).
+        _live_mode = "paper" if getattr(broker, "paper", True) else "live"
+
+        # ── Dispatch: partition into combo groups + single-leg actions ────────
+        # A PMCC roll (and any combo-tagged action) is ONE multi-leg SPREAD via
+        # data_exec.place_combo -> place_multi_leg (a single all-or-nothing POST);
+        # it never legs in. The single-leg loop is for genuine single-leg actions
+        # ONLY — a combo leg sent down it trips _place_option_order's fail-closed
+        # guard, which STAYS as the backstop. partition_combo_orders RAISES on a
+        # malformed batch (a lone combo leg, or >1 untagged option leg) → place
+        # NOTHING (the interim backstop for close_all / Scout OPEN until tagged).
+        from trading_corp.agents.strategies._pmcc_combo import (
+            partition_combo_orders, snapshot_combo_for_consent,
+            assess_combo_reprice_consent,
+        )
+        try:
+            combo_groups, singles = partition_combo_orders(orders)
+        except ValueError as e:
+            for o in orders:
+                o.status = "risk_rejected"
+                o.execution_mode = _live_mode
+                deps.logger_agent.log_proposed_order(o)
+            deps.logger_agent.log_event(
+                actor="data_exec", kind="combo_partition_refused",
+                payload={"symbol": sym, "reason": str(e), "via": "web_button"},
+            )
+            return HTMLResponse(_render_execute_results(sym, analysis, [
+                {"order": o, "outcome": "execute_error",
+                 "detail": f"Refused (multi-leg safety): {str(e)[:150]}"}
+                for o in orders
+            ]))
+
         results: list[dict] = []
-        for order in orders:
+
+        # Each combo group → risk all-or-nothing (a `reject` aborts the whole
+        # combo; `resize` ignored, can't resize one leg), re-price from live
+        # quotes at dispatch (proposal-time mid is stale/non-marketable by
+        # approval), then place as ONE spread.
+        for _cid, _legs in combo_groups.items():
+            _rej = None
+            for order in _legs:
+                order.execution_mode = _live_mode
+                v = deps.risk_agent.evaluate(order, account, strat_state, regime, None)
+                order.risk_reason = v.reason
+                if v.verdict == "reject":
+                    _rej = (order, v)
+                    break
+            if _rej is not None:
+                order, v = _rej
+                for o in _legs:
+                    o.status = "risk_rejected"
+                    deps.logger_agent.log_proposed_order(o)
+                deps.logger_agent.log_event(
+                    actor="risk", kind="combo_rejected_by_risk",
+                    payload={"combo_id": _cid, "symbol": sym, "rejected_leg": order.id,
+                             "reason": v.reason, "via": "web_button"},
+                )
+                results.extend({
+                    "order": o, "outcome": "risk_rejected",
+                    "detail": (f"Combo aborted (all-or-nothing): leg "
+                               f"{(order.extra or {}).get('action')} rejected — {v.reason}")}
+                    for o in _legs)
+                continue
+            _consent_snap = snapshot_combo_for_consent(_legs)
+            try:
+                await deps.pmcc_agent.reprice_combo(_legs, broker)
+            except Exception as e:
+                log.warning("execute_pair: reprice_combo(%s) failed: %s "
+                            "— keeping proposal-time limit", _cid, e)
+            # FINAL consent guard (P1, 2026-07-31): what fires must match what was
+            # shown. Abort the combo if the dispatch reprice drifted adversely vs the
+            # approved snapshot — sign flip, strike drift, credit collapse beyond
+            # tolerance, or a stale/wide-quote hold — placing NOTHING and
+            # re-surfacing for re-approval.
+            _consent_ok, _consent_why = assess_combo_reprice_consent(
+                _legs, _consent_snap,
+                max_adverse_net_deviation=_REPRICE_MAX_ADVERSE_NET,
+            )
+            if not _consent_ok:
+                for o in _legs:
+                    o.status = "risk_rejected"
+                    deps.logger_agent.log_proposed_order(o)
+                deps.logger_agent.log_event(
+                    actor="board", kind="pmcc_consent_reprice_drift",
+                    payload={"combo_id": _cid, "symbol": sym,
+                             "reason": _consent_why, "via": "web_button"},
+                )
+                results.extend({
+                    "order": o, "outcome": "risk_rejected",
+                    "detail": (f"Combo not placed — dispatch price drifted from what you "
+                               f"approved ({_consent_why}). Re-price and approve again.")}
+                    for o in _legs)
+                continue
+            for order in _legs:
+                order.status = "board_approved"
+                order.board_reason = f"approved via panel combo (source={source})"
+                deps.logger_agent.log_proposed_order(order)
+                deps.logger_agent.log_event(
+                    actor="board", kind="board_approved",
+                    payload={"order_id": order.id, "symbol": sym, "via": "web_button",
+                             "qty": order.qty, "combo_id": _cid},
+                )
+            try:
+                fills = await deps.data_exec.place_combo(_legs, division=slug)
+            except Exception as e:
+                log.warning("execute_pair: place_combo(%s) raised: %s", _cid, e)
+                deps.logger_agent.log_event(
+                    actor="data_exec", kind="execution_error",
+                    payload={"symbol": sym, "combo_id": _cid, "error": str(e)},
+                )
+                results.extend({"order": o, "outcome": "execute_error",
+                                "detail": str(e)[:160]} for o in _legs)
+                continue
+            if not fills:
+                results.extend({
+                    "order": o, "outcome": "execute_error",
+                    "detail": "combo did not fill (limit not marketable) — nothing placed; no naked leg"}
+                    for o in _legs)
+                continue
+            _fbi = {f.order_id: f for f in fills}
+            for o in _legs:
+                f = _fbi.get(o.id)
+                results.append({"order": o, "outcome": "filled",
+                                "fill_price": f.price if f else None,
+                                "venue": f.venue if f else None})
+
+        # ── single-leg actions (genuine single-leg only; combos handled above) ─
+        for order in singles:
+            order.execution_mode = _live_mode
             verdict = deps.risk_agent.evaluate(
                 order, account, strat_state, regime, None,
             )
@@ -1101,8 +1480,13 @@ def register(app: FastAPI) -> None:
                 continue
             if verdict.verdict == "resize" and verdict.new_qty is not None:
                 order.qty = float(verdict.new_qty)
+            # SINGLE-LEG dispatch core (close_short buy-to-close / open_short sell-
+            # cover). Source-parameterized: no HITL hardcoded here — an auto loop would
+            # reach this same risk-eval + place with source='auto'. RiskAgent.evaluate
+            # (real-equity BP, halt, caps) already ran above; place() applies the
+            # advisory guard. LEAP-mandate: these orders are short-call only.
             order.status = "board_approved"
-            order.board_reason = "approved via web button"
+            order.board_reason = f"approved via panel (source={source})"
             deps.logger_agent.log_proposed_order(order)
             deps.logger_agent.log_event(
                 actor="board", kind="board_approved",
@@ -1130,7 +1514,37 @@ def register(app: FastAPI) -> None:
         with _LLM_LOCK:
             _pair_cache.pop((slug, sym), None)
 
-        return HTMLResponse(_render_execute_results(sym, analysis, results))
+        # Consume the acted-on decision (FIX 1). A TERMINAL FILL means the
+        # standing ROLL/CLOSE recommendation is DONE, so record a HOLD. Written
+        # as source='executed': it always overwrites the record it acted on
+        # (even a fresh expert ROLL SHORT) so the tile flips to HOLD and the
+        # Approve button self-disables on the next read — but it is treated like
+        # a scan verdict for FUTURE precedence, so the next scan re-raises a
+        # signal if this just-rolled position moves (no 8h blind spot). Only on
+        # a genuine fill (not rest / no-fill / reject). Best-effort.
+        if any(r["outcome"] == "filled" for r in results):
+            try:
+                from trading_corp.agents.divisions import _pmcc_status
+                from datetime import datetime as _dt, timezone as _tz
+                _pmcc_status.record_pmcc_decision(
+                    sym, status="hold", source="executed",
+                    computed_at=_dt.now(_tz.utc).isoformat(), db_url=deps.db_url,
+                    urgency="routine",
+                    summary="Position rolled/closed — holding to collect theta.",
+                    rationale=("An approved action filled, so the prior actionable "
+                               "recommendation is consumed. The next scan re-evaluates "
+                               "and re-raises a signal if the position moves."),
+                )
+            except Exception as e:
+                log.warning("pmcc executed-decision write(%s) failed: %s", sym, e)
+
+        # Push the updated decision to the left-rail tile out-of-band (FIX 2) so
+        # the badge + Approve affordance refresh from the just-written record
+        # without a full page reload. Best-effort ('' on failure / no such row).
+        return HTMLResponse(
+            _render_execute_results(sym, analysis, results)
+            + _pmcc_tile_badge_oob(templates, deps, sym)
+        )
 
     # ── Scout — fresh PMCC opening candidates ───────────────────────────
 
@@ -1210,6 +1624,12 @@ def register(app: FastAPI) -> None:
         first short) instead of the manage-existing-pair pipeline.
         """
         sym = symbol.upper()
+        # Scout Approve = USER-INITIATED (see execute_pair_orders) — bypass dedupe.
+        try:
+            from trading_corp.comms.exec_alert import mark_user_origin
+            mark_user_origin()
+        except Exception:
+            pass
         if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
             return HTMLResponse(_exec_error_html(sym, "Scout is wired for Robinhood PMCC only."))
         broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
@@ -1933,6 +2353,90 @@ def register(app: FastAPI) -> None:
             )
         log.info("pead_halt_initiated: reason=%s closed=%d", reason, closed)
         return _render_action_pill(f"PEAD HALTED · {closed} closed")
+
+    @app.post("/telemetry/pead/max_concurrent", response_class=HTMLResponse)
+    async def pead_set_max_concurrent(request: Request):
+        """PEAD dial (Part B): persist a max_concurrent override to
+        `agent_state robinhood_pead/max_concurrent_override`. The scan reads it
+        live each cycle (no restart) and falls back to strategies.yaml when unset.
+        Mirrors the halt write-surface; PEAD-scoped — affects no other division.
+        Re-renders the dial partial (with the recomputed fundable-count readout).
+        """
+        from trading_corp.web.pead_view import DIVISION, build_pead_view
+        form = await request.form()
+        try:
+            n = int(form.get("max_concurrent"))
+        except (TypeError, ValueError):
+            n = None
+        if n is not None and 1 <= n <= 100:
+            _db_mod.set_agent_state(
+                DIVISION, "max_concurrent_override",
+                {"max_concurrent": n, "ts": _now_iso(), "source": "dashboard_dial"},
+                db_url=deps.db_url,
+            )
+            if deps.logger_agent is not None:
+                deps.logger_agent.log_event(
+                    "pead_operations", "pead_max_concurrent_set",
+                    {"division": DIVISION, "max_concurrent": n,
+                     "source": "dashboard_dial", "ts": _now_iso()},
+                )
+            log.info("pead_max_concurrent_set: n=%d source=dashboard_dial", n)
+        else:
+            log.info("pead_set_max_concurrent: ignored invalid value %r", form.get("max_concurrent"))
+        view = await build_pead_view(deps)
+        return templates.TemplateResponse(request, "partials/pead_dial.html", {"v": view})
+
+    # ITEM2-RH-ROUTES: RH session health + refresh button ------------------------------
+    _RH_AGENT, _RH_KEY = "robinhood_session", "refresh_status"
+    _BUTTON_REAUTH_TIMEOUT_S = 90
+
+    def _rh_health_ctx():
+        import os, time
+        from trading_corp.brokers import robinhood as _rh
+        pickle = os.path.expanduser("~/.tokens/robinhood.pickle")
+        try:
+            age_s = int(time.time() - os.stat(pickle).st_mtime)
+        except OSError:
+            age_s = -1
+        rec = _db_mod.load_agent_state(_RH_AGENT, _RH_KEY, db_url=deps.db_url)
+        st = rec[0] if (rec and isinstance(rec[0], dict)) else {}
+        return {"auth_state": "down" if getattr(_rh, "_auth_down", False) else "valid",
+                "down_since": getattr(_rh, "_auth_down_since", None),
+                "last_good": getattr(_rh, "_auth_last_good", None),
+                "pickle_age_s": age_s, "refresh": st.get("state", "idle"),
+                "refresh_msg": st.get("msg", "")}
+
+    @app.get("/api/rh/session-health", response_class=HTMLResponse)
+    async def rh_session_health(request: Request):
+        return templates.TemplateResponse(request, "rh_session_panel.html", {"health": _rh_health_ctx()})
+
+    @app.post("/api/rh/refresh-session", response_class=HTMLResponse)
+    async def rh_refresh_session(request: Request):
+        db_url = deps.db_url
+        rec = _db_mod.load_agent_state(_RH_AGENT, _RH_KEY, db_url=db_url)
+        if rec and isinstance(rec[0], dict) and rec[0].get("state") in ("running", "push_sent"):
+            return templates.TemplateResponse(request, "rh_session_panel.html", {"health": _rh_health_ctx()})
+        broker = deps.data_exec.brokers.get("robinhood_pead") or next(
+            (b for k, b in deps.data_exec.brokers.items() if k.startswith("robinhood")), None)
+
+        async def _run():
+            try:
+                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
+                    {"state": "push_sent", "msg": "approve the push on your phone", "ts": _now_iso()}, db_url=db_url)
+                ok = False
+                if broker is not None and hasattr(broker, "_attempt_reauth"):
+                    ok = await broker._attempt_reauth(force=True, timeout=_BUTTON_REAUTH_TIMEOUT_S)
+                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
+                    {"state": "valid" if ok else "failed",
+                     "msg": "" if ok else "login not confirmed (push not approved / sms-email / creds)",
+                     "ts": _now_iso()}, db_url=db_url)
+            except Exception as e:  # noqa: BLE001
+                _db_mod.set_agent_state(_RH_AGENT, _RH_KEY,
+                    {"state": "failed", "msg": str(e), "ts": _now_iso()}, db_url=db_url)
+
+        _db_mod.set_agent_state(_RH_AGENT, _RH_KEY, {"state": "running", "msg": "", "ts": _now_iso()}, db_url=db_url)
+        asyncio.create_task(_run())
+        return templates.TemplateResponse(request, "rh_session_panel.html", {"health": _rh_health_ctx()})
 
     @app.get("/approvals/{order_id}", response_class=HTMLResponse)
     async def approval_detail(request: Request, order_id: str):
@@ -4021,7 +4525,9 @@ def _render_ira_pair_analysis(cc) -> str:  # noqa: ANN001 — CoveredCallPositio
 
 def _render_pair_analysis(
     analysis, recommendation=None, slug: str = "", symbol: str = "",
-    show_execute_button: bool = True,
+    show_execute_button: bool = True, status_banner: str = "",
+    roll_extras: dict | None = None, preview_token: tuple | None = None,
+    effective: dict | None = None,
 ) -> str:
     """Render a PMCCAnalysis (+ optional TradeRecommendation) as dark-theme HTML.
 
@@ -4096,15 +4602,109 @@ def _render_pair_analysis(
             + '</div></div>'
         )
 
+    # Consent extras (2026-07-30) — earnings-imminent state + the live
+    # debit/credit/net estimate, sourced from the SAME orders the Approve will fire
+    # (roll_extras is built once from the previewed combo). Only present on the
+    # division-panel Re-analyze roll path; every other caller passes roll_extras=None.
+    earnings = (roll_extras or {}).get("earnings")
+    estimate = (roll_extras or {}).get("estimate")
+    estimate_reason = (roll_extras or {}).get("estimate_reason")
+    offer_roll = earnings is None or earnings.get("offer_roll", True)
+
+    earnings_html = ""
+    if earnings and earnings.get("kind") == "blocked":
+        _date = _html.escape(str(earnings.get("date") or "—"))
+        _ver = "verified" if earnings.get("verified") else "unverified"
+        _rec = _html.escape(str(earnings.get("recommendation") or ""))
+        _cav = earnings.get("caveat")
+        earnings_html = (
+            '<div class="mt-3 rounded-md border border-loss/40 bg-loss/10 p-3">'
+            '<div class="text-[10px] uppercase tracking-wider text-loss font-semibold mb-1">'
+            f'Earnings {_date} · {_ver}</div>'
+            f'<div class="text-xs text-mono">{_rec}</div>'
+            + (f'<div class="text-xs text-warn mt-1">⚠ {_html.escape(str(_cav))}</div>' if _cav else '')
+            + '<div class="text-[10px] text-muted mt-1">Roll not offered while earnings '
+              'is within the buffer — the current short is left to expire.</div>'
+            '</div>'
+        )
+    elif earnings and earnings.get("kind") == "unverified":
+        _flag = _html.escape(str(earnings.get("flag") or "earnings date unverified"))
+        earnings_html = (
+            '<div class="mt-3 rounded-md border border-warn/40 bg-warn/10 p-2">'
+            f'<div class="text-xs text-warn font-mono">⚠ {_flag}</div>'
+            '</div>'
+        )
+
+    estimate_html = ""
+    if estimate:
+        _ce = "" if estimate.get("close_strike") is None else f"{estimate['close_strike']:.2f}"
+        _oe = "" if estimate.get("open_strike") is None else f"{estimate['open_strike']:.2f}"
+        _dir = estimate.get("direction", "credit")
+        _dir_cls = "text-gain" if _dir == "credit" else "text-loss"
+        estimate_html = (
+            '<div class="mt-3 pt-3 border-t border-edge">'
+            '<div class="text-[10px] uppercase tracking-wider text-muted font-semibold mb-1.5">'
+            'Roll estimate <span class="normal-case tracking-normal text-muted/70">'
+            '— est., actual fill will differ slightly</span></div>'
+            '<div class="space-y-1 text-xs font-mono">'
+            f'<div class="flex justify-between gap-2"><span class="text-muted">'
+            f'Debit · buy to close {_ce} C {_html.escape(str(estimate.get("close_expiration") or ""))}</span>'
+            f'<span class="private-money">${estimate.get("debit", 0):.2f}</span></div>'
+            f'<div class="flex justify-between gap-2"><span class="text-muted">'
+            f'Credit · sell to open {_oe} C {_html.escape(str(estimate.get("open_expiration") or ""))}</span>'
+            f'<span class="private-money">${estimate.get("credit", 0):.2f}</span></div>'
+            f'<div class="flex justify-between gap-2 font-semibold"><span class="text-muted">Net {_dir}</span>'
+            f'<span class="private-money {_dir_cls}">${estimate.get("net_abs", 0):.2f}</span></div>'
+            '</div></div>'
+        )
+    elif estimate_reason:
+        estimate_html = (
+            '<div class="mt-3 pt-3 border-t border-edge">'
+            f'<div class="text-xs text-muted font-mono">{_html.escape(str(estimate_reason))}</div>'
+            '</div>'
+        )
+
+    # Hidden consent token — carries the previewed combo's id + shape fingerprint
+    # into the Approve POST so dispatch fires the EXACT combo shown (not a fresh
+    # re-analysis). Present only on the Re-analyze roll path.
+    hidden_consent = ""
+    if preview_token:
+        _pid, _fp = preview_token
+        hidden_consent = (
+            f'<input type="hidden" name="preview_id" value="{_html.escape(str(_pid))}">'
+            f'<input type="hidden" name="fingerprint" value="{_html.escape(str(_fp))}">'
+        )
+
+    _defer_form = (
+        '<form'
+        f' hx-post="/division/{slug}/pair/{symbol}/defer"'
+        ' hx-target="#pair-analysis"'
+        ' hx-swap="innerHTML">'
+        '<button type="submit"'
+        ' class="w-full px-3 py-1.5 rounded-md font-mono text-xs'
+        '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
+        '        transition-colors border border-edge">'
+        '⏸ Defer 24 hours · let theta work / re-evaluate later'
+        '</button>'
+        '</form>'
+    )
+
     # Approve & Execute (primary) + Defer 24h (secondary) buttons.
     # Only render when the action is something we can actually translate
     # into orders. For 'hold' / 'watch' there's nothing to approve/defer.
     # Callers that have no automation pipeline (e.g. IRA dashboard which
     # is read-only — user executes manually in Robinhood) pass
     # show_execute_button=False to hide the buttons.
+    # Earnings-imminent (offer_roll False): Approve is HIDDEN — we recommend letting
+    # the short expire, not rolling — so the operator can only Defer.
     button_html = ""
     actionable = action_raw not in ("", "hold", "watch")
-    if actionable and slug and symbol and show_execute_button:
+    # P1 (2026-07-31): Approve is gated on a CONCRETE built estimate — closes the
+    # bare-Approve gap (a live Approve over "Target δ · DTE" with no numbers). When
+    # the roll can't be priced now (pre-market / illiquid / sparse chain), suppress
+    # Approve and say why.
+    _has_estimate = bool(estimate)
+    if actionable and slug and symbol and show_execute_button and offer_roll and _has_estimate:
         button_html = (
             '<div class="mt-4 pt-3 border-t border-edge space-y-2">'
             # Approve & Execute (primary)
@@ -4115,6 +4715,7 @@ def _render_pair_analysis(
             ' hx-indicator="#approve-spinner"'
             ' hx-confirm="Approve and execute this trade now? '
             f'(Action: {action_str} on {symbol})">'
+            f'{hidden_consent}'
             '<button type="submit"'
             ' class="w-full px-3 py-2 rounded-md font-mono text-sm font-semibold'
             '        bg-accent text-white hover:bg-accent/85 transition-colors'
@@ -4123,40 +4724,326 @@ def _render_pair_analysis(
             f'<span>Approve &amp; Execute · {action_str}</span>'
             '</button>'
             '</form>'
-            # Defer 24h (secondary)
-            '<form'
-            f' hx-post="/division/{slug}/pair/{symbol}/defer"'
-            ' hx-target="#pair-analysis"'
-            ' hx-swap="innerHTML">'
-            '<button type="submit"'
-            ' class="w-full px-3 py-1.5 rounded-md font-mono text-xs'
-            '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
-            '        transition-colors border border-edge">'
-            '⏸ Defer 24 hours · let theta work / re-evaluate later'
-            '</button>'
-            '</form>'
+            + _defer_form +
             '<div class="text-[10px] text-muted/60 font-mono text-center pt-1">'
             'Risk gates apply on Approve. Defer suppresses re-analysis for 24h.'
             '</div>'
             '</div>'
         )
+    elif actionable and slug and symbol and show_execute_button and offer_roll and not _has_estimate:
+        # No concrete built estimate → do NOT show a priced Approve (the bare-Approve
+        # gap). Tell the operator why + how to get a number.
+        _why = _html.escape(str(estimate_reason)) if estimate_reason else (
+            "the roll can't be priced right now (market closed, illiquid, or a sparse chain)")
+        button_html = (
+            '<div class="mt-4 pt-3 border-t border-edge space-y-2">'
+            '<div class="w-full px-3 py-2 rounded-md font-mono text-xs text-center'
+            '            bg-edge text-muted border border-edge">'
+            f'Can\'t be priced right now — {_why}. Refresh pricing or Re-analyze in session.'
+            '</div>'
+            + _pmcc_refresh_pricing_button(slug, symbol)
+            + _pmcc_reanalyze_button(slug, symbol)
+            + '</div>'
+        )
+    elif actionable and slug and symbol and show_execute_button and not offer_roll:
+        # Earnings within buffer — Approve suppressed; Defer only.
+        button_html = (
+            '<div class="mt-4 pt-3 border-t border-edge space-y-2">'
+            '<div class="w-full px-3 py-2 rounded-md font-mono text-xs text-center'
+            '            bg-edge text-muted border border-edge">'
+            'Approve disabled — earnings within buffer; let the short expire, roll after the print'
+            '</div>'
+            + _defer_form +
+            '</div>'
+        )
+
+    # Header status badge — driven by the shared effective_status when the caller passes
+    # it (so the panel header shows the SAME label as the tile: EARNINGS WINDOW / CAN'T
+    # PRICE when a downstream gate suppressed the raw action). Every other caller passes
+    # effective=None and gets the raw action badge, unchanged.
+    if effective is not None:
+        _hdr_label = effective.get("label") or action_str
+        _hdr_class = (
+            'bg-edge text-muted border-edge'
+            if (effective.get("suppressed") or effective.get("advisory"))
+            else urgency_class
+        )
+    else:
+        _hdr_label = action_str
+        _hdr_class = urgency_class
 
     return (
         '<div class="space-y-3">'
+        f'{status_banner}'
         f'<div class="flex items-center gap-2 flex-wrap">'
         f'<span class="text-base">{urgency_emoji}</span>'
         f'<span class="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded font-mono '
-        f'border {urgency_class}">{action_str}</span>'
+        f'border {_hdr_class}">{_hdr_label}</span>'
         f'<span class="text-[11px] text-muted font-mono ml-auto">{confidence_pct}% conf</span>'
         '</div>'
         f'<div class="text-sm text-mono font-medium leading-snug">{summary}</div>'
         f'<div class="text-xs text-muted leading-relaxed">{rationale}</div>'
         f'{warnings_html}'
         f'{trade_html}'
+        f'{estimate_html}'
+        f'{earnings_html}'
         f'{params_html}'
         f'{button_html}'
         '</div>'
     )
+
+
+# ── Unified tile/expert decision: Expert-panel-as-reader helpers ────────────
+# The Expert panel reads the SAME per-asset decision record the tile shows, so
+# the two can no longer disagree. The LLM only re-runs on an explicit Re-analyze
+# (?force=1), which writes a fresh source='expert' verdict.
+
+def _pmcc_reanalyze_button(slug: str, symbol: str, label: str = "↻ Re-analyze now") -> str:
+    """Explicit Re-analyze control — re-runs the LLM (?force=1) and writes a
+    fresh expert verdict to the unified decision record."""
+    return (
+        f'<button hx-get="/division/{slug}/pair-analysis/{symbol}?force=1"'
+        ' hx-target="#pair-analysis" hx-swap="innerHTML"'
+        ' class="w-full mt-1 px-3 py-1.5 rounded-md font-mono text-xs'
+        '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
+        '        transition-colors border border-edge">'
+        f'{label}</button>'
+    )
+
+
+def _pmcc_refresh_pricing_button(slug: str, symbol: str, label: str = "⟳ Refresh pricing") -> str:
+    """LLM-FREE pricing refresh (P1, 2026-07-31) — re-pulls the live chain, re-selects
+    the strike within the STORED δ band, recomputes debit/credit/net, and rewrites the
+    consent stash. NO Anthropic call (distinct from Re-analyze, which re-runs the LLM)."""
+    return (
+        f'<button hx-post="/division/{slug}/pair/{symbol}/refresh-pricing"'
+        ' hx-target="#pair-analysis" hx-swap="innerHTML"'
+        ' class="w-full mt-1 px-3 py-1.5 rounded-md font-mono text-xs'
+        '        bg-pane-2 text-muted hover:bg-edge-2 hover:text-mono'
+        '        transition-colors border border-edge">'
+        f'{label}</button>'
+    )
+
+
+def _pmcc_status_banner(slug: str, symbol: str, *, state: str, age_h, source) -> str:
+    """Freshness banner above a record-sourced Expert panel + a Re-analyze button.
+
+    fresh -> subtle "latest {source} decision · Xh ago"; stale -> a muted
+    "stale as of Xh" note (the tile shows the same 'stale' badge).
+
+    NB: the banner no longer claims "tile & panel in sync" (FIX 3). That was an
+    unconditional string, not a check — and once the execute / Re-analyze
+    responses refresh the tile out-of-band (FIX 2) they ARE in sync, so the
+    claim is redundant. A claim that can be wrong is worse than none.
+    """
+    age_txt = f"{age_h:.0f}h ago" if isinstance(age_h, (int, float)) else "—"
+    src = source or "scan"
+    if state == "stale":
+        note = (
+            '<div class="flex items-center gap-2 text-[11px] font-mono text-muted/60 italic'
+            '            px-2 py-1 rounded border border-edge bg-transparent">'
+            f'<span>⏳ stale as of {age_txt}</span>'
+            f'<span class="text-muted/40">· last {src} verdict · a scan will refresh it</span>'
+            '</div>'
+        )
+    else:
+        note = (
+            '<div class="flex items-center gap-2 text-[11px] font-mono text-muted/60'
+            '            px-2 py-1 rounded border border-edge bg-pane-2/40">'
+            f'<span>latest {src} decision · {age_txt}</span>'
+            '</div>'
+        )
+    return note + _pmcc_reanalyze_button(slug, symbol)
+
+
+def _pmcc_tile_badge_oob(templates, deps, symbol: str) -> str:
+    """Render an out-of-band (hx-swap-oob) refresh of one pair's tile badge (FIX 2).
+
+    After an execute or Re-analyze writes the unified decision record, the
+    left-rail tile badge (in #pair-list) is stale until a full page reload — the
+    panel swap only touches #pair-analysis. Emitting this fragment in the SAME
+    response updates the badge (and thus the Approve affordance) from the
+    just-written record, no reload. Renders the SAME `_pmcc_badge.html` partial
+    the row uses, so the two can't drift. Best-effort: '' on any failure, or when
+    there's no #pmcc-badge-{symbol} in the DOM (HTMX silently no-ops).
+    """
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from trading_corp.web.data import _build_pmcc_tile_status
+        sym = (symbol or "").upper()
+        cfg = (getattr(getattr(deps, "pmcc_agent", None), "_cfg", {}) or {}).get(
+            "tile_status", {}) or {}
+        us = _build_pmcc_tile_status(
+            sym, db_url=deps.db_url, now=_dt.now(_tz.utc), cfg=cfg,
+            agent=getattr(deps, "pmcc_agent", None), slug="robinhood_pmcc",
+        )
+        inner = templates.get_template("partials/_pmcc_badge.html").render(us=us)
+        return (
+            f'<span id="pmcc-badge-{sym}" hx-swap-oob="true" class="contents">'
+            f'{inner}</span>'
+        )
+    except Exception as e:  # noqa: BLE001 — an OOB refresh must never break the response
+        log.warning("pmcc tile-badge OOB(%s) failed: %s", symbol, e)
+        return ""
+
+
+def _pmcc_no_signal_panel(slug: str, symbol: str, cfg: dict) -> str:
+    """Panel shown when no decision exists this session (pre-open / scan aborted).
+    Reads 'working, not broken' + a Re-analyze button to generate one now."""
+    label = (cfg or {}).get("no_signal_label", "awaiting scan")
+    return (
+        '<div class="space-y-3">'
+        '<div class="flex items-center gap-2 text-xs font-mono text-muted/60'
+        '            px-2 py-2 rounded border border-dashed border-edge/60">'
+        '<span class="text-base">🕓</span>'
+        f'<span>No decision this session yet — {label}.</span>'
+        '</div>'
+        '<div class="text-[11px] text-muted/50 leading-relaxed">'
+        'The post-open scan writes a verdict per position; pre-open (or if the '
+        'scan aborted on this name) the tile stays blank by design. Re-analyze to '
+        'generate a fresh expert verdict now.'
+        '</div>'
+        + _pmcc_reanalyze_button(slug, symbol)
+        + '</div>'
+    )
+
+
+def _pmcc_analysis_from_record(rec: dict):
+    """Duck-typed analysis object from a persisted decision record, for
+    `_render_pair_analysis` (reads .action/.urgency/.confidence/.summary/
+    .rationale/.warnings/.target_delta/.target_dte). P1: also surfaces the stored
+    δ BAND (low/high) + DTE so the panel/pricing can read the consent envelope."""
+    import types
+    _lo = rec.get("target_delta_low")
+    _hi = rec.get("target_delta_high")
+    _mid = ((float(_lo) + float(_hi)) / 2.0) if (_lo is not None and _hi is not None) else None
+    return types.SimpleNamespace(
+        action=rec.get("status"),
+        urgency=rec.get("urgency") or "routine",
+        confidence=rec.get("confidence"),
+        summary=rec.get("summary"),
+        rationale=rec.get("rationale"),
+        warnings=rec.get("warnings") or [],
+        target_delta=_mid,
+        target_dte=rec.get("target_dte"),
+        target_delta_low=_lo,
+        target_delta_high=_hi,
+    )
+
+
+async def _render_pmcc_record_panel(deps, slug: str, symbol: str) -> str:
+    """Render the Expert panel from the UNIFIED decision record (NO LLM call):
+    fresh/stale -> the persisted verdict + freshness banner; none -> awaiting-scan.
+
+    P3 ADDITION 3 (+ roll extension 2026-08-13): an ACTIONABLE placeable verdict gets a
+    PRICED Approve straight from the LLM-FREE `price_and_stash` path — NO Re-analyze, NO
+    _llm_analyze_position — routed through the SAME consent stash+fingerprint machinery
+    (displayed == Approve-fires). This now covers CREDIT ROLLS (roll_short /
+    roll_short_early, FRESH verdicts only) as well as close_short / open_short (any
+    non-none verdict); roll_leap stays advisory. The panel status LABEL + the Approve gate
+    are driven by the SHARED `_pmcc_status.effective_status` — the SAME helper the tile
+    uses — so an earnings-suppressed / can't-price / stale roll shows the effective status
+    (EARNINGS WINDOW / CAN'T PRICE) + reason and NO Approve, and can never disagree with
+    the tile. Dispatch is UNCHANGED and still re-checks earnings + fingerprint + reprice.
+    """
+    import html as _html
+    from datetime import datetime as _dt, timezone as _tz
+    from trading_corp.agents.divisions import _pmcc_status
+    from trading_corp.web import pmcc_pricing
+    cfg = (getattr(deps.pmcc_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
+    stale_h = float(cfg.get("staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+    rec = _pmcc_status.load_decision(symbol, db_url=deps.db_url)
+    now = _dt.now(_tz.utc)
+    state = _pmcc_status.classify_freshness(rec, now, stale_h)
+    if state == "none":
+        return _pmcc_no_signal_panel(slug, symbol, cfg)
+    banner = _pmcc_status_banner(
+        slug, symbol, state=state,
+        age_h=_pmcc_status.age_hours(rec, now), source=rec.get("source"),
+    )
+    action = (rec.get("status") or "").lower()
+
+    # ── Effective-status inputs (the SAME gates the tile reads via
+    # _pmcc_status.effective_status): the cheap earnings gate (24h-cached) + the LIVE
+    # pricing buildability from the LLM-FREE price_and_stash pull. ────────────────────
+    _CLOSE_OPEN = ("close_short", "open_short")
+    _ROLLS = ("roll_short", "roll_short_early")
+
+    _earn_state, _earn_reason = "clear", ""
+    if action in (_CLOSE_OPEN + _ROLLS):
+        try:
+            _earn_state, _earn_reason = deps.pmcc_agent._earnings_gate_state(symbol)
+        except Exception:      # noqa: BLE001 — a status read must never break the panel
+            _earn_state, _earn_reason = "clear", ""
+
+    # P3 ADDITION 3 — LLM-FREE priced Approve for a SHORT-side single-leg action; the
+    # 2026-08-13 extension adds credit ROLLS. price_and_stash reconstructs the PMCCAnalysis
+    # from the STORED judgment (NO _llm_analyze_position), prices live, and writes the
+    # consent stash from the SAME pull. Rolls are FRESH-ONLY (a stale >staleness_hours
+    # judgment falls back to Re-analyze); close/open keep their existing any-verdict
+    # pricing; roll_leap is advisory (never priced here).
+    _do_price = (action in _CLOSE_OPEN) or (action in _ROLLS and state == "fresh")
+    pr = None
+    if _do_price:
+        _data_exec = getattr(deps, "data_exec", None)
+        _broker = _data_exec.brokers.get(slug) if _data_exec is not None else None
+        if _broker is not None:
+            try:
+                pr = await pmcc_pricing.price_and_stash(
+                    deps.pmcc_agent, _broker, slug, symbol, deps.db_url)
+            except Exception as e:      # noqa: BLE001 — pricing must never break the panel
+                log.warning("record-panel: LLM-free price_and_stash(%s) failed: %s", symbol, e)
+                pr = None
+
+    eff = _pmcc_status.effective_status(
+        action, earnings_state=_earn_state, earnings_reason=_earn_reason,
+        buildable=(pr.buildable if pr is not None else None),
+        price_reason=(pr.estimate_reason if pr is not None else None),
+        market_closed=not pmcc_pricing.market_regular_open(),
+    )
+
+    # Approve is offered ONLY when the effective status is ACTIONABLE (buildable + not
+    # hard-suppressed) AND a live consent stash exists — so the strike + legs shown are
+    # the strike + legs fired. Freshness is already enforced for rolls by `_do_price`.
+    if eff["actionable"] and pr is not None and pr.buildable and pr.stash_token is not None:
+        return _render_pair_analysis(
+            _pmcc_analysis_from_record(rec), recommendation=None,
+            slug=slug, symbol=symbol, status_banner=banner,
+            roll_extras={"earnings": pr.earnings, "estimate": pr.estimate,
+                         "estimate_reason": pr.estimate_reason},
+            preview_token=pr.stash_token, show_execute_button=True, effective=eff,
+        )
+
+    # Not approvable — render the stored verdict with the EFFECTIVE status (the SAME label
+    # the tile shows) and NO Approve. A suppressed roll shows WHY (EARNINGS WINDOW / CAN'T
+    # PRICE); any other stored verdict keeps the 'Re-analyze to build a live estimate' note.
+    panel = _render_pair_analysis(
+        _pmcc_analysis_from_record(rec), recommendation=None,
+        slug=slug, symbol=symbol, status_banner=banner,
+        roll_extras={"earnings": (pr.earnings if pr is not None else None),
+                     "estimate": None, "estimate_reason": eff["reason"]},
+        show_execute_button=False, effective=eff,
+    )
+    if action not in ("", "hold", "watch"):
+        if eff["suppressed"]:
+            panel += (
+                '<div class="mt-3 rounded-md border border-edge bg-pane-2/40 p-3">'
+                '<div class="text-[11px] font-mono text-muted leading-relaxed">'
+                f'<span class="text-mono uppercase">{_html.escape(eff["label"])}</span> — '
+                f'{_html.escape(eff["reason"] or "action suppressed by a downstream gate")}. '
+                'The stored judgment stands; the tile shows the same effective status.'
+                '</div></div>'
+            )
+        else:
+            panel += (
+                '<div class="mt-3 rounded-md border border-edge bg-pane-2/40 p-3">'
+                '<div class="text-[11px] font-mono text-muted leading-relaxed">'
+                'Approve isn\'t shown on a stored verdict — it needs a live strike, '
+                'debit, credit &amp; net first. <span class="text-mono">Re-analyze</span> '
+                '(above) to build the live estimate, then approve that exact combo.'
+                '</div></div>'
+            )
+    return panel
 
 
 def _render_recommendation(rec) -> str:
@@ -4538,6 +5425,59 @@ def _exec_no_action_html(symbol: str, analysis) -> str:
         f'ℹ️  {symbol} · no orders to place</div>'
         f'<div class="text-xs text-muted">Action <code>{action_str}</code> '
         'does not require any orders. Position remains as-is.</div>'
+        '</div>'
+    )
+
+
+def _synth_analysis_from_stash(action: str | None):
+    """Minimal analysis stand-in for the dispatch view on a stash HIT (FORK 2,
+    2026-07-30). Carries the APPROVED action so the post-execute summary + any
+    earnings-block card render WITHOUT a fresh analyze_symbol (LLM) call. Only
+    `.action` is read downstream; the rest are inert defaults so no consumer
+    AttributeErrors if the render path changes."""
+    import types as _types
+    return _types.SimpleNamespace(
+        action=action or "roll_short", urgency="routine", confidence=None,
+        summary="", rationale="", warnings=[], target_delta=None, target_dte=None,
+    )
+
+
+def _exec_consent_mismatch_html(symbol: str) -> str:
+    """Render a CONSENT MISMATCH — the operator approved a specific combo (from a
+    Re-analyze render) but the stash was gone (expiry/restart) and the live rebuild
+    picked DIFFERENT contracts (the chain moved), so nothing was placed. The panel
+    tells them to Re-analyze and approve the fresh combo (2026-07-30 consent rule:
+    never fire a contract other than the one shown)."""
+    return (
+        '<div class="space-y-2 p-3 rounded-md bg-warn/10 border border-warn/40">'
+        '<div class="text-warn font-mono font-semibold text-sm">'
+        f'⚠️  {symbol} · not placed — the combo changed since you looked</div>'
+        '<div class="text-xs text-muted">The live option chain moved after this card '
+        'was rendered, so approving now would fire a different contract than the one '
+        'you saw. Nothing was sent. <span class="text-mono">Re-analyze</span> to see '
+        'the current strike / debit / credit / net, then approve that.</div>'
+        '</div>'
+    )
+
+
+def _exec_abort_html(symbol: str, analysis, diag: dict | None) -> str:
+    """Render an ABORTED roll/close — `propose_orders_for_pair` returned no
+    orders because a B4 atomic gate refused it (e.g. no liquid weekly). Shows the
+    ACTUAL reason from the agent's `_last_weekly_diag`/`_last_leap_diag`, distinct
+    from `_exec_no_action_html`'s genuine "no orders needed" (hold/watch)."""
+    action_str = (analysis.action or "—").upper().replace("_", " ")
+    d = diag or {}
+    reason = d.get("reason") or "unknown"
+    bits = [f"{k}={d[k]}" for k in ("considered", "liquid", "target_date", "after_dte")
+            if d.get(k) is not None]
+    detail = reason + (f" ({', '.join(bits)})" if bits else "")
+    return (
+        '<div class="space-y-2 p-3 rounded-md bg-warn/10 border border-warn/40">'
+        '<div class="text-warn font-mono font-semibold text-sm">'
+        f'⚠️  {symbol} · {action_str} aborted — no order placed</div>'
+        f'<div class="text-xs text-muted">The roll could not be built '
+        f'(atomic abort; nothing was sent to the broker): <code>{detail}</code>. '
+        'Position is unchanged.</div>'
         '</div>'
     )
 

@@ -120,15 +120,8 @@ def _fetch_unresolved_orders(
     the global ts-ASC cap meant kalshi_weather_arb + kalshi_crypto_arb
     rows never made the top-N cut.
 
-    Ordering: resolution-date proxy ASC NULLS LAST, where the proxy is
-    `COALESCE(expires_at, leg_date)` -- `expires_at` for llm/weather/crypto,
-    `leg_date` for temporal/bucket arb (which carry NO expires_at). NULLs
-    synthesized via `(... IS NULL)` since SQLite NULLS LAST is
-    version-conditional. Temporal/bucket arb rows (no expires_at) previously
-    ALL tied at NULL and fell back to `ts ASC`, so indefinite-horizon legs
-    (mergers/IPOs that never settle) permanently occupied the per-actor
-    budget -- the entire kalshi_arbitrage temporal book booked 0 round-trips
-    for ~2 months until this leg_date fallback landed (2026-07-07).
+    Ordering: `expires_at ASC NULLS LAST` (NULLs synthesized via
+    `(expires_at IS NULL)` since SQLite NULLS LAST is version-conditional).
     Past-expiration rows scanned first — they're the ones most likely to
     have a final resolution on Kalshi. The original `ts ASC` ordering
     prioritized OLDEST audit rows, but oldest-audit ≠ most-likely-resolved
@@ -140,6 +133,21 @@ def _fetch_unresolved_orders(
     rows: list[dict] = []
     with _db.connect(db_url) as conn:
         for actor in _KALSHI_ACTORS:
+            # Epoch-scope kalshi_llm_arbitrage resolution to post-2026-07-07
+            # entries, consistent with DASHBOARD_RT_CUTOFFS['kalshi_llm_arbitrage'].
+            # Pre-epoch kalshi_llm rows are long-horizon/backlog markets whose
+            # fake-early stored expires_at (e.g. KXSPACEDATACENTER stored 06-03
+            # but really closing 2035) sorts them to the front of the
+            # expires_at-ASC budget and permanently starves genuinely-settled
+            # post-epoch markets. Excluding them un-starves post-epoch settlement
+            # WITHOUT mass-booking the pre-epoch backlog (which stays unresolved
+            # by design — it's epoch-scoped out of the dashboard too). Hardcoded
+            # ISO literal, no injection surface. Other actors are unaffected.
+            epoch_clause = (
+                "  AND a.ts >= '2026-07-07T16:40:00+00:00' "
+                if actor == "kalshi_llm_arbitrage"
+                else ""
+            )
             cur = conn.execute(
                 "SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
                 "FROM audit_event a "
@@ -149,6 +157,7 @@ def _fetch_unresolved_orders(
                 "  AND a.kind IN ('would_have_placed', 'kalshi_copy_placed_live') "
                 "  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
                 "  AND r.order_id IS NULL "
+                + epoch_clause +
                 "  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
                 "        SELECT entry_order_id FROM kalshi_round_trips "
                 "        WHERE entry_order_id IS NOT NULL"
@@ -276,6 +285,12 @@ def _compute_round_trip_row(row: dict, res: dict) -> dict | None:
                 "leg":            row.get("leg"),
                 "subtitle":       row.get("subtitle"),
                 "expires_at":     row.get("expires_at"),
+                # S2 fix (b) 2026-07-26: thread structured whale_handle into the
+                # settlement-path round-trip so autopause (_whale_autopause keys on
+                # extra_json.$.whale_handle) can see market-settlement rows — the
+                # majority of live copy P&L, previously invisible. None for non-copy
+                # actors (harmless). Pre-fix live rows covered by the one-time backfill.
+                "whale_handle":   row.get("whale_handle"),
             },
             default=str,
         ),

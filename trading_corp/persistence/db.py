@@ -423,6 +423,73 @@ CREATE TABLE IF NOT EXISTS pending_order (
 );
 CREATE INDEX IF NOT EXISTS ix_pending_order_division_state
     ON pending_order(division, state);
+
+-- ── MACE (robinhood_mace) — Phase 1 net-new tables ──────────────────────
+-- Multi-Asset Condor Engine. Plan: planning/mace_v1_plan.md § DB. All four
+-- are net-new (CREATE TABLE IF NOT EXISTS, no ALTER) so init_db creates them
+-- idempotently on fresh + upgraded DBs; rollback is inert (no reader/writer).
+-- The existing pending_order table is UNFIT for 4-leg combos (V5) — MACE owns
+-- its own lifecycle in mace_rung.status. Weekly markers, cooldowns, and
+-- day/week realized P&L are DERIVED from mace_rung (no separate marker tables).
+CREATE TABLE IF NOT EXISTS mace_rung (
+    rung_id         TEXT PRIMARY KEY,            -- mace-{sym}-{expiry}-{strikes}-{yyyymmdd}; deterministic — reconcile matches on it
+    symbol          TEXT NOT NULL,
+    status          TEXT NOT NULL,               -- submitting|open|closing|closed|abandoned
+    expiry          TEXT NOT NULL,               -- ISO date
+    legs_json       TEXT NOT NULL,               -- 4 legs: type/strike/side/effect/option_id/fill_price
+    width_dollars   REAL NOT NULL,
+    contracts       INTEGER NOT NULL,
+    credit_actual   REAL,                        -- net credit received at entry (per-contract $)
+    max_risk_usd    REAL,
+    entry_ts        TEXT,                        -- ISO-8601 UTC
+    entry_order_id  TEXT,
+    pt_order_id     TEXT,                        -- resting GTC buy-to-close (T9 synthetic id when GTC unproven)
+    pt_debit        REAL,
+    exit_ts         TEXT,
+    exit_reason     TEXT,                        -- pt|stop|time|exdiv|gap|manual
+    exit_debit      REAL,
+    realized_pnl    REAL,                        -- (credit - exit_debit)*100*contracts
+    entry_iso_week  TEXT,                        -- e.g. '2026-W33' — weekly-budget derivation
+    extra_json      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_mace_rung_symbol_status ON mace_rung(symbol, status);
+CREATE INDEX IF NOT EXISTS ix_mace_rung_symbol_week ON mace_rung(symbol, entry_iso_week);
+CREATE INDEX IF NOT EXISTS ix_mace_rung_status ON mace_rung(status);
+CREATE INDEX IF NOT EXISTS ix_mace_rung_exit ON mace_rung(exit_reason, exit_ts);
+
+CREATE TABLE IF NOT EXISTS mace_equity_snapshot (
+    snap_date       TEXT PRIMARY KEY,            -- ET session date YYYY-MM-DD; E basis until next snapshot
+    equity          REAL NOT NULL,
+    cash            REAL,
+    market_value    REAL,
+    ts              TEXT NOT NULL                -- ISO-8601 UTC of the snapshot
+);
+
+CREATE TABLE IF NOT EXISTS mace_iv_history (
+    symbol          TEXT NOT NULL,
+    snap_date       TEXT NOT NULL,               -- ET session date YYYY-MM-DD
+    atm_iv          REAL,
+    ivr_tasty       REAL,                        -- normalized 0-100 (Tasty rank x100) — self-sufficiency corpus
+    source          TEXT,
+    ts              TEXT NOT NULL,
+    PRIMARY KEY (symbol, snap_date)
+);
+
+-- economic_event is DELIBERATELY unprefixed (T2 — the plan spec names it thus;
+-- documented exception to the mace_ prefix rule). Blackout source of truth:
+-- FOMC/CPI seeded from macro_calendar.yaml (source='seed'), LPR-fix rule rows
+-- (source='rule'), manual OPEC/Copom/BR-election/politburo rows (source='manual'),
+-- future feed rows (source='feed'). UNIQUE makes weekly re-seeds idempotent.
+CREATE TABLE IF NOT EXISTS economic_event (
+    id           INTEGER PRIMARY KEY,
+    event_type   TEXT NOT NULL,                  -- FOMC|CPI|NFP|OPEC|COPOM|BR_ELECTION|PBOC|LPR_FIX|...
+    symbol_scope TEXT NOT NULL,                  -- 'ALL' or a specific symbol the blackout applies to
+    event_date   TEXT NOT NULL,                  -- ISO date (ET)
+    source       TEXT NOT NULL,                  -- feed|seed|manual|rule
+    fetched_at   TEXT NOT NULL,                  -- ISO-8601 UTC
+    UNIQUE (event_type, event_date, symbol_scope)  -- idempotent re-seeds
+);
+CREATE INDEX IF NOT EXISTS ix_economic_event_date ON economic_event(event_date);
 """
 
 

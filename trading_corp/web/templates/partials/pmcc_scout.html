@@ -85,12 +85,6 @@
                 spot {{ c.spot_price | money }}
               </span>
             {% endif %}
-            {% if c.is_black_sheep %}
-              <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
-                           bg-warn/15 text-warn border border-warn/30">
-                Black Sheep
-              </span>
-            {% endif %}
             {% if c.weekly_yield_pct is not none %}
               {% set yc = 'gain' if c.weekly_yield_pct >= 0.02 else 'warn' if c.weekly_yield_pct >= 0.01 else 'muted' %}
               <span class="text-[11px] font-mono text-{{ yc }} ml-auto">

@@ -19,6 +19,18 @@
                  {{ intent_color.get(view.division.intent, 'bg-edge text-muted') }}">
       {{ view.division.intent }}
     </span>
+    {% if view.is_live %}
+    <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                 bg-loss/20 text-loss border border-loss/40 font-semibold"
+          title="This division's broker is live — Approve actions place REAL orders">
+      ● LIVE — real money
+    </span>
+    {% else %}
+    <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
+                 bg-edge text-muted">
+      PAPER
+    </span>
+    {% endif %}
     <span class="text-[11px] text-muted font-mono">
       {{ view.division.broker | capitalize }} · {{ view.division.account_filter }}
     </span>
@@ -113,6 +125,14 @@
             {% include "partials/pmcc_pair.html" %}
           {% endfor %}
         </div>
+        {% if view.division.slug == 'robinhood_pmcc' %}
+        <!-- P1 (2026-07-31): 45s live-pricing tick — re-prices all tiles (RH-only, NO
+             LLM, market-hours-gated server-side) and swaps each pricing chip via
+             hx-swap-oob. Hidden; fires only the fetch (hx-swap="none"). -->
+        <div hx-get="/division/{{ view.division.slug }}/pmcc-pricing"
+             hx-trigger="every 45s" hx-swap="none"
+             class="hidden" aria-hidden="true"></div>
+        {% endif %}
       </section>
     {% endif %}
 

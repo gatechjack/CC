@@ -133,13 +133,18 @@ def _opt(symbol, days, strike, qty, *, delta=0.5, avg=1.0, mark=None):
             "option_id": f"{symbol}_{days}_{strike}"}
 
 
-def _call(strike, delta, mark, dte):
-    # OI/vol generous enough to clear even the tighter BLACK-SHEEP liquidity gate
-    # (prod min_avg_options_volume=10000 for MSTR/TSLA) — check 9 runs against PROD
-    # config, unlike the test fixtures' minimal (non-black-sheep) config.
+def _call(strike, delta, mark, dte, oi=11, volume=5000):
+    # REALISTIC near-dated liquidity (2026-07-23). OI accumulates over a
+    # contract's life, so a FRESH daily/weekly carries LOW open interest but real
+    # volume + tight (~$0.10) spreads — matching the observed TSLA 2026-07-27
+    # chain (OI 5-95, volume ~3-8k). Defaults reflect a fresh weekly; pass a high
+    # `oi` for a LEAP (long-dated, OI-rich). This fixture previously fabricated
+    # OI=vol=20000/contract, which no real OTM weekly carries — that synthetic
+    # liquidity is exactly why Check 9 passed while every black-sheep roll was
+    # silently blocked by the (mis-set) per-contract gates.
     return {"strike_price": strike, "delta": delta, "mark_price": mark,
             "bid": round(mark - 0.05, 2), "ask": round(mark + 0.05, 2), "dte": dte,
-            "open_interest": 20000, "volume": 20000, "option_id": f"c_{strike}_{dte}"}
+            "open_interest": oi, "volume": volume, "option_id": f"c_{strike}_{dte}"}
 
 
 def _leg_dict(o):
@@ -297,8 +302,8 @@ def run_readiness_checks(
                     _opt("MSTR", 7, 175.0, -1.0, delta=0.30, avg=2.5, mark=1.50),     # short
                 ],
                 expiry_dates={"MSTR": [wk, leap_exp]},
-                calls={("MSTR", leap_exp): [_call(180.0, 0.85, 20.0, 500)],
-                       ("MSTR", wk): [_call(190.0, 0.30, 2.00, 14)]},
+                calls={("MSTR", leap_exp): [_call(180.0, 0.85, 20.0, 500, oi=8000)],
+                       ("MSTR", wk): [_call(190.0, 0.30, 2.00, 14)]},  # fresh weekly: oi=11, vol=5000
             )
             analysis = PMCCAnalysis(symbol="MSTR", action="roll_leap", confidence=0.9,
                                     urgency="elevated", summary="", rationale="",

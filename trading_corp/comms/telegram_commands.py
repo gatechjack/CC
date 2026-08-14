@@ -5,8 +5,10 @@ Each method returns either a plain string (gets sent as a reply) or a
 
 Callback data scheme (inline button → handler):
     pair:SYM         show /pair SYM detail
-    approve:SYM      execute the recommended trade for SYM
-    defer:SYM        defer SYM for 24h
+    approve:SYM      RETIRED 2026-07-30 — no longer offered; a stale button
+                     degrades to a "execution moved to the dashboard" redirect.
+                     Telegram is notification-only and never places a trade.
+    defer:SYM        defer SYM for 24h (a non-dispatch analysis-suppression control)
     div:SLUG         show positions for a specific division
     home             go back to /help
 
@@ -262,21 +264,27 @@ class TelegramCommands:
         actionable = action_raw not in ("", "hold", "watch")
         if actionable:
             try:
+                # preview=True: rendering the /pair card is NOT a dispatch attempt,
+                # so this build emits no ABORTED / earnings-unverified exec-alert or
+                # audit row (invariant 2026-07-30). The actual Approve callback
+                # (_handle_pair_approve) rebuilds with preview=False before placing.
                 rec = await self.deps.pmcc_agent.build_trade_recommendation(
-                    broker, sym, analysis,
+                    broker, sym, analysis, preview=True,
                 )
             except Exception as e:
                 log.warning("/pair %s: build_trade_recommendation failed: %s", sym, e)
 
         text = _format_pair_message(sym, analysis, rec)
 
-        # Build action keyboard
+        # Build action keyboard.
+        # Approve & Execute RETIRED from Telegram (2026-07-30) — execution is
+        # dashboard-only (CLAUDE.md: Telegram is notification-only, no HITL
+        # dispatch). Defer stays: it is a 24h analysis-suppression control, not a
+        # trade dispatch. The message body still shows the recommended trade so the
+        # operator can decide, then approve it on the division page.
         rows: list[list[tuple[str, str]]] = []
         if actionable:
-            rows.append([
-                ("✅ Approve & Execute", f"approve:{sym}"),
-                ("⏸ Defer 24h", f"defer:{sym}"),
-            ])
+            rows.append([("⏸ Defer 24h", f"defer:{sym}")])
         rows.append([("◀ All pairs", "pairs"), ("🏠 Help", "home")])
         keyboard = _make_keyboard_rows(rows)
         return (text, keyboard)
@@ -413,105 +421,23 @@ class TelegramCommands:
 
         return (f"Unknown action: `{data}`", None)
 
-    # ── Approve & Execute (mirrors the web button) ───────────────────────
+    # ── Approve & Execute — RETIRED from Telegram (2026-07-30) ────────────
 
     async def execute_pair(self, symbol: str) -> tuple[str, Any]:
+        """RETIRED 2026-07-30 — Telegram is notification-only (CLAUDE.md), so roll
+        execution moved to the dashboard. This handler has NO order path: it never
+        builds orders, never runs risk, never calls `data_exec.place`. It exists
+        only so a STALE `approve:` button from an old chat degrades to a redirect
+        instead of dispatching. Approve rolls on the robinhood_pmcc division page,
+        where the consent estimate + exact-combo dispatch live."""
         sym = (symbol or "").upper()
-        if not sym:
-            return ("Missing symbol.", None)
-        slug = "robinhood_pmcc"
-        broker = (
-            self.deps.data_exec.brokers.get(slug) if self.deps.data_exec else None
+        return (
+            "⚠️ *Approve & Execute has moved to the dashboard.*\n\n"
+            f"Open the `robinhood_pmcc` division page, Re-analyze `{sym or 'the pair'}`, "
+            "and approve the roll there. Telegram is notification-only and can no "
+            "longer place trades.",
+            _make_keyboard_2col([("◀ All pairs", "pairs"), ("🏠 Help", "home")]),
         )
-        if broker is None or self.deps.pmcc_agent is None:
-            return ("Execute failed: broker/agent not wired.", None)
-
-        try:
-            reading = self.deps.trend_agent.read() if self.deps.trend_agent else None
-            regime = getattr(reading, "regime", "unknown") if reading else "unknown"
-        except Exception:
-            regime = "unknown"
-
-        try:
-            analysis = await self.deps.pmcc_agent.analyze_symbol(broker, sym, regime=regime)
-        except Exception as e:
-            return (f"Could not regenerate analysis: {e}", None)
-        if analysis is None:
-            return (f"No open position for `{sym}`.", None)
-
-        action_raw = (analysis.action or "").lower()
-        if action_raw in ("", "hold", "watch"):
-            return (
-                f"Action is `{action_raw or 'unknown'}` — nothing to execute on `{sym}`.",
-                None,
-            )
-
-        try:
-            orders = await self.deps.pmcc_agent.propose_orders_for_pair(
-                broker, sym, analysis,
-            )
-        except Exception as e:
-            return (f"Order build failed: {e}", None)
-        if not orders:
-            return (
-                f"`{sym}`: action `{action_raw}` produced no orders.",
-                None,
-            )
-
-        # Risk-eval + place each order (same as web route, condensed)
-        from trading_corp.persistence.models import AccountState, StrategyState
-        try:
-            snap = await broker.snapshot()
-            equity = float(getattr(snap, "equity", 0.0) or 0.0)
-        except Exception:
-            equity = 100_000.0
-        account = AccountState(
-            account=slug, equity=equity or 100_000.0,
-            peak_equity=equity or 100_000.0,
-        )
-        strat_state = StrategyState.from_persistence("robinhood_pmcc", db_url=self.deps.db_url)
-
-        results: list[str] = [f"⚡ *Executing on `{sym}`...*"]
-        for order in orders:
-            verdict = self.deps.risk_agent.evaluate(
-                order, account, strat_state, regime, None,
-            )
-            order.risk_reason = verdict.reason
-            if verdict.verdict == "reject":
-                order.status = "risk_rejected"
-                self.deps.logger_agent.log_proposed_order(order)
-                self.deps.logger_agent.log_event(
-                    actor="risk", kind="risk_rejected",
-                    payload={"order_id": order.id, "symbol": sym,
-                             "reason": verdict.reason, "via": "telegram"},
-                )
-                results.append(f"  🛑 risk rejected: {verdict.reason}")
-                continue
-            if verdict.verdict == "resize" and verdict.new_qty is not None:
-                order.qty = float(verdict.new_qty)
-            order.status = "board_approved"
-            order.board_reason = "approved via telegram"
-            self.deps.logger_agent.log_proposed_order(order)
-            self.deps.logger_agent.log_event(
-                actor="board", kind="board_approved",
-                payload={"order_id": order.id, "symbol": sym,
-                         "via": "telegram", "qty": order.qty},
-            )
-            try:
-                fill = await self.deps.data_exec.place(order, division=slug)
-                results.append(
-                    f"  ✅ {order.side.upper()} ×{order.qty:g} "
-                    f"@ ${fill.price:.2f} ({fill.venue})"
-                )
-            except Exception as e:
-                self.deps.logger_agent.log_event(
-                    actor="data_exec", kind="execution_error",
-                    payload={"order_id": order.id, "symbol": sym, "error": str(e)},
-                )
-                results.append(f"  ⚠️ execution error: {e}")
-
-        keyboard = _make_keyboard_2col([("◀ All pairs", "pairs"), ("🏠 Help", "home")])
-        return ("\n".join(results), keyboard)
 
     # ── Defer 24h (mirrors web button) ───────────────────────────────────
 

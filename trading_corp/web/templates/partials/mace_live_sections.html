@@ -1,0 +1,68 @@
+{# MACE open-rungs table fragment. Self-polls every 30s (hx-get + hx-swap
+   outerHTML), initial paint via {% include %} from mace_live.html. The live MARK
+   / P&L / distance-to-stop / distance-to-PT are computed by the manage LOOP (4
+   fresh leg quotes per rung), NOT by the dashboard — a GET must not place broker
+   API load — so they render "—" here (the dashboard is a read model). Stored
+   entry credit / max-risk / PT target come straight from mace_rung. #}
+<div id="mace-rungs"
+     hx-get="/mace/partials/rungs"
+     hx-trigger="every 30s"
+     hx-swap="outerHTML"
+     class="bg-pane border border-edge rounded-lg p-4">
+  <div class="flex items-baseline justify-between mb-2">
+    <div class="text-[11px] text-muted uppercase tracking-wider">
+      Open rungs{% if rungs %} · {{ rungs|length }}{% endif %}
+    </div>
+    <div class="text-[10px] text-muted font-mono">mark / P&amp;L / dist = manage-loop owned</div>
+  </div>
+
+  {% if rungs %}
+    <div class="overflow-x-auto">
+    <table class="w-full text-xs font-mono whitespace-nowrap">
+      <thead><tr class="text-muted text-left">
+        <th class="pb-1">sym</th>
+        <th class="pb-1">status</th>
+        <th class="pb-1">strikes</th>
+        <th class="pb-1">expiry</th>
+        <th class="pb-1 text-right">DTE</th>
+        <th class="pb-1 text-right">x</th>
+        <th class="pb-1 text-right">width</th>
+        <th class="pb-1 text-right">credit</th>
+        <th class="pb-1 text-right">max risk</th>
+        <th class="pb-1 text-right">PT tgt</th>
+        <th class="pb-1 text-right">mark</th>
+        <th class="pb-1 text-right">P&amp;L</th>
+        <th class="pb-1 text-right">→stop</th>
+        <th class="pb-1 text-right">→PT</th>
+      </tr></thead>
+      <tbody>
+      {% for r in rungs %}
+        <tr class="border-t border-edge/40">
+          <td class="py-1 font-semibold">{{ r.symbol }}</td>
+          <td class="py-1 uppercase
+            {% if r.status == 'closing' %}text-warn{% else %}text-mono{% endif %}">{{ r.status }}</td>
+          <td class="py-1">{{ r.strikes }}</td>
+          <td class="py-1">{{ r.expiry }}</td>
+          <td class="py-1 text-right
+            {% if r.dte is not none and r.dte <= 21 %}text-warn{% endif %}">
+            {{ r.dte if r.dte is not none else '—' }}</td>
+          <td class="py-1 text-right">{{ r.contracts }}</td>
+          <td class="py-1 text-right">${{ r.width | int }}</td>
+          <td class="py-1 text-right">{{ r.credit | money if r.credit is not none else '—' }}</td>
+          <td class="py-1 text-right">{{ r.max_risk | money if r.max_risk is not none else '—' }}</td>
+          <td class="py-1 text-right">{{ r.pt_debit | money if r.pt_debit is not none else '—' }}</td>
+          <td class="py-1 text-right text-muted">—</td>
+          <td class="py-1 text-right text-muted">—</td>
+          <td class="py-1 text-right text-muted">—</td>
+          <td class="py-1 text-right text-muted">—</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <div class="text-sm text-muted font-mono py-2">— no open rungs
+      <span class="text-[11px]">(MACE is standby / no positions)</span>
+    </div>
+  {% endif %}
+</div>

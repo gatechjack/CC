@@ -1,0 +1,80 @@
+{#
+  _pead_card.html — expand-on-click position card (Part 2). DISPLAY ONLY.
+  Reads `row.card` (built by pead_view._position_card from stored primitives) and
+  `v.rule_colors`. Shows the price ladder (entry -> NOW -> drift-dead -> pre-earnings
+  -> stop), the NOW marker positioned price-proportionally on the entry->stop axis,
+  distance-from-NOW callouts, and the 60-day TIME bar. Drift-disabled positions
+  (gap<=0) render "drift n/a -- stop-managed only" rather than a blank line.
+#}
+{% set c = row.card %}
+<div class="mx-2 mb-2 p-3 bg-pane-2/30 rounded-md border border-edge/50">
+  {% if not c %}
+    <div class="text-[11px] font-mono text-muted/60 italic">Awaiting position metadata — no ladder yet.</div>
+  {% else %}
+  <div class="flex items-baseline justify-between mb-2 text-[11px] font-mono">
+    <span class="text-muted">Entry <span class="text-mono">${{ '%.2f' % c.entry }}</span>
+      &rarr; Now <span class="text-mono">${{ '%.2f' % c.now }}</span></span>
+    <span class="{% if row.pnl_pct is not none and row.pnl_pct >= 0 %}text-gain{% else %}text-loss{% endif %}">
+      {% if row.pnl_pct is not none %}{{ '%+.1f' % (row.pnl_pct * 100) }}%{% endif %}
+      {% if row.pnl_usd is not none %} · {{ row.pnl_usd | money_signed }}{% endif %}
+    </span>
+  </div>
+
+  <div class="flex gap-3">
+    {# proportional ladder: entry (top) -> stop (bottom); NOW + drift-dead marked #}
+    <div class="relative w-1.5 shrink-0" style="height: 128px;">
+      <div class="absolute inset-0 bg-pane-2 rounded-full"></div>
+      {# drawdown fill from entry (top) down to NOW #}
+      <div class="absolute left-0 right-0 top-0 rounded-full opacity-40"
+           style="height: {{ c.now_off if c.now_off is not none else 0 }}%;
+                  background: {% if row.pnl_pct is not none and row.pnl_pct < 0 %}#f1556c{% else %}#10b981{% endif %};"></div>
+      {% if c.drift_off is not none %}
+        <div class="absolute -left-1.5 w-[18px] h-[2px]" title="drift-dead"
+             style="top: {{ c.drift_off }}%; background: {{ v.rule_colors.drift }};"></div>
+      {% endif %}
+      {% if c.stop_off is not none %}
+        <div class="absolute -left-1 w-[14px] h-[2px]" title="stop"
+             style="top: {{ c.stop_off }}%; background: {{ v.rule_colors.stop }};"></div>
+      {% endif %}
+      {% if c.now_off is not none %}
+        <div class="absolute -left-1 w-[14px] h-[3px] bg-white rounded" title="NOW"
+             style="top: {{ c.now_off }}%;"></div>
+      {% endif %}
+    </div>
+
+    {# level legend + distance-from-NOW callouts #}
+    <div class="flex-1 text-[11px] font-mono leading-relaxed">
+      <div><span class="text-muted/70">● entry / gap-top</span>
+        <span class="text-mono">${{ '%.2f' % c.entry }}</span></div>
+      <div><span class="text-white">◆ NOW</span>
+        <span class="text-mono">${{ '%.2f' % c.now }}</span></div>
+      {% if c.drift_disabled %}
+        <div class="text-warn">⚠ drift n/a — <span class="font-semibold">stop-managed only</span>
+          <span class="text-muted/50 normal-case">(down/flat reactor, gap ≤ 0)</span></div>
+      {% else %}
+        <div class="{% if c.close_to_drift %}text-loss font-semibold{% endif %}"
+             {% if not c.close_to_drift %}style="color: {{ v.rule_colors.drift }};"{% endif %}>
+          ⚠ drift-dead <span class="text-mono">${{ '%.2f' % c.drift_dead }}</span>
+          <span class="text-muted/60">▼ ${{ '%.2f' % c.room_drift }}{% if c.room_drift_pct is not none %} ({{ '%.1f' % (c.room_drift_pct * 100) }}%){% endif %} from now</span>
+          {% if c.close_to_drift %}<span class="text-loss">· CLOSE</span>{% endif %}</div>
+      {% endif %}
+      <div class="text-muted">· pre-earnings close
+        <span class="text-mono">${{ '%.2f' % c.pre_close }}</span></div>
+      <div style="color: {{ v.rule_colors.stop }};">✖ stop
+        <span class="text-mono">${{ '%.2f' % c.stop }}</span>
+        <span class="text-muted/60">▼ ${{ '%.2f' % c.room_stop }}{% if c.room_stop_pct is not none %} ({{ '%.1f' % (c.room_stop_pct * 100) }}%){% endif %} from now</span></div>
+    </div>
+  </div>
+
+  {# 60-day TIME countdown #}
+  <div class="mt-2.5">
+    <div class="flex justify-between text-[10px] font-mono text-muted/70 mb-0.5">
+      <span>TIME held</span>
+      <span>{{ c.held_days }}/{{ c.max_days }} trading d · {{ c.max_days - c.held_days }} left</span>
+    </div>
+    <div class="h-1.5 bg-pane-2 rounded-full overflow-hidden">
+      <div class="h-full rounded-full" style="width: {{ c.time_pct }}%; background: {{ v.rule_colors.time }};"></div>
+    </div>
+  </div>
+  {% endif %}
+</div>

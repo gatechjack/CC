@@ -77,6 +77,17 @@ class ProposedOrder:
     # isolated path; whole-share / limit / option orders never set these.
     notional_usd: float | None = None
     fractional: bool = False
+    # ── Phase A (2026-07-22): executable-vs-advisory dispatch marker. Default
+    # "executable" so EVERY existing constructor across all divisions is
+    # byte-for-byte unaffected (same additive-default pattern as notional_usd/
+    # fractional above). "advisory" is set ONLY on PMCC roll_leap legs — a
+    # capital-reallocation the operator executes MANUALLY; the agent never places
+    # them. The fail-closed dispatch guard (data_exec.place/place_combo) refuses
+    # any advisory order. Deliberately NOT serialized in to_db_row (no schema
+    # change): the guard's action-string check is the load-bearing signal on the
+    # ceo_graph reconstruct path (_order_from_state), which drops typed fields but
+    # preserves extra.
+    dispatch: Literal["executable", "advisory"] = "executable"
 
     def to_db_row(self) -> dict:
         return {

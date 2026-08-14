@@ -49,15 +49,19 @@ log = logging.getLogger(__name__)
 
 DIVISION = "bitunix_sfp"
 TP_R = 3.0                                   # construct target (retargeted from 2.0, 2026-07-10)
-# ── forward scoreboard epoch (RD-gate go-live, 2026-07-11 01:45 UTC) ──
-# The forward scoreboard — W-L record, realized-R / equity curve, the n/30 verdict gate, and the
-# quality-gate funnel counts — is scoped to closes/events AT OR AFTER this epoch so it measures the
-# RD-gated era CLEANLY. Pre-epoch trades (incl. the -1.07R BTC construct close) REMAIN in
-# paper_trade_record / research_log — they are EXCLUDED from the forward count, NOT deleted. This is a
-# "count from T" filter, never fabricated data. Defined ONCE here; sfp_construct_cockpit_view IMPORTS
-# it so BOTH cockpits scope to the SAME epoch and can never drift out of agreement.
-COCKPIT_STATS_SINCE = "2026-07-11T01:45:00+00:00"
-COCKPIT_STATS_SINCE_LABEL = "2026-07-11 · RD-gate epoch"
+# ── forward scoreboard epoch (net-basis boundary, 2026-07-13 00:00 UTC) ──
+# Moved forward from the 2026-07-11 RD-gate epoch to the 2026-07-13 net-basis boundary: at the
+# 2026-07-12->13 seam actual_pnl_dollars / actual_r_multiple switched GROSS->NET (net-post-fee booking),
+# so a pre-boundary close books on gross and a post-boundary close on net — non-comparable. The forward
+# scoreboard — W-L record, realized-R / equity curve, the n/30 verdict gate, and the quality-gate funnel
+# counts — is scoped to closes/events AT OR AFTER this epoch so every counted trade shares ONE (net)
+# accounting basis. Pre-epoch trades (incl. the two 2026-07-12 gross closes + the -1.07R BTC construct
+# close) REMAIN in paper_trade_record / research_log — EXCLUDED from the forward count, NOT deleted (a
+# "count from T" filter, never fabricated data). Defined ONCE here; sfp_construct_cockpit_view IMPORTS
+# it so BOTH cockpits scope to the SAME epoch and can never drift out of agreement. (No SFP close exists
+# between 2026-07-12 14:47 and 2026-07-14 12:25, so the exact 07-13 time is invariant for the counts.)
+COCKPIT_STATS_SINCE = "2026-07-13T00:00:00+00:00"
+COCKPIT_STATS_SINCE_LABEL = "2026-07-13 · net-basis epoch (PnL/R switched gross→net; ROI% now on margin)"
 CONSTRUCT_SINCE = COCKPIT_STATS_SINCE         # back-compat alias (was construct go-live 2026-07-10)
 BASELINE_AVG_R = 0.182                        # in-sample pooled backtest benchmark (GROSS)
 BASELINE_WIN_PCT = 30                         # backtest win-rate @3R (pooled flat-3R)
@@ -357,47 +361,58 @@ def _loop_heartbeat(db_url: str, wire: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────────
 # TIER C — open SFP position (STRICTLY division='bitunix_sfp'; no shared fallback)
 # ──────────────────────────────────────────────────────────────────────────
-def _open_sfp_position(db_url: str) -> dict | None:
-    """TIER C. The open SFP position — scoped HARD to division='bitunix_sfp'.
+def _open_sfp_positions(db_url: str) -> dict[str, dict]:
+    """TIER C. ALL open SFP positions, keyed by DISPLAY symbol (BTC/ETH/SOL/XRP)
+    — scoped HARD to division='bitunix_sfp'. The platform invariant is 1 open
+    trade PER COIN (max 4/division), so concurrent opens (e.g. XRP + ETH) are
+    VALID and must EACH render on their own coin card. The prior single-row
+    lookup (ORDER BY ts DESC LIMIT 1) collapsed the board to the newest open
+    position division-wide, so a second concurrent position dropped off; this
+    resolves ONE slot PER COIN instead (keyed by (division, symbol)).
 
         SELECT order_id, symbol, side, qty, entry_reference_price, stop_price,
                tp_price, tp_r_multiple, extra_json, ts, execution_mode
         FROM paper_trade_record
         WHERE division='bitunix_sfp' AND result IS NULL
-        ORDER BY ts DESC LIMIT 1;
+        ORDER BY ts DESC;                 -- newest-first; first row per coin wins
 
-    NO fallback to the shared bitunix account snapshot or corp-wide events. If
-    this returns None the caller renders an honest 'no SFP position' state.
+    NO fallback to the shared bitunix account snapshot or corp-wide events. A coin
+    absent from the returned map → the caller renders 'no SFP position' for it.
     """
     with db.connect(db_url) as conn:
-        r = conn.execute(
+        rows = conn.execute(
             "SELECT order_id, symbol, side, qty, entry_reference_price, stop_price, "
             "tp_price, tp_r_multiple, extra_json, ts, execution_mode "
             "FROM paper_trade_record "
-            "WHERE division=? AND result IS NULL ORDER BY ts DESC LIMIT 1",
+            "WHERE division=? AND result IS NULL ORDER BY ts DESC",
             (DIVISION,),
-        ).fetchone()
-    if not r:
-        return None
-    # ref-vs-fill (2026-07-07): prefer the ACTUAL entry fill VWAP (persisted by
-    # the observer as extra['actual_entry_fill_price']) so the entry line + R
-    # reflect the real fill, not the 3m-BOS signal reference. Fall back to the
-    # reference for pre-fix / paper rows (matches the reconciler's
-    # _resolve_entry_price). Stop + TP stay the real venue bracket levels.
-    _extra = _loads(r["extra_json"])
-    _fill = _extra.get("actual_entry_fill_price")
-    try:
-        _entry = float(_fill) if (_fill is not None and float(_fill) > 0) \
-            else r["entry_reference_price"]
-    except (TypeError, ValueError):
-        _entry = r["entry_reference_price"]
-    return {
-        "order_id": r["order_id"], "symbol": r["symbol"], "side": r["side"],
-        "qty": r["qty"], "entry": _entry, "entry_ref": r["entry_reference_price"],
-        "stop": r["stop_price"],
-        "tp": r["tp_price"], "tp_r": r["tp_r_multiple"], "ts": r["ts"],
-        "execution_mode": r["execution_mode"], "extra": _extra,
-    }
+        ).fetchall()
+    out: dict[str, dict] = {}
+    for r in rows:
+        # normalize wire ('ETHUSDT') or display ('ETH/USDT.P') symbol -> short 'ETH'
+        key = str(r["symbol"]).upper().split("/")[0].replace("USDT", "")
+        if key not in SYMBOLS or key in out:     # one-per-coin: keep first (newest ts)
+            continue
+        # ref-vs-fill (2026-07-07): prefer the ACTUAL entry fill VWAP (persisted by
+        # the observer as extra['actual_entry_fill_price']) so the entry line + R
+        # reflect the real fill, not the 3m-BOS signal reference. Fall back to the
+        # reference for pre-fix / paper rows (matches the reconciler's
+        # _resolve_entry_price). Stop + TP stay the real venue bracket levels.
+        _extra = _loads(r["extra_json"])
+        _fill = _extra.get("actual_entry_fill_price")
+        try:
+            _entry = float(_fill) if (_fill is not None and float(_fill) > 0) \
+                else r["entry_reference_price"]
+        except (TypeError, ValueError):
+            _entry = r["entry_reference_price"]
+        out[key] = {
+            "order_id": r["order_id"], "symbol": r["symbol"], "side": r["side"],
+            "qty": r["qty"], "entry": _entry, "entry_ref": r["entry_reference_price"],
+            "stop": r["stop_price"],
+            "tp": r["tp_price"], "tp_r": r["tp_r_multiple"], "ts": r["ts"],
+            "execution_mode": r["execution_mode"], "extra": _extra,
+        }
+    return out
 
 
 def _r_journey(db_url: str, pos: dict) -> dict:
@@ -686,10 +701,10 @@ def register(app: FastAPI) -> None:
         return templates.TemplateResponse(request, "sfp_cockpit.html", ctx)
 
     async def _build_board() -> list[dict]:
-        pos = await _q(_open_sfp_position, db_url)            # TIER C, scoped
+        positions = await _q(_open_sfp_positions, db_url)     # TIER C, scoped, per-coin
         arm_map = _symbol_arm_map()
         div_live = runtime_badge(deps).get("state") == "live"
-        return [await _q(_coin_state, db_url, d, pos, arm_map.get(d, "watch"), div_live)
+        return [await _q(_coin_state, db_url, d, positions.get(d), arm_map.get(d, "watch"), div_live)
                 for d in SYMBOLS]
 
     @app.get("/sfp/partials/header", response_class=HTMLResponse)

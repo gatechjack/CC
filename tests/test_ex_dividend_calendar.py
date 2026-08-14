@@ -253,18 +253,28 @@ ex_dividends:
 def test_production_yaml_loads_and_has_expected_universe():
     """Load the real config/ex_dividend_calendar.yaml and sanity-check it."""
     cal = ExDividendCalendar.load("config/ex_dividend_calendar.yaml")
-    # SPY, QQQ, IWM all quarterly (4 entries each).
+    # SPY/QQQ quarterly (4 each); IWM quarterly + 12/30 excise (5, all
+    # issuer-confirmed 2026-08-13); XLE remaining-2026 (2); GDX annual (1,
+    # PROJECTED); FXI semi-annual remaining (2).
     spy_dates = [e.ex_date for e in cal._events if e.symbol == "SPY"]
     qqq_dates = [e.ex_date for e in cal._events if e.symbol == "QQQ"]
     iwm_dates = [e.ex_date for e in cal._events if e.symbol == "IWM"]
     tlt_dates = [e.ex_date for e in cal._events if e.symbol == "TLT"]
     gld_dates = [e.ex_date for e in cal._events if e.symbol == "GLD"]
+    xle_dates = [e.ex_date for e in cal._events if e.symbol == "XLE"]
+    gdx_dates = [e.ex_date for e in cal._events if e.symbol == "GDX"]
+    fxi_dates = [e.ex_date for e in cal._events if e.symbol == "FXI"]
 
     assert len(spy_dates) == 4, f"expected 4 SPY entries, got {len(spy_dates)}"
     assert len(qqq_dates) == 4, f"expected 4 QQQ entries, got {len(qqq_dates)}"
-    assert len(iwm_dates) == 4, f"expected 4 IWM entries, got {len(iwm_dates)}"
+    assert len(iwm_dates) == 5, f"expected 5 IWM entries, got {len(iwm_dates)}"
     assert len(tlt_dates) == 12, f"expected 12 TLT entries, got {len(tlt_dates)}"
     assert gld_dates == [], "GLD should have no ex-div entries"
+    assert len(xle_dates) == 2, f"expected 2 XLE entries, got {len(xle_dates)}"
+    assert len(gdx_dates) == 1, f"expected 1 GDX entry, got {len(gdx_dates)}"
+    assert len(fxi_dates) == 2, f"expected 2 FXI entries, got {len(fxi_dates)}"
 
     # Sanity: SPY Q1 is March 20, 2026 (issuer-confirmed).
     assert cal.next_ex_date("SPY", today=date(2026, 1, 1)) == date(2026, 3, 20)
+    # Sanity: IWM Q3 is the CORRECTED 9/15, not the old 9/21 projection.
+    assert cal.next_ex_date("IWM", today=date(2026, 8, 1)) == date(2026, 9, 15)

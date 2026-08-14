@@ -249,6 +249,49 @@ def rank_wave(
 
 
 # ---------------------------------------------------------------------------
+# Post-reaction CONFIRMATION GATE — SHARED by the live scan AND the backtest so
+# the two paths cannot diverge (the whole point: validate the rule the engine
+# actually runs). Pure; no bar-inference of the slot; None slot => not tradeable.
+# ---------------------------------------------------------------------------
+
+def reaction_index(report_time: str | None, ann_idx: int | None) -> int | None:
+    """Index of the POST-REACTION session: `ann_idx` for BeforeMarket (reaction
+    is the announcement-day bar), `ann_idx + 1` for AfterMarket (reaction is the
+    next session). None if the slot is unknown (report_time not BMO/AMC) — an
+    un-slotted name is NOT tradeable. No inference from bars."""
+    if report_time == "BeforeMarket":
+        return ann_idx
+    if report_time == "AfterMarket":
+        return None if ann_idx is None else ann_idx + 1
+    return None
+
+
+def confirmation_verdict(
+    report_time: str | None, closes: Sequence[float], ann_idx: int | None,
+) -> str:
+    """The confirmation gate: enter long only if BAR 1 (the reaction session)
+    CLOSES ABOVE BAR 0 (the last full session with NO earnings info). BAR 0 =
+    BAR 1 - 1 for BOTH slots (AMC baseline = day a; BMO baseline = day a-1); the
+    slot only fixes WHICH days these are, not the logic. Entry is BAR 2's open
+    (reaction_index + 1).
+
+    `closes`: session closes oldest->newest. `ann_idx`: index of the first bar
+    on/after the announcement date. Returns exactly one of:
+      'pass'           — reaction close > pre_earnings_close (enter)
+      'reject_gate'    — reaction close <= pre_earnings_close (declined)
+      'reject_no_slot' — report_time unknown -> EXCLUDED (no fallback/inference)
+      'reject_no_bar'  — the pre-earnings or the reaction session is unavailable
+    """
+    if report_time not in ("BeforeMarket", "AfterMarket"):
+        return "reject_no_slot"
+    bar1 = reaction_index(report_time, ann_idx)      # first session trading ON the news (reaction)
+    if bar1 is None or bar1 < 1 or bar1 >= len(closes):
+        return "reject_no_bar"
+    bar0 = bar1 - 1                                   # last full session with NO earnings info (baseline)
+    return "pass" if closes[bar1] > closes[bar0] else "reject_gate"
+
+
+# ---------------------------------------------------------------------------
 # Config builders — let strategies.yaml drive the params (retune w/o code change)
 # ---------------------------------------------------------------------------
 

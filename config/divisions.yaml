@@ -54,7 +54,11 @@ divisions:
     benchmark: SPY
     target_annual_return: 0.20
     strategy: robinhood_joint_iron_condor
-    enabled: true
+    enabled: false                  # 2026-08-11 MACE go-live exclusivity: division DISABLED so the
+                                    # fail-closed startup assertion sees the Joint (116637293063) as
+                                    # MACE-exclusive (disabled => no broker registered => nothing
+                                    # contends). Block kept in config = "linked-but-off"; the IC
+                                    # strategy is already enabled:false in strategies.yaml.
 
   # ── Robinhood PEAD (Phase 2, 2026-06-22) — long-only post-earnings drift on
   # the agentic sub-account. standby:true is the OPERATIVE kill-switch: the
@@ -69,6 +73,25 @@ divisions:
     target_annual_return: 0.30      # reporting/tile label only — inert to the engine
     strategy: robinhood_pead
     standby: false                  # GO-LIVE 2026-06-24 (Board-authorized): scan()+manage() ACTIVE
+    enabled: true
+
+  # ── Robinhood MACE (Phase 4, 2026-08-10) — zero-HITL Multi-Asset Condor Engine
+  # on the JOINT account (takeover). standby:true is the OPERATIVE kill-switch: the
+  # division registers + wires, but all four loops no-op until standby is lifted at
+  # go-live. GO-LIVE IS BLOCKED until the RH programmatic-cancel path is fixed +
+  # live-proven (3b, 2026-08-10 — RH brokeback endpoint migration 404s the legacy
+  # options-cancel path). Exclusivity: at go-live robinhood_joint (account_filter:
+  # joint) must be disabled/repointed so this filter is MACE's alone (the startup
+  # assertion refuses to arm otherwise).
+  - slug: robinhood_mace
+    name: Robinhood MACE
+    broker: robinhood
+    account_filter: "116637293063"  # JOINT acct; numeric hard-bind (Phase-0 confirmed)
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.15      # reporting/tile label only — inert to the engine
+    strategy: robinhood_mace
+    standby: false                  # ARMED 2026-08-11 (MACE go-live): all four loops LIVE
     enabled: true
 
   # ── Fidelity (single login, multiple sub-accounts via Playwright) ───────

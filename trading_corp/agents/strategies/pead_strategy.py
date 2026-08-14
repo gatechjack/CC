@@ -11,7 +11,8 @@ Posture = the bitunix posture (inline-placed, no HITL):
 The exit engine IMPORTS `pead_pressures` — it never re-implements the math, so a
 position fires at the exact price the dashboard shows it approaching.
 
-Daily OHLC bars stay on yfinance (the code-safety / backtest source); the live
+Daily OHLC bars come from Robinhood (SPLIT-ADJUSTED, via the shared
+`data.rh_bars` fetcher — IDENTICAL to the backtest source, no yfinance); the live
 `last` quote for exits comes from the broker.
 """
 from __future__ import annotations
@@ -27,13 +28,20 @@ from pathlib import Path
 import yaml
 
 from trading_corp.agents.strategies import pead_pressures as pp
+from trading_corp.agents.strategies import pead_sizing
 from trading_corp.agents.strategies.pead_signal import (
     ScreenInputs,
+    _percentile,
+    confirmation_verdict,
+    passes_screen,
     rank_wave,
+    reaction_index,
     screen_params_from_config,
     standardized_ue,
     sue_params_from_config,
 )
+from trading_corp.persistence.pead_observability import insert_scan_evaluation
+from trading_corp.data.rh_bars import RHBarsError, fetch_rh_daily_bars
 from trading_corp.data.earnings_provider import EarningsProvider
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
@@ -48,8 +56,10 @@ from trading_corp.web.pead_view import business_days  # shared trading-day count
 log = logging.getLogger(__name__)
 
 _DEFAULT_MANAGE_CADENCE_SEC = 300       # few-min exit cadence
-_DEFAULT_POSITION_PCT = 0.10            # 10% of account value per trade
+_DEFAULT_POSITION_PCT = 0.10            # RETIRED as sizer (see _notional_budget); kept for the fixed-$ override path only
 _DEFAULT_MAX_CONCURRENT = 7
+_DEFAULT_SAFETY_FACTOR = 0.95           # derived sizer: per_name = settled_cash / open_slots * this
+_DEFAULT_SIZE_MIN_USD = 50.0           # per-name $ floor: fund FEWER names at >= this, never sub-floor
 _DEFAULT_ENTRY_DELAY_DAYS = 1           # enter 1-2 trading days post-announcement
 _DEFAULT_ENTRY_MAX_DELAY_DAYS = 2
 _BARS_LOOKBACK_DAYS = 180              # daily bars window for ATR / swing / gap-top
@@ -57,6 +67,8 @@ _DEFAULT_RECONCILE_POLL_SEC = 30                  # reconcile-loop tick while pe
 _DEFAULT_RECONCILE_DEADLINE_AFTER_OPEN_SEC = 300  # wait past the 9:30 ET open before collar-miss cancel
 _DEFAULT_RECONCILE_PARTIAL_WARN_FRAC = 0.90       # warn when realized $ < this fraction of requested
 _DEFAULT_INTENT_BUFFER_SEC = 60        # seconds after open before placing intent orders (~9:31 ET)
+_DEFAULT_MANAGE_EVAL_LEAD_SEC = 1800   # exit engine begins EVALUATING 30 min before the open
+_DEFAULT_MANAGE_OPEN_BUFFER_SEC = _DEFAULT_INTENT_BUFFER_SEC  # hold exit PLACEMENT until open+buffer (~9:31 ET); mirrors the entry path
 
 
 @dataclass
@@ -129,34 +141,25 @@ class PEADStrategy:
                 log.warning("pead_strategy: universe load failed (%s): %s", spec, e)
         return []
 
-    # ── daily bars (yfinance) + ATR ──────────────────────────────────────
+    # ── daily bars (Robinhood, SPLIT-ADJUSTED, shared with the backtest) + ATR ──
     @staticmethod
     def _fetch_daily_bars(symbol: str, lookback_days: int = _BARS_LOOKBACK_DAYS) -> list[_Bar]:
+        # SPLIT-ADJUSTED daily bars from Robinhood via the shared data.rh_bars fetcher,
+        # so live and backtest see IDENTICAL bars. Called by scan() through
+        # asyncio.to_thread — the HTTP + pacing run OFF the event loop. Reuses the
+        # engine's existing robin_stocks session (no login here). NO yfinance / banned
+        # fallback: the fetcher raises on failure; we log and skip the symbol.
+        from datetime import timedelta
+        cutoff = date.today() - timedelta(days=lookback_days)
+        span = "year" if lookback_days <= 340 else "5year"
         try:
-            import yfinance as yf  # type: ignore
-            from datetime import timedelta
-            end = date.today()
-            start = end - timedelta(days=lookback_days)
-            dfr = yf.download(symbol, start=start.isoformat(), end=end.isoformat(),
-                              progress=False, auto_adjust=False)
-        except Exception as e:  # noqa: BLE001
-            log.debug("pead_strategy._fetch_daily_bars(%s) failed: %s", symbol, e)
+            rows = fetch_rh_daily_bars(symbol, span=span, bounds="regular")
+        except RHBarsError as e:
+            log.warning("pead_strategy._fetch_daily_bars(%s): Robinhood fetch failed — skipping (%s)",
+                        symbol, e)
             return []
-        if dfr is None or getattr(dfr, "empty", True):
-            return []
-
-        def _cell(row, col):
-            v = row[col]
-            return float(v.iloc[0]) if hasattr(v, "iloc") else float(v)
-        bars: list[_Bar] = []
-        for idx, row in dfr.iterrows():
-            try:
-                d = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                bars.append(_Bar(d, _cell(row, "Open"), _cell(row, "High"),
-                                 _cell(row, "Low"), _cell(row, "Close"), _cell(row, "Volume")))
-            except Exception:  # noqa: BLE001
-                continue
-        return bars
+        return [_Bar(r["date"], r["open"], r["high"], r["low"], r["close"], r["volume"])
+                for r in rows if r["date"] >= cutoff]
 
     @staticmethod
     def _atr14(bars: list[_Bar], upto_idx: int, period: int = 14) -> float | None:
@@ -203,6 +206,60 @@ class PEADStrategy:
     def _held_symbols(self) -> set[str]:
         return {r["symbol"] for r in self._open_rows()}
 
+    def _log_scan_funnel(self, session_ts, eps_by, screens, ranked, sue_params, screen_params,
+                         gate_verdicts=None) -> None:
+        """Persist this scan's per-name signal funnel into scan_evaluation (FORWARD-ONLY, side-effect
+        only). verdict='passed' for names in `ranked` (cleared screen + SUE>threshold + top-quintile);
+        else 'rejected' with the earliest failing gate as reason_code. Records per-name SUE + the wave
+        size + the quintile cutoff in metrics so 'was the quintile gate binding?' is answerable per
+        entry. Observability MUST NEVER break the scan — every failure is swallowed."""
+        try:
+            passed = {c.symbol for c in ranked}
+            info: dict[str, tuple] = {}
+            wave_sues: list[float] = []
+            for sym in eps_by:
+                sue = standardized_ue(eps_by[sym], lookback=sue_params.lookback)
+                inp = screens.get(sym)
+                ok, reason = (passes_screen(inp, screen_params) if inp is not None
+                              else (False, "missing_screen_inputs"))
+                info[sym] = (sue, ok, reason)
+                if ok and sue is not None:
+                    wave_sues.append(sue)
+            cutoff = (_percentile(sorted(wave_sues), sue_params.quintile_pct)
+                      if (sue_params.top_quintile and wave_sues) else None)
+            gv_map = gate_verdicts or {}
+            for sym, (sue, ok, reason) in info.items():
+                if sym in passed:
+                    gv = gv_map.get(sym)
+                    if gate_verdicts is None or gv == "pass":
+                        verdict, rcode = "passed", None
+                    elif gv == "reject_gate":
+                        verdict, rcode = "rejected", "rejected_by_gate"
+                    elif gv == "reject_no_slot":
+                        verdict, rcode = "rejected", "rejected_no_slot"
+                    else:  # reject_no_bar / unexpected
+                        verdict, rcode = "rejected", "rejected_no_bar"
+                elif not ok:
+                    verdict, rcode = "rejected", reason
+                elif sue is None:
+                    verdict, rcode = "rejected", "insufficient_sue_history"
+                elif sue <= sue_params.sue_threshold:
+                    verdict, rcode = "rejected", "below_sue_threshold"
+                else:
+                    verdict, rcode = "rejected", "below_top_quintile"
+                insert_scan_evaluation(
+                    session_ts, sym, verdict, reason_code=rcode,
+                    metrics={"sue": sue, "screen_ok": ok, "screen_reason": reason,
+                             "wave_size": len(wave_sues), "quintile_cutoff": cutoff,
+                             "sue_threshold": sue_params.sue_threshold,
+                             "gate_verdict": gv_map.get(sym)},
+                    db_url=self.db_url)
+            log.info("pead_strategy.scan: logged funnel — %d evaluated / %d passed / wave=%d cutoff=%s",
+                     len(info), len(passed), len(wave_sues),
+                     ("%.3f" % cutoff) if cutoff is not None else "n/a")
+        except Exception as e:  # noqa: BLE001 — observability must NEVER break the scan
+            log.warning("pead_strategy.scan: scan_evaluation logging failed (non-fatal): %s", e)
+
     # ── risk gate (the ONLY gate; no HITL) ───────────────────────────────
     def _risk_ok(self, order: ProposedOrder, equity: float) -> bool:
         self._peak_equity = max(self._peak_equity, equity)
@@ -246,6 +303,7 @@ class PEADStrategy:
                         # level the engine fires at (which already recomputes from entry).
                         rp = float(fill.price)
                         order.extra["entry_reference_price"] = rp
+                        order.extra["earnings_gap_top"] = rp   # re-anchor DRIFT gap to the REALIZED fill (entry_open), like the stop
                         _pr = pp.primitives_from_extra(order.extra, rp)
                         if _pr is not None:
                             order.extra["stop_price"] = pp.stop_level(_pr)
@@ -282,6 +340,11 @@ class PEADStrategy:
         screen_params = screen_params_from_config(cfg.get("screen", {}) or {})
         sue_params = sue_params_from_config(cfg.get("signal", {}) or {})
         max_concurrent = int(cfg.get("max_concurrent_positions", _DEFAULT_MAX_CONCURRENT))
+        # Live dashboard dial (Part B): an agent_state override wins over the yaml
+        # value; read fresh each scan (no restart), falls back to yaml when unset.
+        _mc_override = pead_sizing.read_max_concurrent_override(self.db_url)
+        if _mc_override is not None:
+            max_concurrent = _mc_override
         emin = int(cfg.get("entry_delay_days", _DEFAULT_ENTRY_DELAY_DAYS))
         emax = int(cfg.get("entry_max_delay_days", _DEFAULT_ENTRY_MAX_DELAY_DAYS))
         today = datetime.now(timezone.utc).date()
@@ -298,6 +361,8 @@ class PEADStrategy:
         bars_by: dict[str, list[_Bar]] = {}
         ann_by: dict[str, date] = {}
         nxt_by: dict[str, date | None] = {}
+        slot_by: dict[str, str | None] = {}   # BMO/AMC reporting slot per symbol (None = unknown)
+        name_by: dict[str, str | None] = {}   # ticker -> company name (General::Name, already-cached facts; display-only)
         for sym in universe:
             if sym in held:
                 continue
@@ -315,6 +380,7 @@ class PEADStrategy:
             if not bars:
                 continue
             facts = self._provider.get_company_facts(sym) or {}
+            name_by[sym] = facts.get("name")   # off the already-fetched 24h-cached facts — NO extra HTTP
             nxt = self._provider.get_next_earnings_date(sym, asof=today)
             d2n = business_days(today, nxt) if nxt else None
             last_close = bars[-1].close
@@ -328,46 +394,99 @@ class PEADStrategy:
             bars_by[sym] = bars
             ann_by[sym] = ann
             nxt_by[sym] = nxt
+            slot_by[sym] = getattr(latest, "report_time", None)   # carry BMO/AMC slot (from calendar via QuarterlyEPS)
 
         ranked = rank_wave(eps_by, screens, sue_params=sue_params,
                            screen_params=screen_params)
+        # ── post-reaction CONFIRMATION GATE (config-gated; DEFAULT OFF) ──
+        # Enter only if the post-reaction session closed above the pre-earnings
+        # close (reaction = day a for BeforeMarket, a+1 for AfterMarket; no slot
+        # -> excluded). Pure computation on already-fetched bars — NO new HTTP in
+        # scan(). IDENTICAL rule as the backtest (shared confirmation_verdict).
+        gate_on = bool(cfg.get("confirmation_gate", False))
+        gate_verdicts: dict[str, str] = {}
+        if gate_on:
+            for c in ranked:
+                _bars = bars_by[c.symbol]
+                _a = self._index_on_or_after(_bars, ann_by[c.symbol])
+                gate_verdicts[c.symbol] = confirmation_verdict(
+                    slot_by.get(c.symbol), [b.close for b in _bars], _a)
+            gated = [c for c in ranked if gate_verdicts.get(c.symbol) == "pass"]
+        else:
+            gated = ranked
+        # persist the per-name signal funnel (forward-only, side-effect only; never breaks the scan)
+        self._log_scan_funnel(datetime.now(timezone.utc).isoformat(),
+                              eps_by, screens, ranked, sue_params, screen_params,
+                              gate_verdicts=(gate_verdicts if gate_on else None))
         if not ranked:
             log.info("pead_strategy.scan: no candidates cleared screen+SUE")
             return []
 
         snap = await broker.snapshot()
         equity = float(getattr(snap, "equity", 0.0) or 0.0)
-        available_bp = getattr(snap, "buying_power", None)  # settled BP; None = no guard (paper/unknown)
-        notional_budget = self._notional_budget(cfg, equity)             # equal-$ per name
+        available_bp = getattr(snap, "buying_power", None)  # portfolio-profile BP (settled-cash fallback only)
+        # ── DERIVED, SELF-BALANCING, FLOORED SIZING (Part A + $ floor) ───────
+        # Size against SETTLED cash (RobinhoodBroker derives it from
+        # load_account_profile: cash − unsettled_funds − cash_held_for_orders),
+        # NOT the retired position_pct × equity. The wave is computed ONCE by
+        # pead_sizing.derive_wave_sizes — the SAME function the dashboard readout
+        # consumes, so the on-screen fundable count can NEVER disagree with what
+        # scan places. It is self-balancing (each name sized against remaining
+        # cash+slots so the last slot is fundable) AND honours the $ floor
+        # (size_min_usd): fund FEWER names at >= the floor, never a sub-floor one.
+        # `position_notional` (fixed $) stays an explicit equal-$ override.
+        _settled = getattr(snap, "settled_cash", None)
+        cash_remaining = (float(_settled) if _settled is not None
+                          else (float(available_bp) if available_bp is not None else 0.0))
+        safety_factor = float(cfg.get("size_safety_factor", _DEFAULT_SAFETY_FACTOR))
+        size_min_usd = float(cfg.get("size_min_usd", _DEFAULT_SIZE_MIN_USD))
+        fixed_notional = cfg.get("position_notional")   # equal-$ escape hatch; None => derived
+        wave = (pead_sizing.derive_wave_sizes(cash_remaining, capacity,
+                                              safety_factor=safety_factor,
+                                              size_min_usd=size_min_usd)
+                if fixed_notional is None else None)   # len(wave)=floored fundable count
+        placed_idx = 0                                  # index into `wave`; advances only on a real placement
         max_hold_seconds = pp.MAX_HOLD_TRADING_DAYS * 24 * 3600  # informational; live TIME rule uses trading-day count
 
         placed: list[ProposedOrder] = []
-        for cand in ranked:
+        for cand in gated:
             if capacity <= 0:
                 break
             bars = bars_by[cand.symbol]
             entry_price = float(bars[-1].close)       # daily-scan entry reference (≈ next-open fill)
             if entry_price <= 0:
                 continue
-            prim = self._build_primitives(bars, ann_by[cand.symbol], entry_price)
+            prim = self._build_primitives(bars, ann_by[cand.symbol], entry_price,
+                                          slot_by.get(cand.symbol))
             if prim is None:
                 continue
-            # ── equal-DOLLAR notional sizing (config-driven, same $ per candidate) ──
-            if notional_budget < 1.0:                 # below RH's $1 fractional minimum
-                log.info("pead_strategy: notional $%.2f < $1 — skip %s", notional_budget, cand.symbol)
+            # ── per-name size: derived path pops the next FLOORED wave slot;
+            #    the fixed-$ override path uses position_notional as-is ──
+            if fixed_notional is not None:            # explicit equal-$ override (position_notional)
+                try:
+                    per_name = max(0.0, float(fixed_notional))
+                except (TypeError, ValueError):
+                    per_name = 0.0
+            else:
+                if placed_idx >= len(wave):           # wave exhausted → floor + cash cap the count
+                    break
+                per_name = wave[placed_idx]           # >= size_min_usd by construction
+            if per_name < 1.0:                        # RH's $1 fractional min — hard skip beneath the $ floor
+                log.info("pead_strategy: size $%.2f < $1 (settled $%.2f, floor $%.0f) — skip %s",
+                         per_name, cash_remaining, size_min_usd, cand.symbol)
                 continue
             elig = getattr(broker, "fractional_eligible", None)   # #6 (cached on broker)
             if elig is not None and not await elig(cand.symbol):
                 log.info("pead_strategy: %s not fractional-eligible — skip", cand.symbol)
                 continue
-            if available_bp is not None and notional_budget > float(available_bp) + 1e-9:
-                log.info("pead_strategy: %s settled BP $%.2f < notional $%.2f — skip",  # #5
-                         cand.symbol, float(available_bp), notional_budget)
+            if per_name > cash_remaining + 1e-9:      # never size beyond settled placeable cash  # #5
+                log.info("pead_strategy: %s size $%.2f > settled cash $%.2f — skip",
+                         cand.symbol, per_name, cash_remaining)
                 continue
             nxt = nxt_by.get(cand.symbol)
             order = ProposedOrder(
                 strategy=self.SLUG, symbol=cand.symbol, side="buy", qty=0.0,
-                order_type="market", notional_usd=notional_budget, fractional=True,
+                order_type="market", notional_usd=per_name, fractional=True,
                 rationale=f"PEAD entry SUE={cand.sue:.2f}",
                 extra={
                     # the 6 LOCKED extra_json keys the dashboard + exit engine read
@@ -377,12 +496,14 @@ class PEADStrategy:
                     "earnings_gap_top": prim["earnings_gap_top"],
                     "next_earnings_date": nxt.isoformat() if nxt else None,
                     "entry_sue": float(cand.sue),
+                    "report_time": slot_by.get(cand.symbol),   # BMO/AMC slot carried for a future confirmation gate; None = unknown (do NOT default)
                     "name": cand.symbol,
+                    "company_name": name_by.get(cand.symbol),   # General::Name (display-only; ticker stays the identity)
                     # ledger trade-card fields
                     "entry_reference_price": entry_price,  # overwritten with realized fill (live)
                     "stop_price": prim["stop_level"],
                     "source_signal": "srw_sue",
-                    "notional_usd": notional_budget,
+                    "notional_usd": per_name,
                 },
             )
             if not self._risk_ok(order, equity):
@@ -395,17 +516,17 @@ class PEADStrategy:
             # The PAPER path is UNCHANGED (no real order; estimate qty + record now).
             if self._is_live():
                 self._write_intent(order, max_hold_seconds=max_hold_seconds)
-                if available_bp is not None:             # RESERVE settled BP on the requested notional (#5)
-                    available_bp = float(available_bp) - notional_budget
+                cash_remaining -= per_name               # deplete settled cash so the next name resizes (#5)
                 self.logger_agent.log_event(
                     self.SLUG, "pead_intent",
                     {"strategy": self.SLUG, "division": self.SLUG, "symbol": cand.symbol,
-                     "notional": notional_budget,
+                     "notional": per_name,
                      "sue": round(float(cand.sue), 3),
                      "entry_reference_price": order.extra.get("entry_reference_price")},
                 )
                 placed.append(order)
                 capacity -= 1
+                placed_idx += 1
                 continue
             if not await self._place_or_paper(order):
                 continue
@@ -413,12 +534,11 @@ class PEADStrategy:
             # (The record reflects the paper estimate; the live realized path is the
             # reconcile promote above, never the requested notional.)
             self._write_record(order, max_hold_seconds=max_hold_seconds)
-            if available_bp is not None:                 # decrement settled BP as we fill (#5)
-                available_bp = float(available_bp) - float(order.extra.get("executed_notional") or notional_budget)
+            cash_remaining -= float(order.extra.get("executed_notional") or per_name)  # deplete settled cash (#5)
             self.logger_agent.log_event(
                 self.SLUG, "pead_entry",
                 {"strategy": self.SLUG, "division": self.SLUG, "symbol": cand.symbol,
-                 "qty": order.qty, "notional": notional_budget,
+                 "qty": order.qty, "notional": per_name,
                  "executed_notional": order.extra.get("executed_notional"),
                  "sue": round(float(cand.sue), 3),
                  "entry": order.extra.get("entry_reference_price"),
@@ -426,15 +546,18 @@ class PEADStrategy:
             )
             placed.append(order)
             capacity -= 1
+            placed_idx += 1
         log.info("pead_strategy.scan: entered %d position(s)", len(placed))
         return placed
 
-    def _build_primitives(self, bars: list[_Bar], announcement: date, entry_price: float) -> dict | None:
-        """The locked entry primitives. `earnings_gap_top` = close of the first
-        full-reaction session — the announcement-date bar `a`, the SAME bar the
-        backtest re-align uses, so dashboard/engine/backtest agree. ATR(14) and
-        the post-earnings swing-low run through the LATEST bar (the live entry
-        day); `entry_price` is the live entry reference (current price)."""
+    def _build_primitives(self, bars: list[_Bar], announcement: date, entry_price: float,
+                          report_time: str | None) -> dict | None:
+        """The locked entry primitives. `earnings_gap_top` = the entry_open
+        (re-anchored to the realized fill at both fill sites). `pre_earnings_close`
+        is SLOT-AWARE — the gate's own bar0 (AMC=a, BMO=a-1), so the drift gap is
+        measured from the SAME pre-earnings close the confirmation gate judges.
+        ATR(14) and the post-earnings swing-low run through the LATEST bar (the
+        live entry day); `entry_price` is the live entry reference (current price)."""
         a = self._index_on_or_after(bars, announcement)
         if a is None or a < 1:
             return None
@@ -442,8 +565,16 @@ class PEADStrategy:
         atr = self._atr14(bars, last_idx)
         if atr is None:
             return None
-        pre_earnings_close = bars[a - 1].close
-        earnings_gap_top = bars[a].close
+        # DRIFT baseline = the gate's slot-aware bar0, using the SAME reaction_index
+        # confirmation_verdict uses (bar0 = reaction_index - 1: AMC=a, BMO=a-1). One
+        # definition, both consumers — no second, drifting slot rule. Unknown slot
+        # -> a-1 (unchanged; entry behaviour for un-slotted names is untouched).
+        _bar1 = reaction_index(report_time, a)
+        _bar0 = (_bar1 - 1) if _bar1 is not None else (a - 1)
+        if _bar0 < 0:
+            return None
+        pre_earnings_close = bars[_bar0].close
+        earnings_gap_top = entry_price   # DRIFT anchor = entry_open (validated backtest semantics); re-anchored to the realized fill at both fill sites
         swing_low = min(b.low for b in bars[a:last_idx + 1])
         stop_level = max(entry_price - 2.5 * atr, swing_low)
         return {
@@ -455,11 +586,47 @@ class PEADStrategy:
         }
 
     # ── EXIT engine (manage) — imports pead_pressures, fires at contract px ──
+    @staticmethod
+    def _exit_window_state(now: datetime, cfg: dict) -> tuple[str, bool]:
+        """Classify `now` (tz-aware) for the exit engine against the SHARED NYSE
+        calendar (default_calendar / _session_open_et — reused read-only, the SAME
+        definition of "market open" the entry/reconcile path uses). Returns
+        (state, placement_open):
+          'closed'   -> outside [open - eval_lead, close]: evaluate nothing and
+                        place/cancel NOTHING (this is what kills the overnight
+                        GFD-sell -> 90s-cancel churn).
+          'pre_open' -> inside the lead window but before open+buffer: evaluate the
+                        rules, but DEFER placement (RH rejects pre-market orders).
+          'session'  -> at/after open+buffer through the close: evaluate AND place.
+        Weekends/holidays -> 'closed' (open_et is None); half-days shrink the upper
+        bound automatically because `close` comes from the calendar."""
+        now_et = now.astimezone(ET)
+        open_et = PEADStrategy._session_open_et(now_et.date().isoformat())
+        if open_et is None:
+            return "closed", False                      # weekend / holiday
+        close_et = default_calendar().close_time_et(now_et)
+        eval_lead = int(cfg.get("manage_eval_lead_sec", _DEFAULT_MANAGE_EVAL_LEAD_SEC))
+        open_buffer = int(cfg.get("manage_open_buffer_sec", _DEFAULT_MANAGE_OPEN_BUFFER_SEC))
+        if now_et < open_et - timedelta(seconds=eval_lead):
+            return "closed", False                      # before the eval window
+        if close_et is not None and now_et >= close_et:
+            return "closed", False                      # after the close
+        if now_et < open_et + timedelta(seconds=open_buffer):
+            return "pre_open", False                    # evaluate, but defer placement
+        return "session", True
+
     async def manage(self, broker) -> tuple[list[ProposedOrder], int]:
         cfg = self._cfg()
         cadence = int(cfg.get("manage_cadence_sec", _DEFAULT_MANAGE_CADENCE_SEC))
         rows = self._open_rows()
         if not rows:
+            return [], cadence
+        # ── Market-hours gate (the off-hours-exit fix) ───────────────────────
+        # Only EVALUATE exits inside [open - eval_lead, close]; only PLACE at/after
+        # open+buffer. Outside the window: no eval, no snapshot, no order, NO cancel.
+        window, placement_open = self._exit_window_state(
+            datetime.now(timezone.utc), cfg)
+        if window == "closed":
             return [], cadence
         today = datetime.now(timezone.utc).date()
         snap = await broker.snapshot()
@@ -480,11 +647,60 @@ class PEADStrategy:
             held = business_days(opened, today)
             nxt = self._parse_date(extra.get("next_earnings_date"))
             d2n = business_days(today, nxt) if nxt else None
+            # DRIFT is a DAILY-CLOSE rule: never on the entry day (held < 1) and at
+            # most once per newly-COMPLETED daily bar. Stop/guard/time are unchanged
+            # (stop reads the intraday quote `last`; guard/time read the calendar).
+            # The daily close comes from the SAME split-adjusted RH fetcher scan()
+            # uses, OFF the event loop via asyncio.to_thread — no HTTP on the loop.
+            drift_close: float | None = None
+            drift_evaluated = False
+            # DRIFT is evaluated ONLY once placement is allowed (regular session):
+            # _mark_drift_daily fires once per completed daily bar, so evaluating it
+            # pre-open would consume that firing and then defer, and the post-open
+            # tick's marker guard would SKIP it -> the drift sell would be lost.
+            # Anchoring drift eval to the open preserves its once-per-bar / act-at-
+            # open semantics (stop/guard/time still evaluate through the whole window).
+            if held >= 1 and placement_open:
+                marker = extra.get("drift_last_daily")
+                # Cheap guard: only touch the RH daily fetcher when a new session may
+                # have completed since we last evaluated (marker != the most-recent
+                # weekday before today). Avoids a per-tick HTTP fetch in steady state.
+                if marker != self._prev_weekday(today).isoformat():
+                    dbars = await asyncio.to_thread(self._fetch_daily_bars, r["symbol"])
+                    lower = marker or opened.isoformat()   # never evaluate the entry day or earlier
+                    pending = [b for b in dbars
+                               if b.d < today and b.d.isoformat() > lower]   # completed, post-entry, not-yet-seen
+                    if pending:
+                        self._mark_drift_daily(r["order_id"], pending[-1].d.isoformat())
+                        # Fire drift on the FIRST completed close that crosses the
+                        # drift-dead level (parity with the backtest, which checks each
+                        # bar's CLOSE in order). No crossing close -> drift suppressed.
+                        level = pp.drift_dead_level(prim)
+                        if pp.earnings_gap_usd(prim) > 0:
+                            for b in pending:
+                                if b.close <= level:
+                                    drift_evaluated = True
+                                    drift_close = float(b.close)
+                                    break
             pr = pp.compute_pressures(prim, last, held_trading_days=held,
-                                      days_to_next_earnings=d2n)
-            rule = self._fired_rule(pr, d2n, held)
+                                      days_to_next_earnings=d2n,
+                                      drift_price=(drift_close if drift_evaluated else None))
+            rule = self._fired_rule(pr, d2n, held, drift_evaluated=drift_evaluated)
             if rule is None:
                 continue                              # no exit yet
+            if not placement_open:
+                # Pre-open: a stop/guard/time exit qualifies, but RH rejects pre-
+                # market orders. DEFER to open+buffer (the next post-open tick re-
+                # evaluates on the live quote and places). Emit an audit_event so a
+                # deferred exit is VISIBLE — the old off-hours path cancelled at the
+                # 90s poll and logged NOTHING.
+                log.info("pead_strategy.manage: %s exit '%s' qualifies pre-open — "
+                         "deferred to open+buffer (no pre-market order)", r["symbol"], rule)
+                self.logger_agent.log_event(
+                    self.SLUG, "pead_exit_deferred",
+                    {"strategy": self.SLUG, "division": self.SLUG,
+                     "symbol": r["symbol"], "rule": rule, "reason": "pre_open"})
+                continue
             sell = ProposedOrder(
                 strategy=self.SLUG, symbol=r["symbol"], side="sell", qty=float(r["qty"]),
                 order_type="market", id=f"{r['order_id']}-exit-{rule}", fractional=True,
@@ -522,12 +738,16 @@ class PEADStrategy:
         return exits, cadence
 
     @staticmethod
-    def _fired_rule(pr: "pp.Pressures", days_to_next, held) -> str | None:
+    def _fired_rule(pr: "pp.Pressures", days_to_next, held,
+                    drift_evaluated: bool = True) -> str | None:
         """Top-down first-match-wins; fire when a pressure reaches 1.0 (stop /
-        drift / time) or the guard date arrives (≤ GUARD_LEAD_DAYS)."""
+        drift / time) or the guard date arrives (≤ GUARD_LEAD_DAYS). `drift_evaluated`
+        gates the DRIFT branch: drift is honoured ONLY on a completed-daily-bar tick
+        (manage() sets it False on the entry day and on intraday ticks with no new
+        completed daily bar), so a same-day intraday dip can never fire drift."""
         if pr.stop >= 1.0:
             return "stop"
-        if pr.drift >= 1.0:
+        if drift_evaluated and pr.drift >= 1.0:
             return "drift"
         if days_to_next is not None and days_to_next <= pp.GUARD_LEAD_DAYS:
             return "guard"
@@ -556,6 +776,32 @@ class PEADStrategy:
             conn.execute(
                 "UPDATE paper_trade_record SET qty=? WHERE order_id=? AND result IS NULL",
                 (float(residual_qty), order_id),
+            )
+
+    @staticmethod
+    def _prev_weekday(d: date) -> date:
+        """The most recent weekday strictly before `d` (Mon->Fri). Used only as a
+        cheap 'has a new session likely completed?' guard so manage() does not hit the
+        RH daily fetcher every 5-min tick. Holidays only cause an occasional harmless
+        EXTRA fetch (never a missed one — the fetched bars are still filtered to real
+        completed sessions strictly before today). Drift signals on session D's close
+        are therefore acted on from D+1's ticks: a ≤1-session pickup lag, immaterial
+        for a slow multi-day rule and safe (never fires on a still-forming bar)."""
+        from datetime import timedelta
+        x = d - timedelta(days=1)
+        while x.weekday() >= 5:   # Sat=5, Sun=6
+            x -= timedelta(days=1)
+        return x
+
+    def _mark_drift_daily(self, order_id: str, day_iso: str) -> None:
+        """Record (in the row's extra_json) the completed daily bar last evaluated for
+        DRIFT, so drift fires at most once per new daily close — not every manage tick."""
+        with db.connect(self.db_url) as conn:
+            conn.execute(
+                "UPDATE paper_trade_record SET "
+                "extra_json=json_set(COALESCE(extra_json,'{}'),'$.drift_last_daily',?) "
+                "WHERE order_id=? AND result IS NULL",
+                (day_iso, order_id),
             )
 
     # ── Flag-2 / Entry-fix: intent → at-open placement ───────────────────────────
@@ -846,6 +1092,7 @@ class PEADStrategy:
             order.extra["executed_notional"] = float(en)
         if avg > 0:
             order.extra["entry_reference_price"] = avg
+            order.extra["earnings_gap_top"] = avg   # re-anchor DRIFT gap to the REALIZED fill (entry_open), like the stop
             _pr = pp.primitives_from_extra(order.extra, avg)
             if _pr is not None:
                 order.extra["stop_price"] = pp.stop_level(_pr)
@@ -870,8 +1117,11 @@ class PEADStrategy:
 
     @staticmethod
     def _notional_budget(cfg: dict, equity: float) -> float:
-        """Equal-dollar notional per candidate (same value for every candidate in a
-        scan). `position_notional` (fixed $) overrides; else position_pct × equity."""
+        """RETIRED sizer (2026-08-02) — NO LONGER CALLED BY scan(), which now uses
+        the settled-cash derived sizer (see the DERIVED SIZING block in scan). Kept
+        only so `position_pct` / `position_notional` stay readable and for any
+        external/back-compat caller. `position_notional` (fixed $) overrides; else
+        the retired position_pct × equity."""
         fixed = cfg.get("position_notional")
         if fixed is not None:
             try:

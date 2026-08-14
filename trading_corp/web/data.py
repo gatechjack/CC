@@ -165,6 +165,14 @@ class PMCCPair:
     leap: OptionLeg | None
     short_call: OptionLeg | None
     extras: list[OptionLeg]
+    # Unified tile/expert decision status, attached by build_division_view for
+    # robinhood_pmcc: {state: fresh|stale|none, status_label, urgency, source,
+    # age_h, stale_label, no_signal_label}. None until attached / non-PMCC.
+    unified_status: dict | None = None
+    # Equity shares held on this underlying (from stock_holdings), so the
+    # classifier can tell a real shares-backed covered call from a LEAP-covered
+    # PMCC. None = unknown (treated as no shares). Populated by _group_pmcc_pairs.
+    underlying_shares: float | None = None
 
     @property
     def has_full_pair(self) -> bool:
@@ -183,27 +191,40 @@ class PMCCPair:
                 parts.append(x.unrealized_pnl)
         return sum(parts) if parts else None
 
+    def _shares_cover_short(self) -> bool:
+        """True iff equity shares fully back the short call (>= 100 per short
+        contract). Shares are the *covered-call* cover; a PMCC uses a long call
+        instead (checked before this). None shares => not covered."""
+        if self.short_call is None or self.underlying_shares is None:
+            return False
+        needed = 100.0 * abs(self.short_call.qty or 0)
+        return needed > 0 and self.underlying_shares >= needed
+
     @property
     def structure_type(self) -> str:
-        """Classify the structure at a glance.
+        """Classify the structure by WHAT COVERS THE SHORT — never by the long
+        leg's remaining DTE. A real LEAP that has aged below any day-count still
+        covers its short and is still a PMCC (the 180-DTE discriminator was the
+        old covered-call mislabel bug: an aged LEAP flipped to 'covered_call').
 
         Returns one of:
-          'pmcc'           — LEAP (DTE >= 180, long call) + short call against it
-          'covered_call'   — long call (DTE < 180) + short call
-          'uncovered_leap' — LEAP only, no short
-          'naked_call'     — long call only, short DTE
-          'short_only'     — short call only (rare; usually leg of something else)
-          'other'          — unusual combination (extras only, or mixed)
+          'pmcc'           — long call (LEAP/diagonal) + short call: the long
+                             call covers the short, at ANY remaining DTE.
+          'covered_call'   — equity shares (>= 100 per short contract) + short
+                             call, NO long-call cover: the shares cover.
+          'uncovered_leap' — long call only, no short (any DTE).
+          'short_only'     — short call with no cover (no long call, no shares)
+                             = a naked short.
+          'other'          — no primary call legs (extras/puts only, or empty).
         """
-        if self.leap and self.short_call:
-            return "pmcc" if (self.leap.dte or 0) >= 180 else "covered_call"
-        if self.leap and not self.short_call:
-            return (
-                "uncovered_leap" if (self.leap.dte or 0) >= 180
-                else "naked_call"
-            )
-        if self.short_call and not self.leap:
-            return "short_only"
+        if self.short_call:
+            if self.leap:
+                return "pmcc"                    # long call covers the short (any DTE)
+            if self._shares_cover_short():
+                return "covered_call"            # equity-covered short
+            return "short_only"                  # naked short
+        if self.leap:
+            return "uncovered_leap"              # long call, no short (any DTE)
         return "other"
 
     @property
@@ -675,6 +696,27 @@ class DivisionViewSnapshot:
     # data_exec.py REST layer emits these). Shape: gate_a_resilience_24h().
     # Relocated here from the retired home-page Stage-1 monitoring row.
     gate_a: dict | None = None
+    # True when the division's broker is NOT a paper/sim broker — i.e. orders
+    # placed via Approve will hit a real-money account. Default False so that
+    # any division whose broker is unknown/None stays conservatively "paper".
+    # Purely observability; no order-placement logic reads this field.
+    is_live: bool = False
+
+
+def _division_is_live(broker) -> bool:
+    """Return True when *broker* is a live (non-paper) broker instance.
+
+    Reads the ``paper`` attribute that every broker exposes:
+      - ``paper=True``  → simulation / paper-execution broker → returns False
+      - ``paper=False`` → live real-money broker              → returns True
+      - broker is None or attribute missing → conservatively False
+
+    Pure function; no I/O.  Extracted so tests can cover it without spinning
+    up the full async build_division_view stack.
+    """
+    if broker is None:
+        return False
+    return not bool(getattr(broker, "paper", True))
 
 
 @dataclass
@@ -3283,6 +3325,73 @@ async def build_donchian_chart_data(db_url: str, display_bars: int = 50) -> dict
     }
 
 
+def _build_pmcc_tile_status(symbol: str, *, db_url, now, cfg: dict, agent=None, slug=None) -> dict:
+    """Resolve the unified tile/expert decision status for one PMCC underlying.
+
+    Loads the single per-asset decision record (the SAME one the Expert panel
+    reads, so they can't disagree) and classifies it fresh|stale|none. The label
+    is the EFFECTIVE post-gate status (via `_pmcc_status.effective_status`) — the raw
+    judgment only when actually actionable; else EARNINGS WINDOW / CAN'T PRICE — so the
+    tile can never show a stale action the downstream gates already suppressed. When
+    `agent`/`slug` are passed it reads the cheap earnings gate + the live pricing cache;
+    without them it degrades to the raw label. Never raises (a status read must not break
+    the page).
+    """
+    from trading_corp.agents.divisions import _pmcc_status
+    cfg = cfg or {}
+    staleness_h = float(cfg.get("staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+    rec = _pmcc_status.load_decision(symbol, db_url=db_url)
+    state = _pmcc_status.classify_freshness(rec, now, staleness_h)
+    out = {
+        "state": state,
+        "stale_label": cfg.get("stale_label", "stale"),
+        "no_signal_label": cfg.get("no_signal_label", "awaiting scan"),
+        "status_label": None,
+        "urgency": "routine",
+        "source": None,
+        "age_h": None,
+        "suppressed": False,
+        "reason": None,
+        "actionable": False,
+    }
+    if state in ("fresh", "stale") and isinstance(rec, dict):
+        _raw = (rec.get("status") or "").lower()
+        # Gather the SAME effective-status inputs the Expert panel uses — only for a
+        # placeable action (hold/watch have nothing to gate): the cheap earnings gate
+        # (24h-cached) + the live pricing buildability already in the pmcc_pricing cache.
+        _earn_state, _earn_reason = None, None
+        _buildable, _price_reason, _mkt_closed = None, None, False
+        if _raw in _pmcc_status.PLACEABLE_ACTIONS:
+            if agent is not None:
+                try:
+                    _earn_state, _earn_reason = agent._earnings_gate_state(symbol)
+                except Exception:      # noqa: BLE001 — a status read must not break the page
+                    _earn_state, _earn_reason = None, None
+            try:
+                from trading_corp.web import pmcc_pricing
+                _pr = pmcc_pricing.cached(slug, symbol) if slug else None
+                _mkt_closed = (bool(_pr.market_closed) if _pr is not None
+                               else not pmcc_pricing.market_regular_open())
+                # Off-hours the cached `buildable` is stale — treat as unknown so a stale
+                # 'buildable' never reads as actionable once the session is closed.
+                _buildable = None if _mkt_closed else (_pr.buildable if _pr is not None else None)
+                _price_reason = None if _mkt_closed else (_pr.estimate_reason if _pr is not None else None)
+            except Exception:      # noqa: BLE001 — pricing read must not break the page
+                _buildable, _price_reason, _mkt_closed = None, None, False
+        eff = _pmcc_status.effective_status(
+            _raw, earnings_state=_earn_state, earnings_reason=_earn_reason,
+            buildable=_buildable, price_reason=_price_reason, market_closed=_mkt_closed,
+        )
+        out["status_label"] = eff["label"]
+        out["suppressed"] = eff["suppressed"]
+        out["reason"] = eff["reason"]
+        out["actionable"] = eff["actionable"]
+        out["urgency"] = rec.get("urgency") or "routine"
+        out["source"] = rec.get("source")
+        out["age_h"] = _pmcc_status.age_hours(rec, now)
+    return out
+
+
 async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
     """Fan out everything needed for the /division/{slug} page.
 
@@ -3388,8 +3497,49 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         ))
 
     # Group into PMCC pairs: per underlying, pick the longest-DTE long call
-    # as the LEAP and the nearest-DTE short call as the short leg.
-    pmcc_pairs, other_options = _group_pmcc_pairs(legs, prices)
+    # as the LEAP and the nearest-DTE short call as the short leg. Pass equity
+    # share counts so the classifier can tell a shares-backed covered call from
+    # a LEAP-covered PMCC (structure_type by cover, not by LEAP DTE).
+    _shares_by_sym = {(h.symbol or "").upper(): h.qty for h in stock_holdings}
+    pmcc_pairs, other_options = _group_pmcc_pairs(legs, prices, _shares_by_sym)
+
+    # Attach the unified tile/expert decision status to each PMCC pair
+    # (robinhood_pmcc only) — one timestamped verdict per asset, shared with the
+    # Expert panel, classified fresh|stale|none. Best-effort; a status-read
+    # failure leaves the tile at NO SIGNAL rather than breaking the page.
+    if slug == "robinhood_pmcc" and pmcc_pairs:
+        _ts_cfg = {}
+        _agent = getattr(deps, "pmcc_agent", None)
+        if _agent is not None:
+            _ts_cfg = (getattr(_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
+        _ts_now = datetime.now(timezone.utc)
+        # P1 (2026-07-31): live pricing for ALL tiles — RH-only, NO LLM. Serve the
+        # display cache (< TTL) else price (staggered, market-hours-gated inside
+        # refresh_division → no pull pre/after-hours). Never blocks the page on a
+        # pricing failure; a failure leaves _p.pricing = None (tile shows nothing new).
+        # Runs BEFORE the unified status below so the effective-status gate can read the
+        # CURRENT-load buildability from the just-refreshed pricing cache.
+        for _p in pmcc_pairs:
+            _p.pricing = None
+        if _agent is not None and broker is not None:
+            try:
+                from trading_corp.web import pmcc_pricing
+                await pmcc_pricing.refresh_division(
+                    _agent, broker, slug,
+                    [_p.underlying for _p in pmcc_pairs], deps.db_url,
+                )
+                for _p in pmcc_pairs:
+                    _p.pricing = pmcc_pricing.tile_pricing_view(
+                        pmcc_pricing.cached(slug, _p.underlying))
+            except Exception as e:      # noqa: BLE001 — pricing must never break the page
+                log.warning("pmcc tile pricing failed for %s: %s", slug, e)
+        # Unified EFFECTIVE status (post-gate) — reads the just-refreshed pricing cache +
+        # the cheap earnings gate so the tile can never disagree with the Expert panel.
+        for _p in pmcc_pairs:
+            _p.unified_status = _build_pmcc_tile_status(
+                _p.underlying, db_url=deps.db_url, now=_ts_now, cfg=_ts_cfg,
+                agent=_agent, slug=slug,
+            )
 
     # Activity feed for this division
     activity = _query_division_activity(deps.db_url, slug, division.strategy, limit=20)
@@ -3496,6 +3646,7 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         bitunix_pending_pa=bitunix_pending_pa_view,
         bitunix_trade_plan=bitunix_trade_plan_view,
         gate_a=gate_a_view,
+        is_live=_division_is_live(broker),
     )
 
 
@@ -3606,6 +3757,18 @@ class PMSummary:
     # cutoff_ts: full ISO; cutoff_label: YYYY-MM-DD for the tile badge.
     cutoff_ts: str | None = None
     cutoff_label: str | None = None
+    # Option-B (distinct-market) aggregates for Kalshi divisions only.
+    # One row per distinct ticker (canonical = earliest entry_ts emission).
+    # None for non-kalshi divisions (or the All view mixing venues).
+    # n_resolved_markets / n_wins_markets / total_realized_markets_pnl /
+    # win_rate_markets_pct are additive siblings of the per-emission fields;
+    # the existing per-emission (Option-A) fields are UNCHANGED.
+    # TODO(display): wire these into the prediction-markets tile template.
+    n_resolved_markets: int | None = None
+    n_wins_markets: int | None = None
+    n_voids_markets: int | None = None
+    total_realized_markets_pnl: float | None = None
+    win_rate_markets_pct: float | None = None
 
 
 @dataclass
@@ -3804,6 +3967,7 @@ DASHBOARD_RT_CUTOFFS: dict[str, str] = {
     # filtered out of dashboard aggregates.
     "kalshi_weather": "2026-05-26T01:08:00+00:00",  # bias-offset v1 deploy (22 cells, magnitude-filtered ≥1.0°F, 9 spring fully-validated + 13 non-spring nbm-only watch-items). Advanced from 2026-05-22T16:25 (P3 xref deploy). First attempt 2026-05-26 00:24 UTC crash-looped on missing residual_logic dependency (rolled back 00:44); successful re-deploy at 2026-05-26 01:10:33 UTC after inlining derive_season. cutoff pre-picked at 01:08 (2.5 min before actual restart) — minor sliver of 01:08-01:10 pre-bias rows passes the dashboard filter. See deploy_log.md 2026-05-26 01:10 UTC.
     "kalshi_crypto":  "2026-05-20T05:52:09+00:00",  # vol-v2 + max_divergence_pct live — see deploy_log.md 2026-05-20 05:52 UTC (matches KALSHI_CRYPTO_VOL_V2_CUTOFF in web/kalshi_crypto_vol_v2.py)
+    "kalshi_llm_arbitrage": "2026-07-07T16:40:00+00:00",  # discovery narrowed to [Economics, Elections] + resolver leg_date fix (deploy_log 2026-07-07 16:40 UTC; commits b5eb93f/d1f5ea6). Scopes dashboard round-trip metrics to post-change entries; the OPEN tab honors the same cutoff via _query_pm_open_trades (_llm_cut).
 }
 
 
@@ -4344,6 +4508,10 @@ def _query_pm_open_trades(
     kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
     if kalshi_slugs:
         kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+        # Scope the OPEN tab to a kalshi division's dashboard cutoff (entry
+        # epoch), mirroring _kalshi_cutoff_clause but against the audit
+        # payload's division + a.ts. Empty => the clause self-disables.
+        _llm_cut = DASHBOARD_RT_CUTOFFS.get("kalshi_llm_arbitrage", "")
         rows = _query(
             db_url,
             f"SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
@@ -4355,6 +4523,7 @@ def _query_pm_open_trades(
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "
             + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "a.ts")
+            + f"  AND NOT (json_extract(a.payload_json, '$.division') = 'kalshi_llm_arbitrage' AND a.ts < '{_llm_cut}') "
             + f"  AND r.order_id IS NULL "
             f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
             f"    SELECT entry_order_id FROM kalshi_round_trips "
@@ -4485,6 +4654,9 @@ def _query_pm_pending_count(
     kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
     if kalshi_slugs:
         kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+        # Match _query_pm_open_trades: scope the pending COUNT to a kalshi
+        # division cutoff (entry epoch) so the OPEN badge equals the OPEN list.
+        _llm_cut = DASHBOARD_RT_CUTOFFS.get("kalshi_llm_arbitrage", "")
         rows = _query(
             db_url,
             f"SELECT COUNT(*) AS n FROM audit_event a "
@@ -4494,6 +4666,7 @@ def _query_pm_pending_count(
             f"  AND a.kind = 'would_have_placed' "
             f"  AND COALESCE(json_extract(a.payload_json, '$.side'), 'buy') = 'buy' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({kalshi_ph}) "
+            f"  AND NOT (json_extract(a.payload_json, '$.division') = 'kalshi_llm_arbitrage' AND a.ts < '{_llm_cut}') "
             f"  AND r.order_id IS NULL "
             f"  AND json_extract(a.payload_json, '$.order_id') NOT IN ("
             f"    SELECT entry_order_id FROM kalshi_round_trips "
@@ -4577,6 +4750,71 @@ def _query_pm_resolved_stats(
     return out
 
 
+def _query_kalshi_distinct_market_stats(
+    db_url: str, division_slugs: list[str],
+    *,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
+) -> dict:
+    """Option-B distinct-market headline aggregation for Kalshi divisions.
+
+    Option A (per-emission) is the raw `kalshi_round_trips` table — every
+    re-emission of the same market signal creates a separate row.
+    Option B (per-market) is this read-layer aggregation: one canonical row
+    per distinct `ticker`, chosen as the EARLIEST entry_ts emission (tie-
+    broken by rowid/id).  Canonical = earliest because it models the
+    idealized case where the division entered once on first signal fire and
+    held to resolution.
+
+    Dedup key is the full market `ticker` (NOT `event_ticker`, which
+    over-collapses distinct strikes — e.g. Treasury T10 / T8 share one
+    event_ticker but are separate markets with independent results).
+
+    Only handles kalshi slugs (division_slugs filtered by `_KALSHI_PREFIX`);
+    returns the zero dict if none are present — does NOT touch polymarket
+    data.  Applies `_kalshi_cutoff_clause` and `_kalshi_copy_mode_clause`
+    identically to `_query_pm_resolved_stats`'s kalshi branch.
+
+    Returns {n_resolved, n_wins, n_voids, total_realized_pnl} where counts
+    are over DISTINCT markets, not emissions — n_resolved will be lower than
+    or equal to the per-emission Option-A count.
+    """
+    out: dict = {"n_resolved": 0, "n_wins": 0, "n_voids": 0, "total_realized_pnl": 0.0}
+    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    if not kalshi_slugs:
+        return out
+
+    kalshi_ph = ",".join("?" for _ in kalshi_slugs)
+    # Window-function CTE: rank emissions per ticker by entry_ts ASC (earliest
+    # first), tie-break by id ASC (rowid proxy for insertion order).  The
+    # outer SELECT filters to rn=1 so each ticker contributes exactly one row.
+    sql = (
+        f"WITH ranked AS ("
+        f"  SELECT ticker, won, market_result, realized_pnl, "
+        f"         ROW_NUMBER() OVER ("
+        f"           PARTITION BY ticker ORDER BY entry_ts ASC, id ASC"
+        f"         ) AS rn "
+        f"  FROM kalshi_round_trips "
+        f"  WHERE division IN ({kalshi_ph})"
+        + _kalshi_cutoff_clause("entry_ts")
+        + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
+        + f") "
+        f"SELECT COUNT(*) AS n_resolved, "
+        f"       COALESCE(SUM(won), 0) AS n_wins, "
+        f"       COALESCE(SUM(CASE WHEN COALESCE(market_result,'') = 'void' "
+        f"                         THEN 1 ELSE 0 END), 0) AS n_voids, "
+        f"       COALESCE(SUM(realized_pnl), 0.0) AS total_pnl "
+        f"FROM ranked WHERE rn = 1"
+    )
+    rows = _query(db_url, sql, tuple(kalshi_slugs))
+    if rows:
+        out["n_resolved"] = int(rows[0].get("n_resolved") or 0)
+        out["n_wins"] = int(rows[0].get("n_wins") or 0)
+        out["n_voids"] = int(rows[0].get("n_voids") or 0)
+        out["total_realized_pnl"] = float(rows[0].get("total_pnl") or 0.0)
+    return out
+
+
 def _pm_equity_at(curve: list[PMEquityPoint], at_or_before: datetime) -> float | None:
     """Last equity point at or before the given UTC datetime, summed
     across divisions present in the curve. Returns None if no points."""
@@ -4597,6 +4835,8 @@ def _query_pm_whales(
     db_url: str, target_slugs: list[str],
     *,
     pm_epoch: str | None = None,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
     selected_sort: str | None = None,
     selected_desc: bool = True,
     hide_uncopyable: bool = False,
@@ -4653,28 +4893,35 @@ def _query_pm_whales(
     # Kalshi K3
     if "kalshi_copy_trading" in target_slugs:
         try:
-            rows = _query(db_url, """
-              SELECT json_extract(extra_json, '$.whale_handle') AS handle,
-                     COUNT(*) AS n,
-                     SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) AS w,
-                     SUM(CASE WHEN won=0 THEN 1 ELSE 0 END) AS l,
-                     SUM(realized_pnl) AS pnl,
-                     MAX(entry_ts) AS last_ts
-              FROM kalshi_round_trips
-              WHERE division='kalshi_copy_trading' AND won IS NOT NULL
-              GROUP BY handle
-            """)
-            opens = _query(db_url, """
-              SELECT json_extract(payload_json,'$.whale_handle') AS handle,
-                     COUNT(*) AS n
-              FROM audit_event
-              WHERE actor='kalshi_copy_trader'
-                AND kind='would_have_placed'
-                AND json_extract(payload_json,'$.side')='buy'
-                AND json_extract(payload_json,'$.order_id') NOT IN
-                  (SELECT entry_order_id FROM kalshi_round_trips WHERE entry_order_id IS NOT NULL)
-              GROUP BY handle
-            """)
+            # S2 fix (c) 2026-07-26: epoch-scope the per-whale panel to match the
+            # tile (_query_pm_resolved_stats). Was full-history; now honors the
+            # Paper/Live/All slice via _kalshi_copy_mode_clause on entry_ts.
+            rows = _query(
+              db_url,
+              "SELECT json_extract(extra_json, '$.whale_handle') AS handle, "
+              "COUNT(*) AS n, "
+              "SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) AS w, "
+              "SUM(CASE WHEN won=0 THEN 1 ELSE 0 END) AS l, "
+              "SUM(realized_pnl) AS pnl, MAX(entry_ts) AS last_ts "
+              "FROM kalshi_round_trips "
+              "WHERE division='kalshi_copy_trading' AND won IS NOT NULL"
+              + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
+              + " GROUP BY handle"
+            )
+            # S2 fix (c): scope opens to the same epoch as the panel (on audit ts).
+            opens = _query(
+              db_url,
+              "SELECT json_extract(payload_json,'$.whale_handle') AS handle, "
+              "COUNT(*) AS n "
+              "FROM audit_event "
+              "WHERE actor='kalshi_copy_trader' "
+              "AND kind='would_have_placed' "
+              "AND json_extract(payload_json,'$.side')='buy' "
+              "AND json_extract(payload_json,'$.order_id') NOT IN "
+              "(SELECT entry_order_id FROM kalshi_round_trips WHERE entry_order_id IS NOT NULL)"
+              + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "ts")
+              + " GROUP BY handle"
+            )
             opens_map = {r.get("handle"): int(r.get("n") or 0) for r in opens}
             for r in rows:
                 handle = r.get("handle") or "(unknown)"
@@ -4818,7 +5065,10 @@ def _query_pm_whales(
         kalshi_handles = [w.handle for w in out if w.venue == "kalshi"]
         if kalshi_handles:
             try:
-                intel = _query_kalshi_whale_intel(db_url, kalshi_handles)
+                intel = _query_kalshi_whale_intel(
+                    db_url, kalshi_handles,
+                    kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch,
+                )
                 for w in out:
                     if w.venue != "kalshi":
                         continue
@@ -5179,6 +5429,9 @@ def _query_kalshi_whale_intel(
     db_url: str,
     whale_handles: list[str],
     division: str = "kalshi_copy_trading",
+    *,
+    kalshi_copy_mode: str = "all",
+    kalshi_copy_epoch: str | None = None,
 ) -> dict[str, dict]:
     """Read-only per-whale copy-quality intel from audit_event + kalshi_round_trips.
 
@@ -5226,18 +5479,30 @@ def _query_kalshi_whale_intel(
         p = max(0.0, min(1.0, float(p)))
         return math.ceil(0.07 * c * p * (1.0 - p) * 100.0) / 100.0
 
+    # P1 2026-07-27: epoch-scope the intel columns to match fix (c)'s base columns
+    # on the Selected panel (Paper/Live/All slice, same as the tile). Default 'all'
+    # = no scoping (Watch bench caller keeps all-time). audit_event scoped on `ts`,
+    # kalshi_round_trips on `entry_ts`. Keeps copies/no_side/sports (and thus
+    # copyability) + net_pnl consistently scoped so the row reads one scope.
+    _ts_clause = _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "ts")
+    _entry_clause = _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
+
     try:
         with db.connect(db_url) as conn:
-            # 1. Entry copies (would_have_placed, side='buy') per whale handle.
+            # 1. Entry copies per whale handle. S2 fix (a) 2026-07-26: count BOTH
+            #    paper would_have_placed AND live kalshi_copy_placed_live (the live
+            #    kind froze the paper-only numerator at go-live). no_fill excluded
+            #    (liquidity, not copyability). side='buy' matches both kinds.
             rows = conn.execute(
                 "SELECT json_extract(payload_json,'$.whale_handle') AS h, "
                 "       COUNT(*) AS n, MAX(ts) AS last_ts "
                 "FROM audit_event "
                 "WHERE actor='kalshi_copy_trader' "
-                "  AND kind='would_have_placed' "
+                "  AND kind IN ('would_have_placed','kalshi_copy_placed_live') "
                 "  AND json_extract(payload_json,'$.side')='buy' "
-                "  AND json_extract(payload_json,'$.whale_handle') IS NOT NULL "
-                "GROUP BY h"
+                "  AND json_extract(payload_json,'$.whale_handle') IS NOT NULL"
+                + _ts_clause
+                + " GROUP BY h"
             ).fetchall()
             for r in rows:
                 h = r[0]
@@ -5264,8 +5529,9 @@ def _query_kalshi_whale_intel(
                 "       COUNT(*) AS n "
                 "FROM audit_event "
                 "WHERE actor='kalshi_copy_trader' "
-                "  AND kind='kalshi_copy_entry_skipped_no_side' "
-                "GROUP BY h"
+                "  AND kind='kalshi_copy_entry_skipped_no_side'"
+                + _ts_clause
+                + " GROUP BY h"
             ).fetchall()
             for r in rows:
                 h = r[0]
@@ -5279,8 +5545,9 @@ def _query_kalshi_whale_intel(
                 "       COUNT(*) AS n "
                 "FROM audit_event "
                 "WHERE actor='kalshi_copy_trader' "
-                "  AND kind='kalshi_copy_entry_skipped_sports' "
-                "GROUP BY h"
+                "  AND kind='kalshi_copy_entry_skipped_sports'"
+                + _ts_clause
+                + " GROUP BY h"
             ).fetchall()
             for r in rows:
                 h = r[0]
@@ -5294,7 +5561,8 @@ def _query_kalshi_whale_intel(
                 "       json_extract(extra_json,'$.exit_price') AS exit_price "
                 "FROM kalshi_round_trips "
                 "WHERE division=? "
-                "  AND json_extract(extra_json,'$.whale_handle') IS NOT NULL",
+                "  AND json_extract(extra_json,'$.whale_handle') IS NOT NULL"
+                + _entry_clause,
                 (division,),
             ).fetchall()
             # Accumulate per handle.
@@ -5609,6 +5877,7 @@ async def build_prediction_market_view(
         asyncio.to_thread(_query_pm_open_trades, db_url, target_slugs, 200, pm_epoch=pm_epoch, kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch),
         asyncio.to_thread(
             _query_pm_whales, db_url, target_slugs, pm_epoch=pm_epoch,
+            kalshi_copy_mode=kalshi_copy_mode, kalshi_copy_epoch=kalshi_copy_epoch,
             selected_sort=kalshi_selected_sort, selected_desc=kalshi_selected_desc,
             hide_uncopyable=kalshi_sel_hide_uncopyable, hide_net_neg=kalshi_sel_hide_net_neg,
         ),
@@ -5635,6 +5904,30 @@ async def build_prediction_market_view(
     if division is not None and division in DASHBOARD_RT_CUTOFFS:
         summary.cutoff_ts = DASHBOARD_RT_CUTOFFS[division]
         summary.cutoff_label = summary.cutoff_ts.split("T", 1)[0]
+
+    # Option-B (distinct-market) aggregates — Kalshi single-division only.
+    # Scoped to single-division pages so the metric is unambiguous; the All
+    # view mixes venues and the per-market dedup only makes sense per-division.
+    # Non-kalshi (polymarket) single-division pages leave the fields as None.
+    if division is not None and division.startswith(_KALSHI_PREFIX):
+        dm = await asyncio.to_thread(
+            _query_kalshi_distinct_market_stats,
+            db_url, [division],
+            kalshi_copy_mode=kalshi_copy_mode,
+            kalshi_copy_epoch=kalshi_copy_epoch,
+        )
+        n_res_m = dm["n_resolved"]
+        n_win_m = dm["n_wins"]
+        n_voi_m = dm["n_voids"]
+        n_loss_m = n_res_m - n_win_m - n_voi_m
+        decisive_m = n_win_m + n_loss_m
+        summary.n_resolved_markets = n_res_m
+        summary.n_wins_markets = n_win_m
+        summary.n_voids_markets = n_voi_m
+        summary.total_realized_markets_pnl = dm["total_realized_pnl"]
+        summary.win_rate_markets_pct = (
+            100.0 * n_win_m / decisive_m if decisive_m > 0 else None
+        )
 
     vol_v2_block = None
     if division == "kalshi_crypto":
@@ -5711,24 +6004,30 @@ async def _fetch_prices_async(symbols: list[str]) -> dict[str, float]:
 
 
 def _group_pmcc_pairs(
-    legs: list[OptionLeg], prices: dict[str, float]
+    legs: list[OptionLeg], prices: dict[str, float],
+    shares: dict[str, float] | None = None,
 ) -> tuple[list[PMCCPair], list[OptionLeg]]:
     """Group option legs into pairs by underlying.
 
     Every underlying with at least one option becomes a pair entry. The
     DTE-based "qualify as PMCC" filter has been removed — short-DTE long
     calls still appear as pairs, and `pair.structure_type` classifies them
-    ('pmcc' vs 'covered_call' vs 'uncovered_leap' etc.).
+    ('pmcc' vs 'covered_call' vs 'uncovered_leap' etc.) by WHAT COVERS THE
+    SHORT, not by the long leg's remaining DTE.
 
     For each underlying:
       - leap   = the long call with the highest DTE (longest-dated long)
       - short  = the short call with the lowest DTE (nearest expiry)
       - extras = everything else (puts, additional longs/shorts)
+      - underlying_shares = equity share qty (from `shares`), so a genuine
+        shares-backed covered call classifies as 'covered_call' while every
+        LEAP-covered position is 'pmcc'.
 
     Returns (pairs, other_options) where `other_options` is now always empty
     — kept in the return signature to avoid churn at call sites; will be
     removed once nothing reads it.
     """
+    shares = shares or {}
     by_und: dict[str, list[OptionLeg]] = {}
     for leg in legs:
         by_und.setdefault(leg.underlying, []).append(leg)
@@ -5753,6 +6052,7 @@ def _group_pmcc_pairs(
             leap=leap,
             short_call=short,
             extras=extras,
+            underlying_shares=shares.get(und),
         ))
 
     # Sort by priority (most urgent first), then alphabetically as tie-break

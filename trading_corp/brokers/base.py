@@ -49,6 +49,13 @@ class AccountSnapshot:
     # than act on a phantom (under-reported) drawdown. See
     # runbooks/2026-06-15_breaker_abstain_on_partial_equity_scoping.md.
     equity_complete: bool = True
+    # SETTLED, PLACEABLE cash — the cash that can actually fund a NEW order right
+    # now, EXCLUDING unsettled proceeds (T+1 on a cash account) and cash already
+    # held for open orders. None => the broker does not expose it (paper/stub and
+    # every non-RH adapter keep None, so nothing changes for them). Currently only
+    # RobinhoodBroker populates it (from load_account_profile); consumed by the
+    # PEAD derived, self-balancing sizer. Additive/optional by design.
+    settled_cash: float | None = None
 
 
 class ReadOnlyBroker(ABC):
@@ -100,7 +107,7 @@ class Broker(ReadOnlyBroker):
     async def cancel_order(self, order_id: str) -> bool: ...
 
     async def place_multi_leg(
-        self, orders: list[ProposedOrder]
+        self, orders: list[ProposedOrder], *, ref_id: str | None = None,
     ) -> list[FillEvent]:
         """Submit a multi-leg option combo as a single atomic order.
 
@@ -110,6 +117,9 @@ class Broker(ReadOnlyBroker):
         iron-condor strategy design doc for the full extra-key contract.
         Returns one FillEvent per leg; all share `combo_id` in audit
         downstream. Atomic at the exchange: all legs fill or none do.
+
+        `ref_id` (optional): a deterministic client order id so a transient
+        retry dedupes at the venue. When None the adapter mints its own.
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not support multi-leg combo orders"
@@ -124,6 +134,18 @@ class Broker(ReadOnlyBroker):
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not expose option Greeks"
+        )
+
+    async def get_option_quote(
+        self, symbol: str, expiration: str, strike: float, option_type: str,
+    ) -> dict[str, float | None]:
+        """Return live {bid, ask, mark} for one option contract by
+        (symbol, expiration 'YYYY-MM-DD', strike, 'call'|'put'). Used by the
+        combo dispatch to re-price a spread from the natural at approval time.
+        Values may be None when the venue omits a field.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not expose option quotes"
         )
 
 

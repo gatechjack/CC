@@ -1,0 +1,52 @@
+{# MACE entry-halt tri-state pill + button (Board-added 2026-08-13). The ONE
+   write surface on /mace: a kill-switch latch (agent_state robinhood_mace/
+   entry_halt) with auto_execute:false semantics. HONEST LATENCY, stated inline:
+   halting stops the NEXT symbol/attempt — an already-resting order completes
+   its fill-or-cancel cycle; open-position management keeps running either way.
+   Self-polls every 30s; POST /mace/halt|arm re-renders this fragment. #}
+{% set h = halt %}
+<div id="mace-halt"
+     hx-get="/mace/partials/halt"
+     hx-trigger="every 30s"
+     hx-swap="outerHTML"
+     class="flex items-center gap-2">
+
+  {% if h.state == 'halted_config' %}
+    <span class="px-2 py-1 rounded-md text-[10px] font-mono font-semibold uppercase
+                 tracking-wider bg-warn/15 text-warn border border-warn/30"
+          title="auto_execute=false in config — the latch is moot; exits still run">
+      ENTRIES: HALTED (config)
+    </span>
+  {% elif h.state == 'halted_button' %}
+    <span class="px-2 py-1 rounded-md text-[10px] font-mono font-semibold uppercase
+                 tracking-wider bg-warn/15 text-warn border border-warn/30"
+          title="latched via dashboard{% if h.latch.ts %} @ {{ h.latch.ts }}{% endif %} — exits still run">
+      ENTRIES: HALTED (button)
+    </span>
+    <button hx-post="/mace/arm" hx-target="#mace-halt" hx-swap="outerHTML"
+            hx-confirm="Re-arm MACE entries? New condor entries resume at the next eval slot."
+            class="px-2 py-1 rounded-md text-[10px] font-mono font-semibold uppercase
+                   tracking-wider bg-gain/15 text-gain border border-gain/30
+                   hover:bg-gain/25 cursor-pointer">
+      ARM
+    </button>
+  {% else %}
+    <span class="px-2 py-1 rounded-md text-[10px] font-mono font-semibold uppercase
+                 tracking-wider bg-gain/15 text-gain border border-gain/30"
+          title="entry latch clear — entries run at the 15:45 slot">
+      ENTRIES: ARMED
+    </span>
+    <button hx-post="/mace/halt" hx-target="#mace-halt" hx-swap="outerHTML"
+            hx-confirm="HALT new MACE entries? Takes effect at the next symbol/attempt — a resting order still completes its fill-or-cancel cycle. Open-position management keeps running."
+            class="px-2 py-1 rounded-md text-[10px] font-mono font-semibold uppercase
+                   tracking-wider bg-loss/15 text-loss border border-loss/30
+                   hover:bg-loss/25 cursor-pointer">
+      HALT ENTRIES
+    </button>
+  {% endif %}
+
+  <span class="text-[9px] text-muted font-mono normal-case hidden lg:inline"
+        title="Halting stops the NEXT symbol/attempt; a resting order completes its fill-or-cancel cycle. Exits/manage always run.">
+    next-attempt latency · exits unaffected
+  </span>
+</div>

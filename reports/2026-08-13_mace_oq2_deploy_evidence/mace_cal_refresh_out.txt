@@ -1,0 +1,42 @@
+﻿Enable succeeded: 
+[stdout]
+=== STEP 1: CLI refresh (as azureuser) ===
+REFRESH seed: inserted=32 skipped=0 by_type={'NFP': 12, 'CPI': 12, 'FOMC': 8}
+REFRESH lpr:  inserted=13 skipped=0 months=13
+
+=== STEP 2: forward window per CLI list (2026-08-14..2026-09-30) ===
+DATE         TYPE           SCOPE    SOURCE   FETCHED_AT
+2026-08-20   LPR_FIX        ALL      rule     2026-08-14T04:37:10+00:00
+2026-09-04   NFP            ALL      seed     2026-08-14T04:37:10+00:00
+2026-09-11   CPI            ALL      seed     2026-08-14T04:37:10+00:00
+2026-09-16   FOMC           ALL      seed     2026-08-14T04:37:10+00:00
+2026-09-21   LPR_FIX        ALL      rule     2026-08-14T04:37:10+00:00
+-- 5 event(s)
+
+=== STEP 3: DB verify (read-only) ===
+TOTAL rows: 45
+--- BY TYPE+SOURCE ---
+CPI      seed  n= 12 2026-01-13..2026-12-10
+FOMC     seed  n=  8 2026-01-28..2026-12-09
+LPR_FIX  rule  n= 13 2026-08-20..2027-08-20
+NFP      seed  n= 12 2026-01-09..2026-12-04
+--- NEXT PER TYPE (>= 2026-08-14) ---
+LPR_FIX  next 2026-08-20
+NFP      next 2026-09-04
+CPI      next 2026-09-11
+FOMC     next 2026-09-16
+CHECK LPR_FIX  2026-08-20: PASS
+CHECK FOMC     2026-09-16: PASS
+CHECK CPI      2026-09-11: PASS
+CHECK NFP      2026-09-04: PASS
+mace_calendar_refresh audit rows: 0 (CLI path does not audit; expected 0 today - ANY row Monday = Sunday loop ran)
+
+=== STEP 4: /mace panel render (next-7d) ===
+PANEL: honest-empty line GONE (has events)
+PANEL: LPR_FIX rendered
+PANEL: 2026-08-20 rendered
+
+RESULT: OK
+
+[stderr]
+

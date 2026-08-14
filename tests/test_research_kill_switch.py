@@ -1,6 +1,6 @@
 """Kill switch: HALT_RESEARCH file presence aborts engagements at the FIRST node.
 
-Pins (unchanged from v2):
+Pins:
   - is_kill_switch_present(repo_root) reads from <repo_root>/HALT_RESEARCH
   - returns (True, info) with mtime + age_seconds when present
   - returns (False, info) when absent (path-only info dict)

@@ -19,12 +19,18 @@
 #
 # Coverage notes:
 #   SPY  — SPDR (SSGA): quarterly. All four 2026 dates confirmed from the
-#          SSGA "Calendar Year 2026 Dividend Distribution Schedule" PDF.
+#          SSGA "Calendar Year 2026 Dividend Distribution Schedule" PDF
+#          (doc SPD003792; re-verified 2026-08-13, matches exactly).
 #   QQQ  — Invesco: quarterly. Q1 + Q2 confirmed from public dividend
 #          trackers; Q3 + Q4 projected from Invesco's typical third-Monday
 #          (or first business day of week 3) pattern.
-#   IWM  — iShares: quarterly. Q1 + Q2 confirmed; Q3 + Q4 projected from
-#          iShares' historical third-Monday pattern.
+#   IWM  — iShares: quarterly. ALL FOUR 2026 dates + a potential 12/30
+#          excise distribution ISSUER-CONFIRMED from the iShares/BlackRock
+#          2026-2028 Fund Distributions Schedule (doc GPS0826-5839861,
+#          dated Aug 13 2026). ★ The old third-Monday projections here
+#          (9/21, 12/21) were WRONG — issuer rule is footnote (g): ex-div
+#          3 business days preceding the third FRIDAY => 9/15, 12/15.
+#          Corrected 2026-08-13 (research/mace_oq2/EXDIV_EVIDENCE.md).
 #   TLT  — iShares: monthly. Issuer-stated rule is "first business day of
 #          each month." May and June 2026 confirmed via tracker sources;
 #          the rest are extrapolated by that rule. Adjusted for weekends
@@ -35,6 +41,38 @@
 #          GLD holds physical gold bullion; the trust generates no
 #          dividend income or capital gains. Revisit if SSGA ever
 #          declares a special distribution.
+#
+# ── MACE universe additions ─────────────────────────────────────────────
+#   XLE  — Energy Select Sector SPDR: quarterly payer. Remaining 2026
+#          dates (9/21, 12/21) ISSUER-CONFIRMED from the same SSGA
+#          schedule as SPY (doc SPD003792). 9/21 falls INSIDE the Sep
+#          30-45 DTE rung windows — the guard is live from day 1.
+#   GDX  — VanEck Gold Miners: ANNUAL December payer (2025 actual:
+#          ex 12/22/2025, $0.6331/sh). VanEck publishes each year's date
+#          only in its December year-end release, so the 2026 date cannot
+#          be issuer-confirmed yet — shipped PROJECTED 12/21,
+#          confirmed:false, guard ON (Board CP0 Option A, 2026-08-13).
+#          *** TRIPWIRE: refresh from VanEck's December 2026 release.
+#          Never load-bearing before ~November at 30-45 DTE. ***
+#   USO  — United States Oil Fund: a commodity-pool ETF that holds WTI
+#          futures; pays NO distributions (stage-A verified 2026-08-09).
+#          Intentionally empty — mace.yaml sets exdiv_guard: false.
+#   IBIT — iShares Bitcoin Trust: spot-BTC grantor trust, no income and no
+#          distributions (sponsor sells trust bitcoin for expenses).
+#          Intentionally empty — exdiv_guard: false (GLD/USO non-payer
+#          precedent). Revisit only on a special distribution.
+#   EWZ  — iShares MSCI Brazil: DOES distribute (historically semi-annual,
+#          ~June + December, amounts/dates variable and declared only weeks
+#          ahead, NOT a full year in advance). exdiv_guard: true in mace.yaml.
+#          *** STRUCTURED-EMPTY: no confirmed 2026 ex-div dates yet. The
+#          guard is INERT for EWZ until real issuer dates are populated here.
+#          EWZ is DISABLED at launch; SOURCE iShares' 2026 distribution dates
+#          before enabling it (gated expansion / Phase-5 config review). ***
+#   FXI  — iShares China Large-Cap: semi-annual payer. Remaining 2026
+#          dates (12/15 + potential 12/30 excise) ISSUER-CONFIRMED from
+#          the iShares schedule (doc GPS0826-5839861, footnote (h):
+#          semi-annual ETFs align ex-dates with the quarterly ETFs).
+#          Populated 2026-08-13 — no longer structured-empty.
 
 ex_dividends:
   # ── SPY (SSGA, quarterly — all 4 confirmed) ─────────────────────────
@@ -81,27 +119,55 @@ ex_dividends:
     confirmed: false
     source: "projected — Invesco third-Monday pattern"
 
-  # ── IWM (iShares, quarterly) ────────────────────────────────────────
+  # ── XLE (SSGA, quarterly — remaining 2026 dates, issuer-confirmed) ──
+  - symbol: XLE
+    ex_date: "2026-09-21"
+    pay_date: "2026-09-23"
+    confirmed: true
+    source: "SSGA 2026 Dividend Distribution Schedule (SPD003792)"
+  - symbol: XLE
+    ex_date: "2026-12-21"
+    pay_date: "2026-12-23"
+    confirmed: true
+    source: "SSGA 2026 Dividend Distribution Schedule (SPD003792)"
+
+  # ── GDX (VanEck, annual December — 2026 date PROJECTED) ─────────────
+  # *** TRIPWIRE (Board CP0 2026-08-13, Option A): VanEck announces the
+  # actual date only in its December year-end release. REFRESH this entry
+  # from that release; the date is never load-bearing before ~November at
+  # 30-45 DTE. 2025 actual: ex 12/22/2025, $0.6331/sh. ***
+  - symbol: GDX
+    ex_date: "2026-12-21"
+    pay_date: ""
+    confirmed: false
+    source: "projected — VanEck annual Dec payer (2025 actual ex 12/22); refresh from VanEck Dec 2026 release"
+
+  # ── IWM (iShares, quarterly — all issuer-confirmed 2026-08-13) ──────
   - symbol: IWM
     ex_date: "2026-03-17"
-    pay_date: ""
+    pay_date: "2026-03-20"
     confirmed: true
-    source: "iShares / public dividend trackers"
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861)"
   - symbol: IWM
     ex_date: "2026-06-15"
     pay_date: "2026-06-18"
     confirmed: true
-    source: "iShares / public dividend trackers"
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861)"
   - symbol: IWM
-    ex_date: "2026-09-21"
-    pay_date: ""
-    confirmed: false
-    source: "projected — iShares third-Monday pattern"
+    ex_date: "2026-09-15"
+    pay_date: "2026-09-18"
+    confirmed: true
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861); replaces WRONG 9/21 third-Monday projection"
   - symbol: IWM
-    ex_date: "2026-12-21"
-    pay_date: ""
-    confirmed: false
-    source: "projected — iShares third-Monday pattern"
+    ex_date: "2026-12-15"
+    pay_date: "2026-12-18"
+    confirmed: true
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861); replaces WRONG 12/21 third-Monday projection"
+  - symbol: IWM
+    ex_date: "2026-12-30"
+    pay_date: "2027-01-05"
+    confirmed: true
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861) — potential excise distribution"
 
   # ── TLT (iShares, monthly — first business day) ─────────────────────
   - symbol: TLT
@@ -165,5 +231,28 @@ ex_dividends:
     confirmed: false
     source: "projected — first business day"
 
+  # ── FXI (iShares, semi-annual — remaining 2026 dates confirmed) ─────
+  - symbol: FXI
+    ex_date: "2026-12-15"
+    pay_date: "2026-12-18"
+    confirmed: true
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861), footnote (h) semi-annual"
+  - symbol: FXI
+    ex_date: "2026-12-30"
+    pay_date: "2027-01-05"
+    confirmed: true
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861) — potential excise distribution"
+
   # ── GLD (World Gold Trust) ──────────────────────────────────────────
   # Intentionally empty — see preamble.
+
+  # ── USO (United States Oil Fund) ────────────────────────────────────
+  # Intentionally empty — pays no distributions (stage-A verified). guard off.
+
+  # ── IBIT (iShares Bitcoin Trust) ────────────────────────────────────
+  # Intentionally empty — spot-BTC trust, no income. guard off (non-payer
+  # precedent); IBIT is a PRIMARY as of the 2026-08-13 OQ-3 reversal.
+
+  # ── EWZ (iShares MSCI Brazil) ───────────────────────────────────────
+  # STRUCTURED-EMPTY — semi-annual distributor; no confirmed 2026 dates yet.
+  # guard INERT until sourced. DISABLED at launch. Populate before enabling.

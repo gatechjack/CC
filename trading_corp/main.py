@@ -778,7 +778,11 @@ async def run(argv: list[str] | None = None) -> int:
     channel: Any  # set below; the scan callbacks reference it via closure
 
     # ── Shared scan callbacks (used by Telegram, CLI, and the scheduler) ──
-    async def _on_scan() -> str:
+    async def _on_scan(push_portfolio_digest: bool = True) -> str:
+        # `push_portfolio_digest` keeps the legacy markdown portfolio digest for the
+        # manual /scan command (default True). The P2 09:45 FULL judgment slot calls
+        # this with False and sends its own compact push_split digest instead — so
+        # the routing is UNCHANGED but the morning digest isn't double-sent.
         if _graph_holder[0] is None:
             return "System still initializing — try again in a moment."
         # PMCC scans run against the Robinhood PMCC division (the primary
@@ -795,13 +799,19 @@ async def run(argv: list[str] | None = None) -> int:
 
         # Push expert portfolio analysis BEFORE routing orders so the
         # Board sees the full picture alongside each approval request.
-        try:
-            analysis_md = await pmcc_agent.analyze_portfolio(
-                scan_broker, regime=scan_regime,
-            )
-            await channel.push(analysis_md)
-        except Exception as e:
-            log.warning("PMCC portfolio analysis failed: %s", e)
+        if push_portfolio_digest:
+            try:
+                analysis_md = await pmcc_agent.analyze_portfolio(
+                    scan_broker, regime=scan_regime,
+                )
+                # push_split (not push) so the manual /scan digest is delivered in
+                # full — the old push() truncated at 4000 chars, dropping holdings.
+                # Chunking is on LINE boundaries and analyze_portfolio balances every
+                # Markdown entity within its own line, so no bold/italic/link is split
+                # across a chunk boundary (each chunk parses independently).
+                await channel.push_split(analysis_md)
+            except Exception as e:
+                log.warning("PMCC portfolio analysis failed: %s", e)
 
         orders = await pmcc_agent.scan(scan_broker, regime=scan_regime)
         if not orders:
@@ -819,6 +829,24 @@ async def run(argv: list[str] | None = None) -> int:
         # remain sequential — same blast-radius bound as pre-B.3.
         groups = _group_orders_by_pair_id(orders)
         for group in groups:
+            # P3a: SHORT-SIDE groups (roll_short combo now; close_short/open_short at
+            # P3b) are UNHOOKED from /approvals + ceo_graph/Telegram. The verdict is
+            # already stored by scan() and surfaces on the division PANEL (the sole
+            # approval surface) + the P2 digest deep-link — NOT routed here, and NEVER
+            # per-leg (so a roll can't half-fill into a naked short). Mandate-safe: a
+            # group with any LEAP-touching leg is NOT short-side and falls through.
+            if _is_pmcc_short_side_group(group):
+                logger_agent.log_event(
+                    "pmcc", "scan_short_side_panel_only",
+                    {"symbol": group[0].symbol,
+                     "actions": sorted({
+                         (o.extra or {}).get("action") for o in group
+                         if (o.extra or {}).get("action")}),
+                     "leg_count": len(group)},
+                )
+                continue
+            # roll_leap (advisory; data_exec refuses to place) + close_all (out-of-
+            # mandate; see the close_all investigation) keep the existing path.
             if len(group) == 1:
                 order = group[0]
                 status = await _run_order(
@@ -1096,6 +1124,30 @@ async def run(argv: list[str] | None = None) -> int:
             _rt_broker.safety_notifier = channel
 
     await channel.start()
+
+    # Observability: wire the REUSED Board bot as the execution-alert transport
+    # (one channel per process). emit_exec_alert() (place_combo terminal states,
+    # roll-abort, post-dispatch integrity) fans out through channel.push. Optional
+    # config in strategies.yaml `execution_alerts: {chat_id, tiers: {FILLED: true,
+    # ABORTED: false, ...}}`; absent → all tiers on, reused Board chat. Non-fatal.
+    try:
+        from trading_corp.comms import exec_alert as _exec_alert_mod
+        if hasattr(channel, "push"):
+            _exec_alert_mod.set_exec_alert_sender(channel.push)
+        _ea_cfg: dict = {}
+        try:
+            import yaml as _yaml_ea
+            with open("config/strategies.yaml", "r", encoding="utf-8") as _f_ea:
+                _ea_cfg = (_yaml_ea.safe_load(_f_ea) or {}).get("execution_alerts") or {}
+        except Exception:
+            _ea_cfg = {}
+        _exec_alert_mod.configure(chat_id=_ea_cfg.get("chat_id"),
+                                  tiers=_ea_cfg.get("tiers"))
+        log.info("Execution alerts wired to Telegram (tiers=%s)",
+                 _ea_cfg.get("tiers") or "all-on")
+    except Exception as _e_ea:
+        log.warning("exec_alert wiring failed (non-fatal): %s", _e_ea)
+
     await channel.push(
         f"CEO online. Mode: *{mode}*. DB: `{db_path}`. "
         f"{'Telegram' if secrets.has_telegram else 'CLI'} channel active."
@@ -1245,11 +1297,104 @@ async def run(argv: list[str] | None = None) -> int:
                     )
             return f"{len(orders)} order(s) proposed."
 
-        # --- Daily pre-open PMCC scan scheduler (8:30 ET) + 15:00-ET terminal-DTE pass ---
+        # --- PMCC scan-split (2026-07-24): pre-open TRIAGE + post-settle
+        #     liveness-gated ACTIONABLE scan + 15:00-ET terminal-DTE pass ---
+        async def _on_triage() -> str:
+            """Pre-open Phase-A triage -> calm two-register morning digest. No cards,
+            no ABORTED alerts (option quotes are last night's stale marks pre-market)."""
+            if _graph_holder[0] is None:
+                return "System still initializing."
+            _b = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                report = await pmcc_agent.triage(_b)
+            except Exception as e:
+                log.warning("PMCC triage failed: %s", e)
+                return f"triage error: {e}"
+            try:
+                await channel.push(pmcc_agent._format_triage_digest(report))
+            except Exception:
+                pass
+            _breach = sum(1 for r in report if r.get("register") == "breach")
+            return f"triage: {len(report)} near-DTE, {_breach} breach/assignment."
+
+        async def _pmcc_liveness_probe():
+            """GLOBAL SPY/QQQ two-sided-quote probe gating the post-settle scan."""
+            _b = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                return await pmcc_agent.reference_quotes_live(_b)
+            except Exception as e:
+                return False, f"liveness probe error: {e}"
+
+        async def _on_assignment_watch() -> str:
+            """B-AE EOD monitoring: alert on near-expiry ITM shorts + pending_* events."""
+            if _graph_holder[0] is None:
+                return "System still initializing."
+            _b = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                res = await pmcc_agent.assignment_watch(_b)
+            except Exception as e:
+                log.warning("assignment_watch failed: %s", e)
+                return f"assignment-watch error: {e}"
+            return f"assignment-watch: {res.get('risk', 0)} risk, {res.get('events', 0)} events."
+
+        async def _run_judgment_slot(due) -> "tuple[bool, str]":
+            """Execute the DUE P2 judgment slot: pick the judgment source (routing
+            full -> _on_scan WITHOUT the legacy digest; terminal -> _on_terminal_scan,
+            preserving _terminal_dte_time_release; delta -> judgment_pass, NO routing),
+            run the fresh-price + digest + push_split data path, persist the snapshot.
+            Returns (sent_ok, summary); the loop owns the per-slot marker. P2 places
+            NOTHING beyond the UNCHANGED routing already on the full/terminal passes."""
+            if _graph_holder[0] is None:
+                return False, "initializing"
+            _b = data_exec.brokers.get("robinhood_pmcc") or paper_broker
+            try:
+                _regime = trend_agent.read().regime
+            except Exception:
+                _regime = "unknown"
+            _source = due.get("source")
+            if _source == "scan":
+                async def judge():
+                    await _on_scan(push_portfolio_digest=False)
+            elif _source == "terminal":
+                judge = _on_terminal_scan
+            else:
+                async def judge():
+                    await pmcc_agent.judgment_pass(_b, regime=_regime)
+            _prior_snapshot = None
+            try:
+                _loaded = db.load_agent_state(
+                    "pmcc_robinhood", "judgment_last_snapshot", db_url=secrets.db_url,
+                )
+                _prior_snapshot = _loaded[0] if _loaded else None
+            except Exception:
+                _prior_snapshot = None
+            _prev_label = (_prior_snapshot or {}).get("slot") or "prior"
+            _thresholds = dict(pmcc_agent._cfg.get("judgment_delta") or {})
+            _text, _sent, _snap = await _execute_judgment_slot(
+                pmcc_agent, _b, channel, secrets.db_url,
+                slot_id=due["id"], kind=due["kind"], label=due["label"],
+                prev_label=_prev_label, thresholds=_thresholds,
+                prior_snapshot=_prior_snapshot, judge=judge,
+            )
+            try:
+                db.set_agent_state(
+                    "pmcc_robinhood", "judgment_last_snapshot", _snap,
+                    db_url=secrets.db_url,
+                )
+            except Exception as e:
+                log.warning("judgment_last_snapshot persist failed: %s", e)
+            return _sent, f"slot {due['id']} kind={due['kind']} sent={_sent}"
+
         scheduler_task = asyncio.create_task(
             _scheduled_pmcc_scan_loop(
                 _on_scan, channel, logger_agent,
                 on_terminal_callback=_on_terminal_scan,
+                on_triage_callback=_on_triage,
+                liveness_probe=_pmcc_liveness_probe,
+                on_eod_callback=_on_assignment_watch,
+                on_judgment_slot=_run_judgment_slot,
+                judgment_schedule=_judgment_schedule_cfg(pmcc_agent._cfg),
+                db_url=secrets.db_url,
             )
         )
 
@@ -1687,6 +1832,190 @@ async def run(argv: list[str] | None = None) -> int:
         )
         log.info("Robinhood PEAD wired (execution_mode=%s; standby-gated).",
                  pead_execution_mode)
+
+
+        # --- Robinhood MACE v1 (Phase 4, 2026-08-10) — zero-HITL Multi-Asset
+        # Condor Engine on the JOINT account (takeover). Same posture as PEAD/
+        # bitunix: NO HITL, the per-leg RiskAgent gate (via the MaceRiskAdapter
+        # single-chokepoint) is the ONLY risk evaluator. divisions.yaml
+        # standby:true makes all four loops LOG ONLINE then no-op until standby
+        # is deliberately lifted; strategies.yaml auto_execute:false halts new
+        # placements even when active (exits still run). GO-LIVE remains BLOCKED
+        # on the RH programmatic-cancel fix (3b) regardless of this wiring — the
+        # cancel path 404s under the brokeback edge migration. The whole block is
+        # guarded so a MACE construction error can NEVER take down the other
+        # divisions (MACE fails safe by design).
+        mace_division = None
+        mace_manager = None
+        mace_daily_task = None
+        mace_manage_task = None
+        mace_reconcile_task = None
+        mace_calendar_task = None
+        try:
+            import sqlite3 as _mace_sqlite3
+            from trading_corp.agents.divisions.robinhood_mace import RobinhoodMaceAgent
+            from trading_corp.mace import loops as mace_loops
+            from trading_corp.mace.config import load_mace_config
+            from trading_corp.mace.exdiv import MaceExDiv
+            from trading_corp.mace.execution import MaceExecutor, RungStore
+            from trading_corp.mace.manager import MaceManager
+            from trading_corp.mace.notify import MaceNotifier
+            from trading_corp.mace.rh_broker import RobinhoodOptionsBroker
+            from trading_corp.mace.risk_adapter import MaceRiskAdapter
+            from trading_corp.persistence.db import resolve_db_path as _mace_resolve_db_path
+
+            # execution_mode triple-gate (PEAD-style): "live" ONLY when the slug
+            # is opted into --live-divisions AND the process is LIVE AND the
+            # robinhood family is live-capable. The BROKER binding is the actual
+            # enforcement (data_exec.brokers[robinhood_mace] is the real RH only
+            # under that same gate — else PaperExecutionBroker, snapshots real /
+            # fills simulated); this value is the observability label.
+            mace_execution_mode = (
+                "live" if ("robinhood_mace" in live_divisions
+                           and mode == "LIVE"
+                           and "robinhood" in (args.brokers or []))
+                else "paper"
+            )
+
+            # Frozen MaceConfig (fail-fast; boot gate refuses any enabled symbol
+            # whose exdiv guard is on with no ex-div dates). config_hash logged.
+            mace_cfg = load_mace_config()
+
+            # Persistent autocommit conn for the RungStore — LOOP-THREAD ONLY (the
+            # /mace web view reads through its OWN short-lived db.connect). The four
+            # mace_* tables are created by init_db(SCHEMA) at startup, so a fresh /
+            # scratch DB has them without the prod migration script.
+            mace_conn = _mace_sqlite3.connect(
+                _mace_resolve_db_path(secrets.db_url),
+                isolation_level=None, check_same_thread=False)
+            mace_conn.row_factory = _mace_sqlite3.Row
+            mace_conn.execute("PRAGMA journal_mode=WAL;")
+            mace_conn.execute("PRAGMA busy_timeout=5000;")
+            mace_conn.execute("PRAGMA synchronous=NORMAL;")
+            mace_store = RungStore(mace_conn)
+
+            # Neutral broker port over the robinhood_mace binding. Division-scoped
+            # tag never trips the PMCC LEAP guard (scoped to robinhood_pmcc).
+            mace_broker = data_exec.brokers.get("robinhood_mace") or paper_broker
+            mace_port = RobinhoodOptionsBroker(
+                mace_broker, dte_min=mace_cfg.entry.dte_min,
+                dte_max=mace_cfg.entry.dte_max, division="robinhood_mace")
+
+            # MACE notifier wants a SYNC `.push`; bridge onto the async process
+            # channel by scheduling on the running loop (T3 notifications only —
+            # zero HITL). Inert until go-live (standby + auto_execute:false).
+            class _MaceChannelBridge:
+                def __init__(self, ch):
+                    self._c = ch
+
+                def _fire(self, coro):
+                    try:
+                        asyncio.create_task(coro)
+                    except RuntimeError:      # no running loop (never at send-time)
+                        pass
+
+                def push(self, text):
+                    self._fire(self._c.push(text))
+
+                def push_split(self, text):
+                    fn = getattr(self._c, "push_split", None) or self._c.push
+                    self._fire(fn(text))
+
+            mace_notifier = MaceNotifier(channel=_MaceChannelBridge(channel), enabled=True)
+
+            def _mace_audit(kind, **payload):
+                try:
+                    logger_agent.log_event("robinhood_mace", kind, payload)
+                except Exception:             # noqa: BLE001 — audit must not break wiring
+                    log.exception("MACE audit log_event failed: %s", kind)
+
+            def _mace_equity():
+                # Latest settled-cash snapshot = the MACE sizing basis E. Audit-only
+                # for the risk gate (resize ignored), so a miss returns None safely.
+                try:
+                    row = mace_conn.execute(
+                        "SELECT equity FROM mace_equity_snapshot "
+                        "ORDER BY snap_date DESC LIMIT 1").fetchone()
+                    return float(row["equity"]) if row is not None else None
+                except Exception:             # noqa: BLE001
+                    return None
+
+            # The safety-critical per-leg RiskAgent adapter — ONE instance feeds
+            # BOTH chokepoint seams: the executor place-funnel (executor_gate) and
+            # the strategy entry-pipeline filter-10 (strategy_gate). Every condor
+            # leg is RiskAgent.evaluate()'d before any placement; any reject aborts.
+            mace_risk = MaceRiskAdapter(
+                risk_agent, account_number=mace_cfg.account_number,
+                equity_provider=_mace_equity, db_url=secrets.db_url, audit=_mace_audit)
+
+            mace_executor = MaceExecutor(
+                mace_cfg, mace_port, mace_store, mace_notifier,
+                risk_gate=mace_risk.executor_gate, audit=_mace_audit)
+
+            # Tasty IVR fetch closure (per shadow_eval: fresh Session per call from
+            # process secrets — token mgmt out of scope). FULLY GUARDED: any failure
+            # -> [] = the IVR-unavailable path (filter skipped; credit-floor +
+            # blackouts still gate). Prod Tasty SDK is 12.4.1 (rank fields 0-1;
+            # ivr_provider normalizes x100 — never the tw_ variant).
+            def _mace_fetch_metrics(symbols_list):
+                ps = getattr(secrets, "tastytrade_provider_secret", None)
+                rt = getattr(secrets, "tastytrade_refresh_token", None)
+                if not (ps and rt):
+                    return []
+                try:
+                    import inspect as _inspect
+                    from tastytrade import Session as _TTSession
+                    from tastytrade.metrics import get_market_metrics as _gmm
+                    session = _TTSession(provider_secret=ps, refresh_token=rt)
+                    syms = list(symbols_list)
+                    if _inspect.iscoroutinefunction(_gmm):
+                        return asyncio.run(_gmm(session, syms))
+                    return _gmm(session, syms)
+                except Exception as exc:       # noqa: BLE001 — IVR is soft-fail
+                    log.warning("MACE Tasty IVR fetch failed (IVR unavailable): %s", exc)
+                    return []
+
+            mace_exdiv = MaceExDiv.load("config/ex_dividend_calendar.yaml")
+
+            # Division shell FIRST so the manager's auto_execute closure resolves
+            # against a live object immediately (the hot kill-switch: auto_execute
+            # false halts placements; standby halts the loops entirely).
+            mace_division = RobinhoodMaceAgent(mace_cfg, notifier=mace_notifier)
+
+            mace_manager = MaceManager(
+                mace_cfg, mace_port, mace_store, mace_executor, mace_notifier,
+                risk_gate=mace_risk.strategy_gate, fetch_metrics=_mace_fetch_metrics,
+                exdiv=mace_exdiv,
+                auto_execute_fn=lambda: mace_division.auto_execute,
+                audit=_mace_audit)
+            mace_division.attach_manager(mace_manager)
+
+            # Four scheduled loops — ALL gate on division.active (enabled + not
+            # standby + manager attached), so they log online then no-op in standby.
+            mace_daily_task = asyncio.create_task(
+                mace_loops.mace_daily_slots_loop(mace_division, logger_agent),
+                name="mace-daily-slots")
+            mace_manage_task = asyncio.create_task(
+                mace_loops.mace_manage_loop(
+                    mace_division, logger_agent,
+                    interval_sec=mace_cfg.management.check_interval_sec),
+                name="mace-manage")
+            mace_reconcile_task = asyncio.create_task(
+                mace_loops.mace_reconcile_loop(mace_division, logger_agent),
+                name="mace-reconcile")
+            mace_calendar_task = asyncio.create_task(
+                mace_loops.mace_calendar_loop(mace_division, logger_agent),
+                name="mace-calendar")
+            log.info(
+                "Robinhood MACE wired (execution_mode=%s, config_hash=%s; "
+                "standby-gated, 4 loops online; go-live BLOCKED on cancel-path fix).",
+                mace_execution_mode, mace_cfg.config_hash[:12])
+        except Exception as _mace_exc:         # noqa: BLE001 — MACE must fail safe
+            log.exception(
+                "Robinhood MACE wiring FAILED — division unwired, other divisions "
+                "unaffected: %s", _mace_exc)
+            mace_division = None
+            mace_manager = None
 
 
         # --- Polymarket round-trip resolver + equity snapshot writer ---
@@ -2203,6 +2532,8 @@ async def run(argv: list[str] | None = None) -> int:
             tasty_strategy=tasty_strategy,
             tasty_telegram_batcher=tasty_telegram_batcher,
             tasty_pending_combo_registry=tasty_pending_combo_registry,
+            mace_division=mace_division,
+            mace_manager=mace_manager,
         )
         await channel.push("Web command center: http://localhost:8000")
 
@@ -2313,6 +2644,15 @@ async def run(argv: list[str] | None = None) -> int:
                 await pead_manage_task
             except (asyncio.CancelledError, Exception):
                 pass
+            # MACE loops (None when wiring failed — guarded so shutdown is clean).
+            for _mace_task in (mace_daily_task, mace_manage_task,
+                               mace_reconcile_task, mace_calendar_task):
+                if _mace_task is not None:
+                    _mace_task.cancel()
+                    try:
+                        await _mace_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
             if replay_task is not None:  # two-state collapse: None when replay retired
                 replay_task.cancel()
                 try:
@@ -2675,6 +3015,8 @@ async def _start_web_server(
     tasty_strategy: Any = None,
     tasty_telegram_batcher: Any = None,
     tasty_pending_combo_registry: Any = None,
+    mace_division: Any = None,
+    mace_manager: Any = None,
     host: str = "0.0.0.0",
     port: int = 8000,
 ):
@@ -2715,6 +3057,8 @@ async def _start_web_server(
         tasty_strategy=tasty_strategy,
         tasty_telegram_batcher=tasty_telegram_batcher,
         tasty_pending_combo_registry=tasty_pending_combo_registry,
+        mace_division=mace_division,
+        mace_manager=mace_manager,
     )
     app = create_app(deps)
     config = uvicorn.Config(
@@ -2753,6 +3097,29 @@ def _scan_should_fire(now, last_scan_date, win_start, win_end, calendar) -> bool
                 return False
         except Exception:
             pass  # fail open: never add a fire-day the old predicate wouldn't
+    return True
+
+
+def _settle_should_attempt(now, last_settle_date, settle_start, settle_end, calendar) -> bool:
+    """Whether the post-settle ACTIONABLE PMCC scan should ATTEMPT at `now` (a
+    separate quote-liveness gate in the loop then decides whether to actually fire).
+
+    Fires once per trading day inside the window [settle_start, settle_end]; skips
+    weekends and full market closures. The window's earliest edge (~9:38 ET) holds
+    the actionable scan past the 9:30-9:35 opening rotation (same-day volume starts
+    at 0, spreads wide); the liveness gate then confirms quotes are real before any
+    strike selection / card. Mirrors `_scan_should_fire`'s weekday/holiday logic."""
+    is_weekday = now.weekday() < 5
+    in_window = settle_start <= now.time() <= settle_end
+    already = (last_settle_date == now.date())
+    if not (is_weekday and in_window and not already):
+        return False
+    if calendar is not None:
+        try:
+            if calendar.close_time_et(now) is None:
+                return False
+        except Exception:
+            pass  # fail open, same as _scan_should_fire
     return True
 
 
@@ -2801,6 +3168,184 @@ def _terminal_should_fire(now, last_terminal_date, calendar, release_offset_min:
     return release_time <= now < close_dt
 
 
+# ── Phase 2 (2026-07-31): 4x/day judgment slots ────────────────────────────
+
+def _judgment_schedule_cfg(pmcc_cfg: dict) -> dict:
+    """Normalize robinhood_pmcc.judgment_schedule with safe defaults so a missing
+    config still yields the standard cadence."""
+    js = dict((pmcc_cfg or {}).get("judgment_schedule") or {})
+    js.setdefault("enabled", True)
+    js.setdefault("slots", [
+        {"id": "0945", "time": "09:45", "kind": "full", "liveness_gated": True, "route": True},
+        {"id": "1100", "time": "11:00", "kind": "delta", "liveness_gated": False, "route": False},
+        {"id": "1400", "time": "14:00", "kind": "delta", "liveness_gated": False, "route": False},
+    ])
+    js.setdefault("terminal", {"id": "terminal", "kind": "delta", "offset_min": 60})
+    js.setdefault("fire_window_min", 30)
+    js.setdefault("close_margin_min", 15)
+    return js
+
+
+def _slot_source(slot: dict) -> str:
+    """Judgment source for a slot: the close-anchored terminal -> 'terminal'; a
+    routing full slot -> 'scan'; a delta slot -> 'judgment_pass' (no routing)."""
+    if slot.get("id") == "terminal":
+        return "terminal"
+    return "scan" if slot.get("route") else "judgment_pass"
+
+
+def _due_judgment_slot(now, calendar, sched_cfg):
+    """Return the judgment slot DUE at `now` (dict id/kind/source/label/
+    liveness_gated) or None. PURE (no DB, no markers). Fixed slots fire within
+    [slot_time, slot_time + fire_window) and ONLY when they land >= close_margin
+    before the day's close — which drops BOTH afternoon slots on a half-day. The
+    terminal slot is close-anchored: [close - offset, close) -> 15:00 on a 16:00
+    close, 12:00 on a 13:00 half-day. A closed day (close_time_et -> None) or a
+    weekend yields None; a missed slot (window passed) simply never matches."""
+    from datetime import timedelta
+    if not sched_cfg.get("enabled", True):
+        return None
+    if now.weekday() >= 5:
+        return None
+    close = None
+    if calendar is not None:
+        try:
+            close = calendar.close_time_et(now)
+        except Exception:
+            close = None
+    if close is None:
+        return None
+    window = int(sched_cfg.get("fire_window_min", 30))
+    margin = int(sched_cfg.get("close_margin_min", 15))
+    for slot in sched_cfg.get("slots", []):
+        try:
+            hh, mm = str(slot["time"]).split(":")
+            slot_dt = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        except Exception:
+            continue
+        if slot_dt >= (close - timedelta(minutes=margin)):
+            continue  # at/after close-margin -> gated (half-day afternoon drop)
+        if slot_dt <= now < slot_dt + timedelta(minutes=window):
+            return {
+                "id": slot["id"], "kind": slot.get("kind", "delta"),
+                "source": _slot_source(slot), "label": str(slot["time"]),
+                "liveness_gated": bool(slot.get("liveness_gated", False)),
+            }
+    term = sched_cfg.get("terminal") or {}
+    offset = int(term.get("offset_min", 60))
+    if (close - timedelta(minutes=offset)) <= now < close:
+        return {
+            "id": term.get("id", "terminal"), "kind": term.get("kind", "delta"),
+            "source": "terminal", "label": now.strftime("%H:%M"),
+            "liveness_gated": False,
+        }
+    return None
+
+
+async def _execute_judgment_slot(
+    pmcc_agent, broker, channel, db_url, *, slot_id, kind, label, prev_label,
+    thresholds, prior_snapshot, judge,
+):
+    """Run ONE judgment slot's data path and send it. Captures the PRIOR decisions
+    (load_decision — the most-recent stored judgment of ANY kind, incl. a manual
+    Re-analyze) BEFORE `judge` overwrites them, awaits `judge` (LLM judgment+store,
+    plus routing for a routing slot), then compose_slot_digest (FRESH price +
+    build — correction B) and push_split. Returns (text, sent_ok, new_snapshot).
+    Placing/routing lives entirely inside `judge`: a dry-run passes a judgment_pass
+    -only `judge` (places nothing) + a buffer channel (no live send)."""
+    from trading_corp.agents.divisions import _pmcc_status
+    try:
+        holdings = await pmcc_agent.detect_existing_legs(broker)
+        syms = [h.symbol for h in holdings]
+    except Exception:      # noqa: BLE001
+        syms = []
+    prior_decisions = {}
+    for s in syms:
+        try:
+            prior_decisions[s] = _pmcc_status.load_decision(s, db_url=db_url)
+        except Exception:      # noqa: BLE001
+            prior_decisions[s] = None
+    if judge is not None:
+        try:
+            await judge()
+        except Exception as e:      # noqa: BLE001 — a routing hiccup must not drop the digest
+            log.exception("judgment slot %s judge() failed: %s", slot_id, e)
+    text, snapshot = await pmcc_agent.compose_slot_digest(
+        broker, db_url, kind=kind, slot_label=label, prev_slot_label=prev_label,
+        prior_decisions=prior_decisions, prior_snapshot=prior_snapshot, thresholds=thresholds,
+    )
+    sent = await channel.push_split(text)
+    return text, bool(sent), snapshot
+
+
+async def _judgment_tick(
+    now, calendar, sched_cfg, *, db, db_url, on_judgment_slot, liveness_probe,
+    backstop_time, defer_holder, logger_agent, channel,
+) -> dict:
+    """Evaluate + (maybe) run the judgment slot DUE at `now`. Returns a small result
+    dict {fired, slot, sent, deferred, reason}. PERSISTED per-slot marker dedupes the
+    SEND: a completed slot (telegram_sent True) is NOT re-run, so a mid-day restart
+    can't double-send; a missed slot (window passed -> no slot due) is skipped; a
+    liveness-gated full slot emits ONE defer notice past the backstop then retries.
+    Extracted from the loop so idempotency/missed-slot/half-day are unit-testable."""
+    if on_judgment_slot is None or not sched_cfg.get("enabled", True):
+        return {"fired": False, "reason": "disabled"}
+    due = _due_judgment_slot(now, calendar, sched_cfg)
+    if due is None:
+        return {"fired": False, "reason": "no slot due"}
+    slot_id = due["id"]
+    mkey = f"judgment_run:{now.date().isoformat()}:{slot_id}"
+    try:
+        m = db.load_agent_state("pmcc_robinhood", mkey, db_url=db_url)
+    except Exception:
+        m = None
+    if bool(m and (m[0] or {}).get("telegram_sent")):
+        return {"fired": False, "slot": slot_id, "reason": "already sent"}
+    live, reason = (True, "no probe")
+    if due.get("liveness_gated") and liveness_probe is not None:
+        try:
+            live, reason = await liveness_probe()
+        except Exception as e:      # noqa: BLE001
+            live, reason = False, f"liveness probe error: {e}"
+    if not live:
+        if (backstop_time is not None and now.time() >= backstop_time
+                and defer_holder.get("date") != now.date()):
+            defer_holder["date"] = now.date()
+            log.info("PMCC judgment full slot deferred: %s", reason)
+            try:
+                await channel.push(
+                    f"PMCC judgment slot deferred: quotes not live yet ({reason}) "
+                    "- retrying next cadence."
+                )
+            except Exception:
+                pass
+            return {"fired": False, "slot": slot_id, "deferred": True, "reason": reason}
+        return {"fired": False, "slot": slot_id, "reason": f"not live ({reason})"}
+    log.info("Scheduler firing PMCC judgment slot %s (%s)...", slot_id, reason)
+    try:
+        ok, summary = await on_judgment_slot(due)
+        # Dedupe the SEND: telegram_sent gates re-runs so a completed slot never
+        # double-sends; a failed send (False) retries on the next poll within window.
+        db.set_agent_state(
+            "pmcc_robinhood", mkey,
+            {"ran_at": now.isoformat(), "telegram_sent": bool(ok),
+             "slot": slot_id, "kind": due["kind"]},
+            db_url=db_url,
+        )
+        if logger_agent is not None:
+            logger_agent.log_event(
+                "scheduler", "pmcc_judgment_slot_done",
+                {"date": str(now.date()), "slot": slot_id, "sent": ok, "summary": summary})
+        return {"fired": True, "slot": slot_id, "sent": bool(ok)}
+    except Exception as e:      # noqa: BLE001
+        log.exception("PMCC judgment slot %s failed: %s", slot_id, e)
+        if logger_agent is not None:
+            logger_agent.log_event(
+                "scheduler", "pmcc_judgment_slot_error",
+                {"date": str(now.date()), "slot": slot_id, "error": str(e)})
+        return {"fired": False, "slot": slot_id, "error": str(e)}
+
+
 async def _scheduled_pmcc_scan_loop(
     on_scan_callback,
     channel,
@@ -2811,17 +3356,36 @@ async def _scheduled_pmcc_scan_loop(
     poll_interval_sec: int = 300,
     on_terminal_callback=None,
     terminal_release_offset_min: int = 60,
+    on_triage_callback=None,
+    liveness_probe=None,
+    settle_window_start_et: tuple[int, int] = (9, 38),
+    settle_backstop_et: tuple[int, int] = (9, 50),
+    settle_window_end_et: tuple[int, int] = (10, 30),
+    on_eod_callback=None,
+    eod_release_offset_min: int = 20,
+    on_judgment_slot=None,
+    judgment_schedule=None,
+    db_url: str | None = None,
 ) -> None:
-    """Daily pre-open PMCC scan scheduler.
+    """Daily PMCC scan scheduler — split into a pre-open TRIAGE pass and a
+    post-open (settled-quotes) ACTIONABLE pass (2026-07-24 scan-split).
 
-    Runs `on_scan_callback` once per US trading day during the pre-open window
-    (default 8:30–9:25 AM Eastern, weekdays only). Designed for the
-    `scan_schedule: "daily_pre_open"` setting in strategies.yaml. Skips
-    weekends and the same trading day if a scan has already fired.
+    When `on_triage_callback` is provided (the split is active):
+      - **Pre-open window** (8:30–9:25 ET) fires `on_triage_callback` — Phase-A
+        triage ONLY (near-DTE / breach / assignment digest). NO strike selection,
+        credit math, cards, or ABORTED alerts (equity options are closed pre-market,
+        so any option quote would be last night's stale mark).
+      - **Post-settle window** ([9:38, 10:30] ET) fires `on_scan_callback` (the
+        actionable scan → Approve cards off LIVE marks), but ONLY once `liveness_probe`
+        reports quotes live (SPY/QQQ two-sided + sane spread). If not live by the
+        backstop (~9:50) it emits ONE calm "deferred" notice and keeps retrying on the
+        poll cadence — never force-scans on opening-rotation garbage, never hangs.
 
-    Note: this does NOT honor US market holidays — yfinance `is_holiday` would
-    require an extra dep. The Risk/Data agents will simply find no fresh prices
-    on those days; the scan is harmless and bails out cleanly.
+    When `on_triage_callback` is None (legacy): the pre-open window fires
+    `on_scan_callback` directly and there is no post-settle pass (original behaviour).
+
+    The terminal-DTE afternoon pass (0-DTE only) is unchanged. Weekends and full
+    market closures (calendar) are skipped; a calendar failure fails open.
     """
     from datetime import datetime, time
     try:
@@ -2842,6 +3406,14 @@ async def _scheduled_pmcc_scan_loop(
     # second invocation, NOT an intraday loop (the C1 attach surface is the release logic).
     last_scan_date = None
     last_terminal_date = None
+    # 2026-07-24 scan-split state: pre-open TRIAGE + post-settle liveness-gated pass.
+    _split = on_triage_callback is not None
+    win_settle_start = time(*settle_window_start_et)
+    win_settle_backstop = time(*settle_backstop_et)
+    win_settle_end = time(*settle_window_end_et)
+    last_settle_date = None
+    last_settle_defer_date = None
+    last_eod_date = None
     # B11: NYSE calendar for the holiday guard — reuse the existing dependency
     # already used by pmcc terminal-DTE logic (close_time_et -> None on closed
     # days). None (unavailable) leaves the guard off = original behaviour.
@@ -2852,6 +3424,14 @@ async def _scheduled_pmcc_scan_loop(
         log.warning("PMCC scheduler: calendar unavailable (%s); holiday guard off", _cal_err)
         _cal = None
 
+    # P2 (2026-07-31): 4x/day judgment slots with PERSISTED per-slot markers. When
+    # on_judgment_slot is wired, the new slots OWN the LLM judgment/digest AND fold in
+    # the old post-settle + terminal LLM passes (those blocks below are gated off);
+    # the 8:30 triage + EOD assignment-watch are untouched.
+    _judgment_sched = judgment_schedule or {}
+    _judg_defer = {"date": None}   # once-per-day liveness-defer notice for the full slot
+    from trading_corp.persistence import db as _db
+
     log.info(
         "PMCC scan scheduler online: weekdays %02d:%02d–%02d:%02d ET",
         scan_window_start_et[0], scan_window_start_et[1],
@@ -2861,7 +3441,23 @@ async def _scheduled_pmcc_scan_loop(
     while True:
         try:
             now = datetime.now(et) if et is not None else datetime.now()
-            if _scan_should_fire(now, last_scan_date, win_start, win_end, _cal):
+            # Pre-open TRIAGE (split): Phase-A only; the callback pushes its own
+            # calm digest. No cards, no ABORTED alerts pre-market (options closed).
+            if _split and _scan_should_fire(now, last_scan_date, win_start, win_end, _cal):
+                last_scan_date = now.date()
+                log.info("Scheduler firing daily pre-open PMCC triage...")
+                try:
+                    result = await on_triage_callback()
+                    logger_agent.log_event("scheduler", "scheduled_triage_done",
+                                           {"date": str(now.date()), "result": result})
+                except Exception as e:
+                    log.exception("Scheduled PMCC triage failed: %s", e)
+                    logger_agent.log_event("scheduler", "scheduled_scan_error",
+                                           {"date": str(now.date()), "error": str(e),
+                                            "pass": "triage"})
+
+            # Pre-open ACTIONABLE scan — LEGACY only (no triage callback wired).
+            if (not _split) and _scan_should_fire(now, last_scan_date, win_start, win_end, _cal):
                 last_scan_date = now.date()
                 log.info("Scheduler firing daily pre-open PMCC scan...")
                 try:
@@ -2888,9 +3484,76 @@ async def _scheduled_pmcc_scan_loop(
                         {"date": str(now.date()), "error": str(e)},
                     )
 
-            # B10: second daily invocation — calendar-anchored terminal-DTE pass (0-DTE only).
+            # P2 JUDGMENT SLOTS (own the LLM judgment + digest; fold in the old
+            # post-settle + terminal LLM passes). Extracted to _judgment_tick so the
+            # marker/idempotency/liveness logic is unit-testable in isolation. Routing
+            # is UNCHANGED (only the full slot routes, via _on_scan). Places NOTHING.
+            if on_judgment_slot is not None:
+                await _judgment_tick(
+                    now, _cal, _judgment_sched, db=_db, db_url=db_url,
+                    on_judgment_slot=on_judgment_slot, liveness_probe=liveness_probe,
+                    backstop_time=win_settle_backstop, defer_holder=_judg_defer,
+                    logger_agent=logger_agent, channel=channel,
+                )
+
+            # Post-settle ACTIONABLE pass (LEGACY, pre-P2): fire the actionable scan
+            # off LIVE marks, but ONLY once quotes are live (liveness_probe). Holds
+            # past the 9:30-9:35 opening rotation; never force-scans, never hangs.
+            # Gated OFF whenever the P2 judgment slots are wired (on_judgment_slot).
+            if on_judgment_slot is None and _split and _settle_should_attempt(
+                now, last_settle_date, win_settle_start, win_settle_end, _cal
+            ):
+                live, reason = (True, "no probe")
+                if liveness_probe is not None:
+                    try:
+                        live, reason = await liveness_probe()
+                    except Exception as e:
+                        live, reason = False, f"liveness probe error: {e}"
+                if live:
+                    last_settle_date = now.date()
+                    log.info("Scheduler firing post-settle PMCC actionable scan (%s)...", reason)
+                    try:
+                        result = await on_scan_callback()
+                        logger_agent.log_event(
+                            "scheduler", "scheduled_scan_done",
+                            {"date": str(now.date()), "result": result,
+                             "pass": "post_settle", "liveness": reason},
+                        )
+                        try:
+                            await channel.push(f"Post-settle PMCC scan: {result}")
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        log.exception("Post-settle PMCC scan failed: %s", e)
+                        logger_agent.log_event(
+                            "scheduler", "scheduled_scan_error",
+                            {"date": str(now.date()), "error": str(e), "pass": "post_settle"},
+                        )
+                elif (now.time() >= win_settle_backstop
+                      and last_settle_defer_date != now.date()):
+                    # Past the backstop and still not live: emit ONE calm defer notice,
+                    # then keep retrying on the poll cadence within the window.
+                    last_settle_defer_date = now.date()
+                    log.info("Post-settle actionable scan deferred: %s", reason)
+                    logger_agent.log_event(
+                        "scheduler", "scheduled_scan_deferred",
+                        {"date": str(now.date()), "reason": reason},
+                    )
+                    try:
+                        await channel.push(
+                            "PMCC actionable scan deferred: quotes not live yet "
+                            f"({reason}) - no cards, position unchanged; retrying next cadence."
+                        )
+                    except Exception:
+                        pass
+
+            # B10: second daily invocation — calendar-anchored terminal-DTE pass (0-DTE
+            # only). LEGACY (pre-P2): gated OFF when the P2 judgment slots are wired
+            # (the close-anchored terminal judgment slot folds this in, still preserving
+            # _terminal_dte_time_release via _on_terminal_scan).
             if (
-                on_terminal_callback is not None
+                on_judgment_slot is None
+                and on_terminal_callback is not None
                 and _terminal_should_fire(now, last_terminal_date, _cal, terminal_release_offset_min)
             ):
                 last_terminal_date = now.date()
@@ -2911,6 +3574,21 @@ async def _scheduled_pmcc_scan_loop(
                         "scheduler", "terminal_dte_pass_error",
                         {"date": str(now.date()), "error": str(e)},
                     )
+
+            # B-AE EOD assignment-watch (close-20min) — fires BEFORE expiry so an ITM
+            # short expiring today/tomorrow is surfaced end-of-day; separate dedup.
+            if (on_eod_callback is not None
+                    and _terminal_should_fire(now, last_eod_date, _cal, eod_release_offset_min)):
+                last_eod_date = now.date()
+                log.info("Scheduler firing EOD assignment-watch...")
+                try:
+                    result = await on_eod_callback()
+                    logger_agent.log_event("scheduler", "eod_assignment_watch_done",
+                                           {"date": str(now.date()), "result": result})
+                except Exception as e:
+                    log.exception("EOD assignment-watch failed: %s", e)
+                    logger_agent.log_event("scheduler", "eod_assignment_watch_error",
+                                           {"date": str(now.date()), "error": str(e)})
 
             await asyncio.sleep(poll_interval_sec)
 
@@ -3973,16 +4651,40 @@ async def _scheduled_kalshi_copy_trader_loop(
                     log.exception("Kalshi copy trader: run_scan_cycle failed: %s", e)
                     continue
 
-                # K5·4: surface any feed-health anomalies the scan suppressed. Drained
-                # BEFORE the `if not orders` early-out so a cycle that suppressed every
-                # exit (and thus emitted nothing) still raises the alarm.
+                # K5·4: surface any feed-health anomalies the scan raised. Drained
+                # BEFORE the `if not orders` early-out so a cycle that emitted nothing
+                # still raises the alarm. Reason-aware (2026-07-30): SETTLEMENT-confirmed
+                # disappearances are legitimate and are NOT queued (silent, non-events);
+                # only genuinely suspicious/unconfirmed feed events reach this loop. This
+                # replaces the old blanket "FEED ANOMALY — check Apify feed health" text
+                # that mis-signalled a feed bug when markets had simply settled.
                 for alarm in agent.drain_feed_alarms():
                     try:
                         who = alarm.get("whale") or "feed"
-                        await channel.push(
-                            f"⚠️ Kalshi copy FEED ANOMALY ({alarm.get('reason')}) — "
-                            f"{who}: synthetic exits SUPPRESSED. Check Apify feed health."
-                        )
+                        reason = alarm.get("reason")
+                        if reason == "mass_disappearance":
+                            msg = (
+                                f"⚠️ Kalshi copy feed check — {who}: "
+                                f"{alarm.get('n_removed')}/{alarm.get('n_prev_tracked')} tracked "
+                                f"positions vanished while the market(s) are still ACTIVE on Kalshi "
+                                f"(or status unconfirmed). Copies retained, exits held pending "
+                                f"confirmation — possible Apify feed gap. (Settled/resolved markets "
+                                f"are handled silently and do NOT trigger this alert.)"
+                            )
+                        elif reason == "confirmed_real_after_n_cycles":
+                            msg = (
+                                f"Kalshi copy (auto-resolved) — {who}: a suspicious disappearance "
+                                f"persisted through the confirm window and was accepted as REAL; "
+                                f"book advanced ({alarm.get('n_removed')} position(s) dropped)."
+                            )
+                        elif reason == "consecutive_fetch_failures":
+                            msg = (
+                                f"⚠️ Kalshi copy FEED DOWN — Apify open_positions fetch failed "
+                                f"{alarm.get('consecutive_failures')}x consecutively. Check Apify feed health."
+                            )
+                        else:
+                            msg = f"⚠️ Kalshi copy feed anomaly ({reason}) — {who}."
+                        await channel.push(msg)
                     except Exception as e:
                         log.warning("Kalshi copy feed-anomaly push failed: %s", e)
 
@@ -4518,6 +5220,34 @@ async def _make_morning_brief(trend_agent, portfolio, ceo, logger_agent) -> str:
     brief = await ceo.morning_brief(regime, snap, pending_approvals=0, recent_events=events)
     logger_agent.log_brief("morning", brief.body_md)
     return brief.body_md
+
+
+# P3 (2026-07-31): SHORT-SIDE actions the PMCC division manages are unhooked from
+# the global /approvals + ceo_graph/Telegram approval and surface ONLY on the
+# division panel (the sole approval surface) + the P2 digest deep-link. A group is
+# "short-side" only when EVERY leg is a short-call action — so any LEAP-touching leg
+# (open_leap / close_leap / roll_leap_*) keeps the group OUT of the panel-only path
+# (mandate-safe: the panel can never drive a LEAP order). roll_short adds its two
+# tags (P3a); close_short_urgent (P3b) and open_short_call (P3b) are added with their
+# panel affordances so a skipped action is always actionable on the panel.
+# Grows per independently-deployable unit: P3a=roll_short; P3b-close adds
+# close_short_urgent (with the panel buy-to-close affordance); P3b-open adds
+# open_short_call (with the panel sell-cover affordance). An action is only added
+# here once it is actionable on the panel, so a skipped action is never stranded.
+_PMCC_SHORT_SIDE_ACTIONS = frozenset({
+    "roll_short_call_close",   # roll: buy-to-close the current short (short-side) [P3a]
+    "roll_short_call_open",    # roll: sell-to-open the new short (short-side)     [P3a]
+    "close_short_urgent",      # single-leg buy-to-close the short (short-side)  [P3b-close]
+    "open_short_call",         # single-leg sell-to-open a fresh weekly cover    [P3b-open]
+})
+
+
+def _is_pmcc_short_side_group(group: "list[ProposedOrder]") -> bool:
+    """True iff EVERY leg in `group` is a short-side action (see set above). Empty
+    tags or any non-short-side (LEAP-touching) leg -> False, so the group falls
+    through to the existing routing instead of the panel-only path."""
+    tags = {(o.extra or {}).get("action") for o in group}
+    return bool(tags) and None not in tags and tags.issubset(_PMCC_SHORT_SIDE_ACTIONS)
 
 
 def _group_orders_by_pair_id(

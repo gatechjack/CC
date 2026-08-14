@@ -139,6 +139,19 @@ against a LEAP that no longer exists.
 skill. This amendment changes only how the DETERMINISTIC layer tags (executable/advisory), renders, and
 dispatches a proposal; the LLM's recommendation content is untouched.
 
+### E. Known pre-existing gap surfaced during the build — FABRICATED risk-gate balance (Phase-B candidate)
+The PMCC risk gate — single-leg AND the new Phase-A roll_short combo — evaluates each order against a
+hardcoded `AccountState(equity=100_000)`, NOT the real Robinhood balance. `main._run_order`
+(`main.py:4593-4595`) supplies no `account` key to the graph state, so `ceo_graph.risk_node`
+(`ceo_graph.py:334-336`) falls back to its default $100k account; equity-relative caps are therefore not
+binding on the real balance. **Pre-existing** (the single-leg path already does this); **inherited faithfully
+by Phase A** — `propose_pmcc_combo` replicates the exact same basis for byte-equivalence — **NOT a
+regression.** Fix shape: feed a real `AccountState` from `broker.snapshot()`, as the IC path does via
+`_ic_account_factory` (`main.py:1528-1529`); PMCC has no equivalent on either path. **This is a PHASE-B item
+(post-submission live safety), NOT Phase-A (atomicity)** — a gate that cannot see real equity belongs with the
+live-safety work. Filed to `BACKLOG.md` alongside the PEAD notional-cap no-op (both = risk caps structurally
+unreachable on live paths — worth reviewing as a pair, not separately).
+
 ---
 
 ## a. What PEAD already solved (`robinhood_pead` — genuinely live since 2026-06-24)
@@ -252,6 +265,106 @@ the two legs through separate graph invocations).
   authorization** — consistent with the standing rule that deploy/automation authorization is
   per-decision and explicit, with no standing/autonomous go. **Plumbing being ready is a
   precondition, not a trigger.**
+
+---
+
+## AMENDMENT 2026-07-23 — Deep-OTM near-worthless EARLY roll (theta capture)
+
+Narrow rule-block exception (Board-approved 2026-07-23). Problem: a short worth a few cents but
+still 1 DTE (the observed TSLA card) draws a HOLD from both the LLM and the deterministic layer —
+the only theta-capture logic (`_terminal_dte_time_release` P1 cycle-continuity) is gated
+`short_leg_dte == 0`, so there is a one-session dead band. Fix = **Lever A** (a purely additive
+pre-0-DTE branch, `_deep_otm_early_release`, invoked before the `short_leg_dte != 0` early-return so
+the existing 0-DTE P0/P1 path is byte-unchanged) + **Lever B** (a *qualitative* rule-block clause;
+numbers stay in the gate, per the terminal-DTE "ATM zone"/±1.5% precedent). Fires only when: config
+enabled, action HOLD/WATCH, `1 <= short_leg_dte <= max_dte`, name not excluded, `mark <=` the
+near-worthless threshold (reuses `cycle_continuity_extrinsic_threshold`), spot present, and the
+**spot-relative** OTM distance `>=` the name's band. `auto_execute` stays FALSE.
+
+**Spot-relative basis (load-bearing).** The gate measures `(strike - spot) / spot`, NOT the display
+code's strike-normalized `(spot - strike) / strike` (`pmcc_robinhood.py:977`). The band is derived
+from overnight up-gaps, which are a % of spot — a strike-normalized moneyness would be non-comparable
+to the very thing it is gated against. Assignment risk on a short call is one-sided (UP gaps only),
+so the band is set off the up-gap tail.
+
+**Spot source = ROBINHOOD (`broker.quote`), NOT yfinance (corrected 2026-07-23).** The gate's evidence
+band was derived from Robinhood historicals, so it MUST evaluate against a Robinhood spot — per the
+standing data-source policy [[data-source-brokerage-first]] (a gate's runtime source must match its
+evidence source). The first cut wired the gate to the scan's yfinance `prices` dict (`_fetch_prices` is
+yfinance-backed) and was caught in review. Corrected: **both** call sites — the scheduled scan and
+`propose_orders_for_pair` — now fetch `broker.quote(sym)` (RH `rs.stocks.get_latest_price`, already the
+engine's standard spot, used by IC/PEAD/Tasty). A shared predicate `_early_release_needs_spot(leg,
+analysis)` (the pre-spot gates: enabled / HOLD-WATCH / penultimate-day / not-excluded / near-worthless
+mark) gates the quote, so only real early-roll candidates are quoted — **0–2 quotes per scan**, only in
+the terminal-DTE window, negligible against the scan's existing RH traffic. `broker.quote` returns
+`0.0` on any failure; the call sites map `0.0 → None` and the gate's `spot <= 0` guard fails safe (no
+fire). The wider PMCC yfinance surface (LLM-analyzer spot, VIX) is separate BACKLOG debt; earnings
+(EODHD-primary + yfinance-fallback) is an accepted design choice, not debt.
+
+**v1 band tiering — FIXED, from config (chosen over per-symbol computation to keep a live data
+dependency out of a deterministic safety gate):**
+
+| tier | band | names (v1) | basis |
+|---|---|---|---|
+| tame | 5% | TSLA | up99 = 4.2% → 5% keeps overnight breach < 1% |
+| default | 8% | BULL, BLSH, HOOD, MSTR, RIOT, RKLB, SMR | up99 ≤ 8.9% for every included default name except BLSH (9.4%, soft data) |
+| excluded | — (no early release) | CIFR, IREN, OPEN | up99 ≥ 10% ceiling — a band cannot make these overnight-safe |
+
+**Evidence (measure once, RE-DERIVE, do NOT inherit).** Overnight close-to-next-open % moves, per
+symbol, window **2025-07 → 2026-07**, via **Robinhood `get_equity_historicals`** (interval day,
+bounds regular / RTH, split-adjusted). Up-gap 99th percentile per name: TSLA 4.2 · BULL 7.4 · MSTR
+7.9 · RKLB 8.35 · HOOD 8.8 · RIOT 8.85 · SMR 8.9 · BLSH 9.4 · CIFR 13.2 · IREN 17.4 · OPEN 17.4.
+Membership in `tame_allowlist` / `exclude` is **empirical and regime-dependent** — a name is on a list
+because of its data on this window, not because of its ticker. A future session must re-derive both
+lists against a fresh window, not read them as fixed. Config carries per-name up99 + window comments.
+
+**Exclusion — ceiling `up99 >= 10%`; mechanism v1 = static config denylist** (`near_worthless_early_roll.exclude`),
+consistent with the no-live-data v1 decision. The 10% ceiling cleanly separates the excluded set
+(13.2 / 17.4 / 17.4) from the widest included name; an 8% band still breaches IREN 2.8% of nights, so
+these keep 0-DTE-only behavior. **v2 mechanism** = a *computed* guard (auto-exclude when trailing
+up99 `>=` the same 10% ceiling), once the trailing computation exists.
+
+**★ BLSH re-check item.** BLSH up99 = 9.4% sits just under the 10% ceiling, but Robinhood returned 250
+daily bars from 2025-07-23 while Bullish IPO'd ~Aug 2025 — early bars may be pre-IPO or thin, so its
+tail is soft. Re-derive BLSH once it has clean post-IPO history; if its true up99 proves `>= 10%` it
+moves to `exclude`.
+
+**★ `max_dte: 1` is tied to the single-night derivation.** up95/up99 are SINGLE-night statistics, so
+the band justifies exactly one overnight until expiry. **Raising `max_dte` REQUIRES re-deriving the
+band over an N-night horizon** — it is not a free config tweak. Recorded so nobody bumps it in passing.
+
+**★ Regime caveat.** The 2025-07 → 2026-07 window is an unusually strong momentum regime for the
+miner / nuclear names (CIFR, IREN, RIOT, SMR, RKLB, MSTR). These bands are therefore **conservative
+for a calmer regime** — the right direction to err, but recorded so a future session does not read the
+bands as regime-neutral.
+
+**v2 shape (documented upgrade, NOT built).** Replace the fixed 2-tier band with a per-symbol band
+computed from the name's own trailing overnight up-gap distribution:
+`band = clamp( trailing ~60-session up-gap 95th pct  (≈ 2.33 × σ_overnight),  5%,  12% )`,
+plus the computed exclusion above (trailing up99 `>= 10%` auto-excludes). It auto-tiers and never goes
+stale, but adds a live data dependency to the gate — so it must carry the SAME fail-safe as v1 (missing
+/ thin historicals ⇒ do not fire) and is deferred until that pipeline's failure modes are worth the
+one-extra-day-of-theta feature.
+
+**Out of scope (BACKLOG-filed 2026-07-23):** the approval-card clarity fix (surface `analysis.warnings`
+into `extra["warnings"]`; consolidate a promoted roll_leap's legs) and the broader LLM-prompt gap. The
+new early-release warning inherits today's rationale-fine-print rendering; the card was not touched.
+
+---
+
+## AMENDMENT 2026-07-23 — Black-sheep taxonomy RETIRED (obsolete workflow)
+
+The black-sheep designation existed when the SYSTEM selected LEAP assets and culled anything failing its criteria; black-sheep marked names the board wanted KEPT despite not fitting. That workflow no longer runs — the board opens/manages all LEAPs manually and selects the assets; the division only manages short calls against held positions (STRC demonstrates it: not black-sheep, not pre-approved, works fine). The 1(a) liquidity defect (a black-sheep-only per-contract 10k volume gate that silently blocked every normal TSLA/MSTR roll for ~2.7 months) was that obsolescence surfacing as a bug.
+
+**Removed (one diff):** `_BLACK_SHEEP_RULES` (TSLA/MSTR now use `_STANDARD_RULES`, verified byte-unchanged); the `_roll_dte_for` BS branch; `is_black_sheep`/`_black_sheep_*` accessors; the `strategy.black_sheep` config block + all advisory black-sheep config (review_priorities / hard_rules / off_criteria references); scout `black_sheep_penalty` + its scoring + `ScoutCandidate.is_black_sheep`; the Telegram display tag + scout-template badge; prompt scaffolding (designation line, system-preamble bullet, action-reference qualifiers).
+
+**Re-homed:** the ceo_graph "TSLA/MSTR always need eyes" approval guardrail is NOT a black-sheep concept — the board flags two higher-risk names for mandatory approval. Replaced `any_action_on_black_sheep_symbols` with `any_action_on_approval_required_symbols`, reading a plain `auto_execute_caps.approval_required_symbols: [TSLA, MSTR]` list. Inert under `auto_execute:false` (as before); a guardrail for a future `auto_execute:true`.
+
+**Merge decision — nothing merged (deliberate).** Both universal candidates in `_BLACK_SHEEP_RULES` were considered and NOT merged into `_STANDARD_RULES`: (1) assignment-avoidance is already enforced by the terminal-DTE guard; (2) no-debit-chasing by the B2 credit gate. Restating them as prompt text would repeat the B8 docstring-divergence mistake (rule text asserting what code already enforces). `_STANDARD_RULES` kept lean. Do NOT re-raise.
+
+**Halfway-roll dropped.** The black-sheep halfway-roll (roll to the strike-vs-spot midpoint on a >3% breach) was removed with `_BLACK_SHEEP_RULES`. It fired 3× in the audit window (2 produced no new short, 1 landed at the wrong delta) — a mechanic that never worked as designed. ★ This removes the **only breach response distinct from up-and-out rolling**; a future session can revisit a distinct breach mechanic DELIBERATELY. Related: `roll_short_early` is no longer explicitly prescribed by any rule (black-sheep was the only block naming it) — it stays handled in code + describable via the action-reference (defensive breach roll), so it is discretionary, not orphaned.
+
+**Precondition confirmed before the fold** (why "never close" was safe to drop): no LLM close (close_all/close_short) can execute without human approval on any path — `auto_execute:false` → ceo_graph HITL interrupt (`_run_order`); dashboard "Approve & Execute" = an explicit human click; and close_all/close_leap force Board approval even under `auto_execute:true` (`_LEAP_CLOSE_ACTIONS`/`closing_any_leap`). And no deterministic guard closes on a runaway breach — the only deterministic close is the 0-DTE terminal hard-deadline (time-based, not breach). So "never close" only ever constrained a RECOMMENDATION.
 
 ---
 

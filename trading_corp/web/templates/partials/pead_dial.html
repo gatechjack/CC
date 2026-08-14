@@ -1,0 +1,62 @@
+{#
+  pead_dial.html — live max_concurrent dial + derived-sizer fundable-count readout.
+  Rendered inside the account strip (via {% include %}) AND returned by
+  POST /telemetry/pead/max_concurrent (htmx outerHTML swap on #pead-dial).
+  References only `v.dial`. PEAD-only. The readout uses the SAME pead_sizing math
+  the scan uses, so "funds ~N at ~$X" can never disagree with what would be placed.
+#}
+<div id="pead-dial" class="bg-pane-2 rounded-md p-3 border border-edge/60">
+  <div class="flex items-baseline justify-between mb-1.5 gap-2">
+    <div class="text-[10px] text-muted uppercase tracking-wider font-mono">
+      Max Concurrent
+      {% if v.dial.override_active %}
+        <span class="text-accent" title="Live dashboard override active (agent_state) — overrides strategies.yaml">• dial</span>
+      {% else %}
+        <span class="text-muted/40" title="Using strategies.yaml value — no dashboard override set">• yaml</span>
+      {% endif %}
+    </div>
+    <div class="text-mono font-semibold text-sm tabular-nums">{{ v.dial.max_concurrent }}</div>
+  </div>
+
+  {# setter — persists to agent_state; next scan uses it (no restart) #}
+  <form hx-post="/telemetry/pead/max_concurrent"
+        hx-target="#pead-dial" hx-swap="outerHTML"
+        class="flex items-center gap-1.5 mb-2">
+    <input type="number" name="max_concurrent" min="1" max="100"
+           value="{{ v.dial.max_concurrent }}"
+           class="w-16 bg-bg border border-edge rounded px-1.5 py-1 text-xs font-mono
+                  tabular-nums text-mono focus:border-accent outline-none">
+    <button type="submit"
+            class="px-2 py-1 rounded bg-accent/15 text-accent border border-accent/30
+                   hover:bg-accent/30 text-[11px] font-mono uppercase tracking-wider
+                   transition-colors cursor-pointer">Set</button>
+  </form>
+
+  {# fundable-count readout — legibility guardrail: the dial's cap vs what cash funds #}
+  <div class="text-[10px] font-mono leading-snug">
+    {% if v.dial.settled_cash is none %}
+      <span class="text-muted/50">settled cash unavailable — readout hidden</span>
+    {% elif v.dial.fundable_count == 0 %}
+      <span class="text-warn">funds 0 names</span>
+      <span class="text-muted/60">— settled ${{ '%.0f' % v.dial.settled_cash }} below the
+        ${{ '%.0f' % v.dial.size_min_usd }}/name floor</span>
+    {% else %}
+      <span class="text-gain">funds ~{{ v.dial.fundable_count }} name{{ 's' if v.dial.fundable_count != 1 else '' }}</span>
+      <span class="text-muted">at
+        {% if v.dial.per_name_first is not none and v.dial.per_name_last is not none
+              and (v.dial.per_name_last - v.dial.per_name_first) > 0.005 %}
+          ${{ '%.2f' % v.dial.per_name_first }}–${{ '%.2f' % v.dial.per_name_last }}
+        {% else %}
+          ~${{ '%.2f' % v.dial.per_name_first }}
+        {% endif %}
+        each</span>
+      <div class="text-muted/50 mt-0.5">
+        settled ${{ '%.0f' % v.dial.settled_cash }} · {{ v.dial.slots_remaining }} slot{{ 's' if v.dial.slots_remaining != 1 else '' }} open ·
+        ${{ '%.0f' % v.dial.size_min_usd }} floor · ×{{ '%.2f' % v.dial.safety_factor }} safety · deploys ${{ '%.0f' % v.dial.total_deploy }}
+        {% if v.dial.fundable_count < v.dial.slots_remaining %}
+          <span class="text-warn/80">· floor caps {{ v.dial.slots_remaining }}→{{ v.dial.fundable_count }}</span>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+</div>

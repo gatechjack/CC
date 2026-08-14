@@ -1,15 +1,10 @@
-"""Audit-trail completeness tests for the research firm (v3).
+"""Audit-trail completeness tests for the research firm.
 
-Pins (CLAUDE.md §1, design §3.6, §4.3):
+Pins (CLAUDE.md §1, design §3.4.5, §4.3):
   - Every product is written to audit_event BEFORE any routing branch
   - Every research-firm audit row carries `actor='research_firm'`,
-    `payload.engagement_id`, `payload.requesting_division`,
-    `payload.product_type`, `payload.asset_class`
+    `payload.engagement_id`, `payload.requesting_division`, `payload.product_type`
   - Audit kinds match the constants in schemas.py
-  - Q11: every terminal row pins both engagement_started_ts and
-    engagement_completed_ts
-  - Refinement 4: research_data_fetch_attempted is FAILURE-ONLY —
-    successful fetches do NOT write the audit row
 """
 from __future__ import annotations
 
@@ -26,28 +21,17 @@ from trading_corp.agents.research.graph import build_engagement_graph
 from trading_corp.persistence.db import init_db
 
 
-# ── Fakes ────────────────────────────────────────────────────────────────
+# Reuse fakes from the e2e test file. Pytest collects same-package modules
+# but doesn't share helpers; redefine the minimal fakes locally.
 
 
 class _FakeTech:
     role = "technical"
-
-    def __init__(self, *, fetch_failure: bool = False):
-        self.fetch_failure = fetch_failure
-
-    async def analyze(self, *, engagement_id, symbol, context=None, on_data_fetch=None):
-        if self.fetch_failure and on_data_fetch is not None:
-            on_data_fetch(source=f"fake:{symbol}", ok=False, error="simulated")
-            return (
-                schemas.ExpertReport(
-                    role="technical", engagement_id=engagement_id, symbol=symbol,
-                    summary="[REFUSED] technical: simulated",
-                    data_sufficiency=False, refusal_reason="simulated",
-                ),
-                0.0,
-            )
+    async def analyze(self, *, engagement_id, symbol, on_data_fetch=None):
+        if on_data_fetch is not None:
+            on_data_fetch(source=f"fake:{symbol}", ok=True, error=None)
         return (
-            schemas.ExpertReport(
+            schemas.AnalystReport(
                 role="technical", engagement_id=engagement_id, symbol=symbol,
                 summary=f"{symbol}: fake bullish",
                 confidence_score=0.7, directional_lean="bullish",
@@ -59,10 +43,11 @@ class _FakeTech:
 
 class _FakeMacro:
     role = "macro"
-
-    async def analyze(self, *, engagement_id, symbol, context=None, on_data_fetch=None):
+    async def analyze(self, *, engagement_id, symbol, earnings_buffer_days=7, on_data_fetch=None):
+        if on_data_fetch is not None:
+            on_data_fetch(source="fake:macro", ok=True, error=None)
         return (
-            schemas.ExpertReport(
+            schemas.AnalystReport(
                 role="macro", engagement_id=engagement_id, symbol=symbol,
                 summary=f"{symbol}: fake macro neutral",
                 confidence_score=0.6, directional_lean="neutral",
@@ -84,44 +69,23 @@ def deps(tmp_db: str, monkeypatch) -> ResearchFirmDeps:
     monkeypatch.setattr(market_data, "get_next_earnings", lambda *a, **kw: None)
 
     logger_agent = LoggerAgent(tmp_db)
-    experts = {"technical": _FakeTech(), "macro": _FakeMacro()}
+    tech = _FakeTech()
+    macro = _FakeMacro()
     graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
+        logger_agent, technical_analyst=tech, macro_analyst=macro, checkpointer=None,
     )
     return ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-
-@pytest.fixture
-def deps_with_fetch_failure(tmp_db: str, monkeypatch) -> ResearchFirmDeps:
-    init_db(tmp_db)
-    from trading_corp.agents.research import graph as graph_mod
-    monkeypatch.setattr(
-        graph_mod, "_load_starter_universe",
-        lambda key: ["AAPL", "MSFT"],
-    )
-    from trading_corp.utils import market_data
-    monkeypatch.setattr(market_data, "get_next_earnings", lambda *a, **kw: None)
-
-    logger_agent = LoggerAgent(tmp_db)
-    experts = {"technical": _FakeTech(fetch_failure=True), "macro": _FakeMacro()}
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    return ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
+        logger_agent=logger_agent, technical_analyst=tech,
+        macro_analyst=macro, graph=graph,
     )
 
 
 def _make_spec():
     return schemas.EngagementSpec(
         requesting_division="robinhood_pmcc",
-        product_type="candidate_recommendation",
-        asset_class="equity",
-        scope=schemas.CandidateScope(
-            mandate={"category": "large_cap"},
-            capacity_dollars=10_000.0,
+        product_type="watchlist_recommendation",
+        scope=schemas.WatchlistScope(
+            target_universe_key="robinhood_pmcc.scout.universe",
             n_candidates=2,
             starter_universe_key="large_mid_cap",
         ),
@@ -130,13 +94,9 @@ def _make_spec():
     )
 
 
-# ── Tests ────────────────────────────────────────────────────────────────
-
-
 async def test_every_research_audit_row_carries_canonical_tags(deps):
     """Every research_firm audit row MUST carry engagement_id +
-    requesting_division + product_type + asset_class in payload
-    (design §4.3)."""
+    requesting_division + product_type in payload (design §4.3)."""
     spec = _make_spec()
     await run_engagement(spec, deps=deps)
 
@@ -148,26 +108,24 @@ async def test_every_research_audit_row_carries_canonical_tags(deps):
         payload = row["payload"]
         assert payload.get("engagement_id") == spec.engagement_id
         assert payload.get("requesting_division") == "robinhood_pmcc"
-        assert payload.get("product_type") == "candidate_recommendation"
-        assert payload.get("asset_class") == "equity"
+        assert payload.get("product_type") == "watchlist_recommendation"
 
 
-async def test_product_audit_kind_emitted_with_full_payload(deps):
-    """`research_candidate_recommendation_emitted` row must contain the
-    full product payload (design §4.2 universal audit-write rule)."""
+async def test_product_audit_kind_emitted(deps):
+    """`research_watchlist_emitted` row must contain the full product
+    payload (design §3.4.5 universal audit-write rule)."""
     spec = _make_spec()
     rec = await run_engagement(spec, deps=deps)
     assert rec is not None
 
     events = deps.logger_agent.recent_events(limit=200)
     emitted = [
-        e for e in events
-        if e["kind"] == schemas.AUDIT_KIND_CANDIDATE_RECOMMENDATION_EMITTED
+        e for e in events if e["kind"] == schemas.AUDIT_KIND_WATCHLIST_EMITTED
     ]
     assert len(emitted) == 1
     product = emitted[0]["payload"]["product"]
-    assert product["asset_class"] == rec.asset_class
-    assert len(product["candidates"]) == len(rec.candidates)
+    assert product["target_universe_key"] == rec.target_universe_key
+    assert product["additions"] == rec.additions
 
 
 async def test_engagement_started_row_written_after_kill_switch_passes(deps):
@@ -179,95 +137,34 @@ async def test_engagement_started_row_written_after_kill_switch_passes(deps):
     assert schemas.AUDIT_KIND_ENGAGEMENT_STARTED in kinds
 
 
-async def test_engagement_started_ts_pinned_in_started_row(deps):
-    """Q11: the engagement_started row payload includes the started ts."""
-    spec = _make_spec()
-    await run_engagement(spec, deps=deps)
-    started_rows = [
-        e for e in deps.logger_agent.recent_events(limit=80)
-        if e["kind"] == schemas.AUDIT_KIND_ENGAGEMENT_STARTED
-    ]
-    assert len(started_rows) == 1
-    assert started_rows[0]["payload"].get("engagement_started_ts")
-
-
-async def test_terminal_row_pins_both_started_and_completed_ts(deps):
-    """Q11: every terminal audit row carries engagement_started_ts +
-    engagement_completed_ts in payload (so dashboard can compute duration
-    without joining)."""
-    spec = _make_spec()
-    rec = await run_engagement(spec, deps=deps)
-    assert rec is not None
-
-    events = deps.logger_agent.recent_events(limit=200)
-    emitted = [
-        e for e in events
-        if e["kind"] == schemas.AUDIT_KIND_CANDIDATE_RECOMMENDATION_EMITTED
-    ]
-    assert emitted
-    payload = emitted[0]["payload"]
-    assert payload.get("engagement_started_ts")
-    assert payload.get("engagement_completed_ts")
-
-
-async def test_data_fetch_audit_failure_only(deps):
-    """Refinement 4: research_data_fetch_attempted fires ONLY on failure.
-    With a happy-path fake (no fetch failures), there should be ZERO
-    data_fetch rows even though the engagement succeeded."""
+async def test_data_fetch_audit_per_analyst(deps):
+    """Each analyst that consumes external data writes one
+    `research_data_fetch_attempted` per fetch (design §4.3 inventory)."""
     spec = _make_spec()
     await run_engagement(spec, deps=deps)
     rows = [
         e for e in deps.logger_agent.recent_events(limit=200)
         if e["kind"] == schemas.AUDIT_KIND_DATA_FETCH
     ]
-    assert rows == [], (
-        "data_fetch_attempted must be FAILURE-ONLY — successful fetches "
-        "are silent (Refinement 4)"
-    )
-
-
-async def test_data_fetch_audit_fires_on_failure(deps_with_fetch_failure):
-    """Conversely, when a fetch fails, the audit row IS written."""
-    spec = _make_spec()
-    await run_engagement(spec, deps=deps_with_fetch_failure)
-    rows = [
-        e for e in deps_with_fetch_failure.logger_agent.recent_events(limit=200)
-        if e["kind"] == schemas.AUDIT_KIND_DATA_FETCH
-    ]
-    assert rows, "expected a data_fetch row on simulated failure"
+    # Two real analysts × two candidates = 4 fetch rows minimum.
+    assert len(rows) >= 4
     for r in rows:
-        assert r["payload"]["ok"] is False
-        assert r["payload"]["error"]
+        assert "source" in r["payload"]
+        assert r["payload"]["ok"] is True
 
 
-async def test_expert_completed_rows_for_real_experts(deps):
-    """Real experts (technical + macro) write `research_expert_completed`
-    on data_sufficiency=True."""
+async def test_analyst_refused_rows_for_stub_analysts(deps):
+    """Stub analysts (sentiment + fundamental in 1a) write
+    `research_analyst_refused` rows — load-bearing for the synthesis
+    "treat refused dimension as unobserved" semantics."""
     spec = _make_spec()
     await run_engagement(spec, deps=deps)
     rows = [
         e for e in deps.logger_agent.recent_events(limit=200)
-        if e["kind"] == schemas.AUDIT_KIND_EXPERT_COMPLETED
+        if e["kind"] == schemas.AUDIT_KIND_ANALYST_REFUSED
     ]
-    # 2 real experts × 2 candidates = 4 completed rows
+    # 2 stubs × 2 candidates = 4 refusals.
     assert len(rows) == 4
-    roles = {r["payload"]["expert_role"] for r in rows}
-    assert "technical" in roles
-    assert "macro" in roles
-
-
-async def test_expert_refused_rows_for_stub_experts(deps):
-    """Stub experts (sentiment + fundamental in 1a-1) write
-    `research_expert_refused` rows — load-bearing for the synthesis
-    'treat refused dimension as unobserved' semantics."""
-    spec = _make_spec()
-    await run_engagement(spec, deps=deps)
-    rows = [
-        e for e in deps.logger_agent.recent_events(limit=200)
-        if e["kind"] == schemas.AUDIT_KIND_EXPERT_REFUSED
-    ]
-    # 2 stubs × 2 candidates = 4 refusals
-    assert len(rows) == 4
-    roles = {r["payload"]["expert_role"] for r in rows}
+    roles = {r["payload"]["analyst_role"] for r in rows}
     assert "sentiment" in roles
     assert "fundamental" in roles

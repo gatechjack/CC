@@ -52,17 +52,36 @@
       {{ struct_label }}
     </span>
 
-    <!-- Recommended action pill (deterministic preview; LLM refines on click) -->
-    {% set action_label, action_urgency = pair.recommended_action %}
-    {% set action_classes = {
-      'urgent':   'bg-loss/15 text-loss border border-loss/30',
-      'elevated': 'bg-warn/15 text-warn border border-warn/30',
-      'routine':  'bg-edge text-muted border border-edge',
-    }.get(action_urgency, 'bg-edge text-muted border border-edge') %}
-    <span class="hidden md:inline-block text-[10px] uppercase font-mono tracking-wider
-                 px-1.5 py-0.5 rounded font-semibold {{ action_classes }}"
-          title="Recommended action ({{ action_urgency }}) — click row for full LLM analysis.">
-      {{ action_label }}
+    <!-- Unified decision status pill: ONE timestamped verdict per asset, shared
+         with the Expert panel. fresh (<Nh) shows the scan/expert badge; stale
+         (>Nh) mutes to "stale —"; no signal this session shows "awaiting scan"
+         (visually distinct so a blank morning tile reads as working, not broken).
+         Replaces the old deterministic recommended_action preview so the tile
+         and Expert panel can no longer disagree.
+         Wrapped in a stable-id container (display:contents keeps the flex layout
+         identical to an unwrapped badge) so execute / Re-analyze can refresh it
+         out-of-band via hx-swap-oob (FIX 2) with no full page reload. The badge
+         markup itself lives in _pmcc_badge.html — the SAME partial the OOB
+         fragment renders, so the row and the OOB copy can't drift. -->
+    {% set us = pair.unified_status %}
+    <span id="pmcc-badge-{{ pair.underlying }}" class="contents">
+      {% include "partials/_pmcc_badge.html" %}
+    </span>
+
+    <!-- Two clocks (P1, 2026-07-31): JUDGMENT age (calm/neutral, amber only when the
+         last verdict is past the staleness window — never red on age alone) +
+         PRICING age (live green/amber/red or "market closed"). The judgment clock is
+         the LLM decision's freshness; the pricing clock is the RH-only live number. -->
+    {% if us and us.state != 'none' and us.age_h is not none %}
+      <span class="hidden lg:inline-block text-[10px] font-mono
+                   {% if us.state == 'stale' %}text-warn/70{% else %}text-muted/50{% endif %}"
+            title="Judgment age — last {{ us.source or 'scan' }} verdict {{ '%.0f' % us.age_h }}h ago{% if us.state == 'stale' %} (a scan will refresh it){% endif %}.">
+        ⧗{{ '%.0f' % us.age_h }}h
+      </span>
+    {% endif %}
+    {% set pricing = pair.pricing %}
+    <span id="pmcc-pricing-{{ pair.underlying }}" class="contents">
+      {% include "partials/_pmcc_pricing.html" %}
     </span>
 
     <!-- Short-leg DTE — surfaces "how urgent is this roll?" on the collapsed row.

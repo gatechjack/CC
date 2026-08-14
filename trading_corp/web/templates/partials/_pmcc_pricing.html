@@ -1,0 +1,26 @@
+{# PMCC live-pricing chip (P1, 2026-07-31). One source of truth, shared by the tile
+   row (pmcc_pair.html, wrapped in #pmcc-pricing-{SYMBOL}) and the 45s interval OOB
+   refresh (routes.py division_pmcc_pricing). Pure render.
+   Context: `pricing` = pair.pricing dict
+     {state, label, net_abs, direction, strike, buildable, market_closed} or None.
+   The PRICING clock: green < TTL, amber < 2×TTL, red beyond, or "market closed".
+   The number reprices at Approve — this is a live heads-up, not the consent record. #}
+{% if pricing and pricing.buildable %}
+  {% set pcls = {'green':'text-gain','amber':'text-warn','red':'text-loss'}.get(pricing.state,'text-muted') %}
+  <span class="hidden md:inline-flex items-baseline gap-1 text-[10px] font-mono"
+        title="Live roll pricing (priced {{ pricing.label }} ago) — reprices at Approve.">
+    <span class="font-semibold {% if pricing.direction == 'debit' %}text-loss{% else %}text-gain{% endif %}">
+      {% if pricing.direction == 'debit' %}-{% else %}+{% endif %}${{ '%.2f' % (pricing.net_abs or 0) }}
+    </span>
+    {% if pricing.strike is not none %}<span class="text-muted/70">· {{ pricing.strike | strike }}C</span>{% endif %}
+    <span class="{{ pcls }}" title="pricing age">· {{ pricing.label }}</span>
+  </span>
+{% elif pricing and pricing.market_closed %}
+  <span class="hidden md:inline-block text-[10px] font-mono text-muted/50 italic"
+        title="Options market closed — no live pricing.">
+    pricing: market closed{% if pricing.net_abs is not none %} — last close{% endif %}
+  </span>
+{% elif pricing and pricing.state != 'none' %}
+  <span class="hidden md:inline-block text-[10px] font-mono text-muted/40"
+        title="Roll can't be priced right now (illiquid / sparse chain).">— can't price</span>
+{% endif %}

@@ -1,0 +1,12 @@
+﻿Enable succeeded: 
+[stdout]
+TOTAL economic_event rows: 0
+--- BY TYPE+SOURCE (n, min..max date) ---
+--- NEXT OCCURRENCE PER TYPE (>= 2026-08-14) ---
+--- NEXT 12 UPCOMING ROWS ---
+--- mace_calendar_refresh AUDITS (latest 5) ---
+(none - weekly refresh has NEVER run)
+RESULT: OK
+
+[stderr]
+

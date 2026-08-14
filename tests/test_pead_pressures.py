@@ -62,6 +62,19 @@ def test_drift_pressure_measured_from_gap_top(last, expected):
     assert _press(last).drift == pytest.approx(expected)
 
 
+def test_drift_price_overrides_last_for_drift_only():
+    # FIX 2: STOP always reads intraday `last`; DRIFT reads `drift_price` (the daily
+    # close) when provided. last=110 (winner -> stop 0, and drift 0 if measured from
+    # last); drift_price=105 (= drift_dead) -> drift fires from the daily close only.
+    pr = compute_pressures(_P, 110.0, held_trading_days=0, days_to_next_earnings=999,
+                           drift_price=105.0)
+    assert pr.stop == pytest.approx(0.0)      # stop from last=110 (above entry) -> 0
+    assert pr.drift == pytest.approx(1.0)     # drift from drift_price=105 = drift_dead -> fires
+    # Backward-compatible: omit drift_price and drift falls back to `last` (dashboard).
+    assert compute_pressures(_P, 110.0, held_trading_days=0,
+                             days_to_next_earnings=999).drift == pytest.approx(0.0)
+
+
 # ── GUARD (calendar) ───────────────────────────────────────────────────────
 @pytest.mark.parametrize("dne,expected", [
     (2, 1.0),         # exactly at guard (next earnings - 2 trading days)

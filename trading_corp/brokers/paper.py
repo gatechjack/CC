@@ -218,6 +218,14 @@ class PaperExecutionBroker(Broker):
             return await self._live.get_puts_for_expiry(symbol, expiry)  # type: ignore[attr-defined]
         return []
 
+    async def get_option_quote(self, symbol: str, expiration: str, strike: float,
+                               option_type: str) -> dict[str, float | None]:
+        # Reads are LIVE even in paper — delegate to the wrapped real broker so
+        # combo re-pricing sees the true bid/ask.
+        if hasattr(self._live, "get_option_quote"):
+            return await self._live.get_option_quote(symbol, expiration, strike, option_type)  # type: ignore[attr-defined]
+        return {"bid": None, "ask": None, "mark": None}
+
     # ------------------------------------------------------------------
     # Multi-leg combo simulation
     #
@@ -243,8 +251,10 @@ class PaperExecutionBroker(Broker):
     # ------------------------------------------------------------------
 
     async def place_multi_leg(
-        self, orders: list[ProposedOrder]
+        self, orders: list[ProposedOrder], *, ref_id: str | None = None,
     ) -> list[FillEvent]:
+        # ref_id is accepted for interface parity with the live broker; the paper
+        # simulator has no venue to dedupe against, so it is ignored.
         if not orders:
             return []
 

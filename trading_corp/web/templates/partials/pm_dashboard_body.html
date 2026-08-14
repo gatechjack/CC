@@ -662,9 +662,10 @@
   <div class="bg-pane border border-edge rounded-lg overflow-hidden">
     <header class="flex items-baseline justify-between px-4 py-3 border-b border-edge">
       <h2 class="text-mono text-sm font-semibold tracking-tight uppercase">
-        Selected whales — paper performance
+        Selected whales{% if view.selected == 'kalshi_copy_trading' %} — {{ view.wr_mode }} performance{% else %} — paper performance{% endif %}
       </h2>
       <div class="flex items-center gap-3">
+        {% if view.selected == 'kalshi_copy_trading' %}<div class="text-[10px] font-mono text-muted/60" title="Copy-intel columns (Copies/Copy%/Net PnL) are scoped to the selected Stats mode above">intel: {% if view.wr_mode == 'live' %}since {{ view.wr_live_epoch[:10] }} · live{% elif view.wr_mode == 'paper' %}pre-go-live · paper{% else %}all-time{% endif %}</div>{% endif %}
         <div class="text-[11px] font-mono text-muted">
           {{ view.whales | length }} whales
         </div>
@@ -712,7 +713,7 @@
             <th class="text-right px-3 py-2 font-medium">Open</th>
             <th class="text-left px-3 py-2 font-medium">Last entry</th>
             {# ── Our copy-intel columns (Kalshi rows only; Polymarket rows show —) ── #}
-            <th class="text-right px-3 py-2 font-medium" title="Our would_have_placed copies">{{ kalshi_selected_sort_link("copies", "Copies") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Our copies: paper would_have_placed + live kalshi_copy_placed_live (side=buy)">{{ kalshi_selected_sort_link("copies", "Copies") }}</th>
             <th class="text-right px-3 py-2 font-medium" title="Total detections (copies + no_side + sports skips)">{{ kalshi_selected_sort_link("detections", "Detected") }}</th>
             <th class="text-right px-3 py-2 font-medium" title="Skipped — no copy side found">{{ kalshi_selected_sort_link("no_side", "No-side") }}</th>
             <th class="text-right px-3 py-2 font-medium" title="Skipped — sports market">{{ kalshi_selected_sort_link("sports", "Sports") }}</th>
@@ -888,6 +889,7 @@
         Watch list — observation only
       </h2>
       <div class="flex items-center gap-3">
+        <div class="text-[10px] font-mono text-muted/60" title="Copy-intel columns (Copies/Copy%/Net PnL) are all-time detection history — a discovery/readability signal, NOT live-scoped (these whales are not copied live)">intel: all-time · discovery</div>
         <div class="text-[11px] font-mono text-muted">
           {{ view.kalshi_watch_only | length }} whales · self-reported stats from Apify · NOT copy-traded
         </div>
@@ -944,7 +946,7 @@
             <th class="text-left px-3 py-2 font-medium">{{ kalshi_watch_sort_link("top_category", "Top Cat") }}</th>
             <th class="text-left px-3 py-2 font-medium">{{ kalshi_watch_sort_link("last_refresh", "Last Refresh") }}</th>
             {# ── Our copy-intel columns (from audit_event + kalshi_round_trips) ── #}
-            <th class="text-right px-3 py-2 font-medium" title="Our would_have_placed copies (side=buy)">{{ kalshi_watch_sort_link("copies", "Copies") }}</th>
+            <th class="text-right px-3 py-2 font-medium" title="Our copies: paper would_have_placed + live kalshi_copy_placed_live (side=buy)">{{ kalshi_watch_sort_link("copies", "Copies") }}</th>
             <th class="text-right px-3 py-2 font-medium" title="Total detections (copies + no_side + sports skips)">{{ kalshi_watch_sort_link("detections", "Detected") }}</th>
             <th class="text-right px-3 py-2 font-medium" title="Skipped — no copy side found">{{ kalshi_watch_sort_link("no_side", "No-side") }}</th>
             <th class="text-right px-3 py-2 font-medium" title="Skipped — sports market">{{ kalshi_watch_sort_link("sports", "Sports") }}</th>

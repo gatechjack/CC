@@ -39,6 +39,21 @@
     </div>
   </header>
 
+  {# ── Advisory banner (Phase A): a roll_leap is executed MANUALLY ── #}
+  {% if view.advisory %}
+    <div class="border border-warn/50 bg-warn/10 rounded-md p-3 mb-3">
+      <div class="text-warn font-mono text-sm font-semibold uppercase tracking-wider mb-1">
+        ⚠ Advisory — recommendation only
+      </div>
+      <div class="text-[12px] text-mono font-mono leading-relaxed">
+        This is a LEAP roll (a capital-reallocation decision).
+        <span class="font-semibold">You execute it manually in your brokerage.</span>
+        The agent will <span class="font-semibold">NOT</span> place these legs — the
+        Approve button is disabled so this recommendation cannot be mistaken for an order.
+      </div>
+    </div>
+  {% endif %}
+
   {# ── Trade legs ────────────────────────────────────────────────── #}
   <div class="border border-edge rounded-md p-3 mb-3 bg-pane-2/40">
     <div class="text-[10px] text-muted uppercase tracking-wider mb-2">trade</div>
@@ -168,6 +183,21 @@
       <input type="hidden" name="also_resolve_paired" value="true" />
     {% endif %}
     <div class="flex flex-col sm:flex-row gap-2">
+      {% if view.advisory %}
+      <button type="button" disabled
+              title="This LEAP roll is executed manually by the operator — the agent does not place it."
+              class="flex-1 px-4 py-3 rounded-md text-sm font-mono font-semibold
+                     bg-pane-2 text-muted border border-edge
+                     disabled:opacity-60 disabled:cursor-not-allowed">
+        Execute manually — agent will not place
+      </button>
+      <button name="decision" value="reject" type="submit"
+              class="flex-1 px-4 py-3 rounded-md text-sm font-mono font-semibold
+                     bg-loss/15 text-loss border border-loss/40
+                     hover:bg-loss/25 transition-colors">
+        Dismiss{% if is_paired %} both{% endif %}
+      </button>
+      {% else %}
       <button name="decision" value="approve" type="submit"
               class="flex-1 px-4 py-3 rounded-md text-sm font-mono font-semibold
                      bg-gain/15 text-gain border border-gain/40
@@ -188,6 +218,7 @@
                      disabled:opacity-40 disabled:cursor-not-allowed">
         ✎ Modify
       </button>
+      {% endif %}
     </div>
     {# Inline modify form, hidden until toggled — only when not paired. #}
     {% if not is_paired %}

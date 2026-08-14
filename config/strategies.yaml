@@ -1,10 +1,69 @@
-# Strategy enablement + watchlists. auto_execute is OFF everywhere by default.
-# Flipping auto_execute to true requires Board approval per the project's HITL rules.
-
 robinhood_pmcc:
   enabled: true
   auto_execute: false
   auto_max_notional: 0
+  # Unified tile/expert decision freshness (UI/status layer, 2026-07-24). ONE
+  # timestamped decision per asset drives BOTH the tile status badge and the
+  # Expert Analysis panel so they can't disagree. Past `staleness_hours` a
+  # verdict is "stale" and the next post-open scan may repopulate it (the window
+  # doubles as the daily "session" boundary). Labels are config so presentation
+  # can change without a code deploy.
+  tile_status:
+    staleness_hours: 8
+    stale_label: "stale"
+    no_signal_label: "awaiting scan"
+  # ============================================================
+  # Phase-2 (2026-07-31): 4x/day ET LLM judgment scheduler + Telegram
+  # digest/delta/heartbeat. The scheduler runs LLM JUDGMENT on a fixed ET
+  # cadence and sends a compact per-holding digest; PRICING for the digest
+  # is the deterministic P1 price_and_stash (NO LLM). Times are ET wall-
+  # clock; the loop is DST + market-calendar aware. Half-days need no new
+  # constant: the fixed 14:00 slot self-drops (14:00 >= close - margin) and
+  # the close-anchored terminal slot moves to the morning-of-close window,
+  # so BOTH after-close afternoon slots are gated and a single pre-close
+  # terminal delta still fires the 0-DTE release. P2 places NOTHING
+  # (judgment + notification only; routing to /approvals is UNCHANGED and
+  # runs only on the 09:45 full slot, exactly as the old post-settle pass).
+  # ============================================================
+  judgment_schedule:
+    enabled: true
+    # Fixed ET slots. kind: full = compact per-holding digest (ALL holdings,
+    # never truncated); delta = material-change-only digest. The full slot is
+    # liveness_gated (holds for live SPY/QQQ quotes past the opening rotation).
+    # route: whether the slot's judgment ALSO runs the existing order routing
+    # (only the full slot routes = the post-settle fold; delta slots do not).
+    slots:
+      - {id: "0945", time: "09:45", kind: "full",  liveness_gated: true,  route: true}
+      - {id: "1100", time: "11:00", kind: "delta", liveness_gated: false, route: false}
+      - {id: "1400", time: "14:00", kind: "delta", liveness_gated: false, route: false}
+    # Close-anchored last slot: fires in [close - offset_min, close) -> 15:00 on
+    # a 16:00 close, 12:00 on a 13:00 half-day. Runs the existing terminal 0-DTE
+    # pass (preserving _terminal_dte_time_release) for routing, then a delta
+    # digest. offset_min mirrors zero_dte.release_offset_min; tunable.
+    terminal:
+      id: "terminal"
+      kind: "delta"
+      offset_min: 60
+    # Grace after a fixed slot's time during which a late start may still fire it;
+    # past this (marker absent) the slot is MISSED and skipped (never backfilled).
+    fire_window_min: 30
+    # A fixed slot is valid only if it lands at least this many minutes before the
+    # day's close (this is what gates BOTH afternoon slots on a half-day).
+    close_margin_min: 15
+  # Material-change thresholds for the DELTA digest (all tunable). A change below
+  # every threshold with an unchanged action -> heartbeat. Confidence drift alone
+  # is NEVER material.
+  judgment_delta:
+    target_delta_shift: 0.05    # |new mid-delta - prior mid-delta| >= -> material
+    target_dte_shift: 2         # |new target_dte - prior target_dte| >= days -> material
+    net_move_dollars: 0.10      # |new net - prior net| >= $/share -> material
+    net_move_pct: 0.20          # OR >= 20% of |prior net| -> material
+  # combo dispatch re-pricing (2026-07-23): marketable give-up per share shaved off
+  # the natural at dispatch so a spread FILLS instead of resting; close_all gets a
+  # much larger urgency give-up. Code defaults 0.02 / 0.25 if absent.
+  combo:
+    give_up_dollars: 0.02
+    close_all_give_up_dollars: 0.25
   # ============================================================
   # 0-DTE Terminal-DTE Override gates (Board direction 2026-05-01).
   # When the short leg has 0 DTE, deterministic Python guards override
@@ -40,6 +99,54 @@ robinhood_pmcc:
     # ~$threshold/contract of residual decay in exchange for
     # immediate next-cycle premium and no post-expiry coverage gap.
     cycle_continuity_extrinsic_threshold: 0.15  # $/share
+
+  # ============================================================
+  # Deep-OTM near-worthless EARLY roll (theta capture) — 2026-07-23.
+  # Additive to the 0-DTE gates above. On the penultimate day, a short
+  # that is BOTH near-worthless AND clearly deep out-of-the-money can be
+  # rolled early to capture next-cycle premium instead of waiting for
+  # 0-DTE. The rule text the LLM sees is QUALITATIVE; the exact numbers
+  # live HERE (single source of truth — do not restate them in the prompt).
+  #
+  # BAND EVIDENCE — measured, not assumed; RE-DERIVE, do not inherit:
+  #   Overnight close-to-next-open % moves, per symbol, window
+  #   2025-07 → 2026-07, via Robinhood get_equity_historicals (interval
+  #   day, bounds regular / RTH, split-adjusted). A short CALL is only
+  #   threatened by UP gaps, so bands are set off the up-gap tail (the
+  #   fatter tail for this momentum-prone universe). Membership in the
+  #   lists below is empirical AND regime-dependent — a future session
+  #   must re-derive it against a fresh window, not read it as fixed.
+  #   Full method + the v2 (per-symbol trailing band) upgrade:
+  #   planning/pmcc_live_execution_plan.md.
+  # ============================================================
+  near_worthless_early_roll:
+    enabled: true
+    # Penultimate day ONLY. up95/up99 are SINGLE-night statistics, so the
+    # band justifies exactly one overnight until expiry. Raising this
+    # REQUIRES re-deriving the band over an N-night horizon — it is not a
+    # free config tweak.
+    max_dte: 1
+    # "Near-worthless" mark ceiling ($/share). Defaults to the 0-DTE
+    # cycle-continuity threshold above so there is ONE definition of
+    # near-worthless across the early and 0-DTE paths.
+    near_worthless_mark_threshold: 0.15
+    # Deep-OTM distance required, measured SPOT-relative: (strike-spot)/spot,
+    # so it is directly comparable to the overnight up-gap the band was
+    # derived from (NOT the display code's strike-normalized form).
+    moneyness_band_default: 0.08   # up99 <= ~8.9% for every included default name
+    moneyness_band_tame:    0.05   # tame allowlist only
+    # Tame allowlist — a name is here because of its DATA, not its ticker:
+    # up99 = 4.2% on the window above, so a 5% band keeps overnight breach < 1%.
+    tame_allowlist:
+      - "TSLA"                     # up99 4.2% (measured 2025-07 → 2026-07)
+    # Excluded — ceiling: up99 >= 10%. A band alone cannot make these
+    # overnight-safe (an 8% band still breaches IREN 2.8% of nights), so
+    # they get NO early release and keep the 0-DTE-only behavior. Re-derive
+    # membership on the same ceiling.
+    exclude:                       # up99 measured 2025-07 → 2026-07:
+      - "CIFR"                     #   up99 13.2%
+      - "IREN"                     #   up99 17.4%
+      - "OPEN"                     #   up99 17.4%
 
   # Halfway-roll cooldown (Item 1 — 2026-05-02). Backstop guard that
   # downgrades roll_short → hold when a recent roll-up was executed
@@ -107,7 +214,6 @@ robinhood_pmcc:
       weekly_yield_pct: 1.00       # primary signal
       delta_distance_to_target: 0.30  # closer to target delta = better
       earnings_distance_days: 0.10    # more days from earnings = safer
-      black_sheep_penalty: 0.15       # slight de-prioritization (not exclusion)
 
   # ============================================================
   # Auto-execution caps (apply when auto_execute is flipped to true)
@@ -124,9 +230,15 @@ robinhood_pmcc:
     max_daily_total_debit_dollars: 1500   # cumulative debits across all actions per day
     max_daily_actions: 10                 # max number of orders per day
 
+    # Symbols whose EVERY action always requires Board approval, independent of any
+    # strategy taxonomy — the board flags specific higher-risk names for mandatory
+    # eyes. Inert while auto_execute:false (every action is HITL already); this is
+    # the guardrail for a future auto_execute:true.
+    approval_required_symbols: ["TSLA", "MSTR"]
+
     # Required approval triggers (always require approval, regardless of dollar amount)
     require_approval_for:
-      - "any_action_on_black_sheep_symbols"   # TSLA, MSTR always need eyes
+      - "any_action_on_approval_required_symbols"  # names in approval_required_symbols
       - "closing_any_leap"                     # closing longs is consequential
       - "opening_new_pmcc_on_new_symbol"       # new underlying = thesis decision
       - "any_action_when_vix_above_30"         # high-vol regime needs human judgment
@@ -176,118 +288,7 @@ robinhood_pmcc:
       dividend_yield_max: 0.01
       earnings_buffer_days: 7
 
-    # ============================================================
-    # BLACK SHEEP — high-IV names where assignment is not an option
-    # Strategy: roll halfway, never buy back fully, ride mean reversion
-    # Cash-constrained: cannot accept 100-share assignment
-    # ============================================================
-    black_sheep:
-      symbols:
-        - symbol: "TSLA"
-          rationale: "long-term conviction; high IV mean-reverts reliably"
-          intent: "perpetual_roll_no_assignment"
-        - symbol: "MSTR"
-          rationale: "core BTC-leverage; high IV mean-reverts reliably"
-          intent: "perpetual_roll_no_assignment"
-
-      eligibility_criteria:
-        min_options_iv: 0.70
-        min_avg_options_volume: 10000
-        min_underlying_avg_volume: 5_000_000
-        mean_reversion_history: true
-        early_assignment_risk: "low"
-
-      management_rules:
-        cash_available_for_assignment: false
-        never_allow_assignment: true
-        leap_exercise_allowed: false
-        leap_protection: "preserve_at_all_costs"
-        leap_drawdown_close_threshold: null
-        leap_thesis_check_only: true
-        short_leg_required: true
-        short_leg_dte_target: 7
-        short_leg_initial_delta: [0.20, 0.35]
-
-      rolling_rules:
-        philosophy: |
-          NEVER buy back fully and re-sell OTM at a loss.
-          ALWAYS roll, always for credit, always to a higher strike.
-          Use "halfway roll" when stock has moved aggressively against you.
-          Trust mean reversion on high-IV names within 1-3 weekly cycles.
-
-        roll_trigger_dte: 2
-        roll_trigger_dte_otm: 1
-        roll_trigger_itm_intraday: false
-
-        halfway_roll:
-          when_to_use: "short_strike_breached_by_more_than_3_pct"
-          new_strike_logic: "halfway_between_current_short_strike_and_underlying_price"
-          new_dte: 7
-          require_credit: true
-          minimum_credit: 0.05
-          fallback_extend_dte: 14
-          fallback_extend_dte_max: 21
-
-        standard_roll:
-          when_to_use: "short_within_3_pct_of_underlying"
-          new_strike_logic: "match_or_slightly_above_underlying_price"
-          new_dte: 7
-          require_credit: true
-
-        otm_roll:
-          when_to_use: "short_otm_at_50_pct_profit_or_more"
-          action: "close_at_70_pct_profit_then_open_new_7dte"
-          new_strike_delta: [0.20, 0.30]
-
-        forbidden_actions:
-          - action: "buy_back_short_fully_at_loss_then_resell_otm"
-            reason: "locks in loss right before mean-reversion whipsaw"
-          - action: "close_full_pmcc_to_recover_short_loss"
-            reason: "abandons the long thesis to fix a short — backwards"
-          - action: "accept_assignment"
-            reason: "no cash to fund 100 shares; would force LEAP exercise at loss"
-          - action: "roll_for_debit_to_chase_otm"
-            reason: "high IV means credit rolls are nearly always available"
-
-        mean_reversion:
-          expected_pullback_window: "1_to_3_weekly_cycles"
-          expected_pullback_pct: 0.05
-          do_not_panic_within: "2_weekly_cycles"
-
-      black_sheep_breach:
-        philosophy: |
-          High-IV names breach constantly. The breach is not the problem —
-          panic management is. Roll halfway, collect credit, wait for MR.
-
-        minor_breach:
-          definition: "underlying 0-3% above short strike"
-          preferred_action: "standard_roll_at_2_dte"
-          alternate_action: "let_expire_if_at_strike_and_dte_0"
-
-        major_breach:
-          definition: "underlying 3-10% above short strike"
-          preferred_action: "halfway_roll"
-          require_credit: true
-
-        runaway_breach:
-          definition: "underlying 10%+ above short strike"
-          preferred_action: "halfway_roll_with_extended_dte"
-          new_dte: 14
-          require_credit: true
-          forbidden: ["close_leap", "buy_back_at_full_loss", "accept_assignment"]
-
-      exit_when:
-        - "underlying_thesis_explicitly_broken"
-        - "leap_dte < 90 AND no_roll_available_for_credit"
-        - "fundamental_deterioration_confirmed"
-        - "roll_no_longer_yields_credit_after_3_attempts"
-
-      leap_management:
-        roll_out_trigger_dte: 180
-        roll_out_method: "diagonal_credit_or_minimum_debit"
-        max_debit_pct_of_position: 0.15
-
-    # ----- LEAP (long leg) — for non-black-sheep positions -----
+    # ----- LEAP (long leg) -----
     long_leg:
       dte_min: 365
       dte_max: 720
@@ -300,7 +301,7 @@ robinhood_pmcc:
       roll_down_trigger_delta: 0.40
       roll_out_trigger_dte: 120
 
-    # ----- Weekly short (short leg) — for non-black-sheep positions -----
+    # ----- Weekly short (short leg) -----
     short_leg:
       dte_target: 7
       dte_secondary: 14
@@ -340,7 +341,7 @@ robinhood_pmcc:
           (b) realized overnight gap exceeds 1σ implied move
           (c) account cannot tolerate assignment risk
 
-    # ----- Breach policy (standard, for non-black-sheep) -----
+    # ----- Breach policy (standard) -----
     breach_policy:
       philosophy: "breaches are expected, not emergencies — evaluate combined P/L"
       classification:
@@ -385,14 +386,14 @@ robinhood_pmcc:
         - "if LEAP delta > 0.95, treat as deep ITM equity — close or roll deep"
         - "log breach event + outcome for monthly review"
 
-    # ----- Off-criteria positions (non-black-sheep) -----
+    # ----- Off-criteria positions -----
     off_criteria_positions:
       policy: "manage_to_completion_no_renewal"
       description: |
-        Positions on symbols that don't match underlying_criteria but aren't
-        marked as black_sheep. Continue normal management until LEAP expiry
-        or the thesis breaks. Do NOT propose new PMCC setups on these names
-        after the existing one closes — rotate capital to compliant names.
+        Positions on symbols that don't match underlying_criteria. Continue
+        normal management until LEAP expiry or the thesis breaks. Do NOT propose
+        new PMCC setups on these names after the existing one closes — rotate
+        capital to compliant names.
       flag_for_review: true
       block_new_entries_on_symbol: true
 
@@ -400,7 +401,17 @@ robinhood_pmcc:
     liquidity:
       max_bid_ask_spread_pct: 0.10
       min_open_interest: 100
+      # RETIRED 2026-08-04: the standalone `vol < min_avg_volume` floor was removed
+      # from PMCCAgent._passes_liquidity (subsumed by liveness; wrongly rejected
+      # OI-established strikes off-hours / at the open). Key kept inert for history;
+      # nothing reads it. Liveness (below) + spread are the liquidity bar.
       min_avg_volume: 50
+      # 1(b) 2026-07-23: liveness = OI >= min_open_interest OR volume >= this.
+      # OI accumulates over a contract's life; a fresh near-dated expiry with
+      # real volume + tight spreads (observed TSLA 07-27 roll targets: ~5k-8k)
+      # was rejected by the OI-only floor. Set above phantom-strike noise so an
+      # untraded strike (volume ~0) still cannot clear it.
+      oi_bypass_min_volume: 500
 
     # ----- Hedging -----
     hedging:
@@ -411,15 +422,12 @@ robinhood_pmcc:
     # ----- Position review priorities -----
     review_priorities:
       high:
-        - "any short showing -100% or worse open P/L (non-black-sheep)"
-        - "any short with delta > 0.60 (non-black-sheep)"
+        - "any short showing -100% or worse open P/L"
+        - "any short with delta > 0.60"
         - "any short within 2 days of expiry and ITM"
       medium:
         - "shorts at 50%+ profit (close candidates)"
-        - "LEAPs down >40% from cost (thesis check, EXCLUDING black_sheep)"
-      black_sheep_specific:
-        - "any black_sheep LEAP with DTE < 90 (exercise/roll decision needed)"
-        - "any black_sheep short approaching ITM near expiry"
+        - "LEAPs down >40% from cost (thesis check)"
 
     # ----- Hard rules -----
     hard_rules:
@@ -428,10 +436,7 @@ robinhood_pmcc:
       - "always state full expiry date (YYYY-MM-DD) for every strike"
       - "no new short premium within 7 DTE of underlying earnings"
       - "on breach, evaluate combined PMCC P/L — never act on short leg alone"
-      - "black_sheep positions follow black_sheep rules, NOT standard breach policy"
       - "off_criteria positions: manage to completion, no new entries on same symbol"
-      - "never accept assignment on any black_sheep position"
-      - "never close a black_sheep LEAP to fund a short buyback"
       - "respect auto_execute_caps when auto_execute is true"
 
 
@@ -1689,6 +1694,12 @@ kalshi_copy_trader:
   enabled: true                    # Board-flip after audit-mode validation
   auto_execute: true                # LIVE Phase K5 go-live 2026-07-01 (was: false)
   division: kalshi_copy_trading
+  # Auto-pause circuit-breaker mode (hot-reload). 'shadow' = evaluate the
+  # epoch-scoped forward window and emit kalshi_whale_would_auto_pause WITHOUT
+  # removing whales (observe-only); 'active' = also remove + emit
+  # kalshi_whale_auto_paused. Ships 'shadow' for the 2026-07-20 window-fix
+  # deploy; flip to 'active' (hot, no restart) once verified.
+  autopause_mode: shadow
   # 2026-05-12: throttled 300s → 600s to fit Apify Starter's $200/mo hard
   # cap. At 5min cadence the 26h observation burn extrapolated to ~$320/mo
   # (above cap); 10min cadence halves Apify request volume to ~$160/mo,
@@ -1711,6 +1722,22 @@ kalshi_copy_trader:
     # public trade tape (±5% of whale's contracts, min 1). Higher = more
     # forgiving match but risks picking up unrelated trades.
     size_match_tolerance_pct: 5.0
+  # ── K5·4 feed-health / mass-exit circuit breaker (hot-reload) ──────────────
+  # A whale rarely closes >= mass_exit_threshold_pct of its tracked positions in
+  # one ~10-min cycle; when it does, decide whether that is REAL (markets settled
+  # / cancelled) or a feed glitch BEFORE synthesizing exits or alarming.
+  feed_health:
+    mass_exit_threshold_pct: 60      # trip at >= this % of a whale's positions removed in one cycle
+    min_positions_for_check: 2       # never treat a 1-position whale's close as "mass"
+    # R1 (2026-07-30): classify each vanished ticker via Kalshi resolution. A
+    # RESOLVED/VOID market is a legitimate settlement -> advance snapshot, NO alarm
+    # (e.g. the July FOMC KXFEDDECISION markets settling at the 2pm-ET announcement).
+    # true = check (recommended); false = every mass-disappearance is suspicious.
+    settlement_check_enabled: true
+    # R2: if a still-active (or unconfirmable) disappearance persists this many
+    # consecutive cycles, accept it as real, advance the book, and alarm ONCE more
+    # (not once per cycle). Guarantees a real removal can never latch the breaker.
+    anomaly_confirm_cycles: 3
 
 
 # ── Polymarket Copy Trading (Phase 4+ placeholder; deprioritized 2026-05-10) ──
@@ -1732,6 +1759,13 @@ polymarket_copy_trader:
   enabled: true                    # Board-flip after audit-mode validation
   auto_execute: false               # Phase 4+ before this can flip live
   division: polymarket_copy_trading
+  # Auto-pause circuit-breaker mode (hot-reload). 'shadow' = evaluate the
+  # epoch-scoped forward window (entry_ts >= metrics_epoch) and emit
+  # polymarket_whale_would_auto_pause WITHOUT removing whales; 'active' = also
+  # remove + emit polymarket_whale_auto_paused. Ships 'shadow' for the
+  # 2026-07-20 window-fix deploy; flip to 'active' (hot, no restart) once
+  # verified (superbeter007 is the expected first would-pause).
+  autopause_mode: shadow
   poll_interval_sec: 60             # 60s; free API can sustain faster if needed
   activity_limit_per_poll: 20
   sizing:
@@ -1743,7 +1777,7 @@ polymarket_copy_trader:
 
 # ── Robinhood Joint Iron Condor v1 ──
 robinhood_joint_iron_condor:
-  enabled: true
+  enabled: false
   auto_execute: false
   division: robinhood_joint
 
@@ -1881,12 +1915,24 @@ tasty_options_iron_condor:
       - any_neutral_strategy_open_or_close
       - any_action_when_vix_above_30
 
+# ── Robinhood MACE (Phase 4, 2026-08-10) — HOT kill-switches ONLY (T1). Everything
+# else (universe, sizing, management, breakers) is the frozen MaceConfig in
+# config/mace.yaml, loaded once at boot. auto_execute:false halts new placements on
+# the next decision; exits continue. GO-LIVE BLOCKED pending the RH cancel-path fix
+# (3b, 2026-08-10 — brokeback endpoint migration 404s the legacy options-cancel).
+robinhood_mace:
+  enabled: true                  # declarative; divisions.yaml standby:true is the operative gate
+  auto_execute: true             # ARMED 2026-08-11 (MACE go-live): autonomous placements ON
+  division: robinhood_mace
+  config_file: config/mace.yaml  # frozen MaceConfig source (T1)
+
 # Post-Earnings-Announcement-Drift, long-only US equities on the agentic
 # Robinhood account (680725082). Autonomous (no per-trade approval) once the
 # Board blesses the strategy; paper-first. Division wiring lands in Phase 2.
 robinhood_pead:
   enabled: true                  # declarative; divisions.yaml standby:true is the operative gate
   auto_execute: true             # GO-LIVE 2026-06-24 (Board-authorized): PEAD trades autonomously, no HITL
+  confirmation_gate: true         # gate ON 2026-07-24 (post-reaction confirmation; pead_strategy.py:393)
   division: robinhood_pead
 
   # --- Universe screen — CONFIG-DRIVEN floors (retune without a code change) ---
@@ -1916,8 +1962,10 @@ robinhood_pead:
   # auto_execute:false above keeps it paper even if standby is lifted. The
   # intended ~20-25 name book needs funding; max_concurrent caps the plumbing book.
   universe_file: "@config/nasdaq_composite.txt"   # 3,207-name Nasdaq Composite (anchored path)
-  position_pct: 0.10                # 10% of account value per name
-  max_concurrent_positions: 10      # plumbing book ceiling (~20-25 when funded)
+  position_pct: 0.10                # RETIRED 2026-08-02 — no longer drives sizing (kept readable; position_notional still overrides)
+  size_safety_factor: 0.95          # derived sizer: per_name = settled_cash / open_slots_remaining * this
+  size_min_usd: 50                  # per-name $ floor: fund FEWER names at >= $50, never a sub-$50 name
+  max_concurrent_positions: 10      # plumbing book ceiling; live-overridable from the dashboard dial (agent_state)
   entry_delay_days: 1               # enter 1 trading day post-announcement...
   entry_max_delay_days: 2           # ...through 2 td (the PEAD entry window)
   manage_cadence_sec: 300           # exit-engine poll cadence

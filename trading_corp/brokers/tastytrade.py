@@ -286,8 +286,12 @@ class TastytradeBroker(Broker):
 
     async def place_multi_leg(
         self, orders: list[ProposedOrder], *, dry_run: bool = False,
+        ref_id: str | None = None,
     ) -> list[FillEvent]:
         """Submit a multi-leg option combo as a single atomic NewOrder.
+
+        `ref_id` is accepted for Broker-interface parity; the tastytrade adapter
+        does not thread a client order id today (no-op).
 
         All `orders` share combo_id / combo_direction / net_limit_price /
         underlying / qty (validated by validate_combo_cohesion). Each

@@ -84,6 +84,11 @@ def build_approval_view(detail: dict) -> dict:
         "risk": _build_risk(risk_verdict),
         "warnings": list(extra.get("warnings") or []),
         "pmcc_pair_id": extra.get("pmcc_pair_id"),
+        # Phase A: a roll_leap leg is ADVISORY — the operator executes the LEAP
+        # roll manually; the agent never places it. Keyed on the action prefix
+        # (survives the ceo_graph reconstruct path, same signal the fail-closed
+        # dispatch guard uses). The card renders a banner + a disabled Approve.
+        "advisory": str(extra.get("action") or "").startswith("roll_leap"),
         "raw_extra": extra,
     }
 
@@ -135,6 +140,8 @@ def coalesce_paired_view(views: list[dict]) -> dict:
             w for v in sorted_views for w in v["warnings"]
         )),
         "pmcc_pair_id": anchor["pmcc_pair_id"],
+        # Phase A: advisory if ANY coalesced leg is a roll_leap leg.
+        "advisory": any(v.get("advisory") for v in sorted_views),
         "raw_extra": anchor["raw_extra"],
         "is_paired": True,
         "paired_order_ids": [

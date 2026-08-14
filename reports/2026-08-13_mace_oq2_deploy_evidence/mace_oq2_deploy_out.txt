@@ -1,0 +1,33 @@
+﻿Enable succeeded: 
+[stdout]
+== PRE-GATE: prod == base b11af9b ==
+PRE-GATE OK (7 files at base, halt partial absent)
+== DECODE payload ==
+== STAGE-GATE: staged == target bb3cb7a ==
+STAGE-GATE OK (8 files)
+== BACKUP + rollback.sh ==
+BACKUP OK: /home/azureuser/mace_oq2_bak_20260813 (rollback.sh written)
+== SWAP ==
+SWAP done (cat-> for 7 existing preserves owner; new partial ref-cloned)
+== POST-GATE: in-place == target ==
+POST-GATE OK (8 files)
+== PY-COMPILE (as azureuser, prod venv) ==
+PY-COMPILE OK
+total 140
+drwxr-xr-x  2 root      root       4096 Aug 14 04:02 .
+drwxr-x--- 39 azureuser azureuser  4096 Aug 14 04:02 ..
+-rw-rw-r--  1 azureuser azureuser  8705 Aug 11 05:48 ex_dividend_calendar.yaml.bak
+-rw-rw-r--  1 azureuser azureuser 52083 Aug 11 05:48 execution.py.bak
+-rw-rw-r--  1 azureuser azureuser  6933 Aug 11 05:48 loops.py.bak
+-rw-rw-r--  1 azureuser azureuser  5385 Aug 12 05:23 mace.yaml.bak
+-rw-rw-r--  1 azureuser azureuser 10504 Aug 11 05:48 mace_live.html.bak
+-rw-rw-r--  1 azureuser azureuser 12780 Aug 11 05:48 mace_view.py.bak
+-rw-rw-r--  1 azureuser azureuser 16509 Aug 13 11:18 manager.py.bak
+-rwxr-xr-x  1 root      root       2085 Aug 14 04:02 rollback.sh
+
+DEPLOY RESULT: OK - 8 files live at target bb3cb7a. ENGINE NOT RESTARTED YET.
+next: mace_oq2_restart.ps1 (never 15:40-15:58 ET) then mace_oq2_verify.ps1
+rollback: mace_oq2_rollback.ps1 (runs bash /home/azureuser/mace_oq2_bak_20260813/rollback.sh)
+
+[stderr]
+

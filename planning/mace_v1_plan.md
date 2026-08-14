@@ -1,0 +1,325 @@
+# Robinhood MACE (Multi-Asset Condor Engine) — Phased Build Plan
+
+Planned 2026-08-09 against worktree `cc-2026-08-09-wt` @ `7d34d82` (== origin/prod-live) on branch `claude-2026-08-09`. Verified against installed `robin_stocks 3.4.0`, `tastytrade 13.2.2` (p2venv). All file:line citations verified this session.
+
+**APPROVED 2026-08-09 by the Board (GT_Jack) with 7 rulings, all incorporated below.** Execution mode: phase-by-phase with scoped commits; **STOP at every phase checkpoint for operator verification**; Phase 3's `brokers/robinhood.py` diff requires explicit operator review BEFORE commit (pre-authorization conditions); **do not begin Phase 0 until the operator confirms he is ready to run the probe steps.**
+
+**AMENDMENT 2026-08-09 (Board decision — account resolution, supersedes the "new account" premise):** the new RH account came back options **Level 2** (L3 requires margin; RH permits one individual margin account per login). **MACE takes over the JOINT account** (already margin + L3; runs the joint IC condors today). Joint IC migrates to a different account/strategy in its own separate workstream — **out of scope here**. All 7 prior rulings stand. Amendment details are marked **[A2026-08-09]** throughout.
+
+## Context
+
+New fully-atomic (zero-HITL) defined-risk options division: iron condors on liquid ETFs via Robinhood, on a NEW account (same login), all rules deterministic + YAML-driven, live at build completion (no paper phase), Telegram as the human safety net. Operator retains deploys/config; engine retains all order decisions.
+
+**Board decisions ratified in-session (record in deploy_log at go-live as a Board memo):**
+1. **Coexist, reuse rails only.** `robinhood_joint_iron_condor` + `tasty_options_iron_condor` stay byte-untouched. No forking their files, no generic condor framework — but three extraction seams built in (§ Future extraction).
+2. **`brokers/robinhood.py` additive-only pre-authorization** with conditions: (a) md5 drift-gate prod vs git BEFORE any edit is planned, report drift; (b) PMCC call-site regression tests prove byte-path-identical defaults; (c) any non-additive necessity ⇒ stop-and-report, no exceptions. MACE's reconcile loop owns polling the resting GTC PT order; PT fill detection lives in MACE reconcile under the fake-fill guard.
+3. **[A2026-08-09] Account = the JOINT account (takeover), self-sourced from the repo.** Same RH login/creds, no new KV entries, plaintext filter, startup assertions — unchanged. Self-sourcing note (premise correction, surfaced): `robinhood_joint`'s `account_filter` in divisions.yaml:52 is the KEYWORD `joint`, not a number. Resolution flow: MACE inherits that filter value; Phase 0 resolves it against live account enumeration to the concrete account number, asserts `type == margin` and `option_level >= 3` (expected true today — no L2/upgrade language anywhere), and echoes the number in the probe report for operator confirmation; the confirmed numeric is then pinned as `mace.yaml account_number` + `divisions.yaml robinhood_mace account_filter` at Phase 1 (numeric hard-bind per PEAD precedent, satisfying the startup assertion `account_number == mace.yaml == divisions.yaml filter`).
+4. **Go-live authorization:** zero-HITL, live at build completion, launch scope 1 contract / SPY only / breakers alert-only. Compensating controls: Telegram alerting, operator-gated config expansion, operator-supervised window for first entries (presence + kill-switch; no approval gates in the order path). Supersedes CLAUDE.md "HITL default" + Backtester human gate for this division (T8).
+
+## Verified ground truth (drives the design)
+
+| # | Finding | Evidence |
+|---|---|---|
+| V1 | **RH combo orders are LIMIT-ONLY** — `'type': 'limit'` hardcoded | robin_stocks `orders.py:1002`; repo replica `brokers/robinhood.py:1639`. ⇒ all "MARKET" exits = marketable-limit ladder (§7.3) |
+| V2 | `DataExecAgent.place(order, division)` :178 / `place_combo(orders, division)` :742; PMCC LEAP guard scoped `division=="robinhood_pmcc"` (:197,:762) — MACE can't trip it. Combos are risk-gated **per-leg in the strategy layer before `place_combo`** (joint IC `_ic_orchestration.py:156`; resize verdicts ignored — reject-only gates, `_pmcc_combo.py:473,503`) | data_exec.py, _ic_orchestration.py |
+| V3 | Live mechanics: `--live-divisions` CLI (`main.py:150-170`), gate at `:2571-2574` (LIVE mode AND broker family AND slug listed), `TC_LIVE_AUTHORIZED=LIVE` for systemd (`:196-197`) | main.py |
+| V4 | ET helpers `utils/time.py` (`ET` :7, `now_et()` :14); PEAD window-loop pattern `main.py:3404-3455`; PMCC 4x/day at-time slots `main.py:2972+` | — |
+| V5 | `pending_order` table UNFIT for 4-leg combos (single-leg shape + PEAD-locked `extra_json` keys, db.py:408-425) ⇒ MACE-owned lifecycle in `mace_rung.status` | db.py |
+| V6 | `config/macro_calendar.yaml` holds 2026 FOMC(8)/CPI(12)/NFP(12); `MacroCalendar.load` mtime-hot, `is_within_halt_window` :142 — seed source for `economic_event` | data/macro_calendar.py |
+| V7 | tastytrade 13.2.2 **has** `get_market_metrics(session, symbols)` → `MarketMetricInfo.implied_volatility_index_rank` (+tos/tw variants) — net-new call, SDK-supported. **[P0 stage A] PROD venv runs 12.4.1, not 13.2.2** — call PROVEN LIVE on 12.4.1, all 7 symbols, model path clean (T10 NOT triggered). Local p2venv 13.2.2 skew noted for test fidelity. **Rank fields are 0–1 scale** (SPY 0.272 = IVR 27.2) → ivr_provider MUST normalize ×100 before the `ivr_floor: 25` compare. **Canonical field = `implied_volatility_index_rank` (== tos variant); `tw_` diverges wildly (USO tw=1.0 vs ivr=0.295) — never use tw** | tastytrade/metrics.py:67-128 + P0 probe 2026-08-09 |
+| V8 | **`config/ex_dividend_calendar.yaml` + `data/ex_dividend_calendar.py` already exist** (`next_ex_date`, `is_within_window`; used by joint IC :456,:757). SPY 2026 populated, TLT monthly rule, GLD empty. Missing: EWZ/FXI/USO/IBIT entries — config addition, not new code | — |
+| V9 | Test pattern: tmp strategies.yaml fixture + fake broker + `db.SCHEMA` executescript into tmp sqlite (`tests/test_iron_condor_strategy.py:1-90`); ALL local pytest via `.\scripts\run_capped.ps1` | — |
+| V10 | WebDeps `web/app.py:32-102` — new fields MUST default `None` (tg_deps constructor at `main.py:915-929` is defaults-reliant); cockpit pattern = view module `register(app)` from `routes.py:193-213`; home tile ladder `templates/home.html:82-92` | — |
+| V11 | **GTC combos at RH unproven from disk** (all repo call-sites hardcode gfd) ⇒ Phase-0 probe; fallback = synthetic PT rule (T9) | robinhood.py:1261,1637 |
+| V12 | `planning/iron_condor_v1_plan.md` conventions inherited: atomic 4-leg POST w/ single ref_id, per-leg risk gate unchanged, combo metadata in `extra` (no schema changes) | :135-143 |
+
+## Architecture
+
+### Module layout (hard boundary from pead/; no robin_stocks types above the broker layer)
+
+```
+trading_corp/mace/
+  __init__.py
+  config.py        # frozen dataclasses; load_mace_config(path) -> MaceConfig; fail-fast validation; sha256 config_hash
+  domain.py        # CondorSpec, RungState, OptionQuote, EvalResult, ExitReason, BreakerState — neutral types only
+  calendar.py      # economic_event read/write; weekly refresh; seeds (macro_calendar.yaml import, LPR 20th-monthly generator)
+  ivr_provider.py  # Tasty get_market_metrics daily fetch + unavailable-fallback; ATM-IV snapshot writer (mace_iv_history)
+  exdiv.py         # wraps data/ex_dividend_calendar.py for MACE symbols (+ config additions for EWZ/FXI/USO/IBIT)
+  strategy.py      # PURE decision logic: entry pipeline, sizing, overflow, management precedence — no I/O
+  broker_port.py   # OptionsBrokerPort ABC: chain(), leg_quote(), place_condor(), place_resting_close(),
+                   #   cancel(), order_status(), open_orders(), snapshot(), account_assertions()
+  rh_broker.py     # RobinhoodOptionsBroker — the ONLY port impl; the ONLY mace file importing trading_corp.brokers.*
+  execution.py     # entry ladder, exit ladder, PT lifecycle, reconcile state machine (drives port, updates mace_rung)
+  notify.py        # Telegram formats (§ Observability); URGENT first-line convention
+  manager.py       # MaceManager: constructed from MaceConfig + injected deps (db_url, risk_agent, data_exec,
+                   #   logger_agent, port, channel). No module-level singletons, no yaml re-reads in strategy logic.
+trading_corp/agents/divisions/robinhood_mace.py   # thin shell, PEAD pattern (enabled/standby mtime-hot; attach_manager)
+trading_corp/web/mace_view.py + templates/mace_live.html + partials/mace_live_sections.html
+scripts/mace_phase0_probe.py · scripts/mace_calendar_cli.py · scripts/mace_shadow_eval.py
+config/mace.yaml
+```
+
+**Import rule (enforced by an AST-walking test):** only `rh_broker.py` may import `trading_corp.brokers.*`; `strategy.py`/`manager.py` import only `mace.*`, stdlib, injected callables.
+
+### Config split (T1)
+
+- `config/strategies.yaml` → tiny hot block (kill-switches ONLY): `robinhood_mace: {enabled, auto_execute, division: robinhood_mace, config_file: config/mace.yaml}`. Flipping `auto_execute: false` halts new placements on the next decision; exits continue.
+- `config/mace.yaml` → EVERYTHING else, loaded ONCE at boot into frozen `MaceConfig`, fail-fast on any invalid field, restart-gated, sha256 hash logged at boot + shown on `/mace`.
+- `config/divisions.yaml` → `slug: robinhood_mace, broker: robinhood, account_filter: "<NEW-ACCT-#>", strategy: robinhood_mace, standby: true (until go-live), enabled: true`. `standby` is hot via shell property reads (T7); registration/broker-binding needs restart.
+
+### Draft `config/mace.yaml` (every spec number as a default)
+
+```yaml
+account_number: "<JOINT acct # — resolved at Phase 0, operator-confirmed>"  # [A2026-08-09] must equal divisions.yaml account_filter (startup assertion)
+acknowledge_foreign_positions: false    # [A2026-08-09] foreign-position guard override; entries stay disabled while foreign positions/orders exist and this is false
+universe: [SPY]                         # LAUNCH. Expansion order: SPY, GLD, TLT, USO, EWZ, FXI, IBIT
+max_contracts: 1
+entry:
+  eval_time_et: "15:45"
+  entry_cutoff_et: "15:58"
+  dte_min: 30
+  dte_max: 45                           # prefer highest DTE in window
+  short_delta_target: 0.20
+  short_delta_band: [0.15, 0.25]
+  credit_floor_pct_of_width: 0.30
+  risk_band_min_per_width_usd: 50       # min (width-credit)*100 = 50*width (w3=>150, w2=>100, w1=>50)
+  risk_band_max_usd: 250                # absolute max (width-credit)*100 ceiling
+  enforce_risk_band: true               # "where strike listings allow"
+  ivr_floor: 25                         # Tasty rank fields are 0-1 scale (P0-proven); ivr_provider normalizes x100 before this compare
+  weekly_new_rungs_per_symbol: 1        # + refill: closures re-open budget from next session
+  max_rungs_per_symbol: 4
+  stop_cooldown_sessions: 2
+  ibit_overflow_cap: 6
+  overflow_max_per_symbol_session: 1    # T6 ruling 2026-08-09
+sizing:
+  rung_risk_pct: 0.05
+  deployment_target_pct: 0.80
+  equity_snapshot_time_et: "15:40"
+management:
+  check_interval_sec: 300
+  window_et: ["09:35", "15:55"]
+  pt_pct_of_credit: 0.50                # resting GTC buy-to-close
+  stop_multiple: 2.0
+  time_exit_dte: 21
+  time_exit_at_et: "15:30"
+  exdiv_guard_sessions: 5
+execution:
+  entry_start_offset_usd: 0.02          # limit = mid - 0.02
+  entry_tick_usd: 0.01
+  entry_fill_wait_sec: 60
+  entry_max_attempts: 5
+  exit_fill_wait_sec: 20
+  exit_max_attempts: 5
+  exit_hard_ceiling_mult_of_width: 1.00
+breakers:                               # ALERT-ONLY at launch (Board memo)
+  day_loss_pct: 0.05
+  week_loss_pct: 0.08                   # ISO week
+  hwm_soft_pct: 0.85
+  hwm_hard_pct: 0.75
+  breaker_enforcement: "off"            # off | pause_entries | halt_flat (code exists, unit-tested, inert)
+data:
+  ivr_source: tastytrade_market_metrics # field: implied_volatility_index_rank (== tos variant; tw diverges e.g. USO tw=1.0 vs ivr=0.295 -- never tw)
+  iv_snapshot_daily: true
+  calendar_refresh_weekday: "SUN"
+notifications:
+  daily_summary_time_et: "15:50"
+symbols:
+  SPY:  {enabled: true,  width_dollars: 3, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
+  GLD:  {enabled: false, width_dollars: 3, blackout_event_types: [],                    exdiv_guard: false}
+  TLT:  {enabled: false, width_dollars: 2, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
+  USO:  {enabled: false, width_dollars: 2, blackout_event_types: [OPEC],                exdiv_guard: false}  # USO pays no distributions — verified at Phase 0
+  EWZ:  {enabled: false, width_dollars: 2, blackout_event_types: [COPOM, BR_ELECTION],  exdiv_guard: true}
+  FXI:  {enabled: false, width_dollars: 2, fallback_width_dollars: 1, blackout_event_types: [PBOC, LPR_FIX], exdiv_guard: true}
+  IBIT: {enabled: false, width_dollars: 2, blackout_event_types: [], overflow_only: true, exdiv_guard: false}
+```
+
+### DB (all net-new tables; idempotent `CREATE TABLE IF NOT EXISTS` appended to `persistence/db.py` SCHEMA per house pattern db.py:438-443; migration script in `scripts/`; rollback = tables inert with no reader/writer)
+
+- **`mace_rung`** — `rung_id` PK (`mace-{sym}-{expiry}-{strikes}-{yyyymmdd}`), `symbol`, `status` (`submitting|open|closing|closed|abandoned`), `expiry`, `legs_json` (4 legs: type/strike/side/effect/option_id/fill_price), `width_dollars`, `contracts`, `credit_actual`, `max_risk_usd`, `entry_ts`, `entry_order_id`, `pt_order_id`, `pt_debit`, `exit_ts`, `exit_reason` (`pt|stop|time|exdiv|gap|manual`), `exit_debit`, `realized_pnl`, `entry_iso_week`, `extra_json`. Weekly markers + cooldowns + day/week realized P&L are DERIVED from this table (no separate marker tables).
+- **`mace_equity_snapshot`** — `snap_date` PK, `equity`, `cash`, `market_value`, `ts`. E for all sizing until next snapshot; missing today ⇒ use most recent; none ever ⇒ entries skip (`no_equity_snapshot`).
+- **`mace_iv_history`** — (`symbol`, `snap_date`) PK, `atm_iv`, `ivr_tasty`, `source`, `ts`.
+- **`economic_event`** — `id` PK, `event_type`, `symbol_scope`, `event_date`, `source` (`feed|seed|manual|rule`), `fetched_at`, UNIQUE(`event_type`,`event_date`,`symbol_scope`) for idempotent re-seeds. (Unprefixed by explicit spec naming — documented exception to the `mace_` rule, T2.)
+- **`agent_state`** rows (`agent='robinhood_mace'`): `hwm`, breaker latches, last-eval report JSON (dashboard), calendar-refresh marker.
+
+## Behavior specifications (decision-complete)
+
+### Entry pipeline (daily 15:45 ET slot; sequential over universe in config order; audit `mace_entry_eval` BEFORE each branch per CLAUDE.md #2; first failing filter = recorded skip reason)
+1. capacity: `open_rungs(symbol) < max_rungs_per_symbol`
+2. weekly budget: `entries_this_ISO_week(symbol) < weekly_new_rungs_per_symbol + closures_this_week_before_today(symbol)` (refill: replacement eligible from the session after a close)
+3. cooldown: no stop-loss exit within last 2 sessions (`stop_cooldown`)
+4. blackout: no `economic_event` matching symbol's `blackout_event_types` dated today OR next trading session
+5. IVR ≥ 25 (Tasty rank ×100 — 0-1 scale, P0-proven). Unavailable/stale handling (**RATIFIED 2026-08-09**): Tasty down ⇒ filter skipped + audit + non-urgent alert; `updated_at` older than 2 sessions ⇒ same skip path for THAT symbol. **Audit skip-reason + alert must distinguish `ivr_stale` (include symbol + age) from `ivr_unavailable`** so per-symbol staleness patterns are visible in eval history. Credit floor + blackouts still gate in both cases.
+6. build: expiry = highest DTE in [30,45] (`no_expiry`); shorts nearest |Δ|=0.20 within [0.15,0.25] each side (`no_delta_strike`); wings exactly `width_dollars` beyond with an UNCONDITIONAL wing-listing check for ALL symbols — unlisted wing ⇒ `no_wing` skip (Board-accepted 2026-08-09 off the stage-B $5-grid finding; "where strike listings allow" is universal, not FXI-only; FXI additionally retries at `fallback_width_dollars: 1`); risk-band `(width−credit_mid)*100 ∈ [50·width_dollars, 250]` when `enforce_risk_band` (`risk_band`) — **WIDTH-SCALED per ruling risk-band-width-scaling 2026-08-09** (w3⇒[150,250] SPY-launch-identical, w2⇒[100,250], w1⇒[50,250] so the FXI fallback is viable; the prior fixed [150,250] made ALL width-2 names structurally unenterable)
+7. credit floor: `credit_mid ≥ 0.30×width` (`credit_floor`)
+8. size: `contracts = min(floor(0.05·E / ((width−credit_mid)·100)), max_contracts)`; 0 ⇒ `budget`
+9. reserve: `Σ open max_risk + candidate ≤ 0.80·E` (`reserve`)
+10. risk gate: per-leg `RiskAgent.evaluate()` with `extra["is_option"]=True` (joint-IC pattern; any reject aborts the whole condor)
+Pass ⇒ entry ladder. **Overflow (T6 as RULED 2026-08-09):** capital forfeited by a failed primary filter routes to IBIT first (cap 6 rungs), then highest-IVR primary with capacity. Overflow entries are **EXEMPT from the receiving symbol's weekly-budget filter** (a receiver never has spare weekly budget — the exemption is what makes overflow non-inert). All OTHER filters apply to the receiver: capacity, cooldown, blackout, IVR, build, credit floor, sizing, reserve, risk gate. New bound: **max 1 overflow entry per symbol per session** (`overflow_max_per_symbol_session: 1`). IBIT is `overflow_only`, never a primary (OQ-3 RATIFIED). Inert at launch (universe=[SPY]).
+IV snapshot: during eval, write each evaluated symbol's ATM IV + Tasty IVR into `mace_iv_history` (self-sufficiency corpus from day 1).
+
+### Entry ladder (V1: everything is a limit)
+Attempt k∈1..5 at `credit_mid_fresh − 0.02 − (k−1)·0.01` (fresh mid each attempt; never below the 0.30×width floor — crossing ⇒ stand down `credit_floor_drift`). `combo_id = mace-{sym}-{expiry}-{strikes}-{date}-a{k}` — distinct ref_id per attempt (RH dedupes repeated ref_ids). Place via `place_condor` (tif gfd, fill timeout 60s). `filled` ⇒ book rung + place resting PT + Telegram. `pending` ⇒ cancel → poll terminal: `cancelled` ⇒ next attempt; `filled` in the cancel race ⇒ book manually off the confirmed order dict (the ONE entry-side booking outside place_combo; guarded by confirmed `state=="filled"` only). Attempts exhausted or 15:58 cutoff ⇒ stand down until next daily eval + audit + Telegram. **No fill = no trade.**
+
+### Management (5-min ticks, 09:35–15:55 ET)
+Mark = cost-to-close at mid from 4 fresh leg quotes. Precedence per rung: **stop** (`mark ≥ 2.0×credit`; the 09:35 tick IS the gap rule) → **time** (`DTE ≤ 21` AND `now ≥ 15:30 ET`) → **exdiv** (`exdiv_guard` on, short call ITM (spot > short-call strike), ex-div within 5 sessions via `data/ex_dividend_calendar.py`). Any exit: FIRST cancel the resting PT and confirm terminal — if the PT turns out `filled` in that race, book the PT exit and stop. Never adjust/roll/leg out; whole structures only; never past 21 DTE or into expiration.
+
+### Emulated-MARKET exit ladder (V1 consequence; spec's "MARKET" — T4)
+Basis = fresh natural (buy-to-close shorts at ask, sell-to-close wings at bid ⇒ net natural debit). Attempt 1 = natural rounded up to tick; unfilled 20s ⇒ cancel (same race handling) ⇒ attempt k+1 = fresh natural + (k−1) ticks; max 5 attempts; hard ceiling `width×1.00` per spread. Exhaustion ⇒ rung stays `closing` + **URGENT Telegram** (operator manual action is the backstop).
+
+### PT (resting GTC)
+Placed at entry-fill time: resting GTC buy-to-close at `round_tick(credit_actual×0.50)` via new `place_multi_leg_resting` (no poll). Live = real resting order; paper mode = synthetic manage-tick rule (`mark ≤ pt_debit` ⇒ close at PT price) since PaperExecutionBroker has no resting simulation (T11 — accepted; live is the target).
+
+### Reconcile loop
+Polls each `pt_order_id` (`order_status`): `filled` ⇒ book exit (realized = `(credit − pt_debit)·100·contracts`) + Telegram; unexpectedly `cancelled` ⇒ alert + re-place next manage tick. Also drains `submitting` rungs (boot/crash): match by deterministic combo_id against open/recent orders; confirmed `filled` ⇒ promote to `open` (+ place PT); confirmed terminal-dead or unmatched past a 2-session horizon ⇒ `abandoned` + alert. **Fake-fill guard everywhere: an HTTP error/exception NEVER books a fill; booking requires confirmed order state.**
+
+### Sizing/E
+E = `mace_equity_snapshot` for the current session (15:40 ET slot, `broker.snapshot()` on the MACE-bound broker — acct-scoped per robinhood.py:495-497). Never intraday buying power.
+
+### Startup assertion (fail-closed — deliberately stricter than PMCC's warn-only :4630-4658)
+On first live-mode tick: `account_number == mace.yaml == divisions.yaml filter` (numeric bind already raises on mismatch, robinhood.py:452-461); `option_level` ≥ 3 else entries disabled + URGENT alert + audit (exits/reconcile still allowed); every order/snapshot path passes `account_number` (structurally true: place_multi_leg :1249, snapshot :497, open-orders orders.py:78; `cancel_option_order` is order-URL-routed with no acct param — noted in code comment).
+
+**[A2026-08-09] Account-exclusivity assertion (fail-closed):** at arm time, NO other enabled division in divisions.yaml may carry this account_filter (keyword-or-numeric resolving to the same account) — specifically the `robinhood_joint`/`robinhood_joint_iron_condor` block must have been repointed or disabled so this filter is MACE's alone. Two engines on one account ⇒ **refuse to arm** + URGENT alert.
+
+**[A2026-08-09] Foreign-position guard:** at startup, inventory open option positions AND open orders on the account; anything not matching a `mace-` combo_id or a known `mace_rung` ⇒ **entries disabled** + URGENT Telegram (exits/reconcile still permitted) until the account is clean OR the operator explicitly acknowledges via `acknowledge_foreign_positions: true` (default `false`). Snapshot-E remains the sizing basis and is only trusted under this guard. NOTE: load-bearing at launch — the Joint account holds legacy joint-IC positions until that migration workstream clears them; go-live requires clean-or-acknowledged (see Phase 5).
+
+### Breakers (alert-only)
+Evaluated each manage tick + at daily summary against snapshot-E and HWM (`agent_state`): day realized ≥5% E; ISO-week realized ≥8% E; equity <0.85·HWM; <0.75·HWM. Firing ⇒ Telegram FIRST LINE `🚨 URGENT — MACE <condition>` + numbers + suggested manual action. `breaker_enforcement` branches (`pause_entries`: entry pipeline short-circuits; `halt_flat`: pause + ladder close-all) exist, unit-tested, SHIPPED `"off"`.
+
+## Additive `brokers/robinhood.py` change spec (exact; pre-authorized additive-only)
+
+| Change | Kind | Default behavior |
+|---|---|---|
+| `_submit_spread_with_ref_id(…, time_in_force="gfd")` | new trailing kwarg (:1610-1648) | byte-identical payload |
+| `place_multi_leg` reads `extra["combo_time_in_force"]` (dflt "gfd") + `extra["combo_fill_timeout_s"]` (dflt class 20.0) from leg 0 | new optional extra-key reads (:1206,:1574) | identical when keys absent (PMCC/IC never set them) |
+| `place_multi_leg_resting(orders, *, ref_id, time_in_force="gtc") -> str` | new method | no existing caller |
+| `get_option_order_status(order_id) -> dict` | new method | no existing caller |
+
+Gate: md5 drift check of prod `brokers/robinhood.py` vs `git -c core.autocrlf=false show` immediately before editing (deploy_log recipe). Drift or any non-additive necessity ⇒ **STOP-AND-REPORT**. PMCC golden-payload regression tests: capture the exact spread POST payload for existing PMCC/IC call-shapes pre/post change; assert byte-identical.
+
+## Observability
+
+**Telegram** (existing `TelegramChannel.push`/`push_split`; fill-detail follows PEAD/PMCC precedent — T3):
+- Entry: `✅ MACE ENTRY {SYM} {expiry} {sp}/{lp}P {sc}/{lc}C ×{n} — credit ${c} (floor ${f}) · PT resting ${pt} GTC · maxrisk ${mr}`
+- Exit: `🔔 MACE EXIT {SYM} {expiry} ×{n} — {REASON} @ ${debit} · P&L {±$} ({±% of credit})`
+- Stand-down/reject: `⚠️ MACE {SYM} entry stand-down — {k}/5 attempts unfilled (last ${p})` / `⚠️ MACE order rejected …`
+- Unhandled error: `⚠️ MACE ERROR {loop}: {exc}` (top-level try in every loop)
+- Daily 15:50 ET summary: equity, HWM, open rungs (one line each), day realized P&L, breaker states, next-session blackouts
+- Breakers: `🚨 URGENT — MACE {condition}` first line + numbers + suggested action; Tasty-IVR-down = non-urgent note
+
+**Dashboard `/mace` v1** (mace_view.py `register(app)` pattern; WebDeps fields default `None`; home.html tile): (1) header — execution_mode badge, config_hash, standby/enabled/auto_execute states; (2) open rungs table — symbol, strikes, DTE, credit, current mark, P&L, distance-to-stop, distance-to-PT; (3) equity + HWM; (4) full effective config (from the frozen object, not the file); (5) last eval results per symbol (entered / skip reason); (6) calendar next-7-days; (7) IVR per symbol. Plain + functional; htmx 30s partial for (2).
+
+## Phases
+
+### Phase 0 — Capability confirmation, drift gate, feed probes (NO repo changes)
+**WILL:** read-only API calls on both RH accounts' metadata; at most ONE far-OTM deliberately-unmarketable cancel-immediately test order on the NEW account; read-only Tasty/EODHD/yfinance HTTP calls; md5 reads of prod files over read-only SSH. **WILL NOT:** place any marketable order, touch existing accounts' orders/positions, modify any prod or repo file, restart anything, create KV entries.
+1. **Drift gate (md5 sweep)** per deploy_log recipe + CRLF trap (CLAUDE.md :399-411): `brokers/robinhood.py`, `main.py`, `agents/data_exec.py` (sweep even though default-untouched), `web/app.py`, `web/routes.py`, `templates/home.html`, `persistence/db.py`, `config/{divisions,strategies,risk,ex_dividend_calendar}.yaml`. **Any drift on `brokers/robinhood.py` ⇒ STOP-AND-REPORT before planning any edit.** Report drift table.
+2. **[A2026-08-09] Account-resolution probe** (operator-run script/REPL, later committed as `scripts/mace_phase0_probe.py`): account list → resolve the repo's `joint` keyword filter to the concrete JOINT account number; assert present, `type == margin`, `option_level >= 3` (expected true today); all other accounts still enumerate (routing sanity); **echo the resolved number in the probe report for operator confirmation** (it becomes the Phase-1 numeric hard-bind). Also inventory the account's open option positions/orders (baseline for the foreign-position guard + joint-IC migration scope).
+3. **The one test order (CORRECTED per Board ruling 1 — credit-limit direction). [A2026-08-09] SEQUENCING GATE: runs ONLY AFTER the operator confirms joint IC is disabled/standby on this account** (its HITL engine must not observe a foreign resting condor). Steps 1/4/5/6 have no such dependency and run first. SPY iron condor, 30–45 DTE, shorts ~5Δ (far-OTM), qty 1, `timeInForce='gtc'`, `account_number=<JOINT>`, **credit limit = 0.95×width (e.g. $2.85 on a $3-wide condor) — deliberately UNFILLABLE** (demanding ~the full width as credit can never be marketable). NOTE the inversion this ruling caught: for a NET-CREDIT limit order, a LOW limit ($0.01) is the minimum-acceptable credit ⇒ instantly marketable ⇒ would FILL; a HIGH limit rests. Assert: response `id` present, account URL contains NEW acct, `time_in_force=='gtc'` echoed, state ∈ {queued, confirmed, unconfirmed} with **zero fills**; then cancel → poll to `cancelled`. Proves in one shot: 4-leg condor accepted, account routing, **GTC combos (V11)**, cancel+status path. **The probe script must carry a marketability-direction comment block (credit: lower limit = more marketable; debit: higher limit = more marketable) so this inversion cannot recur in the entry/exit ladder implementations** — entry ladder walks the credit limit DOWN toward marketability (mid−0.02, −$0.01/attempt); exit ladder walks the debit limit UP toward marketability (natural, +$0.01/attempt). Both already conform; the comment pins the rule.
+4. **Tasty probe:** `get_market_metrics` for all 7 symbols — field map incl. ETF `market_cap` pydantic parse risk (T10; fallback = raw `session._get("/market-metrics")` manual parse).
+5. **EODHD probe:** GET `/api/calendar/economic-events` with our key → in-plan verdict (OQ-1; expectation: not on Free/Starter tier).
+6. **USO distribution check** (currently pays none — confirms `exdiv_guard: false`).
+**Checkpoint 0:** probe report (account #, option level, order JSON round-trip, GTC echo, Tasty field map, EODHD verdict, drift table) → operator ratifies GTC-PT design GO (else T9 fallback) + OQ-1 calendar answer. **Rollback:** nothing (one cancelled order remains in RH history; id noted in deploy_log Phase-0 entry).
+
+### Phase 1 — Config, domain, DB, calendar, data providers
+**New:** `mace/{__init__,config,domain,calendar,ivr_provider,exdiv}.py`; `config/mace.yaml`; `scripts/mace_calendar_cli.py` (add/remove/list manual events); `scripts/mace_phase0_probe.py` (committed for the record); tests `test_mace_{config,calendar,ivr,exdiv}.py`. **Modified:** `persistence/db.py` (SCHEMA append — net-new tables, no ALTER; migration script `scripts/migrate_mace_tables.py` for the prod DB); `config/ex_dividend_calendar.yaml` (+EWZ/FXI/USO/IBIT). Calendar seeds: macro_calendar.yaml import (FOMC/CPI → `source='seed'`; YAML stays master, weekly loop re-seeds idempotently — T12), LPR-fix rule generator (20th monthly, next-business-day roll — `source='rule'`), manual entries for OPEC+/Copom/BR-elections/politburo (`source='manual'`, operator-supplied dates via CLI).
+**Checkpoint 1:** `run_capped` pytest green; `init_db` against a prod-DB COPY shows the 4 new tables; `mace_calendar_cli list` shows seeded FOMC/CPI + generated LPR rows; operator spot-checks dates. **Rollback:** delete new files; SCHEMA block additive + inert.
+
+### Phase 2 — Decision engine (pure logic, no I/O)
+**New:** `mace/strategy.py` (entry pipeline, sizing, overflow, management precedence, breaker math); tests `test_mace_{strategy_entry,sizing,strategy_manage,breakers}.py` with golden fixture chains (incl. band-edge deltas, FXI fallback width, credit-floor edges, refill/weekly/cooldown matrices, overflow routing, ISO-week P&L); `scripts/mace_shadow_eval.py` — runs the full entry eval on LIVE data, prints the per-symbol decision table, places NOTHING.
+**Checkpoint 2:** pytest green; operator runs `mace_shadow_eval` on a market afternoon and sanity-checks strike/credit/size decisions against the broker app. **Rollback:** delete files.
+
+### Phase 3 — Broker port, additive robinhood.py changes, execution, division shell
+**New:** `mace/{broker_port,rh_broker,execution,notify,manager}.py`; `agents/divisions/robinhood_mace.py`; tests `test_mace_{rh_broker,execution,division_shell}.py` (mocked port: ladder sequences, cancel races, fake-fill guard, reconcile drains, PT lifecycle) + **PMCC golden-payload regressions** for robinhood.py. **Modified:** `brokers/robinhood.py` (additive table above; drift-gate re-run immediately before). Risk integration: per-leg evaluate + `risk.yaml` `overrides.robinhood_mace` block (per_trade_risk_pct aligned to 5% rung risk; daily-loss/DD autohalt neutralization per T5 — PEAD precedent risk.yaml:157-160; **RATIFIED by Board 2026-08-09**; per-leg evaluate stays active).
+**Checkpoint 3:** full `run_capped` pytest green incl. PMCC golden-payload regressions; drift-gate re-run shows exactly the intended robinhood.py diff; operator code-review of the additive diff. **Rollback:** revert robinhood.py to pre-edit md5 (golden tests prove equivalence); delete mace files; config appends inert while `standby: true`.
+
+### Phase 4 — Engine wiring + observability
+**Modified:** `main.py` (construct MaceManager from mace.yaml + deps; execution_mode triple-gate PEAD-style :1798-1803; four loops: daily-slots loop [15:40 snapshot → 15:45 entry → 15:50 summary, PMCC-slot pattern], 5-min manage loop, reconcile loop, weekly calendar-refresh loop); `web/app.py` (WebDeps `mace_*` fields, default None); `web/routes.py` (`mace_view.register(app)`); `templates/home.html` (tile); **New:** `web/mace_view.py`, `templates/mace_live.html`, `partials/mace_live_sections.html`; `config/{divisions,strategies}.yaml` MACE blocks (`standby: true`, `auto_execute: false` until go-live); tests incl. WebDeps construction-completeness extension.
+**Checkpoint 4:** local paper-mode boot (`run_capped`, scratch DB): all four loops log online, config hash on `/mace`, tile renders; forced-clock unit run shows snapshot→entry→summary slot sequence; Telegram formats verified via test hook. **Rollback:** revert main.py/app.py/routes.py/home.html hunks; tiles fall back to generic `/division/robinhood_mace`.
+
+### Phase 5 — Go-live
+1. Pre-deploy: full `run_capped` pytest green; prod-vs-main md5 sweep of every touched file; config review — `universe: [SPY]`, `max_contracts: 1`, `breaker_enforcement: "off"`, account number matches Phase-0 probe. **Standing config-review rule (Board ruling 7, applies to every future expansion edit): do NOT expand universe beyond 2 symbols until the entry-window serialization work (OQ-2: shorter fill waits or parallel ladders) is built — this line also goes in the expansion runbook.**
+2. Funding confirmed in NEW account (Monday); deploy-day 15:40 snapshot shows expected E.
+3. Deploy per [[prod-live-deploy-base-rule]]: prod-live is deploy base; per-file LF-md5 proof (worktree==prod==expected); advance prod-live same session; deploy_log entry incl. **Board memo** (decision 4 zero-HITL/live-at-completion + T5 risk-autohalt neutralization + T8 Backtester-gate supersession + T6 overflow ruling) and Phase-0 test-order id.
+3b. **[A2026-08-09] Account-takeover preconditions:** (i) exclusivity — `robinhood_joint`/joint-IC block repointed or disabled in divisions.yaml so the account_filter is MACE's alone (assertion refuses to arm otherwise); (ii) foreign-position guard satisfied — account clean of legacy joint-IC positions/orders (migration workstream, out of scope here) OR `acknowledge_foreign_positions: true` set consciously; entries stay disabled until then.
+4. Flip: `standby: false`, `auto_execute: true`, add `robinhood_mace` to `--live-divisions` (systemd unit args), `TC_LIVE_AUTHORIZED=LIVE` already set for the process; restart; startup assertion passes (account + L3 + exclusivity + foreign-position guard).
+5. **Supervised first-entry window:** operator present 15:35–16:05 ET on first eval day(s); kill-switch ready (`auto_execute: false` = hot halt of new placements; `standby: true` = hot scan/manage halt; `--live-divisions` removal + restart = full disarm). No approval gates in the order path.
+6. Watch: first PT resting order visible in RH app as GTC; first 5-min manage tick logs; 15:50 summary arrives.
+
+## Deviations / tensions / open questions (NONE silently resolved)
+
+**Board rulings 2026-08-09 (all resolved — nothing left to ratify):**
+- **T5 RATIFIED:** neutralize daily-loss/DD autohalts for `robinhood_mace` in risk.yaml per PEAD precedent (exits-deadlock rationale: a `strategy_state` halt rejects EXITS too, risk.py:113-118/:144-168). Per-leg `RiskAgent.evaluate()` stays active. Record in the Board memo.
+- **T6 MODIFIED:** overflow entries EXEMPT from the receiver's weekly-budget filter (specced version was structurally inert — a receiver never has spare weekly budget). All other filters apply to the receiver + new bound: max 1 overflow entry per symbol per session. §7.1 + test matrices updated.
+- **OQ-1 RATIFIED as defaulted:** launch on manual+seed+rule calendar sources; macro_calendar.yaml FOMC/CPI seed covers the SPY launch scope. Phase-0 EODHD verdict stands either way. FMP deferred post-launch — note: Board decision 3 governed ACCOUNT credentials, not data-provider keys; it does not bar a future FMP KV entry.
+- **OQ-3 RATIFIED:** IBIT overflow-only, never a primary.
+- **T4 ACCEPTED as specced:** emulated market-exit ladders are the required adaptation of the operator's market-order decision given V1 (limit-only API); residual stop-slip bounded by defined risk. No change.
+- **Ruling 1 (Phase 0):** test-order credit limit corrected to deliberately-unfillable 0.95×width (see Phase 0 step 3 + marketability-direction comment requirement).
+- **Ruling 7 (OQ-2 carry-forward):** universe must not expand beyond 2 symbols until entry-window serialization work is done — added to Phase 5 config review + expansion runbook line.
+- **Ruling risk-band-width-scaling (2026-08-09, Checkpoint 2):** the fixed `risk_band_usd: [150,250]` was a spec defect — it contradicted the design-phase per-symbol risk figures and made ALL width-2 names (TLT/USO/EWZ/FXI/IBIT) structurally unenterable (a $2-wide condor caps at $200 max-risk but the 0.30 credit floor forces max-risk ≤ $140 < 150). REPLACED with a width-scaled band: `risk_band_min_per_width_usd: 50` (min = 50·width_dollars) + `risk_band_max_usd: 250` (absolute). Consequences: w3⇒[150,250] (SPY launch byte-identical), w2⇒[100,250], w1⇒[50,250] (FXI fallback_width_dollars:1 becomes viable, not ceremonially dead). Implemented on the Phase-2 branch (strategy.py + config.py + mace.yaml + tests). The Phase-5 expansion config review still governs enabling any width-2 name.
+- **Ruling 2026-08-09 (post-stage-A) — IVR staleness:** RATIFIED as proposed. `updated_at` older than 2 sessions ⇒ that symbol takes the Tasty-unavailable path (IVR filter skipped; credit floor + blackouts still gate; non-urgent alert). Refinement: skip-reason + alert distinguish `ivr_stale` (symbol + age) from `ivr_unavailable`.
+- **Ruling 2026-08-09 (post-stage-A) — version-skew constraint:** ivr_provider unit tests MUST be mock-based (version-independent); the stage-A p0a3 probe stands as the 12.4.1 integration proof. **Standing constraint: upgrading prod's tastytrade package is henceforth a deliberate, tested change (MACE IVR load-bears on its API surface) — never casual.**
+- **Confirmation 2026-08-09: Joint account `116637293063` CONFIRMED by operator** — Phase-1 numeric hard-bind ratified (`mace.yaml account_number` + `divisions.yaml robinhood_mace account_filter`).
+- **[A2026-08-09] Amendment 8 — account resolution:** new acct is L2-only ⇒ MACE takes over the JOINT account (margin + L3). Self-sourced from repo (`joint` keyword filter → Phase-0 numeric resolution + operator confirmation → Phase-1 numeric pin). New fail-closed assertions: account-exclusivity (refuse to arm if any other enabled division carries the filter; joint IC must be repointed/disabled by go-live) + foreign-position guard (`acknowledge_foreign_positions` flag, default false; entries disabled while foreign positions/orders exist). Phase-0 resequenced: drift/Tasty/EODHD/USO first; test order only after operator confirms joint IC disabled/standby on the account. L2/upgrade language deleted — assertion is simply `option_level >= 3` on Joint. Joint-IC migration = separate workstream, out of scope.
+Already-decided deviations, recorded: **T1** config hybrid (hot kill-switches in strategies.yaml; all else frozen mace.yaml) · **T2** `economic_event` unprefixed (spec names it) · **T3** Telegram fill detail follows PEAD/PMCC precedent · **T4** MARKET exits emulated as ladders (V1 limit-only; true stop can slip past 2.0× during a burst — bounded by defined-risk max loss) · **T7** divisions.yaml standby hot via shell re-stat; registration needs restart · **T8** Backtester gate superseded by Board decision 4 · **T9** GTC unproven until Phase 0 (fallback = synthetic PT manage-tick rule = spec deviation requiring operator note) · **T10** Tasty ETF `market_cap` parse risk (raw-GET fallback) · **T11** paper-mode PT divergence accepted · **T12** YAML remains FOMC/CPI master; weekly re-seed idempotent · **OQ-2** entry window fits ~2 symbols/day worst-case (5×60s ladders, 15:45–15:58) — fine at launch; shorten waits or parallelize before expanding past 2 symbols (future work, deliberately not built).
+
+## Future extraction note (per Board decision 1)
+Seams: (a) `mace/domain.py` neutral types, zero broker leakage above `rh_broker.py`; (b) `OptionsBrokerPort` single broker surface — a future Tasty impl replaces `rh_broker.py` only; (c) `MaceManager` constructible from `MaceConfig` + injected deps (no singletons, no yaml re-reads in strategy logic). **Deliberately NOT built:** second port impl, HITL/approval hooks, adjustment/roll logic, generic condor framework, shared code with the two existing IC engines (byte-untouched), parallel entry ladders, paper resting-order simulation.
+
+## Verification (end-to-end)
+- Every phase: `.\scripts\run_capped.ps1 python -m pytest` (house discipline) — new tests + full suite; baseline count from latest deploy_log entry must hold.
+- Phase 0/3: drift-gate md5 sweeps (CRLF-aware) with reported tables.
+- Phase 2: `mace_shadow_eval` live-data dry run reviewed by operator.
+- Phase 4: paper-mode boot on scratch DB; loop/slot logs; dashboard + Telegram render checks.
+- Go-live: startup assertion, supervised first entry, resting GTC PT visible in RH app, 15:50 summary, deploy_log + Board memo appended, prod-live advanced same session.
+
+## Execution status (updated 2026-08-09 — Phase 0 stage A COMPLETE)
+
+**Stage A executed and COMPLETE** (operator ran `mace_p0a.ps1`, then `mace_p0a2.ps1` [KV route — disproved], then `mace_p0a3.ps1` [az run-command root — succeeded]; all runners staged in `C:\Users\AA Incorporado\cc`, ASCII/LF-validated). Results:
+
+1. **Drift gate: 11/11 MATCH, ZERO drift** (prod vs `7d34d82`, LF-md5). `brokers/robinhood.py` = `5862d2e8` both sides → additive pre-authorization condition (a) SATISFIED.
+2. **Account resolution: Joint = `116637293063`** — `joint_tenancy_with_ros`, `option_level_3`, margin_balances present, not deactivated. Assertions pass (`option_level >= 3`, margin). **AWAITING operator confirmation** → becomes Phase-1 numeric hard-bind (`mace.yaml account_number` + `divisions.yaml account_filter`).
+3. **Foreign-position baseline: CLEAN** — 0 open option positions, 0 open option orders on Joint. Takeover reduces to config repointing; no legacy-position migration blocker at this time.
+4. **ANOMALY (surfaced, unresolved):** the L2 "new account" did NOT enumerate — only 3 accounts returned (`461391328` individual L3, `934310442` ira_traditional L2, `116637293063` joint L3). Does not block MACE (Joint is the target per A2026-08-09); operator may want to check the new-account application status separately.
+5. **EODHD economic-events: AVAILABLE** — `/api/economic-events` HTTP 200 on the current plan (`/api/calendar/economic-events` → 422 wrong path). OQ-1 stands as ruled (launch on manual+seed+rule); feed integration remains deferred post-launch, now known-feasible.
+6. **USO: zero distributions on record** → `exdiv_guard: false` CONFIRMED.
+7. **Tasty IVR probe: COMPLETE (via `mace_p0a3` az run-command root).** Route history: `/etc/trading-corp/tastytrade.env` perm-denied for azureuser → KV probe (p0a2) 404 on both `TASTYTRADE-*` names = **KV route disproved, matching `secrets.py:204-206`** ("NOT KV — no TASTYTRADE-* secrets in KV, verified 2026-05-29") → root path (p0a3) sourced the env file, ran prod venv python. **Findings: (a) PROD SDK = tastytrade 12.4.1** (plan's V7 verified 13.2.2 locally — skew noted; call proven live on 12.4.1, model path clean, T10 pydantic risk NOT triggered); **(b) rank fields are 0–1 scale** (SPY 0.272132797 = IVR 27.2) → **ivr_provider must normalize ×100 vs `ivr_floor: 25` — the 25-vs-0.25 bug is now impossible to miss**; **(c) canonical field = `implied_volatility_index_rank` (== tos)**; `tw_` diverges (USO tw=1.0 vs ivr=0.295) — never tw; **(d)** SPY `updated_at` was ~31h stale (2026-08-08 10:10 vs others 2026-08-09 17:00) → PROPOSED (awaiting ruling): treat `updated_at` older than 2 sessions as "Tasty unavailable" for that symbol (existing filter-skip + non-urgent-alert path). Live IVR snapshot 2026-08-09: EWZ 30.3 / GLD 33.0 / SPY 27.2 / USO 29.5 / FXI 25.8 / TLT 19.6 / IBIT 9.1.
+8. **Operator directive (recorded, deferred — NOT MACE scope):** migrate Tasty creds to Azure Key Vault + rotate values later (infosec backlog; rotation runbook `runbooks/tastytrade_oauth_rotation.md` Pre-flight 1 already covers the multi-path update requirement).
+
+**Stage B UNLOCKED 2026-08-09:** Joint `116637293063` operator-CONFIRMED; **joint IC DISABLED LIVE** (Board-authorized; `mace_p0b1` az run-command root: surgical 1-line flip `robinhood_joint_iron_condor.enabled true→false`, context-count==1 guarded, strategies.yaml md5 `cc6791803b6562a18dd603fab88b2a4b`→`ee4c1f624608975d67b9b74e2e0c82a0`, backup `.bak_jointic_disable_20260809`, mtime-hot NO restart — MainPID 621536 / NRestarts 0 unchanged). prod-live ADVANCED same-session: `7d34d82`→`55e34c8` (config flip + deploy_log entry, LF-md5 parity worktree==prod==`ee4c1f62` proven, pushed). Stage-B runner `mace_p0b2.ps1` staged + validated (self-gates on `enabled: false`; one unfillable order: SPY ~8%-OTM shorts w/ delta assert ≤0.10, credit limit 0.95×width, GTC, place→assert→cancel→poll; no retry). Checkpoint 0 completes after stage B → operator ratifies GTC-PT GO (else T9 fallback).
+
+**Stage B runs 1–2 (2026-08-09, both clean aborts, NOTHING placed — silent-creation check 0 both times):**
+- **Run 1 finding — SPY far-OTM strike grid is $5-only on the call side:** at ~8% OTM on the 2026-09-18 monthly, call 838 UNLISTED while 835 resolved (put side 709/712 both listed — grids are asymmetric). Probe fixed: shorts snap to the $5 grid, `WIDTH 3.0→5.0`, `CREDIT_LIMIT 2.85→4.75` (still 0.95×width, unfillability principle unchanged). **Build-phase note (Phase 2/3): the entry build's "wings exactly width_dollars beyond" can hit unlisted wings even on SPY — wing-listing check + `no_wing` skip reason must be universal, not an FXI-only concern.**
+- **Run 2 finding — Joint account UNFUNDED:** RH rejected placement `"not enough overnight buying power"` (BP < the ≤$500 spread requirement; 0 positions so overnight BP ≈ cash). Rejection implicitly proves payload acceptance + account routing (risk check runs after structural validation). **Still unproven (V11): order-id round-trip, GTC echo, queued state, cancel/status path.** Probe needs NO further changes; re-run after funding (plan Phase-5 step-2 Monday item, pulled forward as the stage-B prerequisite). Delta asserts passed both runs (put 710 −0.090 / call 835 +0.036).
+
+**Board ruling 2026-08-09 — CHECKPOINT RESEQUENCING (build proceeds ahead of stage B):** stage B's unknowns shrank — 4-leg build, payload acceptance, and account routing are PROVEN (two clean aborts + joint IC's production history on this account); the only remaining unknown is the GTC round-trip (V11), which affects only the resting-PT component and has the designed T9 fallback. Therefore Phases 1→2→3→4 begin NOW without waiting for stage B. Phase-3 constraint: keep the PT lifecycle cleanly seamed so GTC-resting vs T9-synthetic is a CONTAINED swap pending the stage-B verdict; build GTC-first as planned. All phase checkpoints still STOP for operator verification as written. Stage B re-run (post-funding), Checkpoint-0 GTC ratification, funding, deploy, go-live: Monday-gated exactly as planned. Checkpoint 2's shadow_eval runs on stale Friday chains for mechanics verification; operator re-runs on live data Monday before final ratification. Wing-listing finding ACCEPTED → entry-pipeline filter 6 updated (unconditional check, `no_wing` skip reason).
+
+## Checkpoint 3 findings (2026-08-10)
+
+- **RATIFIED — `CondorSpec.closing_legs()` call-side inversion. Severity: HIGH (real-money).** The Phase-1 draft emitted `short_call "sell"` / `long_call "buy"` on the closing legs — which RE-OPENS the call spread instead of flattening it. `closing_legs()` was UNUSED before Phase 3; the exit ladder and the resting PT (`mace/execution.py` → `mace/rh_broker.py`) are its first consumers. Placed live, a stop/time/exdiv exit or a PT fill would have **DOUBLED the call spread** rather than closing the condor. Corrected to `short_call "buy"` / `long_call "sell"` (commit `88e0e4e`); regression test `tests/test_mace_domain_condor.py` pins `closing == reverse(opening)` on BOTH sides + `effect=="close"`. Operator-ratified at Checkpoint 3. Lesson: verify foundational (Phase-1) helpers against their FIRST real consumer — a latent orientation bug in an unused helper is invisible until execution wires it.
+- **RULING — "fresh prod md5" means a PROD read at APPLY time, never a cached baseline.** Checkpoint 3's drift gate was satisfied by a local-worktree LF-md5 (== stage-A baseline `5862d2e8`), which proves the diff applied to the right bytes but NOT that prod hadn't drifted since the Sunday stage-A read. Binding correction (applies to every future gated edit): immediately before applying a pre-authorized `brokers/*.py` edit, read the LIVE prod file's LF-md5 and require the match then; a stale baseline is not a drift gate. The Checkpoint-3 push is gated on this fresh prod read matching `5862d2e8f2c6002f9d70dd7dec9a47e4`.
+
+## Checkpoint 0 — cancel-path finding CLOSED (2026-08-10; root cause + fix)
+
+- **✅ ROOT CAUSE + FIX (operator devtools capture 2026-08-10, single-leg subject order `6a7a3ffa`, token-redacted).** The endpoint NEVER moved: the RH **web app POSTs the SAME constructed** `.../options/orders/{id}/cancel/` URL robin_stocks builds — the difference is the **BODY**. The web app sends `Content-Type: application/json` with **`{"account_number": <owning account>}`**; robin_stocks POSTs it with **no body**. Under the brokeback edge sharding the service resolves the order via the **account context** and returns **404 (not 400)** when the body is absent — which explains every observation (reads work, app/web cancel works, robin_stocks cancel 404s on both gtc + gfd, order-state irrelevant). **Fix (commit `556d0d8`, `mace/rh_broker.cancel` rung 0):** POST the constructed URL **with** the `{"account_number": self._account_number}` json body (account from the **bound** account, never hardcoded), off-thread, ahead of the existing fallback chain; the loud-fail and the **absolute fake-cancel guard** (only a terminal read-back believes the cancel; a 200 on the POST books nothing) are unchanged. Probe v3 (commit `a758552`) + the operator one-shot runner `cc\mace_p0b5*.{ps1,py}` carry the same fix for the live re-run.
+- **★ GO-LIVE GATE — "programmatic cancel proven live on a spread order": flips GREEN ONLY on the stage-B FINAL re-run evidence, NOT on this capture/fix alone.** The re-run (`cc\mace_p0b5.ps1`, operator-run, prod-side, one live unfillable GTC condor on the funded Joint) must show the FULL assertion set pass: id round-trip, GTC echo, resting zero fills, joint routing, **CANCEL ⇒ terminal CANCELLED via the fixed path**, 0 open orders after. All pass ⇒ **Checkpoint 0 records GO on the T9 basis** (the LADDER cancel — the load-bearing one — is proven; resting-GTC PT stays OFF per ruling, the manage-loop **T9 synthetic PT** [commit `5206af6`] is the mechanism). Partial/ambiguous ⇒ stop-and-report with raw evidence; gate stays RED. Prereq: Joint funded (run 2 aborted on overnight BP).
+- **Historical (pre-fix) blocker record retained below for provenance:**
+
+- **HARD BLOCKER (pre-ruling 3b confirmed): RH programmatic option-order cancel is broken.** `POST https://api.robinhood.com/options/orders/{id}/cancel/` returns **404** for BOTH GTC and GFD spread orders (live-proven: orders `6a79fe0a` gtc, `6a7a0a1f` gtc, `6a7a20f5` gfd). The order's OWN server-advertised `cancel_url` is **byte-identical** to that constructed URL (so it is NOT a "wrong URL" problem), and the 404 is **universal** — not order-state (`confirmed` vs `queued`) or type (gtc vs gfd) scoped. Root cause = Robinhood **"brokeback" edge migration** (account host now `edge.brokeback-us-9.region.rh`; same 2025 wave as robin_stocks #1637/#1635/#1617). **No library fix exists** (robin_stocks 3.4.0 is latest; master still hard-codes the 404ing path). The RH **app** cancels fine → the real cancel endpoint moved to the brokeback edge and is **undocumented**. MACE's entry/exit ladders + PT lifecycle all depend on programmatic cancel ⇒ **GO-LIVE BLOCKED**.
+- **MACE fails SAFE, not silently:** the `rh_broker` resilient-cancel (`558eb94`) now **raises loudly** when all cancel rungs 404, and the **fake-cancel guard** in execution refuses to place any closing order without a terminal read-back — so MACE can never double-fill against an un-cancelled order; it just cannot exit until cancel works.
+- **Fix path (Board-authorized, contingent):** capture the RH **web app's** cancel request via browser devtools (robinhood.com + F12, "Copy as cURL", token redacted) → discover the brokeback cancel endpoint (host/path/method/headers/body) → implement it **MACE-local in `rh_broker`** behind the existing fallback chain → **live-prove with a fresh probe before Checkpoint 0 can record GO**. Mobile-app interception is the fallback only if web routes differently.
+- **★ GO-LIVE GATE (Board ruling, named): "programmatic cancel proven live on a spread order"** — an explicit, currently-RED go-live gate. Checkpoint 0 cannot record GO without it.
+- **Platform exposure audit (read-only):** NO currently-live division calls `cancel_order`/`cancel_option_order` (MACE is the first consumer — the broken cancel is unexercised in prod). Live divisions' place + fill-poll (`get_option_order_info`) + snapshot reads WORK. ONE latent, **fail-safe** exposure flagged to the PMCC + joint-IC workstreams: `RobinhoodBroker._reconcile_after_submit_failure`→`_recent_option_orders`→`rs.orders.get_all_option_orders` (robin_stocks #1617 reports it brokeback-broken/empty), used only on a 401/429-during-submit; it fails closed (books nothing) so no silent money loss — verify + track, no fix from here.
+- **STALE-READS finding (for MACE's reconcile loop):** brokeback order reads LAG — an app-cancel took minutes to reflect on `get_all_open_option_orders`. MACE's reconcile depends on these reads; the drain/abandon logic must tolerate read lag (the 2-session horizon already provides slack, but the timing is a known risk).
+- **Tastytrade fallback branch (Board, for the record):** the `OptionsBrokerPort` seam exists precisely so a Tastytrade impl can replace `rh_broker.py` alone if the captured RH endpoint can't be found/proven. A Board decision for later, not now.
+
+## Checkpoint 4 — SIGNED OFF (2026-08-10, code + paper-boot verified)
+
+- **Phase-4 coupled unit + cancel-path fix + T9 synthetic PT all COMPLETE and CP4-signed-off.** 7 commits `24ec6df..6132cde` on `claude-2026-08-09b`, **PUSHED** (operator-authorized after CP4). Full suite 3370 tests: baseline **88 failed / 12 errors HELD EXACTLY, ZERO mace failures**.
+- **Real paper-mode integration boot PASSED (the required CP4 addition).** `trading_corp.main.run([])` booted PAPER (no `--live`), scratch DB, all broker/exchange creds cleared + `KEY_VAULT_URI` unset ⇒ NO real connects, prod untouched. Proven from the boot log (`cc\mace_paper_boot3.log`): **(a)** all four MACE loops start as asyncio tasks + log online (`config_hash=33c82c4122ae`) + **no-op in standby** (zero fire events) + cancel cleanly on shutdown; **(b)** `/mace` serves HTTP 200 with the config_hash; **(c)** PEAD/PMCC/bitunix_sfp construct + run unaffected + web command center listening; **(d)** clean shutdown cancels the loops with **no traceback** (the lone ERROR was a benign yfinance data-fetch warning). Harness `cc\mace_paper_boot.py` (operator staging area; not repo code). ★Harness note: the /mace GET must run off the event-loop thread (a blocking urlopen starves uvicorn on the same loop).
+- **★ GO-LIVE GATE (restated, authoritative): "programmatic cancel proven live on a spread" flips GREEN ONLY on the operator's stage-B FINAL re-run evidence (`cc\mace_p0b5.ps1`, funded Joint) — NOT on the capture/fix alone.** Then Checkpoint 0 records GO **on the T9 basis** (the LADDER cancel is proven — the load-bearing one; resting-GTC PT stays OFF per ruling, the manage-loop **T9 synthetic PT** is the mechanism). The earlier "blocked on capture" framing is **SUPERSEDED** — the capture succeeded and the fix is committed (`556d0d8`).
+- **Operator-owned from here (agent HOLDS):** the stage-B final re-run, the Checkpoint-0 GO recording, deploy, and go-live. The agent does NOT fire the live probe.
+
+## Build-session execution notes
+- Worktree `cc-2026-08-09-wt` branch `claude-2026-08-09`; commit per phase (scoped commits, artifacts as-you-go); push with `-u origin claude-2026-08-09`.
+- All operator paste commands: ONE line ≤100 chars; anything longer ships as a pure-ASCII `.ps1` runner per command-paste-rule.
+- Agent SSH to prod: read-only only; writes/restarts operator-run.

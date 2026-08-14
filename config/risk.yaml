@@ -158,3 +158,26 @@ overrides:
     per_trade_risk_pct: 1.0
     per_strategy_daily_loss_pct: 1.0
     max_drawdown_disabled: true
+
+  # Robinhood MACE — zero-HITL Multi-Asset Condor Engine (iron condors on the
+  # JOINT account). DEFINED-RISK BY DESIGN: max loss per condor = (width × 100 −
+  # credit) × contracts, sized at 5% of settled equity per rung; the per-leg risk
+  # gate in agents/risk.py STAYS ACTIVE and is the risk control (any leg reject
+  # aborts the whole condor). Board-RATIFIED 2026-08-09 (T5).
+  #
+  # Account-level halts are deliberately NEUTRALIZED (PEAD precedent above): a
+  # strategy_state daily-loss / drawdown auto-flatten rejects EXITS too
+  # (risk.py:113-118 / :144-168). A zero-HITL condor engine MUST be able to CLOSE
+  # its positions — an account halt that blocks exits would DEADLOCK the engine
+  # holding open defined-risk structures at the worst moment. MACE runs its own
+  # ALERT-ONLY breaker layer (config/mace.yaml `breakers`, enforcement shipped
+  # "off"); the account-halt path is the wrong tool here.
+  #   - per_trade_risk_pct 0.05         → aligned to the 5% rung-risk cap (ACTIVE).
+  #   - per_strategy_daily_loss_pct 1.0 → float()-read, never fires (neutralized).
+  #   - max_drawdown_disabled: true     → opts out of the §4 account DD auto-flatten.
+  # MUST NOT be omitted: omitting falls back to the GLOBAL DD / daily-loss caps,
+  # which would halt the division (and block its exits) on ordinary movement.
+  robinhood_mace:
+    per_trade_risk_pct: 0.05
+    per_strategy_daily_loss_pct: 1.0
+    max_drawdown_disabled: true

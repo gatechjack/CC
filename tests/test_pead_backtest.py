@@ -99,12 +99,62 @@ def test_hard_stop_gap_through_fills_at_open():
     assert tr.exit_price == pytest.approx(95.0)         # gap-through -> fill at open
 
 
-def test_drift_dead_between_stop_and_giveback():
+def test_drift_dead_fires_on_close_fills_at_close():
+    # FIX 2: drift-dead is a daily-CLOSE rule. Close 101 <= drift_dead 102 (and low
+    # 101 > stop 100 so stop does not pre-empt) -> drift fires, filled at the CLOSE.
     rows = list(_BASE_ROWS)
-    rows[4] = (104, 104, 101, 101)  # low 101: > stop 100, <= drift_dead 102
+    rows[4] = (104, 104, 101, 101)  # close 101 <= drift_dead 102, low 101 > stop 100
     tr = simulate_trade(_sig(rows), BacktestParams(**_NO_FRICTION))
     assert tr.exit_reason == "drift_dead"
-    assert tr.exit_price == pytest.approx(102.0)        # fill at drift_dead level
+    assert tr.exit_price == pytest.approx(101.0)        # CLOSE-based drift -> fill at bar CLOSE
+    assert tr.holding_days == 1
+
+
+def test_drift_dead_close_only_ignores_intrabar_low():
+    # FIX 2 proof: a bar whose LOW pierces drift_dead but CLOSES back above it must
+    # NOT drift-exit (close-only). A later bar that CLOSES below the level does.
+    rows = list(_BASE_ROWS)
+    rows[4] = (104, 104, 101, 105)  # low 101 <= drift_dead 102 but close 105 > 102 -> NO drift
+    rows[5] = (105, 105, 101, 101)  # close 101 <= 102 -> drift on THIS bar's close
+    tr = simulate_trade(_sig(rows), BacktestParams(**_NO_FRICTION))
+    assert tr.exit_reason == "drift_dead"
+    assert tr.exit_date == date(2024, 1, 6)             # idx5, not idx4 (its low is ignored)
+    assert tr.exit_price == pytest.approx(101.0)        # idx5 close
+
+
+# FIX 1: slot-aware drift baseline. Same bars + entry; AMC baseline = bars[a],
+# BMO baseline = bars[a-1] (via the gate's reaction_index) -> different drift gap,
+# so the SAME later close fires drift for AMC but not for BMO.
+_SLOT_ROWS = [
+    (99,  100, 98,  99),    # 0
+    (99,  101, 98,  100),   # 1  a-1: BMO baseline close = 100
+    (100, 106, 100, 104),   # 2  a (announcement day): AMC baseline close = 104
+    (108, 111, 107, 110),   # 3  a+1 = entry (open 108)
+    (110, 110, 105, 105),   # 4  close 105: between BMO drift_dead 104 and AMC drift_dead 106
+    (105, 107, 104, 106),   # 5
+    (106, 108, 105, 107),   # 6
+]
+_SLOT_PARAMS = dict(
+    entry_delay_days=1, atr_period=2, hard_stop_atr_mult=10.0,  # stop far below -> won't pre-empt
+    drift_dead_giveback=0.5, next_earnings_guard_days=2, max_hold_trading_days=5,
+    slippage_bps=0.0, half_spread_bps=0.0, confirmation_gate=False,
+)
+
+
+def _slot_sig(report_time):
+    bars = _mkbars(_SLOT_ROWS)
+    return EventSignal("TST", bars[2].trade_date, 2.0, bars, report_time=report_time)
+
+
+def test_slot_aware_pre_earnings_close_amc_vs_bmo():
+    # AMC: baseline = bars[a=2].close 104 -> gap 4 -> drift_dead 106 -> close 105 FIRES at idx4.
+    amc = simulate_trade(_slot_sig("AfterMarket"), BacktestParams(**_SLOT_PARAMS))
+    assert amc.exit_reason == "drift_dead"
+    assert amc.exit_date == date(2024, 1, 5)            # idx4
+    assert amc.exit_price == pytest.approx(105.0)
+    # BMO: baseline = bars[a-1=1].close 100 -> gap 8 -> drift_dead 104 -> close 105 does NOT fire.
+    bmo = simulate_trade(_slot_sig("BeforeMarket"), BacktestParams(**_SLOT_PARAMS))
+    assert bmo.exit_reason != "drift_dead"             # runs to data_end instead
 
 
 def test_next_earnings_guard_flattens():

@@ -26,6 +26,85 @@ from trading_corp.utils.time import iso, now_utc
 log = logging.getLogger(__name__)
 
 
+class AdvisoryOrderError(RuntimeError):
+    """Raised when an ADVISORY order reaches a dispatch chokepoint.
+
+    Fail-closed guard: a roll_leap / LEAP-roll leg is a capital-reallocation the
+    operator executes MANUALLY — the agent must NEVER place it. Mirrors the
+    single-leg-path guard in RobinhoodBroker._place_option_order (never partially
+    act on something that must not execute). Detection checks BOTH the typed
+    `dispatch` field AND the `extra["action"]` prefix: the action survives
+    ceo_graph's `_order_from_state` reconstruction (which drops typed fields but
+    preserves `extra`), so it is the load-bearing signal on the single-leg path.
+    """
+
+
+def _is_advisory_order(order: ProposedOrder) -> bool:
+    """True if `order` must never be placed by the agent (fail-closed).
+
+    Checks the typed dispatch marker first (authoritative where the original
+    object flows, e.g. the combo path) then the action prefix (load-bearing on
+    the ceo_graph single-leg path, which reconstructs the order without the typed
+    field). Either condition ⇒ advisory.
+    """
+    if getattr(order, "dispatch", "executable") == "advisory":
+        return True
+    action = str((order.extra or {}).get("action") or "")
+    return action.startswith("roll_leap")
+
+
+class LeapMandateError(RuntimeError):
+    """Raised when a robinhood_pmcc order would SELL or CLOSE the LEAP. The PMCC
+    division manages the SHORT weekly calls ONLY and must never touch the LEAP — the
+    mandate enforced at the EXECUTION boundary (fail-CLOSED). Belt-and-suspenders with
+    the removed close_all action + propose/scan branches; the floor that must exist
+    before autonomy (an auto loop that ever emits a PMCC LEAP order is refused here)."""
+
+
+# A PMCC short is weekly (DTE ~7-45); the LEAP is long-dated (~365-720). Anything at
+# or beyond this floor, being SOLD/CLOSED, is the LEAP.
+_PMCC_LEAP_DTE_FLOOR = 180
+
+
+def _pmcc_touches_leap(order: ProposedOrder) -> bool:
+    """STRUCTURAL (no broker fetch): True if this robinhood_pmcc order would SELL or
+    CLOSE the LEAP. The division holds exactly one long-dated call (the LEAP) + weekly
+    shorts, so a long-dated (DTE >= floor) option being SOLD or CLOSED is the LEAP.
+    ONLY sell/close is caught — a legitimate new-open LEAP BUY is not 'touching' the
+    existing LEAP and stays unaffected. Primary signal is the option's DTE; a
+    'leap'-named action tag is the belt for the rare path where dte is absent."""
+    ex = order.extra or {}
+    if not ex.get("is_option"):
+        return False
+    # Only a reduction of the position touches the existing LEAP: a sell, or a close.
+    if not (getattr(order, "side", None) == "sell" or ex.get("position_effect") == "close"):
+        return False
+    dte = ex.get("dte")
+    if dte is not None:
+        try:
+            if int(dte) >= _PMCC_LEAP_DTE_FLOOR:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return "leap" in str(ex.get("action") or "").lower()
+
+
+def _emit_pmcc_leap_block_alert(order: ProposedOrder) -> None:
+    """A PMCC LEAP-placement attempt is a SAFETY event the operator must see."""
+    try:
+        from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+        emit_exec_alert(ExecOutcome(
+            tier="EXEC_FAIL",
+            symbol=getattr(order, "symbol", "?"),
+            strategy=getattr(order, "strategy", "robinhood_pmcc"),
+            reason=("PMCC LEAP-mandate: REFUSED an order that would sell/close the LEAP "
+                    f"(action={(order.extra or {}).get('action')!r})"),
+            order_id=getattr(order, "id", None),
+        ))
+    except Exception:      # noqa: BLE001 — the guard must refuse even if alerting fails
+        log.exception("PMCC LEAP-block alert emit failed")
+
+
 class DataExecAgent:
     def __init__(
         self,
@@ -97,6 +176,35 @@ class DataExecAgent:
         return await self.brokers[division].snapshot()
 
     async def place(self, order: ProposedOrder, division: str = "default") -> FillEvent:
+        # Phase A fail-closed guard: an ADVISORY order (roll_leap / LEAP-roll leg)
+        # is operator-executed MANUALLY — refuse it BEFORE any broker call, dry-run,
+        # or staleness gate. Cannot be bypassed by a future caller, refactor, or an
+        # auto_execute flip.
+        if _is_advisory_order(order):
+            raise AdvisoryOrderError(
+                f"refusing to place ADVISORY order {order.id} "
+                f"(dispatch={getattr(order, 'dispatch', '?')!r}, "
+                f"action={(order.extra or {}).get('action')!r}) — roll_leap / "
+                "LEAP-roll legs are executed MANUALLY by the operator; the agent "
+                "never places them."
+            )
+        # PMCC LEAP-mandate (fail-CLOSED, PMCC-SCOPED): the robinhood_pmcc division
+        # manages the SHORT weekly calls ONLY and must never sell/close the LEAP. This
+        # is scoped to division == robinhood_pmcc, so NO non-PMCC order is affected —
+        # other divisions'/strategies' legitimate LEAP orders place normally. Refuse +
+        # alert (a PMCC LEAP-placement attempt is a safety event). Belt-and-suspenders
+        # with close_all removal; the mandate floor before autonomy.
+        if division == "robinhood_pmcc" and _pmcc_touches_leap(order):
+            _emit_pmcc_leap_block_alert(order)
+            raise LeapMandateError(
+                f"refusing PMCC LEAP-touching order {order.id} "
+                f"(action={(order.extra or {}).get('action')!r}, "
+                f"side={getattr(order, 'side', None)!r}, "
+                f"dte={(order.extra or {}).get('dte')!r}, "
+                f"strike={(order.extra or {}).get('strike')!r}) — the robinhood_pmcc "
+                "division manages the SHORT weekly calls ONLY and never sells/closes the "
+                "LEAP; a LEAP action is executed MANUALLY by the operator."
+            )
         broker = self.brokers.get(division) or self.brokers.get("default")
         if broker is None:
             raise RuntimeError(f"No broker registered for division={division!r}")
@@ -639,6 +747,28 @@ class DataExecAgent:
         if not orders:
             return []
 
+        # Phase A fail-closed guard: no ADVISORY leg may ride the combo path
+        # either (roll_leap is never combo-tagged, but guard belt-and-braces).
+        for _o in orders:
+            if _is_advisory_order(_o):
+                raise AdvisoryOrderError(
+                    f"refusing to place ADVISORY combo leg {_o.id} "
+                    f"(action={(_o.extra or {}).get('action')!r}) — roll_leap legs "
+                    "are executed MANUALLY by the operator; the agent never places them."
+                )
+
+        # PMCC LEAP-mandate on the combo path (fail-CLOSED, PMCC-SCOPED): refuse the
+        # WHOLE combo if ANY leg would sell/close the LEAP. Non-PMCC combos unaffected.
+        if division == "robinhood_pmcc":
+            _leap_leg = next((o for o in orders if _pmcc_touches_leap(o)), None)
+            if _leap_leg is not None:
+                _emit_pmcc_leap_block_alert(_leap_leg)
+                raise LeapMandateError(
+                    f"refusing PMCC combo — leg {_leap_leg.id} would sell/close the LEAP "
+                    f"(action={(_leap_leg.extra or {}).get('action')!r}); the robinhood_pmcc "
+                    "division manages the SHORT weekly calls ONLY."
+                )
+
         # Defense-in-depth: confirm a single combo_id is present on every
         # leg. The broker-level validator will catch deeper mismatches.
         combo_ids = {(o.extra or {}).get("combo_id") for o in orders}
@@ -652,10 +782,45 @@ class DataExecAgent:
         first_extra = orders[0].extra or {}
         direction = first_extra.get("combo_direction")
         net_limit = first_extra.get("net_limit_price")
+        # Deterministic client ref_id so a transient retry of THIS combo dedupes
+        # at the venue instead of double-placing (order_option_spread otherwise
+        # mints a fresh uuid4 per call).
+        from trading_corp.agents.strategies._pmcc_combo import combo_ref_id
+        _ref_id = combo_ref_id(str(combo_id))
+
+        def _exec_alert(tier, reason, *, filled_price=None, changed=False,
+                        broker_error=None):
+            """Fire the observability alert for this combo's terminal outcome.
+            Double-isolated (this try/except + emit_exec_alert's own)."""
+            try:
+                from trading_corp.comms.exec_alert import (
+                    ExecOutcome, emit_exec_alert,
+                )
+                emit_exec_alert(ExecOutcome(
+                    tier=tier,
+                    symbol=(orders[0].symbol if orders else "?"),
+                    strategy=strategy, reason=reason, combo_id=str(combo_id),
+                    legs=[{"side": o.side,
+                           "expiration": (o.extra or {}).get("expiration"),
+                           "strike": (o.extra or {}).get("strike")} for o in orders],
+                    attempted_price=(float(net_limit) if net_limit is not None else None),
+                    filled_price=filled_price,
+                    qty=(float(orders[0].qty) if orders else None),
+                    broker_error=broker_error, position_changed=changed,
+                ))
+            except Exception:
+                pass
 
         broker = self.brokers.get(division) or self.brokers.get("default")
         if broker is None:
             raise RuntimeError(f"No broker registered for division={division!r}")
+
+        # Tag every leg with the REAL broker's execution mode (mirrors place()'s
+        # single-leg line) so combo rows are labelled live/paper accurately even
+        # if placement raises below.
+        _combo_mode = "paper" if getattr(broker, "paper", True) else "live"
+        for _o in orders:
+            _o.execution_mode = _combo_mode
 
         # Dry-run short-circuit. Synthesise 4 FillEvents at each leg's
         # limit_price so downstream consumers (web result panel, audit
@@ -699,7 +864,27 @@ class DataExecAgent:
             )
             return fills
 
-        fills = await broker.place_multi_leg(orders)
+        try:
+            fills = await broker.place_multi_leg(orders, ref_id=_ref_id)
+        except Exception as e:
+            # A combo that submitted but did not confirm `filled` in the poll
+            # window (RobinhoodComboPending) must book NOTHING — record it as
+            # pending/unconfirmed and re-raise so the route surfaces it. Any hard
+            # error (reject / no-id) also re-raises; neither books a position.
+            if type(e).__name__ == "RobinhoodComboPending":
+                self.logger.log_event(
+                    actor="data_exec", kind="combo_pending_unconfirmed",
+                    payload={"combo_id": combo_id, "strategy": strategy,
+                             "division": division,
+                             "broker_order_id": getattr(e, "order_id", None),
+                             "reason": str(e)},
+                )
+                _exec_alert("NO_FILL", "pending/unconfirmed after poll — booked nothing",
+                            broker_error=str(e))
+            else:
+                _exec_alert("EXEC_FAIL", "combo rejected / API error at broker",
+                            broker_error=str(e))
+            raise
 
         if not fills:
             self.logger.log_event(
@@ -719,11 +904,17 @@ class DataExecAgent:
                 "combo_unfilled combo=%s strategy=%s division=%s",
                 combo_id, strategy, division,
             )
+            _exec_alert("NO_FILL", "combo did not fill (limit not marketable) — position unchanged")
             return []
 
         if len(fills) != len(orders):
             # Should not happen — broker is contractually all-or-nothing.
             # Surface loudly rather than silently mis-aligning.
+            _exec_alert(
+                "NAKED_LEG",
+                f"combo booked {len(fills)}/{len(orders)} legs — integrity breach",
+                changed=True,
+            )
             raise RuntimeError(
                 f"broker.place_multi_leg returned {len(fills)} fills for "
                 f"{len(orders)} legs in combo {combo_id!r}"
@@ -780,6 +971,10 @@ class DataExecAgent:
                 "combo_id": combo_id,
                 "strategy": strategy,
                 "division": division,
+                # The ONE Robinhood spread-order id both legs share (all FillEvents
+                # carry the same broker_order_id from order_option_spread's response).
+                "broker_order_id": getattr(fills[0], "broker_order_id", None),
+                "ref_id": _ref_id,
                 "direction": direction,
                 "net_limit_price": net_limit,
                 "net_actual": actual,
@@ -793,6 +988,11 @@ class DataExecAgent:
             "actual=%.4f limit=%s legs=%d",
             combo_id, strategy, division, direction,
             actual, net_limit, len(fills),
+        )
+        _exec_alert(
+            "FILLED",
+            f"{direction or 'combo'} filled {actual:g} @ {getattr(fills[0], 'venue', '?')}",
+            filled_price=actual, changed=True,
         )
         return fills
 

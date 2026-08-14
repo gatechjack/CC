@@ -1,15 +1,14 @@
-"""End-to-end engagement runs through the LangGraph subgraph (v3).
+"""End-to-end engagement runs through the LangGraph subgraph.
 
-Covers happy path + sad paths (kill switch / out-of-scope / expert-refused-storm
-/ Layer 2 rejection).
+Covers happy path + sad paths (kill switch / out-of-scope / analyst-refused-storm).
 
-These tests use FAKE experts (no yfinance, no LLM) so they're deterministic
+These tests use FAKE analysts (no yfinance, no LLM) so they're deterministic
 and offline. The engagement graph itself runs unmocked — it's the integration
-between scope-check, registry lookup, fan-out, synthesis, and post-validate
-that we're pinning.
+between scope-check, fan-out, synthesis, and post-validate that we're pinning.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,11 +24,12 @@ from trading_corp.agents.research.kill_switch import KILL_SWITCH_FILENAME
 from trading_corp.persistence.db import init_db
 
 
-# ── Fake experts ─────────────────────────────────────────────────────────
+# ── Fake analysts ────────────────────────────────────────────────────────
 
 
-class FakeTechnicalExpert:
-    """Returns a controllable ExpertReport. Cost is configurable."""
+class FakeTechnicalAnalyst:
+    """Returns a controllable AnalystReport. Cost is configurable to drive
+    the cost-cap fixtures; here we default to 0 so tests stay free."""
     role = "technical"
 
     def __init__(
@@ -45,10 +45,12 @@ class FakeTechnicalExpert:
         self.sufficient = sufficient
         self.cost_per_call = cost_per_call
 
-    async def analyze(self, *, engagement_id, symbol, context=None, on_data_fetch=None):
+    async def analyze(self, *, engagement_id, symbol, on_data_fetch=None):
+        if on_data_fetch is not None:
+            on_data_fetch(source=f"fake_yfinance:{symbol}", ok=True, error=None)
         if not self.sufficient:
             return (
-                schemas.ExpertReport(
+                schemas.AnalystReport(
                     role="technical",
                     engagement_id=engagement_id,
                     symbol=symbol,
@@ -59,7 +61,7 @@ class FakeTechnicalExpert:
                 self.cost_per_call,
             )
         return (
-            schemas.ExpertReport(
+            schemas.AnalystReport(
                 role="technical",
                 engagement_id=engagement_id,
                 symbol=symbol,
@@ -73,7 +75,7 @@ class FakeTechnicalExpert:
         )
 
 
-class FakeMacroExpert:
+class FakeMacroAnalyst:
     role = "macro"
 
     def __init__(
@@ -89,10 +91,12 @@ class FakeMacroExpert:
         self.sufficient = sufficient
         self.cost_per_call = cost_per_call
 
-    async def analyze(self, *, engagement_id, symbol, context=None, on_data_fetch=None):
+    async def analyze(self, *, engagement_id, symbol, earnings_buffer_days=7, on_data_fetch=None):
+        if on_data_fetch is not None:
+            on_data_fetch(source="fake_macro:vix", ok=True, error=None)
         if not self.sufficient:
             return (
-                schemas.ExpertReport(
+                schemas.AnalystReport(
                     role="macro", engagement_id=engagement_id, symbol=symbol,
                     summary="[REFUSED] macro: simulated outage",
                     data_sufficiency=False,
@@ -101,48 +105,9 @@ class FakeMacroExpert:
                 self.cost_per_call,
             )
         return (
-            schemas.ExpertReport(
+            schemas.AnalystReport(
                 role="macro", engagement_id=engagement_id, symbol=symbol,
                 summary=f"{symbol}: macro lean={self.lean} (FAKE)",
-                confidence_score=self.confidence,
-                directional_lean=self.lean,
-                data_sufficiency=True,
-            ),
-            self.cost_per_call,
-        )
-
-
-class FakeSentimentExpert:
-    role = "sentiment"
-
-    def __init__(
-        self,
-        *,
-        confidence: float = 0.5,
-        lean: str | None = "neutral",
-        sufficient: bool = True,
-        cost_per_call: float = 0.0,
-    ) -> None:
-        self.confidence = confidence
-        self.lean = lean
-        self.sufficient = sufficient
-        self.cost_per_call = cost_per_call
-
-    async def analyze(self, *, engagement_id, symbol, context=None, on_data_fetch=None):
-        if not self.sufficient:
-            return (
-                schemas.ExpertReport(
-                    role="sentiment", engagement_id=engagement_id, symbol=symbol,
-                    summary="[REFUSED] sentiment: simulated outage",
-                    data_sufficiency=False,
-                    refusal_reason="simulated outage",
-                ),
-                self.cost_per_call,
-            )
-        return (
-            schemas.ExpertReport(
-                role="sentiment", engagement_id=engagement_id, symbol=symbol,
-                summary=f"{symbol}: sentiment lean={self.lean} (FAKE)",
                 confidence_score=self.confidence,
                 directional_lean=self.lean,
                 data_sufficiency=True,
@@ -172,35 +137,43 @@ def stub_universe(monkeypatch, tmp_path: Path):
         graph_mod, "_load_starter_universe",
         lambda key: ["AAPL", "MSFT", "NVDA", "GOOGL"],
     )
+
+    # Bypass yfinance earnings fetches — every symbol "clear".
     from trading_corp.utils import market_data
     monkeypatch.setattr(market_data, "get_next_earnings", lambda *a, **kw: None)
 
 
 @pytest.fixture
 def deps_with_fakes(initialized_db: str, stub_universe) -> ResearchFirmDeps:
-    """Build a ResearchFirmDeps with fake experts and an in-memory graph
-    (no checkpointer). Production wires the same shape with real experts."""
+    """Build a ResearchFirmDeps with fake analysts and an in-memory graph
+    (no checkpointer). Production wires the same shape with real analysts +
+    AsyncSqliteSaver."""
     logger_agent = LoggerAgent(initialized_db)
-    experts = {"technical": FakeTechnicalExpert(), "macro": FakeMacroExpert()}
+    tech = FakeTechnicalAnalyst()
+    macro = FakeMacroAnalyst()
     graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
+        logger_agent,
+        technical_analyst=tech,
+        macro_analyst=macro,
+        checkpointer=None,
     )
     return ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
+        logger_agent=logger_agent,
+        technical_analyst=tech,
+        macro_analyst=macro,
+        graph=graph,
     )
 
 
-def _candidate_spec(n: int = 3) -> schemas.EngagementSpec:
+def _watchlist_spec(n: int = 3) -> schemas.EngagementSpec:
     return schemas.EngagementSpec(
         requesting_division="robinhood_pmcc",
-        product_type="candidate_recommendation",
-        asset_class="equity",
-        scope=schemas.CandidateScope(
-            mandate={"category": "large_cap"},
-            capacity_dollars=10_000.0,
+        product_type="watchlist_recommendation",
+        scope=schemas.WatchlistScope(
+            target_universe_key="robinhood_pmcc.scout.universe",
             n_candidates=n,
             starter_universe_key="large_mid_cap",
-            current_holdings=[],
+            existing_universe=[],
         ),
         triggered_by="telegram",
         triggered_ts=datetime.now(timezone.utc).isoformat(),
@@ -210,68 +183,71 @@ def _candidate_spec(n: int = 3) -> schemas.EngagementSpec:
 # ── Tests ────────────────────────────────────────────────────────────────
 
 
-async def test_e2e_happy_path_emits_candidate_recommendation(deps_with_fakes):
-    """Healthy run: 4-symbol stub universe → top 3 → CandidateRecommendation
-    with conviction + fit_score on each candidate."""
-    spec = _candidate_spec(n=3)
+async def test_e2e_happy_path_emits_watchlist(deps_with_fakes):
+    """Healthy run: 4-symbol stub universe → top 3 → WatchlistRecommendation."""
+    spec = _watchlist_spec(n=3)
     rec = await run_engagement(spec, deps=deps_with_fakes)
     assert rec is not None
-    assert isinstance(rec, schemas.CandidateRecommendation)
-    assert 0 < len(rec.candidates) <= 3
-    for c in rec.candidates:
-        assert c.symbol in {"AAPL", "MSFT", "NVDA", "GOOGL"}
-        assert c.thesis
-        assert c.fit_rationale
-        assert 0.0 <= c.fit_score <= 1.0
-        assert c.conviction in {"high", "medium", "low"}
+    assert isinstance(rec, schemas.WatchlistRecommendation)
+    assert len(rec.additions) <= 3
+    assert len(rec.additions) > 0
+    for sym in rec.additions:
+        assert sym in {"AAPL", "MSFT", "NVDA", "GOOGL"}
+        assert rec.rationale_per_symbol.get(sym)
+        assert sym in rec.fit_score_per_symbol
 
 
-async def test_e2e_kill_switch_aborts_before_any_expert(
+async def test_e2e_kill_switch_aborts_before_any_analyst(
     deps_with_fakes, tmp_path, monkeypatch,
 ):
     """HALT_RESEARCH file present → engagement aborts at the first node;
-    no expert runs, audit row has kill_switch_aborted."""
+    no analyst runs, audit row has kill_switch_aborted."""
+    # Override kill switch lookup to a tmp path containing the file
     from trading_corp.agents.research import graph as graph_mod, kill_switch as ks
     halt = tmp_path / KILL_SWITCH_FILENAME
     halt.write_text("halt", encoding="utf-8")
     monkeypatch.setattr(
         ks, "kill_switch_path", lambda repo_root=None: halt,
     )
+    # Also patch the import inside the graph module since it captured the
+    # symbol at import time
     monkeypatch.setattr(
         graph_mod, "is_kill_switch_present",
         lambda repo_root=None: ks.is_kill_switch_present(repo_root=tmp_path),
     )
 
-    spec = _candidate_spec()
+    spec = _watchlist_spec()
     rec = await run_engagement(spec, deps=deps_with_fakes)
     assert rec is None
 
     events = deps_with_fakes.logger_agent.recent_events(limit=50)
     kinds = [e["kind"] for e in events]
     assert "research_engagement_aborted_kill_switch" in kinds
-    assert not any(k == "research_expert_completed" for k in kinds)
-    assert not any(k == "research_expert_refused" for k in kinds)
+    # No analyst rows should have been written
+    assert not any(k == "research_analyst_completed" for k in kinds)
+    assert not any(k == "research_analyst_refused" for k in kinds)
 
 
 async def test_e2e_out_of_scope_aborts_for_nonexistent_starter(
-    initialized_db: str,
+    initialized_db: str, monkeypatch,
 ):
     """Bad starter_universe_key → Layer 1 rejects, audit row written."""
     logger_agent = LoggerAgent(initialized_db)
-    experts = {"technical": FakeTechnicalExpert(), "macro": FakeMacroExpert()}
+    tech = FakeTechnicalAnalyst()
+    macro = FakeMacroAnalyst()
     graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
+        logger_agent, technical_analyst=tech, macro_analyst=macro, checkpointer=None,
     )
     deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
+        logger_agent=logger_agent, technical_analyst=tech,
+        macro_analyst=macro, graph=graph,
     )
 
     spec = schemas.EngagementSpec(
         requesting_division="robinhood_pmcc",
-        product_type="candidate_recommendation",
-        asset_class="equity",
-        scope=schemas.CandidateScope(
-            mandate={}, capacity_dollars=0.0,
+        product_type="watchlist_recommendation",
+        scope=schemas.WatchlistScope(
+            target_universe_key="robinhood_pmcc.scout.universe",
             n_candidates=3,
             starter_universe_key="nonexistent_universe_xyz",
         ),
@@ -285,868 +261,121 @@ async def test_e2e_out_of_scope_aborts_for_nonexistent_starter(
     assert "research_engagement_aborted_out_of_scope" in kinds
 
 
-async def test_e2e_expert_refusal_storm_still_terminates_cleanly(
+async def test_e2e_analyst_refusal_storm_still_synthesizes(
     initialized_db: str, stub_universe,
 ):
-    """All experts refuse → synth still runs but produces zero-fit candidates
-    that get filtered; either path must NOT raise."""
+    """All analysts refuse → synth still emits a (low-fit) recommendation
+    or the graph terminates with no_action. Either path must NOT raise."""
     logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(sufficient=False),
-        "macro": FakeMacroExpert(sufficient=False),
-    }
+    tech = FakeTechnicalAnalyst(sufficient=False)
+    macro = FakeMacroAnalyst(sufficient=False)
     graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
+        logger_agent, technical_analyst=tech, macro_analyst=macro, checkpointer=None,
     )
     deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
+        logger_agent=logger_agent, technical_analyst=tech,
+        macro_analyst=macro, graph=graph,
     )
 
-    spec = _candidate_spec(n=2)
+    spec = _watchlist_spec(n=2)
     rec = await run_engagement(spec, deps=deps)
 
     kinds = [e["kind"] for e in logger_agent.recent_events(limit=80)]
-    # Refusals must be in the audit log — load-bearing for "treat refused
-    # dimensions as unobserved"
-    assert any(k == "research_expert_refused" for k in kinds)
-    # Either rec=None (zero candidates passed fit_score>0 filter) OR rec
-    # has all-zero fit_scores. Both are fine — what matters is no crash
-    # and the trail exists.
+    # Refusals must be in the audit log — that's the load-bearing
+    # guarantee for "treat refused dimensions as unobserved"
+    assert any(k == "research_analyst_refused" for k in kinds)
+    # Either the recommendation comes back with fit=0 additions OR the
+    # graph routes through validation_failed / no_action. Both are fine
+    # — what matters is no crash and the trail exists.
     if rec is not None:
-        for c in rec.candidates:
-            assert c.fit_score <= 0.0
+        for sym in rec.additions:
+            assert rec.fit_score_per_symbol.get(sym, 1.0) <= 0.0
 
 
-async def test_e2e_post_validator_rejection(deps_with_fakes, monkeypatch):
+async def test_e2e_post_validator_rejection(
+    deps_with_fakes, monkeypatch,
+):
     """If synth somehow produces a malformed product, post-validate
     short-circuits with `validation_failed` audit + None return.
 
-    We force this by monkey-patching the synthesizer to emit a candidate
-    whose symbol appears in current_holdings — caught by Layer 2.
+    We force this by monkey-patching the synthesizer to return a bogus product.
     """
+    from trading_corp.agents.research.synthesis import watchlist as synth_mod
     from trading_corp.agents.research import graph as graph_mod
 
-    async def _bad_synth(*, spec, reports_by_symbol, expert_audit_row_ids):
-        bad = schemas.CandidateRecommendation(
+    async def _bad_synth(*, spec, reports_by_symbol, analyst_audit_row_ids):
+        bad = schemas.WatchlistRecommendation(
             engagement_id=spec.engagement_id,
             requesting_division=spec.requesting_division,
-            asset_class=spec.asset_class,
-            candidates=[
-                schemas.Candidate(
-                    symbol="HELD_SYM", thesis="t", conviction="medium",
-                    fit_rationale="fr", fit_score=0.5,
-                ),
-            ],
+            target_universe_key="DRIFTED.PATH",  # Layer 2 catches this
+            additions=["AAPL"],
+            rationale_per_symbol={"AAPL": "x"},
+            fit_score_per_symbol={"AAPL": 0.5},
         )
         return bad, 0.0
 
+    # Patch where the graph imported it from
     monkeypatch.setattr(
-        graph_mod, "synthesize_candidate_recommendation", _bad_synth,
+        graph_mod, "synthesize_watchlist_recommendation", _bad_synth,
     )
-    # Rebuild the graph to pick up the patched function.
+    # Rebuild the graph to pick up the patched function
     deps_with_fakes.graph = build_engagement_graph(
         deps_with_fakes.logger_agent,
-        experts=deps_with_fakes.experts,
+        technical_analyst=deps_with_fakes.technical_analyst,
+        macro_analyst=deps_with_fakes.macro_analyst,
         checkpointer=None,
     )
 
-    # Build a spec whose current_holdings includes the symbol the bad
-    # synth emits — Layer 2's holdings check will flag it.
-    spec = schemas.EngagementSpec(
-        requesting_division="robinhood_pmcc",
-        product_type="candidate_recommendation",
-        asset_class="equity",
-        scope=schemas.CandidateScope(
-            mandate={}, capacity_dollars=10_000.0,
-            n_candidates=2,
-            starter_universe_key="large_mid_cap",
-            current_holdings=["HELD_SYM"],
-        ),
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
+    spec = _watchlist_spec(n=2)
     rec = await run_engagement(spec, deps=deps_with_fakes)
     assert rec is None
     kinds = [e["kind"] for e in deps_with_fakes.logger_agent.recent_events(limit=80)]
     assert "research_engagement_validation_failed" in kinds
 
 
-async def test_e2e_no_inline_keyboard_approval_path(deps_with_fakes):
-    """v3: there is NO board-approval flow on the recommendation as a
-    unit. The engagement returns the product; the division decides per
-    candidate. Acceptance: emitting a recommendation must NOT write any
-    `research_watchlist_approval_recorded` (dropped from v2) row."""
-    spec = _candidate_spec(n=2)
+async def test_e2e_board_approval_records_audit_no_yaml_write(
+    deps_with_fakes, tmp_path, monkeypatch,
+):
+    """Phase 1a: dashboard/Telegram approval records
+    `research_watchlist_approval_recorded` with status
+    `approved_pending_manual_apply` and a copy-paste diff. Crucially,
+    `config/strategies.yaml` is NOT mutated — that's Phase 1b.
+    """
+    spec = _watchlist_spec(n=2)
     rec = await run_engagement(spec, deps=deps_with_fakes)
     assert rec is not None
 
-    events = deps_with_fakes.logger_agent.recent_events(limit=80)
-    kinds = [e["kind"] for e in events]
-    # These v2 audit kinds should never appear in a v3 run.
-    assert not any(k == "research_watchlist_approval_recorded" for k in kinds)
-    assert not any(k == "research_watchlist_emitted" for k in kinds)
-    assert not any(k == "research_watchlist_rejected" for k in kinds)
+    # Snapshot strategies.yaml mtime BEFORE approval.
+    strat = Path("config/strategies.yaml")
+    mtime_before = strat.stat().st_mtime
 
-
-async def test_e2e_thesis_happy_path_emits_thesis(deps_with_fakes):
-    """Phase 1b happy path: ThesisScope on a single symbol → Thesis product
-    with summary, key_drivers, key_risks, earnings_window_clear."""
-    spec = schemas.EngagementSpec(
-        requesting_division="board",
-        product_type="thesis",
-        asset_class="equity",
-        scope=schemas.ThesisScope(symbol="AAPL", depth="standard"),
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps_with_fakes)
-    assert product is not None
-    assert isinstance(product, schemas.Thesis)
-    assert product.symbol == "AAPL"
-    assert product.summary
-    assert isinstance(product.key_drivers, list) and product.key_drivers
-    assert isinstance(product.key_risks, list)
-    # FakeMacroExpert + FakeTechnicalExpert default to data_sufficiency=True,
-    # so we expect at least one driver (bullish lean) and zero hard-bear risks.
-    # earnings_window_clear defaults True (stub_universe monkeypatches earnings to None).
-    assert product.earnings_window_clear is True
-
-    # Audit row must be present.
-    kinds = [e["kind"] for e in deps_with_fakes.logger_agent.recent_events(limit=40)]
-    assert "research_thesis_emitted" in kinds
-
-
-async def test_e2e_thesis_skips_shortlist(deps_with_fakes):
-    """Thesis is single-symbol; the shortlist node (which excludes held names
-    and applies earnings filters against a starter universe) must NOT run.
-    Pinning this prevents a future refactor from accidentally routing thesis
-    through the candidate path and dropping symbols silently."""
-    spec = schemas.EngagementSpec(
-        requesting_division="board",
-        product_type="thesis",
-        asset_class="equity",
-        scope=schemas.ThesisScope(symbol="ZZZZ"),  # not in any starter universe
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps_with_fakes)
-    # If shortlist had run, ZZZZ wouldn't be in the starter universe and we'd
-    # get no_action. Thesis path must reach experts → synthesis → emit.
-    assert isinstance(product, schemas.Thesis)
-    assert product.symbol == "ZZZZ"
-
-
-async def test_e2e_thesis_all_experts_refuse_still_produces_thesis(initialized_db):
-    """When every expert refuses, we still emit a Thesis (with risk-flagged
-    refusals as key_risks). Prevents 'silent no-action' on the Board ad-hoc
-    surface — the Board asked, the team should answer with what it has."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(sufficient=False),
-        "macro": FakeMacroExpert(sufficient=False),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    spec = schemas.EngagementSpec(
-        requesting_division="board",
-        product_type="thesis",
-        asset_class="equity",
-        scope=schemas.ThesisScope(symbol="MSFT"),
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.Thesis)
-    # Refusals propagate into key_risks so the Board sees the gap.
-    risks_text = " ".join(product.key_risks).lower()
-    assert "data unavailable" in risks_text or "refused" in risks_text
-
-
-async def test_e2e_thesis_layer2_blocks_symbol_drift(deps_with_fakes, monkeypatch):
-    """Force the synthesizer to emit a Thesis whose symbol doesn't match the
-    spec — Layer 2's symbol-drift guard must short-circuit with
-    validation_failed and None return."""
-    from trading_corp.agents.research import graph as graph_mod
-
-    async def _bad_synth(*, spec, reports, expert_audit_row_ids, **_kwargs):
-        bad = schemas.Thesis(
-            engagement_id=spec.engagement_id,
-            symbol="WRONG_SYMBOL",  # spec asked for AAPL
-            summary="t", key_drivers=["d"], key_risks=["r"],
-            earnings_window_clear=True,
-        )
-        return bad, 0.0
-
-    monkeypatch.setattr(graph_mod, "synthesize_thesis", _bad_synth)
-    deps_with_fakes.graph = build_engagement_graph(
-        deps_with_fakes.logger_agent,
-        experts=deps_with_fakes.experts,
-        checkpointer=None,
-    )
-
-    spec = schemas.EngagementSpec(
-        requesting_division="board",
-        product_type="thesis",
-        asset_class="equity",
-        scope=schemas.ThesisScope(symbol="AAPL"),
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps_with_fakes)
-    assert product is None
-    kinds = [e["kind"] for e in deps_with_fakes.logger_agent.recent_events(limit=40)]
-    assert "research_engagement_validation_failed" in kinds
-
-
-async def test_e2e_dropped_division_audit_kinds_not_emitted(deps_with_fakes):
-    """Phase 1a-1 does NOT write division-side `research_candidate_acted_on`
-    or `research_candidate_skipped` rows — those ship in 1a-2 (PMCC scout
-    integration). Verify nothing emits them prematurely."""
-    spec = _candidate_spec(n=2)
-    await run_engagement(spec, deps=deps_with_fakes)
-    events = deps_with_fakes.logger_agent.recent_events(limit=80)
-    kinds = [e["kind"] for e in events]
-    assert "research_candidate_acted_on" not in kinds
-    assert "research_candidate_skipped" not in kinds
-
-
-async def test_e2e_position_context_happy_path_emits_position_context(
-    initialized_db: str, stub_universe,
-):
-    """Phase 1d happy path: PositionContextScope on a single symbol →
-    PositionContext product with macro_summary, sentiment_summary,
-    confidence_score, and the audit row written."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {"macro": FakeMacroExpert(), "sentiment": FakeSentimentExpert()}
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    spec = schemas.EngagementSpec(
-        requesting_division="lord_otter",
-        product_type="position_context",
-        asset_class="equity",
-        scope=schemas.PositionContextScope(
-            symbol="AAPL",
-            time_horizon_hours=4,
-            current_position_qty=100.0,
-            current_position_avg_price=150.0,
-            current_position_age_hours=12.0,
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert product is not None
-    assert isinstance(product, schemas.PositionContext)
-    assert product.symbol == "AAPL"
-    assert product.requesting_division == "lord_otter"
-    assert product.time_horizon_hours == 4
-    assert product.macro_summary
-    assert product.sentiment_summary
-    assert 0.0 <= product.confidence_score <= 1.0
-
-    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
-    assert "research_position_context_emitted" in kinds
-
-
-async def test_e2e_position_context_skips_shortlist(
-    initialized_db: str, stub_universe,
-):
-    """PositionContext is single-symbol; the shortlist node must NOT run.
-    Pinning this prevents a future refactor from accidentally routing
-    position_context through the candidate path."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {"macro": FakeMacroExpert(), "sentiment": FakeSentimentExpert()}
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    spec = schemas.EngagementSpec(
-        requesting_division="market_cypher",
-        product_type="position_context",
-        asset_class="equity",
-        scope=schemas.PositionContextScope(
-            symbol="ZZZZ",  # not in any starter universe
-            time_horizon_hours=24,
-            current_position_qty=1.0,
-            current_position_avg_price=10.0,
-            current_position_age_hours=1.0,
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.PositionContext)
-    assert product.symbol == "ZZZZ"
-
-
-async def test_e2e_position_context_all_experts_refuse_still_emits(
-    initialized_db: str, stub_universe,
-):
-    """When every expert refuses, we still emit a PositionContext (with
-    refusals as risk_flags + confidence_score=0.0). Caller decides what
-    to do with it; the audit trail records what we told them."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "macro": FakeMacroExpert(sufficient=False),
-        "sentiment": FakeSentimentExpert(sufficient=False),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    spec = schemas.EngagementSpec(
-        requesting_division="lord_otter",
-        product_type="position_context",
-        asset_class="equity",
-        scope=schemas.PositionContextScope(
-            symbol="MSFT",
-            time_horizon_hours=4,
-            current_position_qty=50.0,
-            current_position_avg_price=300.0,
-            current_position_age_hours=2.0,
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.PositionContext)
-    assert product.confidence_score == 0.0
-    flags_text = " ".join(product.risk_flags).lower()
-    assert "data unavailable" in flags_text or "refused" in flags_text
-
-
-async def test_e2e_position_context_layer2_blocks_symbol_drift(
-    initialized_db: str, stub_universe, monkeypatch,
-):
-    """Force the synthesizer to emit a PositionContext whose symbol
-    doesn't match the spec — Layer 2's symbol-drift guard must
-    short-circuit with validation_failed and None return."""
-    from trading_corp.agents.research import graph as graph_mod
-
-    async def _bad_synth(*, spec, reports, expert_audit_row_ids, **_kwargs):
-        bad = schemas.PositionContext(
-            engagement_id=spec.engagement_id,
-            requesting_division=spec.requesting_division,
-            symbol="WRONG_SYMBOL",  # spec asked for AAPL
-            time_horizon_hours=spec.scope.time_horizon_hours,
-            macro_summary="m", sentiment_summary="s",
-            risk_flags=[], confidence_score=0.5,
-        )
-        return bad, 0.0
-
-    monkeypatch.setattr(graph_mod, "synthesize_position_context", _bad_synth)
-
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {"macro": FakeMacroExpert(), "sentiment": FakeSentimentExpert()}
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    spec = schemas.EngagementSpec(
-        requesting_division="lord_otter",
-        product_type="position_context",
-        asset_class="equity",
-        scope=schemas.PositionContextScope(
-            symbol="AAPL",
-            time_horizon_hours=4,
-            current_position_qty=100.0,
-            current_position_avg_price=150.0,
-            current_position_age_hours=12.0,
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert product is None
-    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
-    assert "research_engagement_validation_failed" in kinds
-
-
-# ── Phase 1e — TradeConfirmation tests ──────────────────────────────────
-
-
-def _trade_confirmation_spec(
-    *,
-    symbol: str = "AAPL",
-    side: str = "buy",
-    asset_class: str = "equity",
-    requesting_division: str = "lord_otter",
-) -> schemas.EngagementSpec:
-    return schemas.EngagementSpec(
-        requesting_division=requesting_division,
-        product_type="trade_confirmation",
-        asset_class=asset_class,
-        scope=schemas.TradeConfirmationScope(
-            proposed_action={
-                "symbol": symbol,
-                "side": side,
-                "size_pct_equity": 0.02,
-                "entry_price": 150.0,
-                "tier": "standard",
+    # Simulate Board approval (the same path the Telegram callback takes).
+    deps_with_fakes.logger_agent.log_event(
+        actor=schemas.RESEARCH_ACTOR,
+        kind=schemas.AUDIT_KIND_WATCHLIST_APPROVAL_RECORDED,
+        payload={
+            "engagement_id": rec.engagement_id,
+            "status": "approved_pending_manual_apply",
+            "diff": {
+                "additions": rec.additions,
+                "drops": rec.drops,
+                "target_universe_key": rec.target_universe_key,
             },
-            context={"alert_signal": "otter_buy"},
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
+        },
     )
 
-
-async def test_e2e_trade_confirmation_happy_path_emits_confirm(
-    initialized_db: str, stub_universe,
-):
-    """Phase 1e happy path: bullish technical + macro experts on a 'buy'
-    proposal → deterministic verdict='confirm', audit row written."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
-        "macro": FakeMacroExpert(lean="bullish", confidence=0.6),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
+    # strategies.yaml MUST NOT have been touched.
+    assert strat.stat().st_mtime == mtime_before, (
+        "Phase 1a approval must NOT mutate strategies.yaml"
     )
 
-    product = await run_engagement(_trade_confirmation_spec(), deps=deps)
-    assert isinstance(product, schemas.TradeConfirmation)
-    assert product.subject_action.get("symbol") == "AAPL"
-    assert product.verdict == "confirm"
-    assert product.rationale
-    assert product.suggested_modifications is None
-
-    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
-    assert "research_trade_confirmation_emitted" in kinds
-
-
-async def test_e2e_trade_confirmation_all_bearish_pushes_back(
-    initialized_db: str, stub_universe,
-):
-    """All valid experts bearish on a 'buy' proposal → push_back verdict.
-    The deterministic path uses this as the conservative quorum rule."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(lean="bearish", confidence=0.8),
-        "macro": FakeMacroExpert(lean="bearish", confidence=0.7),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    product = await run_engagement(_trade_confirmation_spec(), deps=deps)
-    assert isinstance(product, schemas.TradeConfirmation)
-    assert product.verdict == "push_back"
-    # Bearish leans should be in risks_flagged for downstream visibility.
-    flags_text = " ".join(product.risks_flagged).lower()
-    assert "bearish" in flags_text
-
-
-async def test_e2e_trade_confirmation_skips_shortlist(
-    initialized_db: str, stub_universe,
-):
-    """TradeConfirmation is single-symbol; the shortlist node must NOT
-    run. Pin against future refactors that would route through the
-    candidate path."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(),
-        "macro": FakeMacroExpert(),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    # ZZZZ would never appear in a starter universe; if shortlist ran
-    # we'd get no_action. TradeConfirmation must reach experts → synthesis.
-    product = await run_engagement(
-        _trade_confirmation_spec(symbol="ZZZZ"), deps=deps,
-    )
-    assert isinstance(product, schemas.TradeConfirmation)
-    assert product.subject_action.get("symbol") == "ZZZZ"
-
-
-async def test_e2e_trade_confirmation_layer2_blocks_subject_action_drift(
-    initialized_db: str, stub_universe, monkeypatch,
-):
-    """Force the synthesizer to emit a TradeConfirmation whose
-    subject_action.symbol doesn't match the spec — Layer 2's drift
-    guard must short-circuit with validation_failed and None return."""
-    from trading_corp.agents.research import graph as graph_mod
-
-    async def _bad_synth(*, spec, reports, expert_audit_row_ids, **_kwargs):
-        bad = schemas.TradeConfirmation(
-            engagement_id=spec.engagement_id,
-            requesting_division=spec.requesting_division,
-            subject_action={"symbol": "WRONG_SYMBOL", "side": "buy"},
-            verdict="confirm",
-            rationale="r",
-            risks_flagged=[],
-            suggested_modifications=None,
-        )
-        return bad, 0.0
-
-    monkeypatch.setattr(graph_mod, "synthesize_trade_confirmation", _bad_synth)
-
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(),
-        "macro": FakeMacroExpert(),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    product = await run_engagement(_trade_confirmation_spec(), deps=deps)
-    assert product is None
-    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
-    assert "research_engagement_validation_failed" in kinds
-
-
-async def test_e2e_trade_confirmation_invalid_side_rejected_at_layer1(
-    initialized_db: str, stub_universe,
-):
-    """Layer 1 catches invalid side values before any expert runs."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(),
-        "macro": FakeMacroExpert(),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-
-    spec = schemas.EngagementSpec(
-        requesting_division="lord_otter",
-        product_type="trade_confirmation",
-        asset_class="equity",
-        scope=schemas.TradeConfirmationScope(
-            proposed_action={"symbol": "AAPL", "side": "long"},  # invalid
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert product is None
-    kinds = [e["kind"] for e in logger_agent.recent_events(limit=20)]
-    assert "research_engagement_aborted_out_of_scope" in kinds
-    assert not any(k == "research_expert_completed" for k in kinds)
-
-
-# ── Phase 1f — Debate gate e2e tests ────────────────────────────────────
-
-
-async def test_e2e_debate_gate_skips_on_aligned_experts(
-    initialized_db: str, stub_universe,
-):
-    """All experts bullish + same confidence band → gate skips silently.
-    No research_debate_invoked / research_debate_completed audit rows."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
-        "macro": FakeMacroExpert(lean="bullish", confidence=0.65),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-    spec = schemas.EngagementSpec(
-        requesting_division="board",
-        product_type="thesis",
-        asset_class="equity",
-        scope=schemas.ThesisScope(symbol="AAPL"),
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.Thesis)
-    assert product.debate_audit_row_id is None
-    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
-    assert "research_debate_invoked" not in kinds
-    assert "research_debate_completed" not in kinds
-
-
-async def test_e2e_debate_gate_fires_on_disagreement(
-    initialized_db: str, stub_universe,
-):
-    """Bullish + bearish experts → gate fires → debate runs → both audit
-    rows land + state.debate_outcome populated."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
-        "macro": FakeMacroExpert(lean="bearish", confidence=0.65),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-    spec = schemas.EngagementSpec(
-        requesting_division="board",
-        product_type="thesis",
-        asset_class="equity",
-        scope=schemas.ThesisScope(symbol="AAPL"),
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.Thesis)
-
-    events = logger_agent.recent_events(limit=40)
-    kinds = [e["kind"] for e in events]
-    assert "research_debate_invoked" in kinds
-    assert "research_debate_completed" in kinds
-    # The completion row carries the DebateOutcome dump.
-    completed = next(e for e in events if e["kind"] == "research_debate_completed")
-    payload = completed["payload"] or {}
-    outcome = payload.get("outcome") or {}
-    assert outcome.get("symbol") == "AAPL"
-    assert outcome.get("invoked_reason")
-    assert outcome.get("bull_case")
-    assert outcome.get("bear_case")
-    assert outcome.get("judge_bull_score")
-    assert outcome.get("judge_bear_score")
-
-
-async def test_e2e_debate_gate_skips_for_candidate_recommendation(
-    deps_with_fakes,
-):
-    """Multi-symbol products skip the gate by design (Phase 1f decision —
-    per-candidate debates would need multi-DebateOutcome state)."""
-    # Push experts into disagreement; the gate would fire on a single-
-    # symbol product but must skip on candidate_recommendation.
-    deps_with_fakes.experts["technical"] = FakeTechnicalExpert(
-        lean="bullish", confidence=0.8,
-    )
-    deps_with_fakes.experts["macro"] = FakeMacroExpert(
-        lean="bearish", confidence=0.7,
-    )
-    deps_with_fakes.graph = build_engagement_graph(
-        deps_with_fakes.logger_agent,
-        experts=deps_with_fakes.experts,
-        checkpointer=None,
-    )
-
-    spec = _candidate_spec(n=2)
-    rec = await run_engagement(spec, deps=deps_with_fakes)
-    assert rec is None or isinstance(rec, schemas.CandidateRecommendation)
-    if isinstance(rec, schemas.CandidateRecommendation):
-        assert rec.debate_audit_row_id is None
-    kinds = [
-        e["kind"] for e in deps_with_fakes.logger_agent.recent_events(limit=80)
+    # Audit row exists with the right shape.
+    events = deps_with_fakes.logger_agent.recent_events(limit=80)
+    approvals = [
+        e for e in events
+        if e["kind"] == schemas.AUDIT_KIND_WATCHLIST_APPROVAL_RECORDED
     ]
-    assert "research_debate_invoked" not in kinds
-    assert "research_debate_completed" not in kinds
-
-
-async def test_e2e_debate_gate_fires_on_position_context(
-    initialized_db: str, stub_universe,
-):
-    """Position context with disagreeing macro+sentiment fires the gate
-    even though PositionContext has no debate_audit_row_id field."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "macro": FakeMacroExpert(lean="bullish", confidence=0.7),
-        "sentiment": FakeSentimentExpert(lean="bearish", confidence=0.6),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-    spec = schemas.EngagementSpec(
-        requesting_division="lord_otter",
-        product_type="position_context",
-        asset_class="equity",
-        scope=schemas.PositionContextScope(
-            symbol="AAPL",
-            time_horizon_hours=4,
-            current_position_qty=100.0,
-            current_position_avg_price=150.0,
-            current_position_age_hours=12.0,
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.PositionContext)
-    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
-    assert "research_debate_invoked" in kinds
-    assert "research_debate_completed" in kinds
-
-
-async def test_e2e_debate_gate_fires_on_trade_confirmation(
-    initialized_db: str, stub_universe,
-):
-    """TradeConfirmation with disagreeing experts fires the gate +
-    debate_audit_row_id flows through to the product."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
-        "macro": FakeMacroExpert(lean="bearish", confidence=0.65),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-    spec = schemas.EngagementSpec(
-        requesting_division="lord_otter",
-        product_type="trade_confirmation",
-        asset_class="equity",
-        scope=schemas.TradeConfirmationScope(
-            proposed_action={"symbol": "AAPL", "side": "buy",
-                             "size_pct_equity": 0.02, "tier": "standard"},
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.TradeConfirmation)
-    # Phase 1f part 2: debate_audit_row_id MUST tag on the product so
-    # the dashboard can join product -> debate audit row directly.
-    assert product.debate_audit_row_id is not None
-    kinds = [e["kind"] for e in logger_agent.recent_events(limit=40)]
-    assert "research_debate_invoked" in kinds
-    assert "research_debate_completed" in kinds
-
-
-# ── Phase 1f part 2 — synthesizer integration tests ─────────────────────
-
-
-async def test_e2e_thesis_carries_debate_audit_row_id_when_gate_fires(
-    initialized_db: str, stub_universe,
-):
-    """Thesis with disagreeing experts -> gate fires -> Thesis product
-    carries debate_audit_row_id and key_drivers includes the synthesis
-    line (deterministic-narration path; LLM path is unit-tested)."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
-        "macro": FakeMacroExpert(lean="bearish", confidence=0.65),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-    spec = schemas.EngagementSpec(
-        requesting_division="board",
-        product_type="thesis",
-        asset_class="equity",
-        scope=schemas.ThesisScope(symbol="AAPL"),
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.Thesis)
-    assert product.debate_audit_row_id is not None
-    # Deterministic narration path inserts a debate-driver entry.
-    assert any("debate" in d.lower() for d in product.key_drivers), (
-        f"expected debate-tagged key_driver, got {product.key_drivers}"
-    )
-
-
-async def test_e2e_thesis_no_debate_field_when_gate_skips(
-    initialized_db: str, stub_universe,
-):
-    """When gate skips (aligned experts), Thesis MUST NOT carry a
-    debate_audit_row_id and MUST NOT mention 'debate' in drivers."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "technical": FakeTechnicalExpert(lean="bullish", confidence=0.7),
-        "macro": FakeMacroExpert(lean="bullish", confidence=0.65),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-    spec = schemas.EngagementSpec(
-        requesting_division="board",
-        product_type="thesis",
-        asset_class="equity",
-        scope=schemas.ThesisScope(symbol="AAPL"),
-        triggered_by="telegram",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.Thesis)
-    assert product.debate_audit_row_id is None
-    assert not any("debate fired" in d.lower() for d in product.key_drivers)
-
-
-async def test_e2e_position_context_surfaces_debate_in_risk_flags(
-    initialized_db: str, stub_universe,
-):
-    """When the gate fires on a PositionContext engagement, the judge
-    synthesis line shows up in risk_flags. PositionContext has no
-    debate_audit_row_id field per design — the audit row is joinable
-    via engagement_id."""
-    logger_agent = LoggerAgent(initialized_db)
-    experts = {
-        "macro": FakeMacroExpert(lean="bullish", confidence=0.7),
-        "sentiment": FakeSentimentExpert(lean="bearish", confidence=0.6),
-    }
-    graph = build_engagement_graph(
-        logger_agent, experts=experts, checkpointer=None,
-    )
-    deps = ResearchFirmDeps(
-        logger_agent=logger_agent, experts=experts, graph=graph,
-    )
-    spec = schemas.EngagementSpec(
-        requesting_division="lord_otter",
-        product_type="position_context",
-        asset_class="equity",
-        scope=schemas.PositionContextScope(
-            symbol="AAPL",
-            time_horizon_hours=4,
-            current_position_qty=100.0,
-            current_position_avg_price=150.0,
-            current_position_age_hours=12.0,
-        ),
-        triggered_by="division_agent",
-        triggered_ts=datetime.now(timezone.utc).isoformat(),
-    )
-    product = await run_engagement(spec, deps=deps)
-    assert isinstance(product, schemas.PositionContext)
-    assert any("debate" in f.lower() for f in product.risk_flags), (
-        f"expected debate-tagged risk_flag, got {product.risk_flags}"
-    )
+    assert approvals
+    payload = approvals[0]["payload"]
+    assert payload["status"] == "approved_pending_manual_apply"
+    assert payload["diff"]["target_universe_key"] == rec.target_universe_key

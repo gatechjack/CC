@@ -14,14 +14,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from trading_corp.agents.strategies.pead_pressures import (
     RULE_COLORS,
     compute_pressures,
+    drift_dead_level,
     primitives_from_extra,
     stop_level,
 )
+from trading_corp.agents.strategies import pead_sizing
 from trading_corp.persistence.db import connect, load_agent_state
 from trading_corp.persistence.pead_observability import (
     load_feed_status,
@@ -83,6 +88,45 @@ def query_open_positions(db_url: str, division: str = DIVISION) -> list[dict]:
     return out
 
 
+def _position_card(prim, entry: float, last: float, held: int) -> dict:
+    """Price-ladder card data (Part 2, DISPLAY ONLY) from stored primitives — no new
+    computation about exits. `drift_dead` is the EXACT level the exit engine's drift
+    rule measures against: `drift_dead_level(prim)` on the SAME stored, slot-aware
+    `pre_earnings_close` the engine reads (so the card can never show a line the
+    engine doesn't act on). `drift_dead` is None when drift is DISABLED (earnings-day
+    gap <= 0 — a down/flat reactor; the position is stop-managed only)."""
+    stop = stop_level(prim)
+    gap = prim.earnings_gap_top - prim.pre_earnings_close          # earnings-day gap ($)
+    drift_disabled = gap <= 0
+    drift_dead = None if drift_disabled else drift_dead_level(prim)
+    span = entry - stop                                           # ladder axis: entry (top) -> stop (bottom)
+
+    def _off(p):                                                 # % down the entry->stop axis, clamped 0..100
+        if p is None or span <= 0:
+            return None
+        return max(0.0, min(100.0, (entry - p) / span * 100.0))
+
+    room_stop = (last - stop) if last is not None else None
+    room_drift = (last - drift_dead) if (drift_dead is not None and last is not None) else None
+    # "close" to drift-dead: NOW is within the last 20% of the entry->drift-dead drop
+    close_to_drift = bool(drift_dead is not None and room_drift is not None
+                          and 0.0 <= room_drift <= 0.20 * max(1e-9, entry - drift_dead))
+    return {
+        "entry": entry, "now": last, "stop": stop, "drift_dead": drift_dead,
+        "pre_close": prim.pre_earnings_close, "gap_top": prim.earnings_gap_top,
+        "drift_disabled": drift_disabled,
+        "entry_off": _off(entry), "now_off": _off(last), "drift_off": _off(drift_dead),
+        "pre_off": _off(prim.pre_earnings_close), "stop_off": _off(stop),
+        "room_stop": room_stop,
+        "room_stop_pct": (room_stop / last) if (room_stop is not None and last) else None,
+        "room_drift": room_drift,
+        "room_drift_pct": (room_drift / last) if (room_drift is not None and last) else None,
+        "close_to_drift": close_to_drift,
+        "held_days": held, "max_days": 60,
+        "time_pct": max(0.0, min(100.0, held / 60.0 * 100.0)),
+    }
+
+
 def assemble_book(open_rows: list[dict], quotes: dict[str, float], today: date) -> list[dict]:
     """Pure book assembly: compute pressures per row (LOCKED contract) and sort
     by governing pressure descending. Rows missing the extra_json primitives or
@@ -100,6 +144,7 @@ def assemble_book(open_rows: list[dict], quotes: dict[str, float], today: date) 
         base = {
             "symbol": sym,
             "name": extra.get("name") or sym,
+            "company_name": extra.get("company_name"),   # General::Name (display-only; None on legacy rows -> template falls back to ticker)
             "entry_date": opened.strftime("%b %d"),
             "last": last,
             "sue": extra.get("entry_sue"),
@@ -115,7 +160,7 @@ def assemble_book(open_rows: list[dict], quotes: dict[str, float], today: date) 
             book.append({**base, "complete": False, "pressures": None,
                          "governing": None, "fuse_pct": None,
                          "fuse_color": None, "governing_color": None,
-                         "open_risk_usd": None})
+                         "open_risk_usd": None, "card": None})
             continue
         nxt = _parse_date(extra.get("next_earnings_date"))
         days_to_next = business_days(today, nxt) if nxt else None
@@ -126,7 +171,8 @@ def assemble_book(open_rows: list[dict], quotes: dict[str, float], today: date) 
                                    "guard": pr.guard, "time": pr.time},
                      "governing": pr.governing, "fuse_pct": pr.fuse_pct,
                      "fuse_color": pr.fuse_color, "governing_color": pr.governing_color,
-                     "open_risk_usd": max(0.0, (entry - stop_level(prim)) * r["qty"])})
+                     "open_risk_usd": max(0.0, (entry - stop_level(prim)) * r["qty"]),
+                     "card": _position_card(prim, entry, last, held)})
     # complete rows first, by governing pressure desc; then placeholders.
     book.sort(key=lambda b: (1 if b["complete"] else 0, b.get("fuse_pct") or 0.0),
               reverse=True)
@@ -179,6 +225,62 @@ def _exit_attribution(db_url: str, division: str = DIVISION) -> dict:
     return {"by_rule": by_rule, "total": total, "empty": total == 0}
 
 
+# ── Upcoming-Earnings anticipation panel (front half of the funnel) ──────────
+# Reads the ISOLATED pead-earnings-watcher DB STRICTLY read-only (mode=ro). That DB is written ONLY by
+# the separate `pead-earnings-watcher` side-process; the engine never writes it and this open handle
+# physically cannot. Fully graceful: absent DB/table (watcher not deployed / first run) -> available:False.
+def _watch_db_path() -> str:
+    return os.environ.get(
+        "PEAD_WATCH_DB", str(Path.home() / "pead_earnings" / "earnings_watch.db"))
+
+
+def query_upcoming_earnings(max_watch: int = 60) -> dict:
+    """SYNC read of earnings_watch.db (caller wraps in asyncio.to_thread so the event loop never blocks —
+    the 6/26 lesson). Returns the watchlist (upcoming screen-passers we do NOT already hold, soonest
+    first) + a recent-reported tail (post-announcement: actual vs est + EXACT computed SUE) + the
+    anticipation-funnel stats. NEVER writes; NEVER raises to the caller."""
+    p = _watch_db_path()
+    if not os.path.exists(p):
+        return {"available": False, "reason": "no_db"}
+    try:
+        conn = sqlite3.connect(f"file:{Path(p).as_posix()}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return {"available": False, "reason": "open_failed"}
+    conn.row_factory = sqlite3.Row
+    try:
+        meta = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM watch_meta")}
+        try:
+            stats = json.loads(meta.get("last_stats") or "{}")
+        except (ValueError, TypeError):
+            stats = {}
+        watch = [dict(r) for r in conn.execute(
+            "SELECT * FROM earnings_watch WHERE phase='upcoming' AND screen_ok=1 "
+            "AND COALESCE(already_held,0)=0 "
+            "ORDER BY report_date ASC, COALESCE(sue_plausible,0) DESC, "
+            "COALESCE(sue_hitrate,0) DESC LIMIT ?", (max_watch,))]
+        reported = [dict(r) for r in conn.execute(
+            "SELECT * FROM earnings_watch WHERE phase='reported' "
+            "ORDER BY report_date DESC, code ASC LIMIT 40")]
+        fails = {r["screen_reason"]: r["n"] for r in conn.execute(
+            "SELECT screen_reason, COUNT(*) n FROM earnings_watch "
+            "WHERE screen_ok=0 GROUP BY screen_reason ORDER BY n DESC")}
+    except sqlite3.Error:
+        conn.close()
+        return {"available": False, "reason": "query_failed"}
+    conn.close()
+    last = meta.get("last_refresh_ts")
+    stale = True
+    if last:
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
+            stale = age > 18 * 3600  # watcher runs 2x/day; older than ~18h => not on schedule
+        except (ValueError, TypeError):
+            stale = True
+    return {"available": True, "last_refresh": last, "window": meta.get("last_window"),
+            "stats": stats, "stale": stale, "watchlist": watch, "reported": reported,
+            "screen_fail_counts": fails}
+
+
 async def build_pead_view(deps, *, today: date | None = None) -> dict:
     """Assemble the full PEAD dashboard view dict. Graceful + read-only:
     every block degrades to an empty state if its data isn't present yet."""
@@ -224,6 +326,37 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
         "open_count": len(book),
     }
 
+    # ── derived-sizing dial + fundable-count readout (Part B) ────────────────
+    # Uses the SAME pead_sizing math the scan uses, so the on-screen
+    # "funds ~N at ~$X" can never disagree with what the sizer would place.
+    # slots_remaining is proxied by the OPEN book count (pending/intent are
+    # transient across the pre-open→open gap; open records are the steady state).
+    eff_max_concurrent, override_active = pead_sizing.effective_max_concurrent(db_url)
+    _sc = getattr(snap, "settled_cash", None) if snap is not None else None
+    settled_cash = float(_sc) if _sc is not None else None
+    safety_factor = pead_sizing.yaml_safety_factor()
+    size_min_usd = pead_sizing.yaml_size_min_usd()
+    slots_remaining = max(0, eff_max_concurrent - len(book))
+    # SAME floored sizer the scan consumes -> the readout can't claim more names
+    # than the $ floor + settled cash actually support.
+    wave_sizes = (pead_sizing.derive_wave_sizes(settled_cash, slots_remaining,
+                                                safety_factor=safety_factor,
+                                                size_min_usd=size_min_usd)
+                  if settled_cash is not None else [])
+    dial = {
+        "max_concurrent": eff_max_concurrent,
+        "override_active": override_active,
+        "held": len(book),
+        "slots_remaining": slots_remaining,
+        "settled_cash": settled_cash,
+        "safety_factor": safety_factor,
+        "size_min_usd": size_min_usd,
+        "fundable_count": len(wave_sizes),
+        "per_name_first": wave_sizes[0] if wave_sizes else None,
+        "per_name_last": wave_sizes[-1] if wave_sizes else None,
+        "total_deploy": sum(wave_sizes) if wave_sizes else 0.0,
+    }
+
     # Stage-0 health: feed tri-state (+ broker reachability)
     feeds = load_feed_status(db_url)
     health = {
@@ -241,13 +374,19 @@ async def build_pead_view(deps, *, today: date | None = None) -> dict:
     rejections = {"by_reason": tally["by_reason"], "rejected": tally["rejected"],
                   "reconciles": (tally["scanned"] - tally["qualified"]) == tally["rejected"]}
 
+    # Upcoming-Earnings anticipation panel (front half): read the isolated watcher DB mode=ro OFF the
+    # event loop (never a sync fetch on render — the 6/26 lesson). Graceful empty if the watcher is absent.
+    upcoming = await asyncio.to_thread(query_upcoming_earnings)
+
     return {
         "mode": mode,
         "rule_colors": dict(RULE_COLORS),     # stop/drift/guard/time -> hex (4-cell strip)
         "account": account,
+        "dial": dial,                         # Part B: live max_concurrent + fundable-count readout
         "health": health,
         "funnel": funnel,
         "rejections": rejections,
+        "upcoming": upcoming,                 # front-half anticipation panel (isolated watcher DB, ro)
         "exit_queue": [],                     # populated by Phase-2 routing (graceful empty)
         "book": book,
         "attribution": _exit_attribution(db_url),

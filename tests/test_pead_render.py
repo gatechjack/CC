@@ -66,7 +66,8 @@ def _seed(url: str) -> None:
     extra = {
         "entry_atr_14": 4.0, "post_earnings_swing_low": 90.0,
         "pre_earnings_close": 100.0, "earnings_gap_top": 110.0,
-        "entry_sue": 3.1, "next_earnings_date": "2026-09-15", "name": "Acme Corp",
+        "entry_sue": 3.1, "next_earnings_date": "2026-09-15",
+        "name": "AAA", "company_name": "Acme Corp",   # name = ticker identity; company_name = display (General::Name)
     }
     sess = "2026-06-22T13:00:00+00:00"
     with connect(url) as conn:

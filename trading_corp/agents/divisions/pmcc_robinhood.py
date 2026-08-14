@@ -71,122 +71,21 @@ High-Beta / Crypto-Levered Names" PMCC book. The thesis:
 - Acceptable underlyings: crypto miners (MARA/RIOT/CIFR/IREN/BULL),
   crypto proxies (MSTR/HOOD/BLSH), high-beta momentum (ASTS/RKLB/SMR),
   high-IV specialty.
-- Some symbols are designated BLACK SHEEP and follow special rules
-  (perpetual roll, never accept assignment, halfway-roll on breach, trust
-  mean reversion within 1-3 weekly cycles).
 
 You have deep expertise in:
 - Options Greeks (delta, theta, gamma, vega) and their evolution
 - IV rank/percentile and premium-selling environments
-- Rolling mechanics: standard, halfway, OTM, defensive
+- Rolling mechanics: standard up-and-out, OTM, defensive
 - Assignment risk on cash-constrained accounts
 - Mean-reversion timing on high-IV names
 
-The user message will tell you whether the position is BLACK SHEEP or STANDARD
-and give you the specific rules that apply. Apply ONLY those rules — do not
-mix the two regimes.
+The user message gives you the specific rules that apply to this position.
+Apply them exactly.
 
 Respond ONLY with valid JSON. No markdown fences, no preamble, no explanation outside the JSON object.
 """
 
 # Concise rule blocks injected into the user prompt
-_BLACK_SHEEP_RULES = """\
-## RULES: BLACK SHEEP — {symbol}
-This symbol is designated BLACK SHEEP. Apply these rules INSTEAD of standard PMCC management:
-
-1. PERPETUAL ROLL — never accept assignment, never close LEAP to fund a short buyback.
-2. CASH NOT AVAILABLE for assignment. LEAP exercise is NOT permitted.
-3. ROLL TRIGGER: 2 DTE (1 DTE if OTM). NEVER let a breached short run to expiry.
-4. SHORT LEG: 7-DTE target, delta 0.20-0.35.
-5. ROLLING PHILOSOPHY (high-IV mean reversion is the edge):
-   - Always for credit. Always to a higher strike.
-   - "Halfway roll" when stock has moved >3% above short strike:
-       new strike = halfway between current short strike and underlying price.
-       7 DTE preferred. If no credit available, extend DTE to 14 (max 21).
-   - "Standard roll" when within 3% of strike: roll to slightly above
-       underlying, 7 DTE, must be credit.
-   - "OTM roll" at 50%+ profit: close at 70%, open new 7-DTE delta 0.20-0.30.
-6. BREACH HANDLING:
-   - Minor (0-3% above strike): standard roll at 2 DTE.
-   - Major (3-10% above strike): halfway roll, must collect credit.
-   - Runaway (10%+ above strike): halfway roll with 14-DTE extension.
-   COOLDOWN (back-to-back halfway-roll guard): When ROLL HISTORY
-   shows a recent halfway roll (positive strike_change >= $1 within
-   `cooldown_days`, default 7) AND the current short_leg_dte > 2
-   AND extrinsic > `extrinsic_floor` ($0.50/sh default) — choose
-   `hold` directly. The expectation after a halfway roll is "collect
-   theta + wait for whipsaw"; back-to-back halfway rolls in one
-   weekly cycle compound slippage and lock in losses.
-   Override `hold` and choose roll_short ONLY if the breach has
-   ACCELERATED past the prior roll's projected range — concretely:
-   spot now > prior_short_strike_after + |prior_strike_change|. (i.e.
-   the underlying has moved at least as far again as the prior
-   roll caught it, so the prior roll's "new range" is already
-   breached.)
-   BACKSTOP: deterministic Python guard (`_recent_halfway_roll_cooldown`)
-   downgrades roll_short → hold when the cooldown conditions hold,
-   regardless of LLM judgment. If the LLM picks roll_short despite
-   the conditions, the guard rewrites the action and the
-   recommendation card shows a HOLD with a cooldown warning — but
-   the LLM's rationale text will read as "roll", which is
-   confusing. So: HONOR the cooldown directly when ROLL HISTORY
-   shows a recent halfway roll; let the backstop catch only the
-   genuine acceleration-override-vs-cooldown edge cases.
-   STRIKE TARGETING: when prescribing a halfway roll, ALSO populate
-   `target_strike` in the JSON response with the computed midpoint
-   (rounded to the nearest listed strike). Without `target_strike`
-   the picker falls back to `target_delta` ranking, which on a
-   high-IV underlying typically picks a strike well above the
-   halfway midpoint and silently breaks the rule. Setting
-   `target_strike` makes the strike picker honor the rule directly.
-7. TERMINAL-DTE OVERRIDE (CRITICAL — applies before breach rules above):
-   When the short has ≤2 DTE AND the underlying is within ±1.5% of the strike
-   (the "ATM zone"), DEFAULT TO HOLD. The mark is almost entirely extrinsic
-   premium that decays to zero by expiration. Rolling at this stage locks in
-   theta you would otherwise collect for free.
-   Override HOLD and roll/close ONLY if any are true:
-     (a) Underlying is more than 1.5% above strike (genuine breach)
-     (b) Overnight gap risk is unacceptable for this account size
-     (c) IV pricing suggests a >1σ implied move before expiration
-   When in doubt with ≤2 DTE ATM short: HOLD and re-evaluate at next session.
-   NOTE: deterministic Python guard (`_terminal_dte_time_release`)
-   overrides this rule for 0-DTE positions regardless of LLM judgment.
-   Two release paths, both calendar- and config-aware:
-     - **Time gate.** Anchored to the actual session close from
-       NYSE calendar. release = close - release_offset_min (default
-       60m); hard_deadline = close - hard_deadline_offset_min (30m).
-       On 16:00 close that's 15:00/15:30 ET; on 13:00 half-days
-       12:00/12:30 ET. Inside the release window: forces roll_short.
-       Past hard_deadline: forces close_short with urgency='urgent'.
-     - **Cycle-continuity.** If short_leg_mark <=
-       cycle_continuity_extrinsic_threshold ($/share, default $0.15)
-       AND short_leg_dte == 0, force roll_short regardless of time.
-   LLM should narrate the override when it fires; the override
-   warning is appended to analysis.warnings.
-8. FORBIDDEN ACTIONS (recommend "watch" or "roll_short_early" instead):
-   - Buy back fully at a loss then resell OTM (locks in loss before MR whipsaw).
-   - Close full PMCC to recover a short loss (abandons long thesis).
-   - Accept assignment.
-   - Roll for debit to chase OTM.
-9. EXIT ONLY when: thesis explicitly broken, LEAP DTE < 90 with no credit roll
-   available, fundamental deterioration, or 3 attempts yielded no credit.
-   NOTE: a deterministic Python guard
-   (`_promote_to_roll_leap_if_hard_rule`) promotes any roll_short →
-   roll_leap when LEAP delta >= 0.95 OR long_leg_dte < 120, regardless
-   of regime. For BLACK SHEEP this guard fires more aggressively than
-   BS philosophy normally would (BS defers LEAP exit until DTE < 90
-   with no credit roll). The guard's intent is to surface a 4-leg
-   compound recommendation (close short + close LEAP + open new LEAP +
-   open new short) so the user sees ALL the legs — they can still
-   reject the LEAP roll and approve only the short roll if BS perpetual-
-   roll philosophy applies. To AVOID the guard firing on a BS position
-   you don't want to roll deep, choose `hold` or `watch` instead of
-   `roll_short` until DTE crosses below the BS exit threshold.
-
-For BLACK SHEEP: prefer "roll_short_early" or "roll_short" over "close_short".
-Use "close_all" only as a last resort when exit conditions are met.
-"""
-
 _STANDARD_RULES = """\
 ## RULES: STANDARD PMCC — {symbol}
 1. ROLL TRIGGER: 2 DTE OR 50%+ profit captured (whichever first).
@@ -251,6 +150,22 @@ _STANDARD_RULES = """\
        AND short_leg_dte == 0, force roll_short regardless of time.
    LLM should narrate the override when it fires; the override
    warning is appended to analysis.warnings.
+   DEEP-OTM NEAR-WORTHLESS EXCEPTION (distinct from the ATM-zone HOLD
+   above): when the short is worth only a few cents AND sits well outside
+   the underlying's typical overnight move — clearly, safely
+   out-of-the-money, not merely cheap because it is a near-expiry
+   at-the-money contract — do NOT default to HOLD. Prefer rolling it early
+   (buy-to-close the near-worthless short, sell a fresh short) to capture
+   next-cycle premium rather than waiting for the last day. A cheap mark
+   alone does NOT qualify: an at-the-money short near expiry can also mark a
+   few cents while still carrying real overnight assignment risk. Only the
+   clearly deep-OTM case qualifies.
+   NOTE: a deterministic Python guard (`_deep_otm_early_release`, invoked by
+   `_terminal_dte_time_release`) enforces the exact "deeply out-of-the-money"
+   distance and "near-worthless" mark from config, releases this roll on the
+   penultimate day for eligible names, and EXCLUDES the highest-overnight-
+   volatility names (which keep 0-DTE-only behavior). Narrate the exception
+   when it applies; the release warning is appended to analysis.warnings.
 5. HARD RULES:
    - Never roll for debit > 8% of LEAP value.
    - If LEAP delta > 0.95, treat as deep ITM equity — close or roll deep.
@@ -394,7 +309,7 @@ class PMCCAnalysis:
     """LLM expert analysis result for one PMCC position."""
     symbol: str
     # hold | roll_short | roll_short_early | roll_leap | close_short |
-    # open_short | watch | close_all
+    # open_short | watch   (close_all REMOVED — division is short-side only)
     action: str
     confidence: float           # 0.0–1.0
     urgency: str                # routine | elevated | urgent
@@ -411,6 +326,13 @@ class PMCCAnalysis:
     # delta-only picker would miss. None = fall back to delta-distance
     # ranking (original behavior).
     target_strike: float | None = None
+    # δ BAND (P1, 2026-07-31): the consent ENVELOPE the deterministic pricing
+    # refresh selects the concrete strike within — persisted on the decision record
+    # so pricing can rebuild the roll WITHOUT re-running the LLM. Derived from
+    # `target_delta` ± a config half-width at judgment time (`_apply_delta_band`);
+    # None on both = fall back to the point/config-default selection.
+    target_delta_low: float | None = None
+    target_delta_high: float | None = None
     # Phase-2 override contract (2026-07-21): structured escape hatch letting the
     # LLM authorize a deterministic gate to permit what it would otherwise block.
     # {"kind": "hold_override"|"net_debit_justified"|"earnings_override",
@@ -453,7 +375,6 @@ class ScoutCandidate:
     """
     symbol: str
     spot_price: float | None
-    is_black_sheep: bool
 
     # Concrete legs (None when the chain didn't yield a qualifying contract)
     leap_leg: TradeLegDetail | None
@@ -540,6 +461,8 @@ def _select_weekly_strike(
     calls: list[dict],
     target_delta: float = 0.30,
     target_strike: float | None = None,
+    target_delta_low: float | None = None,
+    target_delta_high: float | None = None,
 ) -> dict | None:
     """Pick weekly short strike.
 
@@ -549,7 +472,14 @@ def _select_weekly_strike(
     delta-only ranking would miss. Caller is responsible for sanity —
     we don't second-guess (the LLM cited the strike per its rules).
 
-    When `target_strike` is None (default): pick the strike whose delta
+    δ BAND (P1, 2026-07-31): when `target_delta_low`/`target_delta_high` are BOTH
+    given (and `target_strike` is None), pick the best liquid strike whose delta
+    falls WITHIN [low, high] — the consent envelope — choosing the one closest to
+    the band midpoint (stable/predictable). If no listed strike's delta lands in
+    the band, fall through to point selection at the band MIDPOINT. Either bound
+    None = no band = the original point/default behavior below.
+
+    When `target_strike` is None and no band: pick the strike whose delta
     is closest to `target_delta` but below 0.40 (OTM only), falling
     back to the full delta pool if no OTM strikes exist. Original
     behavior, preserved for backwards-compat.
@@ -564,11 +494,92 @@ def _select_weekly_strike(
             with_strike,
             key=lambda c: abs(float(c["strike_price"]) - target_strike),
         )
-    otm = [c for c in calls if c.get("delta") is not None and c["delta"] < 0.40]
-    pool = otm if otm else [c for c in calls if c.get("delta") is not None]
-    if not pool:
+    if target_delta_low is not None and target_delta_high is not None:
+        lo, hi = min(target_delta_low, target_delta_high), max(target_delta_low, target_delta_high)
+        in_band = [
+            c for c in calls
+            if c.get("delta") is not None and lo <= c["delta"] <= hi
+        ]
+        if in_band:
+            mid = (lo + hi) / 2.0
+            return min(in_band, key=lambda c: abs(c["delta"] - mid))
+        # No liquid strike lands in the band — price at the band midpoint so the
+        # roll still builds (the panel/consent shows the actual selected strike).
+        target_delta = (lo + hi) / 2.0
+    withd = [c for c in calls if c.get("delta") is not None]
+    if not withd:
         return None
-    return min(pool, key=lambda c: abs(c["delta"] - target_delta))
+    otm = [c for c in withd if c["delta"] < 0.40]
+    # Prefer an OTM (delta < 0.40) strike nearest the target, BUT never let the OTM
+    # cutoff EXCLUDE a strike that is strictly CLOSER to the target than the best OTM
+    # candidate. On coarse-spaced low-priced names — and when the delta band is empty
+    # (Fix 3, 2026-08-06) — the nearest strike can sit just above 0.40 (e.g. a δ0.47
+    # next to a δ0.16); the old hard `<0.40` cutoff silently substituted the far-OTM
+    # low-delta strike. CLAMP to the nearest strike by delta instead; never abort.
+    best_all = min(withd, key=lambda c: abs(c["delta"] - target_delta))
+    if not otm:
+        return best_all
+    best_otm = min(otm, key=lambda c: abs(c["delta"] - target_delta))
+    if abs(best_all["delta"] - target_delta) < abs(best_otm["delta"] - target_delta):
+        return best_all
+    return best_otm
+
+
+def _mid_of(opt: dict) -> float | None:
+    """MID of an option quote: mark_price, else the bid/ask midpoint, else None.
+    Single source of the roll's MID convention (FIX 1, 2026-08-07) so selection,
+    the credit gate, and dispatch all price the same way."""
+    mk = opt.get("mark_price")
+    if mk is not None:
+        return float(mk)
+    bid, ask = opt.get("bid"), opt.get("ask")
+    if bid is not None and ask is not None:
+        return (float(bid) + float(ask)) / 2.0
+    return None
+
+
+def _select_best_net_weekly(
+    calls: list[dict],
+    close_buyback: float | None,
+    *,
+    target_delta: float = 0.35,
+    band_low: float = 0.28,
+    band_high: float = 0.42,
+) -> dict | None:
+    """Pick the roll's new weekly by BEST NET near the δ target (FIX 2, 2026-08-07).
+
+    Among liquid candidates whose delta lands in the window [band_low, band_high]
+    (default 0.28-0.42, i.e. ~δ0.35 +/- 0.07), choose the strike whose MID net vs
+    the buy-to-close price is BEST — the largest credit, or (if none is a credit)
+    the smallest debit (best-defensive). Net is measured at MID (sell the new
+    weekly at its mark, buy the old short back at `close_buyback`) so the ranking
+    matches the MID-based gate + dispatch (FIX 1). Ties break to the strike nearest
+    `target_delta` (deterministic).
+
+    WHY a window, not nearest-delta: the pre-fix picker took the strike nearest the
+    δ target regardless of net, landing on marginal rolls (TSLA $335 δ0.31 = +$0.03
+    when the adjacent $330 δ0.40 = +$1.43). The window brackets the target so the
+    best-net strike is chosen without walking arbitrarily far ITM (excludes an
+    over-ITM δ0.45 grab) or into far-OTM thin premium (excludes δ<0.28).
+
+    Falls back to `_select_weekly_strike` (nearest-delta) when `close_buyback` is
+    None (OPEN path — no old short to net against) or no candidate lands in the
+    window, so a build always happens. Pure; no I/O."""
+    if close_buyback is None:
+        return _select_weekly_strike(calls, target_delta)
+    lo, hi = min(band_low, band_high), max(band_low, band_high)
+    in_band = [
+        c for c in calls
+        if c.get("delta") is not None and lo <= c["delta"] <= hi
+        and _mid_of(c) is not None
+    ]
+    if not in_band:
+        return _select_weekly_strike(calls, target_delta)
+    # Best MID net (max); tie-break nearest delta to the target (stable).
+    return max(
+        in_band,
+        key=lambda c: (round(_mid_of(c) - close_buyback, 4), -abs(c["delta"] - target_delta)),
+    )
 
 
 def _days_to(expiry: str) -> int:
@@ -581,6 +592,17 @@ def _days_to(expiry: str) -> int:
 # ---------------------------------------------------------------------------
 # PMCCAgent
 # ---------------------------------------------------------------------------
+
+# Allowed PMCC actions (SHORT-side + hold/watch). close_all is REMOVED: the division
+# manages the short weekly calls ONLY and never sells/closes the LEAP. Enforced at the
+# LLM parse boundary — any non-allowed action (incl. a hallucinated close_all) is
+# normalized to "watch" (no actionable order), belt-and-suspenders with the removed
+# prompt option + the removed propose/scan branches.
+_PMCC_VALID_ACTIONS = frozenset({
+    "hold", "roll_short", "roll_short_early", "roll_leap",
+    "close_short", "open_short", "watch",
+})
+
 
 class PMCCAgent:
     def __init__(
@@ -633,6 +655,15 @@ class PMCCAgent:
         # "the fix works" from "chains are thin and we now do nothing").
         self._last_weekly_diag: dict | None = None
         self._last_leap_diag: dict | None = None
+        # FIX 3 (2026-08-04): last roll/open ABORT (reason + chain_state), stashed by
+        # `_audit_roll_abort` on EVERY abort (preview included) so a card render can
+        # surface the SPECIFIC reason via `last_roll_abort_reason` instead of the
+        # conflated "market closed, illiquid, or a sparse chain" fallback.
+        self._last_roll_abort: dict | None = None
+        # Brokerage-first earnings (2026-07-28): last resolution stashed by
+        # `_earnings_gate_state` so the roll ship path can emit an "earnings
+        # unverified" alert when a roll proceeds with no confident earnings date.
+        self._last_earnings_resolution = None
 
         self._reload()
 
@@ -710,23 +741,6 @@ class PMCCAgent:
         return self._strategy_cfg.get("management", {}) or {}
 
     @property
-    def _black_sheep_block(self) -> dict:
-        return self._strategy_cfg.get("black_sheep", {}) or {}
-
-    @property
-    def _black_sheep_symbols(self) -> set[str]:
-        entries = (self._black_sheep_block.get("symbols") or [])
-        out: set[str] = set()
-        for e in entries:
-            sym = e.get("symbol") if isinstance(e, dict) else e
-            if isinstance(sym, str):
-                out.add(sym.upper())
-        return out
-
-    def is_black_sheep(self, symbol: str) -> bool:
-        return symbol.upper() in self._black_sheep_symbols
-
-    @property
     def _roll_dte(self) -> int:
         # Prefer strategies.yaml strategy.management.roll_dte_trigger
         v = self._management_cfg.get("roll_dte_trigger")
@@ -735,10 +749,7 @@ class PMCCAgent:
         return int(self._pmcc_cfg.get("short_call_roll_dte", 21))
 
     def _roll_dte_for(self, leg: PMCCPosition) -> int:
-        """Effective roll-DTE trigger for a leg (black sheep get tighter rule)."""
-        if self.is_black_sheep(leg.symbol):
-            rules = self._black_sheep_block.get("rolling_rules", {}) or {}
-            return int(rules.get("roll_trigger_dte", 2))
+        """Effective roll-DTE trigger for a leg."""
         return self._roll_dte
 
     @property
@@ -771,11 +782,64 @@ class PMCCAgent:
         return float(self._pmcc_cfg.get("short_call_target_delta", 0.30))
 
     @property
+    def _short_roll_target_delta(self) -> float:
+        """δ target the ROLL best-net picker centres on + tie-breaks to (FIX 2,
+        2026-08-07). Distinct from the OPEN target (`_short_target_delta`, 0.30):
+        rolls aim a touch higher (0.35) so the best-net window brackets the credit-
+        bearing strikes. Config `short_leg.roll_target_delta` (default 0.35)."""
+        v = self._short_leg_cfg.get("roll_target_delta")
+        return float(v) if v is not None else 0.35
+
+    @property
+    def _roll_best_net_delta_low(self) -> float:
+        """Low delta bound of the ROLL best-net candidate window (FIX 2). Config
+        `short_leg.roll_best_net_delta_low` (default 0.28). Excludes far-OTM thin
+        strikes from the net ranking."""
+        v = self._short_leg_cfg.get("roll_best_net_delta_low")
+        return float(v) if v is not None else 0.28
+
+    @property
+    def _roll_best_net_delta_high(self) -> float:
+        """High delta bound of the ROLL best-net candidate window (FIX 2). Config
+        `short_leg.roll_best_net_delta_high` (default 0.42). Includes the δ~0.40
+        credit-bearing strike (e.g. TSLA $330) while excluding an over-ITM grab."""
+        v = self._short_leg_cfg.get("roll_best_net_delta_high")
+        return float(v) if v is not None else 0.42
+
+    @property
     def _short_target_dte(self) -> int:
         v = self._short_leg_cfg.get("dte_target")
         if v is not None:
             return int(v)
         return _WEEKLY_MIN_DTE
+
+    @property
+    def _short_delta_band_half(self) -> float:
+        """Half-width of the δ consent BAND derived around the LLM's point target
+        (P1, 2026-07-31). The pricing refresh selects the concrete strike WITHIN
+        [target_delta − half, target_delta + half]. Tunable via strategies.yaml
+        `short_leg.delta_band_half` (falls back to 0.05)."""
+        v = self._short_leg_cfg.get("delta_band_half")
+        return float(v) if v is not None else 0.05
+
+    def _apply_delta_band(self, analysis: "PMCCAnalysis | None") -> "PMCCAnalysis | None":
+        """Derive + stamp the δ BAND on a fresh judgment (P1). low/high =
+        `target_delta` ± `_short_delta_band_half`, clamped to a sane OTM window
+        [0.10, 0.45]. No-op when the LLM gave no `target_delta` (band stays None →
+        pricing falls back to the config-default point) or a band is already set.
+        Mutates + returns `analysis` so the SAME band the operator consents to is
+        both used for the render AND persisted on the decision record."""
+        if analysis is None:
+            return analysis
+        if analysis.target_delta_low is not None or analysis.target_delta_high is not None:
+            return analysis
+        td = analysis.target_delta
+        if td is None:
+            return analysis
+        half = self._short_delta_band_half
+        analysis.target_delta_low = max(0.10, round(float(td) - half, 4))
+        analysis.target_delta_high = min(0.45, round(float(td) + half, 4))
+        return analysis
 
     @property
     def _contracts_per_25k(self) -> int:
@@ -795,49 +859,82 @@ class PMCCAgent:
     def _min_open_interest(self) -> int:
         return int(self._liquidity_cfg.get("min_open_interest", 100))
 
+    # NOTE: the `min_avg_volume` config key is RETIRED (2026-08-04). The standalone
+    # per-contract volume floor it fed was removed from `_passes_liquidity` — it was
+    # subsumed by the Liveness gate and only ever wrongly rejected OI-established
+    # strikes with thin intraday prints (see `_passes_liquidity` docstring). No
+    # accessor remains so a live-looking knob can't silently gate selection.
+
     @property
-    def _min_avg_volume(self) -> int:
-        return int(self._liquidity_cfg.get("min_avg_volume", 50))
+    def _oi_bypass_min_volume(self) -> int:
+        # 1(b) 2026-07-23: today's volume at/above which a contract clears the
+        # liveness gate DESPITE low open interest. OI accumulates over a
+        # contract's life; a genuinely-traded FRESH near-dated expiry hasn't had
+        # time to build OI, so an OI-only floor wrongly rejects it. Set high
+        # enough that a phantom/untraded strike (which trades ~0) cannot clear
+        # it — the observed fresh-daily roll targets traded ~5k-8k.
+        return int(self._liquidity_cfg.get("oi_bypass_min_volume", 500))
 
     def _passes_liquidity(self, opt: dict, *, symbol: str | None = None) -> tuple[bool, str]:
-        """Return (passes, reason). Uses strategies.yaml liquidity gates.
+        """Return (passes, reason). Tradeability floor from the strategies.yaml gates.
 
-        Black-sheep symbols use the tighter `eligibility_criteria` from the
-        black_sheep block (min_avg_options_volume defaults to 10000) when
-        available; otherwise the standard gate applies.
+        The bar is two gates:
+          1. Liveness — established OR actively-traded: pass when open interest
+             >= `min_open_interest` (100) OR today's volume >= `oi_bypass_min_volume`
+             (500). OI accumulates over a contract's life; volume is the live signal,
+             so a FRESH near-dated expiry with real volume qualifies before it builds
+             OI, AND an ESTABLISHED strike (high OI) qualifies with zero intraday prints.
+          2. Two-sided market — a real bid AND a real ask (a sane, non-inverted
+             quote). A missing BID = nothing to sell a credit into; a missing ASK =
+             nothing to buy back at; an inverted (bid > ask) quote is stale/degenerate.
+             These are the genuinely-untradeable cases.
+
+        `symbol` is retained for API stability (callers pass it) but no longer
+        selects the gate.
+
+        History:
+          1(a) 2026-07-23: a per-contract volume floor of 10000 (from the
+            since-retired black_sheep `eligibility_criteria`) was mis-applied here
+            — no OTM weekly trades 10k/day — silently blocking every normal roll on
+            the affected names for ~2.7 months. Reduced to `min_avg_volume`=50.
+          2026-08-04: the standalone `vol < min_avg_volume` (50) floor was REMOVED —
+            subsumed by Liveness (any strike clearing Liveness already has OI>=100 or
+            vol>=500), it only ever wrongly rejected OI-established thin-print strikes.
+          2026-08-06: the raw bid/ask SPREAD-WIDTH rejection (`spread > 10% of mid`)
+            is REMOVED. The operator trades at MID and fills ~100%, so a wide-but-
+            two-sided market on an OI-liquid strike IS tradeable. The width gate was
+            rejecting RIOT's entire on-target delta chain (12-22% spreads are normal
+            for these weeklies) and silently substituting a far-OTM low-bid strike,
+            which then manufactured a false "net debit" block. Tradeability is a
+            two-sided market + Liveness — NOT spread width. The "is there a market at
+            all" checks (no bid / no ask / inverted) are PRESERVED below. `_select_
+            weekly_strike` also clamps to nearest-delta so no far-OTM substitution can
+            occur; if the WHOLE on-target chain is untradeable the caller defers with
+            an honest sparse-chain reason (never a misleading "net debit").
         """
-        # Pick the right gate set
-        is_bs = bool(symbol and self.is_black_sheep(symbol))
-        if is_bs:
-            elig = self._black_sheep_block.get("eligibility_criteria") or {}
-            min_volume = int(elig.get("min_avg_options_volume", self._min_avg_volume))
-        else:
-            min_volume = self._min_avg_volume
-
         bid = float(opt.get("bid") or 0)
         ask = float(opt.get("ask") or 0)
         oi = int(opt.get("open_interest") or 0)
         vol = int(opt.get("volume") or 0)
 
-        # Open interest
-        if oi < self._min_open_interest:
-            return False, f"OI={oi} < {self._min_open_interest}"
+        # 1. Liveness: established (open interest) OR actively-traded today (volume).
+        if oi < self._min_open_interest and vol < self._oi_bypass_min_volume:
+            return False, (
+                f"OI={oi} < {self._min_open_interest} AND "
+                f"vol={vol} < {self._oi_bypass_min_volume}"
+            )
 
-        # Volume
-        if vol < min_volume:
-            return False, f"vol={vol} < {min_volume}"
-
-        # Bid-ask spread (skip if no bid — can't compute meaningfully)
-        if bid > 0 and ask > 0:
-            mid = (bid + ask) / 2.0
-            spread_pct = (ask - bid) / mid if mid > 0 else 1.0
-            if spread_pct > self._max_bid_ask_spread_pct:
-                return False, (
-                    f"spread={spread_pct*100:.1f}% > "
-                    f"{self._max_bid_ask_spread_pct*100:.1f}%"
-                )
-        elif ask <= 0:
+        # 2. Two-sided-market tradeability floor (the raw spread-WIDTH gate was
+        # removed 2026-08-06 — see docstring). Reject ONLY the genuinely untradeable:
+        # no bid (can't collect a credit), no ask (can't buy back), or an inverted
+        # (stale/degenerate) quote. A wide-but-two-sided market on a liquid strike
+        # PASSES — the operator fills at mid.
+        if bid <= 0:
+            return False, "no bid"
+        if ask <= 0:
             return False, "no ask price"
+        if ask < bid:
+            return False, f"inverted bid={bid:.2f} > ask={ask:.2f}"
 
         return True, "ok"
 
@@ -849,34 +946,48 @@ class PMCCAgent:
         return int(crit.get("earnings_buffer_days", 7))
 
     def _earnings_gate_state(self, symbol: str) -> tuple[str, str]:
-        """B9 (Phase 2): TRI-STATE earnings read — distinguishes a genuinely-clear
-        window from missing data so a fail-open roll (one that shipped only because
-        the data source was DOWN) is visible in the abort/audit payload.
+        """B9: TRI-STATE earnings read, now BROKERAGE-FIRST (2026-07-28).
+
+        Resolves the next-earnings date via `resolve_earnings` — Robinhood's
+        VERIFIED date is authoritative; the EODHD/yfinance feed is fallback
+        (flagged UNVERIFIED). Fixes the RIOT false-block (feed carried a stale
+        2025 date, broker said 08-05 = clear) AND the reverse danger (a stale
+        feed FALSELY CLEARING a real upcoming print), because the broker's
+        verified date wins in BOTH directions.
           - "blocked"          : earnings within the buffer window → gate blocks.
-          - "clear"            : earnings data present, none within the buffer
+          - "clear"            : a future date exists, none within the buffer
                                  (also returned when the gate is config-disabled).
-          - "data_unavailable" : no earnings date from the source → FAIL-OPEN
-                                 (thinly-traded names commonly lack earnings dates;
-                                 we don't silently kill the universe).
-        Returns (state, reason). Single source of truth for both the roll gate and
-        `_blocked_by_earnings` (open path), so the two can never drift.
+          - "data_unavailable" : NEITHER broker nor feed has a future date →
+                                 FAIL-OPEN (never silently block a liquid name);
+                                 the roll ship path emits an "earnings unverified"
+                                 alert so this is never silent.
+        Returns (state, reason). Stashes `self._last_earnings_resolution` (source /
+        verified / disagreement) for the ship path. Single source of truth for both
+        the roll gate and `_blocked_by_earnings` (open path), so the two can never
+        drift.
         """
         buffer_days = self._earnings_buffer_days
         if buffer_days <= 0:
+            self._last_earnings_resolution = None
             return "clear", ""
 
-        from trading_corp.utils.market_data import get_next_earnings
-        nxt = get_next_earnings(symbol)
-        if nxt is None:
-            return "data_unavailable", "no earnings date from data source"
+        from trading_corp.utils.market_data import resolve_earnings
+        res = resolve_earnings(symbol)
+        self._last_earnings_resolution = res
+
+        if res.date is None:
+            # Neither broker nor feed has a future date. Fail-open (do NOT block a
+            # liquid name — the RIOT failure), but never silently: the ship path
+            # emits an "earnings unverified" alert.
+            return "data_unavailable", "no earnings date from broker or feed (fail-open; UNVERIFIED)"
 
         from datetime import datetime, timezone
-        delta = nxt - datetime.now(timezone.utc)
-        days = delta.days  # truncates toward negative; for future dates, this is days_until rounded down
+        days = (res.date - datetime.now(timezone.utc)).days  # future date → days_until, floored
+        src = f"source={res.source}" + ("" if res.verified else "; UNVERIFIED")
         if 0 <= days <= buffer_days:
             return "blocked", (
-                f"earnings on {nxt.date().isoformat()} ({days}d away, "
-                f"buffer={buffer_days}d)"
+                f"earnings on {res.date.date().isoformat()} ({days}d away, "
+                f"buffer={buffer_days}d; {src})"
             )
         return "clear", ""
 
@@ -896,24 +1007,155 @@ class PMCCAgent:
             return True, reason
         return False, ""
 
+    def earnings_card_state(
+        self, symbol: str, short_strike: float | None = None,
+        spot: float | None = None,
+    ) -> dict:
+        """DISPLAY-layer earnings state for the roll consent card (Enhancement A,
+        2026-07-28). Drives off the SAME `_earnings_gate_state` the backend roll
+        path uses (via `resolve_earnings`), so the UI and the gate can never
+        disagree. Read-only; no order/broker side effects.
+
+        Returns a dict:
+          kind         : "blocked" | "unverified" | "clear"
+          date         : ISO date of the next earnings (or None)
+          verified     : True only when the broker CONFIRMED the date
+          source       : "broker" | "feed" | "none" | None
+          recommendation: the "let it expire" text (blocked only), else None
+          flag         : the unverified-confirm text (unverified only), else None
+          caveat       : assignment-risk caveat (blocked AND short ITM), else None
+          offer_roll   : False iff blocked (card hides Approve); True otherwise
+
+        `short_strike` + `spot` are optional; when both are given and the short is
+        ITM (spot ≥ strike) under a BLOCKED state, a "let it expire risks
+        assignment" caveat is surfaced — but the operator's stated default ("let it
+        expire") is kept, not overridden."""
+        state, _reason = self._earnings_gate_state(symbol)
+        res = getattr(self, "_last_earnings_resolution", None)
+        date_iso = res.date.date().isoformat() if (res and res.date) else None
+        verified = bool(res.verified) if res else False
+        source = res.source if res else None
+        out = {
+            "kind": "clear", "date": date_iso, "verified": verified,
+            "source": source, "recommendation": None, "flag": None,
+            "caveat": None, "offer_roll": True,
+        }
+        if state == "blocked":
+            out["kind"] = "blocked"
+            out["offer_roll"] = False
+            out["recommendation"] = (
+                f"Earnings {date_iso} — let the current short call expire, then sell "
+                "a new call after earnings is announced and the stock has moved."
+            )
+            try:
+                itm = (spot is not None and short_strike is not None
+                       and float(spot) >= float(short_strike))
+            except (TypeError, ValueError):
+                itm = False
+            if itm:
+                out["caveat"] = (
+                    f"Short strike {short_strike:g} is in-the-money (spot {float(spot):g}) "
+                    "— letting it expire risks assignment; consider closing before the "
+                    "print. Default remains: let it expire."
+                )
+        elif state == "data_unavailable":
+            out["kind"] = "unverified"
+            out["offer_roll"] = True
+            out["flag"] = "earnings date unverified — confirm before rolling"
+        return out
+
+    @staticmethod
+    def _classify_liquidity_reason(reason: str) -> str:
+        """Bucket a _passes_liquidity reason into the sub-gate that bound:
+        liveness (OI-and-volume), no_bid, no_ask, inverted (and legacy spread/volume).
+        Observability for the abort diagnostics (2026-07-24: 'all failed liquidity
+        gate' hid WHICH gate). `spread`/`volume` buckets are retained for back-compat
+        though `_passes_liquidity` no longer emits them (2026-08-06 / 2026-08-04)."""
+        r = reason or ""
+        if "no bid" in r:
+            return "no_bid"
+        if "no ask" in r:
+            return "no_ask"
+        if "inverted" in r:
+            return "inverted"
+        if "OI=" in r:                       # "OI=.. < .. AND vol=.. < .." (liveness)
+            return "liveness"
+        if "spread=" in r:                   # legacy (width gate removed 2026-08-06)
+            return "spread"
+        if "vol=" in r:                      # legacy volume-only floor
+            return "volume"
+        return "other"
+
+    def last_roll_abort_reason(self, symbol: str | None = None) -> str | None:
+        """FIX 3 (2026-08-04): a plain-English reason for the MOST RECENT roll/open
+        abort on `symbol`, built from the `_last_roll_abort` stash that
+        `_audit_roll_abort` sets on EVERY abort (preview included). Lets a card render
+        say WHY a roll was unbuildable — "N candidate strikes, all failed the liquidity
+        gate" vs "chain empty / no roll-out expiry" vs earnings/credit — instead of the
+        conflated "market closed, illiquid, or a sparse chain" fallback.
+
+        Returns None when there's no abort matching `symbol` (→ the caller keeps its
+        own generic text). Symbol-scoped so a stale abort from another name can't leak
+        into this card."""
+        ab = getattr(self, "_last_roll_abort", None)
+        if not ab:
+            return None
+        if symbol is not None and str(ab.get("symbol") or "").upper() != symbol.upper():
+            return None
+        reason = ab.get("reason") or ""
+        chain = ab.get("chain_state") or {}
+        diag_reason = chain.get("reason") or ""
+        considered = chain.get("considered")
+        failed = chain.get("failed_by_gate") or {}
+        # Selection aborts (sparse chain) — surface the chain state that bound.
+        if diag_reason == "no_liquid_weekly_contracts":
+            n = considered if considered is not None else "the"
+            tail = f" (failed by {dict(failed)})" if failed else ""
+            return f"{n} candidate strike(s) fetched, all failed the liquidity gate{tail}"
+        if diag_reason in ("no_liquid_leap_contracts",):
+            return f"{considered} LEAP candidate(s), all failed the liquidity gate"
+        if diag_reason == "no_qualifying_weekly_strike":
+            return f"{considered} liquid strike(s), none matched the target δ / strike"
+        if diag_reason == "no_future_expiry_dates":
+            return "chain empty — no future expiry dates"
+        if diag_reason == "no_rollout_weekly":
+            return "no weekly expiry rolls out past the current short"
+        if diag_reason == "no_weekly_within_ceiling":
+            return "no weekly expiry within the target DTE window"
+        # Proceed-gate aborts (not a sparse chain).
+        if reason == "earnings_window":
+            return "earnings within the buffer — roll suppressed (let the short expire)"
+        if reason == "net_debit_roll":
+            return "roll would be a net debit — blocked (rolls must be for credit)"
+        if reason in ("sparse_chain_no_leap", "sparse_chain_no_weekly_for_new_leap"):
+            return "no qualifying LEAP/weekly for the roll — sparse chain"
+        # Fallback: the raw abort reason is still more specific than the conflated string.
+        if reason:
+            return f"roll unbuildable: {reason}"
+        return None
+
     def _filter_liquid(self, opts: list[dict], symbol: str) -> list[dict]:
-        """Drop illiquid contracts. Logs each rejection at debug level."""
+        """Drop illiquid contracts. Logs each rejection at debug level and
+        aggregates which sub-gate bound (liveness / volume / spread / no_ask),
+        stored on self._last_liquidity_breakdown for the abort diagnostics."""
         out: list[dict] = []
-        rejected = 0
+        breakdown: dict[str, int] = {}
         for o in opts:
             ok, reason = self._passes_liquidity(o, symbol=symbol)
             if ok:
                 out.append(o)
             else:
-                rejected += 1
+                b = self._classify_liquidity_reason(reason)
+                breakdown[b] = breakdown.get(b, 0) + 1
                 log.debug(
                     "PMCCAgent liquidity gate dropped %s C%.0f (%s): %s",
                     symbol, o.get("strike_price", 0), o.get("expiration_date"), reason,
                 )
-        if rejected:
+        self._last_liquidity_breakdown = dict(breakdown)
+        if breakdown:
             log.info(
-                "PMCCAgent liquidity: %s — %d/%d contracts passed gate",
-                symbol, len(out), len(opts),
+                "PMCCAgent liquidity: %s — %d/%d passed; failed by sub-gate: %s",
+                symbol, len(out), len(opts), dict(breakdown),
             )
         return out
 
@@ -1022,19 +1264,8 @@ class PMCCAgent:
                 f"{theta_block}"
             )
 
-        # Inject the rule block that applies to this position
-        is_bs = self.is_black_sheep(pos.symbol)
-        if is_bs:
-            rules_block = _BLACK_SHEEP_RULES.format(symbol=pos.symbol)
-            entry = next(
-                (e for e in (self._black_sheep_block.get("symbols") or [])
-                 if isinstance(e, dict) and e.get("symbol", "").upper() == pos.symbol.upper()),
-                {},
-            )
-            bs_thesis = entry.get("rationale") or "core conviction; high-IV mean-reverts reliably"
-            rules_block += f"\n## Black-sheep thesis for {pos.symbol}: {bs_thesis}\n"
-        else:
-            rules_block = _STANDARD_RULES.format(symbol=pos.symbol)
+        # Inject the rule block that applies to this position (all names: STANDARD).
+        rules_block = _STANDARD_RULES.format(symbol=pos.symbol)
 
         # ROLL HISTORY block — tell the LLM what just happened to this LEAP
         # so it doesn't recommend back-to-back halfway rolls. The
@@ -1051,7 +1282,6 @@ class PMCCAgent:
 - Current underlying price: {price_str}
 - Market regime: {regime}
 - VIX (spot): {vix_str}
-- Designation: {"BLACK SHEEP" if is_bs else "STANDARD"}
 
 ## LEAP (Long Call — synthetic stock replacement)
 - Contract: {pos.long_leg_symbol}
@@ -1066,7 +1296,7 @@ class PMCCAgent:
 {history_block}
 Respond with ONLY this JSON (no other text, no markdown):
 {{
-  "action": "<hold|roll_short|roll_short_early|roll_leap|close_short|open_short|watch|close_all>",
+  "action": "<hold|roll_short|roll_short_early|roll_leap|close_short|open_short|watch>",
   "confidence": <float 0.0-1.0>,
   "urgency": "<routine|elevated|urgent>",
   "summary": "<one clear sentence: situation + recommended action>",
@@ -1074,21 +1304,21 @@ Respond with ONLY this JSON (no other text, no markdown):
   "warnings": ["<specific risk>", "<specific risk>"],
   "target_delta": <recommended short call delta as float, or null>,
   "target_dte": <recommended short call DTE target as integer, or null>,
-  "target_strike": <recommended short call STRIKE as float, or null — set this when a rule prescribes a specific strike (e.g. halfway-roll midpoint per BREACH HANDLING). When set, the strike picker honors this directly, overriding delta-distance ranking. Leave null when delta-targeting is correct (standard cycles).>,
+  "target_strike": <recommended short call STRIKE as float, or null — set this when a rule prescribes a specific strike (e.g. a cited resistance level). When set, the strike picker honors this directly, overriding delta-distance ranking. Leave null when delta-targeting is correct (standard cycles).>,
   "override": <null, OR {{"kind": "hold_override"|"net_debit_justified"|"earnings_override", "reason": "<one clause>"}} — set ONLY when a rule you cite explicitly permits an action a deterministic guard would otherwise block (a HOLD you want rolled, a small net-debit roll, or a roll inside the earnings buffer); otherwise null.>
 }}
 
 Action reference:
 - hold: all criteria healthy, manage at next scheduled trigger
-- roll_short: normal roll (BLACK SHEEP: <=2 DTE / STANDARD: <=2 DTE OR >=50% profit captured)
-- roll_short_early: roll before normal trigger (defensive on a breached short, or
-    halfway-roll for black sheep)
+- roll_short: normal roll (<=2 DTE OR >=50% profit captured)
+- roll_short_early: roll before the normal trigger (defensive on a breached short)
 - roll_leap: LEAP needs to be rolled (delta drift below 0.40, DTE < 120, or strike compromised)
-- close_short: close/buy-back the short call. AVOID for BLACK SHEEP unless OTM at expiry —
-    prefer roll_short_early. For STANDARD: appropriate for assignment/earnings risk.
+- close_short: close/buy-back the short call — appropriate for assignment / earnings risk
 - open_short: LEAP is uncovered — sell a new weekly call
 - watch: no action but flag for close monitoring next cycle
-- close_all: STANDARD only. NEVER for black sheep unless exit conditions strictly met.
+
+This division manages the SHORT weekly calls ONLY. NEVER recommend selling or closing
+the LEAP; there is no "close the whole position" action — an exit is an operator action.
 """
 
         try:
@@ -1106,9 +1336,17 @@ Action reference:
                     raw = raw[4:]
                 raw = raw.strip()
             data = json.loads(raw)
-            return PMCCAnalysis(
+            # ACTION ALLOWLIST (2026-07-31): reject any non-allowed action — a stale or
+            # hallucinated close_all (or anything outside _PMCC_VALID_ACTIONS) becomes
+            # "watch" so no LEAP-touching / close-all order can ever be built.
+            _action = str(data.get("action", "watch"))
+            if _action.strip().lower() not in _PMCC_VALID_ACTIONS:
+                log.warning("PMCCAgent: LLM returned non-allowed action %r for %s -> watch",
+                            _action, pos.symbol)
+                _action = "watch"
+            _analysis = PMCCAnalysis(
                 symbol=pos.symbol,
-                action=str(data.get("action", "watch")),
+                action=_action,
                 confidence=float(data.get("confidence", 0.5)),
                 urgency=str(data.get("urgency", "routine")),
                 summary=str(data.get("summary", "")),
@@ -1119,6 +1357,9 @@ Action reference:
                 target_strike=float(data["target_strike"]) if data.get("target_strike") is not None else None,
                 override=data.get("override") if isinstance(data.get("override"), dict) else None,
             )
+            # Stamp the δ consent BAND (P1) so the SAME envelope is used for the
+            # render and persisted for the LLM-free pricing refresh.
+            return self._apply_delta_band(_analysis)
         except Exception as e:
             log.warning("PMCCAgent: LLM analysis failed for %s: %s", pos.symbol, e)
             return None
@@ -1153,6 +1394,8 @@ Action reference:
         broker: Broker,
         symbol: str,
         analysis: PMCCAnalysis,
+        *,
+        preview: bool = False,
     ) -> list[ProposedOrder]:
         """Translate an LLM action recommendation into concrete ProposedOrders.
 
@@ -1163,7 +1406,18 @@ Action reference:
         Reuses the existing _propose_* helpers so the rationale + sizing logic
         stays consistent with the scheduled scan path. Actions that need no
         order ('hold', 'watch') return [].
+
+        `preview=True` (2026-07-30): this call is a card render / Re-analyze /
+        estimate build, NOT a dispatch attempt. It still resolves the concrete
+        target strikes + prices (so the consent card can show them), but every
+        abort gate suppresses its `pmcc_roll_aborted` audit row and its exec-alert
+        (see `_audit_roll_abort(preview=...)`) and the earnings-unverified alert is
+        withheld. Exec-alerts fire ONLY on a genuine dispatch attempt.
         """
+        # FIX 3 (2026-08-04): clear the last-abort stash so a stale reason from a prior
+        # build can't leak into this card. Re-set by _audit_roll_abort iff a gate fires.
+        self._last_roll_abort = None
+
         # Detect position FIRST so the 0-DTE wall-clock gate can override
         # action="hold"/"watch" before the early-return below (Board
         # direction 2026-05-01 — see _terminal_dte_time_release).
@@ -1174,7 +1428,14 @@ Action reference:
         # Apply 0-DTE wall-clock time gate. No-op when pos is None or
         # the position isn't 0-DTE; otherwise may rewrite hold/watch →
         # roll_short (15:00–15:30 ET) or close_short urgent (>= 15:30 ET).
-        analysis = self._terminal_dte_time_release(analysis, pos)
+        # The deep-OTM early-release moneyness gate needs a Robinhood spot
+        # (matching the band's evidence source) — quote only when `pos` is an
+        # early-roll candidate; 0.0 / failure → None → gate fails safe (no fire).
+        _early_spot = None
+        if pos is not None and self._early_release_needs_spot(pos, analysis):
+            _q = await broker.quote(symbol)
+            _early_spot = _q if _q and _q > 0 else None
+        analysis = self._terminal_dte_time_release(analysis, pos, spot=_early_spot)
         # Apply LEAP Hard Rule promotion (Item 2 — 2026-05-02). When LEAP
         # delta>=0.95 OR long_leg_dte<120, promote roll_short → roll_leap
         # so the recommendation includes the LEAP roll legs, not just
@@ -1204,7 +1465,8 @@ Action reference:
 
         # ── Roll short (with or without "early" trigger) ──
         if action in ("roll_short", "roll_short_early"):
-            return await self._propose_roll_short(symbol, pos, broker, analysis=analysis)
+            return await self._propose_roll_short(
+                symbol, pos, broker, analysis=analysis, preview=preview)
 
         # ── Open a new short on an uncovered LEAP ──
         if action == "open_short":
@@ -1245,6 +1507,7 @@ Action reference:
                 self._audit_roll_abort(
                     reason="earnings_window", symbol=symbol,
                     extra={"gates": dict(rl_gates), "earnings_reason": rl_ereason},
+                    preview=preview,
                 )
                 return []
             # B4 (atomic roll_leap): resolve BOTH new legs BEFORE proposing any
@@ -1254,6 +1517,7 @@ Action reference:
                 self._audit_roll_abort(
                     reason="sparse_chain_no_leap", symbol=symbol,
                     missing_leg="new_leap", diag=self._last_leap_diag,
+                    preview=preview,
                 )
                 return []
             new_weekly = await self._find_best_weekly(
@@ -1261,6 +1525,8 @@ Action reference:
                 target_delta=analysis.target_delta if analysis else None,
                 target_dte=analysis.target_dte if analysis else None,
                 target_strike=analysis.target_strike if analysis else None,
+                target_delta_low=analysis.target_delta_low if analysis else None,
+                target_delta_high=analysis.target_delta_high if analysis else None,
                 after_dte=pos.short_leg_dte,  # B7: new short must roll OUT
             )
             if not new_weekly:
@@ -1268,21 +1534,31 @@ Action reference:
                     reason="sparse_chain_no_weekly_for_new_leap",
                     symbol=symbol, missing_leg="new_short_on_new_leap",
                     diag=self._last_weekly_diag,
+                    preview=preview,
                 )
                 return []
             rl_gates["selection"] = "ok"
             # B2 (short-leg credit) — close-old-short vs open-new-short pair ONLY;
             # the LEAP legs (2+3) are B3's domain (do NOT re-derive compound cost).
             rl_close_mark = pos.short_leg_mark or 0.0
-            rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark)
-            if rl_cons_net < 0 and rl_override != "net_debit_justified":
+            # Extend the same-timestamp MID basis (Fix 2, 2026-08-06) to the roll_leap
+            # short-leg gate — off the stale bid-vs-scan-mark. Fresh buyback mark; gate
+            # on the mid net. (roll_leap is advisory-only; not dispatch-give_up-aligned.)
+            rl_close_q = await self._fresh_leg_quote(
+                broker, symbol, pos.short_leg_expiry, pos.short_leg_strike)
+            rl_close_mark_fresh, rl_cm_src = self._fresh_mark(rl_close_q, fallback=rl_close_mark)
+            rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark_fresh)
+            if rl_mark_net < 0 and rl_override != "net_debit_justified":
                 rl_gates["credit"] = "blocked"
                 self._audit_roll_abort(
                     reason="net_debit_roll", symbol=symbol,
-                    extra={"gates": dict(rl_gates), "conservative_net": round(rl_cons_net, 4),
-                           "mark_net": round(rl_mark_net, 4), "close_mark": round(rl_close_mark, 4),
-                           "open_bid": rl_open_bid, "fees_included": False,
-                           "fee_gap": "pre-fee: spread only"},
+                    extra={"gates": dict(rl_gates), "mid_net": round(rl_mark_net, 4),
+                           "conservative_net": round(rl_cons_net, 4),
+                           "close_mark_fresh": round(rl_close_mark_fresh, 4),
+                           "close_mark_scan": round(rl_close_mark, 4),
+                           "close_mark_source": rl_cm_src, "open_bid": rl_open_bid,
+                           "fees_included": False, "fee_gap": "pre-fee: spread only"},
+                    preview=preview,
                 )
                 return []
             rl_gates["credit"] = "clear"
@@ -1363,47 +1639,19 @@ Action reference:
                 ),
                 pair_id=pair_id,
             ))
-            self._audit_division("pmcc_roll_gates", {
-                "symbol": symbol, "gates": dict(rl_gates),
-                "conservative_net": round(rl_cons_net, 4),
-                "mark_net": round(rl_mark_net, 4), "override_kind": rl_override,
-            })
-            return orders
-
-        # ── Close everything on this underlying ──
-        if action == "close_all":
-            orders: list[ProposedOrder] = []
-            pair_id = str(uuid.uuid4())[:8]
-            if pos.short_leg_expiry and pos.short_leg_strike is not None:
-                orders.append(self._make_option_order(
-                    underlying=symbol, side="buy", contracts=contracts,
-                    expiry=pos.short_leg_expiry,
-                    strike=pos.short_leg_strike,
-                    mark_price=pos.short_leg_mark or 0.0,
-                    position_effect="close",
-                    action="close_short_urgent",
-                    dte=pos.short_leg_dte,
-                    rationale=self._build_rationale(
-                        f"CLOSE ALL: short {symbol}", analysis,
-                    ),
-                    pair_id=pair_id,
-                ))
-            orders.append(self._make_option_order(
-                underlying=symbol, side="sell", contracts=contracts,
-                expiry=pos.long_leg_expiry,
-                strike=pos.long_leg_strike,
-                # B3: record the real mark for cost visibility; the execution agent
-                # will price it — keep the market-sell (0.0 limit) so an URGENT close fills.
-                mark_price=(float(pos.long_leg_mark) if pos.long_leg_mark is not None else None),
-                preserve_market_sell=True,
-                position_effect="close",
-                action="close_leap_urgent",
-                dte=pos.long_leg_dte,
-                rationale=self._build_rationale(
-                    f"CLOSE ALL: LEAP {symbol}", analysis,
-                ),
-                pair_id=pair_id,
-            ))
+            if not preview:
+                # preview: don't write a shipped-roll audit for a mere card render.
+                self._audit_division("pmcc_roll_gates", {
+                    "symbol": symbol, "gates": dict(rl_gates),
+                    "conservative_net": round(rl_cons_net, 4),
+                    "mark_net": round(rl_mark_net, 4), "override_kind": rl_override,
+                })
+            # Phase A: roll_leap legs are ADVISORY — the operator executes the LEAP
+            # roll MANUALLY; the agent never places them. (Fresh local `orders`
+            # holds only the 4 roll_leap legs here.) The fail-closed dispatch guard
+            # also refuses any advisory / roll_leap order.
+            for _rl_leg in orders:
+                _rl_leg.dispatch = "advisory"
             return orders
 
         log.warning(
@@ -1417,12 +1665,27 @@ Action reference:
         broker: Broker,
         symbol: str,
         analysis: PMCCAnalysis,
+        *,
+        preview: bool = False,
+        prebuilt_orders: list[ProposedOrder] | None = None,
     ) -> TradeRecommendation | None:
         """Build a concrete TradeRecommendation (dollar-priced legs + benefits).
 
         Used by the dashboard's expert-analysis panel to show specifically what
         will happen if the user clicks Approve & Execute. Returns None for
         actions that don't require any orders (hold/watch).
+
+        `preview=True` (2026-07-30): the panel/Re-analyze render is NOT a dispatch
+        attempt, so the underlying `propose_orders_for_pair` build suppresses its
+        abort/earnings exec-alerts + audit rows. The returned recommendation
+        (legs, strikes, prices) is identical to the non-preview build.
+
+        `prebuilt_orders` (2026-07-30): pass an already-built order list to derive
+        the recommendation from WITHOUT re-proposing. The web Re-analyze handler
+        builds the combo once, then feeds the SAME list here (display), to the
+        consent estimate, and to the dispatch stash — so the strike shown, the
+        estimate shown, and the strike fired are guaranteed identical (one build,
+        no re-quote drift between them).
         """
         action = (analysis.action or "").lower()
         if action in ("", "hold", "watch"):
@@ -1430,7 +1693,11 @@ Action reference:
 
         # Reuse the existing order-proposal logic. These ProposedOrders carry
         # mark_per_share / bid / ask / delta / dte in extra (we just made them).
-        orders = await self.propose_orders_for_pair(broker, symbol, analysis)
+        orders = (
+            prebuilt_orders if prebuilt_orders is not None
+            else await self.propose_orders_for_pair(
+                broker, symbol, analysis, preview=preview)
+        )
         if not orders:
             return None
 
@@ -1525,8 +1792,7 @@ Action reference:
     def _wait_alternative_relevant(action: str, existing: PMCCPosition | None) -> bool:
         """True if the wait-vs-roll comparison would be meaningful for this action."""
         closing_actions = {
-            "roll_short", "roll_short_early", "close_short",
-            "roll_leap", "close_all",
+            "roll_short", "roll_short_early", "close_short", "roll_leap",
         }
         if action not in closing_actions or existing is None:
             return False
@@ -1714,15 +1980,6 @@ Action reference:
                         f"({'+' if strike_change > 0 else ''}${strike_change:,.2f})"
                     )
 
-        elif action == "close_all":
-            b.append("Closes both legs — no further premium accrual")
-            if existing:
-                cost_basis_leap = existing.long_leg_avg_price * abs(existing.long_leg_qty)
-                b.append(
-                    f"Original LEAP cost basis: ${cost_basis_leap:,.2f} "
-                    "— compare to expected close proceeds for realized P&L"
-                )
-
         if not b:
             b.append("Result depends on fill prices — see legs above")
         return b
@@ -1818,8 +2075,7 @@ Action reference:
 
         for pos, analysis in zip(positions, analyses):
             price_str = f"${prices[pos.symbol]:.2f}" if pos.symbol in prices else "N/A"
-            tag = " 🐑 _BLACK SHEEP_" if self.is_black_sheep(pos.symbol) else ""
-            lines.append(f"**{pos.symbol}** @ {price_str}{tag}")
+            lines.append(f"**{pos.symbol}** @ {price_str}")
 
             # LEAP line
             lines.append(
@@ -1856,6 +2112,142 @@ Action reference:
             lines.append("")  # spacer
 
         return "\n".join(lines)
+
+    # -- Phase 2: judgment pass + digest ------------------------------------
+
+    async def judgment_pass(
+        self, broker: Broker, regime: str = "unknown",
+    ) -> "dict[str, PMCCAnalysis | None]":
+        """P2 judgment-ONLY pass over every HELD PMCC leg: LLM-analyze (bounded
+        concurrency), apply the SAME deterministic composition as scan() (0-DTE
+        terminal release -> LEAP hard-rule promotion -> halfway-roll cooldown), and
+        PERSIST each final verdict (source='scan', band+DTE). Builds NO orders and
+        does NO routing. Returns {symbol: PMCCAnalysis|None}.
+
+        This DUPLICATES scan()'s judgment+store block by design — scan() is left
+        byte-identical per the P2 decision. `test_pmcc_judgment_parity` asserts the
+        two paths produce the same verdict so the duplication cannot silently drift.
+        """
+        self._reload()
+        existing = await self.detect_existing_legs(broker)
+        legs_by_symbol: dict[str, PMCCPosition] = {leg.symbol: leg for leg in existing}
+        if not legs_by_symbol:
+            return {}
+        self._check_options_tier_once(broker)
+        prices = await self._fetch_prices(list(legs_by_symbol.keys()))
+        from trading_corp.utils.market_data import get_vix
+        vix = get_vix()
+
+        analyses: dict[str, PMCCAnalysis | None] = {}
+        syms = list(legs_by_symbol.keys())
+        llm_concurrency = max(1, int(self._cfg.get("llm_concurrency", 3)))
+        sem = asyncio.Semaphore(llm_concurrency)
+
+        async def _analyze_one(s: str):
+            async with sem:
+                return await self._llm_analyze_position(
+                    legs_by_symbol[s], prices.get(s), regime, vix=vix,
+                )
+
+        raw = await asyncio.gather(
+            *[_analyze_one(s) for s in syms], return_exceptions=True,
+        )
+        for sym, res in zip(syms, raw):
+            if isinstance(res, Exception):
+                log.warning("PMCCAgent.judgment_pass: LLM exception for %s: %s", sym, res)
+                analyses[sym] = None
+            else:
+                analyses[sym] = res  # type: ignore[assignment]
+
+        # SAME composition order as scan() / propose_orders_for_pair.
+        for sym in list(analyses.keys()):
+            if sym in legs_by_symbol:
+                _leg = legs_by_symbol[sym]
+                _early_spot = None
+                if self._early_release_needs_spot(_leg, analyses[sym]):
+                    _q = await broker.quote(sym)
+                    _early_spot = _q if _q and _q > 0 else None
+                a = self._terminal_dte_time_release(
+                    analyses[sym], _leg, spot=_early_spot,
+                )
+                a = self._promote_to_roll_leap_if_hard_rule(a, legs_by_symbol[sym])
+                a = self._recent_halfway_roll_cooldown(a, legs_by_symbol[sym])
+                analyses[sym] = a
+
+        # SAME persist as scan()'s unified tile/expert writer (source='scan').
+        if self._db_url and analyses:
+            from trading_corp.agents.divisions import _pmcc_status
+            _now_iso = now_utc().isoformat()
+            _stale_h = float((self._cfg.get("tile_status") or {}).get(
+                "staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+            for _sym, _a in analyses.items():
+                if _a is None:
+                    continue
+                _pmcc_status.record_pmcc_decision(
+                    _sym, status=_a.action, source="scan", computed_at=_now_iso,
+                    db_url=self._db_url, urgency=_a.urgency,
+                    confidence=_a.confidence, summary=_a.summary,
+                    rationale=_a.rationale, warnings=_a.warnings,
+                    target_delta_low=getattr(_a, "target_delta_low", None),
+                    target_delta_high=getattr(_a, "target_delta_high", None),
+                    target_dte=getattr(_a, "target_dte", None),
+                    staleness_hours=_stale_h,
+                )
+        return analyses
+
+    async def compose_slot_digest(
+        self, broker: Broker, db_url: str, *, kind: str, slot_label: str,
+        prev_slot_label: str, prior_decisions: dict, prior_snapshot: dict | None,
+        thresholds: dict,
+    ) -> "tuple[str, dict]":
+        """Fresh-price ALL held holdings (correction B: warm the cache at run time)
+        and build the slot's Telegram text. Returns (digest_text, new_snapshot).
+
+        Judgment must ALREADY be stored (this reads load_decision + prices — NO LLM).
+        kind='full' -> compact per-holding digest (never truncated by the caller's
+        push_split); kind='delta' -> material-changes-only digest, else a heartbeat.
+        The returned snapshot is persisted so the next slot can compute pricing move.
+        """
+        from trading_corp.web import pmcc_pricing
+        from trading_corp.agents.divisions import _pmcc_status
+        slug = PMCC_SLUG
+        holdings = await self.detect_existing_legs(broker)
+        syms = [h.symbol for h in holdings]
+        priced: dict[str, Any] = {}
+        for s in syms:
+            try:
+                priced[s] = await pmcc_pricing.price_and_stash(self, broker, slug, s, db_url)
+            except Exception as e:      # noqa: BLE001 — digest must never crash the loop
+                log.warning("compose_slot_digest: price(%s) failed: %s", s, e)
+                priced[s] = None
+        new_dec = {s: _pmcc_status.load_decision(s, db_url=db_url) for s in syms}
+
+        def _est(s):
+            pr = priced.get(s)
+            return pr.estimate if (pr is not None and getattr(pr, "buildable", False)) else None
+
+        new_snap = {s: holding_snapshot(new_dec.get(s), _est(s)) for s in syms}
+        rows = [digest_row(s, new_dec.get(s), priced.get(s)) for s in syms]
+
+        if kind == "full":
+            header = (
+                f"PMCC judgment {slot_label} - {now_utc().date().isoformat()} "
+                f"({len(rows)} holding(s))"
+            )
+            text = build_full_digest(header, rows)
+        else:
+            prior_map = (prior_snapshot or {}).get("holdings", {}) if prior_snapshot else {}
+            material: list = []
+            for s in syms:
+                prior_combined = _prior_combined(prior_decisions.get(s), prior_map.get(s))
+                d = judgment_delta(prior_combined, new_snap[s], thresholds)
+                if d["material"]:
+                    material.append((digest_row(s, new_dec.get(s), priced.get(s)), d["reasons"]))
+            closed = sorted(set(prior_map.keys()) - set(syms))
+            text = build_delta_digest(slot_label, prev_slot_label, material, closed)
+
+        snapshot = {"taken_at": now_utc().isoformat(), "slot": slot_label, "holdings": new_snap}
+        return text, snapshot
 
     # -- Universe ------------------------------------------------------------
 
@@ -2042,7 +2434,6 @@ Action reference:
           - roll_leap: LEAP delta has drifted, needs to be rolled
           - roll_short_early: opportunistic early roll before DTE/profit trigger
           - close_short (urgent): ITM short call requiring immediate attention
-          - close_all (urgent): structural failure, close full position
         """
         self._reload()
 
@@ -2055,6 +2446,7 @@ Action reference:
         # that excludes those underlyings). Legs always need
         # management regardless of universe shape.
         existing = await self.detect_existing_legs(broker)
+        self._check_options_tier_once(broker)
         legs_by_symbol: dict[str, PMCCPosition] = {leg.symbol: leg for leg in existing}
 
         # B10: the 15:00-ET terminal-DTE pass evaluates ONLY 0-DTE positions — a SUBSET
@@ -2150,8 +2542,17 @@ Action reference:
         # path and the scheduled-scan path apply the same overrides.
         for sym in list(analyses.keys()):
             if sym in legs_by_symbol:
+                _leg = legs_by_symbol[sym]
+                # The deep-OTM early-release moneyness gate MUST evaluate against
+                # a Robinhood spot — the source its band was derived from — NOT
+                # the yfinance `prices` dict. Quote ONLY early-roll candidates
+                # (0–2 per scan); 0.0 / failure → None → gate fails safe (no fire).
+                _early_spot = None
+                if self._early_release_needs_spot(_leg, analyses[sym]):
+                    _q = await broker.quote(sym)
+                    _early_spot = _q if _q and _q > 0 else None
                 a = self._terminal_dte_time_release(
-                    analyses[sym], legs_by_symbol[sym],
+                    analyses[sym], _leg, spot=_early_spot,
                 )
                 a = self._promote_to_roll_leap_if_hard_rule(
                     a, legs_by_symbol[sym],
@@ -2160,6 +2561,32 @@ Action reference:
                     a, legs_by_symbol[sym],
                 )
                 analyses[sym] = a
+
+        # ── Unified tile/expert decision record (scan writer) ──────────────
+        # Persist each analyzed symbol's FINAL verdict (source='scan') so the
+        # tile badge and the Expert panel read one timestamped decision instead
+        # of diverging. Precedence protects a still-fresh manual Expert; a symbol
+        # whose LLM analysis aborted (None) is left UNwritten -> tile NO SIGNAL.
+        # Best-effort — a status write never blocks the scan. (Pre-open triage()
+        # is a separate method and deliberately writes nothing here.)
+        if self._db_url and analyses:
+            from trading_corp.agents.divisions import _pmcc_status
+            _now_iso = now_utc().isoformat()
+            _stale_h = float((self._cfg.get("tile_status") or {}).get(
+                "staleness_hours", _pmcc_status.DEFAULT_STALENESS_HOURS))
+            for _sym, _a in analyses.items():
+                if _a is None:
+                    continue
+                _pmcc_status.record_pmcc_decision(
+                    _sym, status=_a.action, source="scan", computed_at=_now_iso,
+                    db_url=self._db_url, urgency=_a.urgency,
+                    confidence=_a.confidence, summary=_a.summary,
+                    rationale=_a.rationale, warnings=_a.warnings,
+                    target_delta_low=getattr(_a, "target_delta_low", None),
+                    target_delta_high=getattr(_a, "target_delta_high", None),
+                    target_dte=getattr(_a, "target_dte", None),
+                    staleness_hours=_stale_h,
+                )
 
         orders: list[ProposedOrder] = []
 
@@ -2201,44 +2628,6 @@ Action reference:
                         ))
                         continue
 
-                    if analysis.action == "close_all":
-                        log.warning("PMCCAgent: URGENT close_all for %s: %s", symbol, analysis.summary)
-                        pair_id = str(uuid.uuid4())[:8]
-                        if leg.short_leg_expiry:
-                            orders.append(self._make_option_order(
-                                underlying=symbol, side="buy", contracts=contracts,
-                                expiry=leg.short_leg_expiry,
-                                strike=leg.short_leg_strike or 0.0,
-                                mark_price=leg.short_leg_mark or 0.0,
-                                position_effect="close",
-                                action="close_short_urgent",
-                                dte=leg.short_leg_dte,
-                                rationale=self._build_rationale(
-                                    f"CLOSE ALL (1/2): close short {symbol} "
-                                    f"{leg.short_leg_expiry} C{leg.short_leg_strike:.2f}",
-                                    analysis,
-                                ),
-                                pair_id=pair_id,
-                            ))
-                        orders.append(self._make_option_order(
-                            underlying=symbol, side="sell", contracts=contracts,
-                            expiry=leg.long_leg_expiry,
-                            strike=leg.long_leg_strike,
-                            # B3: record the real mark for cost visibility; the execution agent
-                            # will price it — keep the market-sell (0.0 limit) so an URGENT close fills.
-                            mark_price=(float(leg.long_leg_mark) if leg.long_leg_mark is not None else None),
-                            preserve_market_sell=True,
-                            position_effect="close",
-                            action="close_leap_urgent",
-                            dte=leg.long_leg_dte,
-                            rationale=self._build_rationale(
-                                f"CLOSE ALL (2/2): sell LEAP {symbol} "
-                                f"{leg.long_leg_expiry} C{leg.long_leg_strike:.2f}",
-                                analysis,
-                            ),
-                            pair_id=pair_id,
-                        ))
-                        continue
 
                 # ── LLM-detected roll_leap (not in deterministic rules) ──
                 if analysis and analysis.action == "roll_leap":
@@ -2269,6 +2658,8 @@ Action reference:
                         target_delta=analysis.target_delta if analysis else None,
                         target_dte=analysis.target_dte if analysis else None,
                         target_strike=analysis.target_strike if analysis else None,
+                        target_delta_low=analysis.target_delta_low if analysis else None,
+                        target_delta_high=analysis.target_delta_high if analysis else None,
                         after_dte=leg.short_leg_dte,  # B7: new short must roll OUT
                     )
                     if not new_weekly:
@@ -2282,15 +2673,22 @@ Action reference:
                     # B2 (short-leg credit) — close-old-short vs open-new-short pair ONLY;
                     # LEAP legs (2+3) are B3's domain (do NOT re-derive compound cost).
                     rl_close_mark = leg.short_leg_mark or 0.0
-                    rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark)
-                    if rl_cons_net < 0 and rl_override != "net_debit_justified":
+                    # Extend the same-timestamp MID basis (Fix 2, 2026-08-06) to the
+                    # roll_leap short-leg gate — off the stale bid-vs-scan-mark.
+                    rl_close_q = await self._fresh_leg_quote(
+                        broker, symbol, leg.short_leg_expiry, leg.short_leg_strike)
+                    rl_close_mark_fresh, rl_cm_src = self._fresh_mark(rl_close_q, fallback=rl_close_mark)
+                    rl_cons_net, rl_mark_net, rl_open_bid = _short_roll_credit(new_weekly, rl_close_mark_fresh)
+                    if rl_mark_net < 0 and rl_override != "net_debit_justified":
                         rl_gates["credit"] = "blocked"
                         self._audit_roll_abort(
                             reason="net_debit_roll", symbol=symbol,
-                            extra={"gates": dict(rl_gates), "conservative_net": round(rl_cons_net, 4),
-                                   "mark_net": round(rl_mark_net, 4), "close_mark": round(rl_close_mark, 4),
-                                   "open_bid": rl_open_bid, "fees_included": False,
-                                   "fee_gap": "pre-fee: spread only"},
+                            extra={"gates": dict(rl_gates), "mid_net": round(rl_mark_net, 4),
+                                   "conservative_net": round(rl_cons_net, 4),
+                                   "close_mark_fresh": round(rl_close_mark_fresh, 4),
+                                   "close_mark_scan": round(rl_close_mark, 4),
+                                   "close_mark_source": rl_cm_src, "open_bid": rl_open_bid,
+                                   "fees_included": False, "fee_gap": "pre-fee: spread only"},
                         )
                         continue
                     rl_gates["credit"] = "clear"
@@ -2373,6 +2771,12 @@ Action reference:
                         ),
                         pair_id=pair_id,
                     ))
+                    # Phase A: roll_leap legs are ADVISORY — operator executes the
+                    # LEAP roll MANUALLY; the agent never places them. Scoped to
+                    # this batch via pair_id (orders here is the scan accumulator).
+                    for _rl_leg in orders:
+                        if (_rl_leg.extra or {}).get("pmcc_pair_id") == pair_id:
+                            _rl_leg.dispatch = "advisory"
                     self._audit_division("pmcc_roll_gates", {
                         "symbol": symbol, "gates": dict(rl_gates),
                         "conservative_net": round(rl_cons_net, 4),
@@ -2446,8 +2850,8 @@ Action reference:
     # -- Roll condition ------------------------------------------------------
 
     def _should_roll(self, leg: PMCCPosition) -> bool:
-        # Black sheep use a tighter (typically 2-DTE) trigger; standard uses
-        # the global setting (defaults to 21, but strategies.yaml now overrides).
+        # Roll-DTE trigger from the global setting (defaults to 21;
+        # strategies.yaml management.roll_dte_trigger overrides).
         roll_dte = self._roll_dte_for(leg)
         if leg.short_leg_dte is not None and leg.short_leg_dte <= roll_dte:
             return True
@@ -2508,6 +2912,7 @@ Action reference:
         *,
         now_et_dt: datetime | None = None,
         calendar: Any = None,
+        spot: float | None = None,
     ) -> "PMCCAnalysis | None":
         """Override action when 0-DTE release conditions fire.
 
@@ -2539,12 +2944,24 @@ Action reference:
         Returns a possibly-modified PMCCAnalysis (dataclasses.replace).
         Adds a warning explaining the override so the audit trail and
         Telegram approval message render the reason.
+
+        `spot` (optional) enables an ADDITIVE pre-0-DTE branch — the
+        deep-OTM near-worthless early release (see
+        `_deep_otm_early_release`). When `spot` is None, or the branch is
+        ineligible, this function's original 0-DTE behavior below is
+        byte-unchanged.
         """
         import dataclasses
         from trading_corp.utils.time import ET, now_et as _now_et
 
         if analysis is None or leg is None:
             return analysis
+        # Deep-OTM near-worthless EARLY release (2026-07-23) — additive,
+        # strictly pre-0-DTE. Returns a modified analysis ONLY when it fires;
+        # otherwise None, and the existing 0-DTE path below runs unchanged.
+        _early = self._deep_otm_early_release(analysis, leg, spot=spot)
+        if _early is not None:
+            return _early
         if leg.short_leg_dte != 0:
             return analysis
 
@@ -2625,6 +3042,119 @@ Action reference:
                 f"overridden to 'roll_short' to start the cycle before "
                 f"the {hard_deadline.strftime('%H:%M ET')} hard close "
                 f"deadline."
+            ],
+        )
+
+    # -- Deep-OTM near-worthless early release (2026-07-23) ------------------
+
+    def _early_release_needs_spot(
+        self,
+        leg: "PMCCPosition | None",
+        analysis: "PMCCAnalysis | None",
+    ) -> bool:
+        """True iff `leg`/`analysis` clear every deep-OTM near-worthless
+        EARLY-release gate that does NOT require spot (config enabled, action
+        HOLD/WATCH, penultimate-day window, name not excluded, near-worthless
+        mark). Callers use this to decide whether to fetch a Robinhood spot for
+        the moneyness gate — quoting only real candidates. `_deep_otm_early_release`
+        calls the SAME predicate before applying the spot-dependent moneyness
+        check, so the two cannot drift."""
+        if analysis is None or leg is None:
+            return False
+        cfg = (self._cfg.get("near_worthless_early_roll") or {}) \
+            if hasattr(self, "_cfg") else {}
+        if not cfg.get("enabled", False):
+            return False
+        if (analysis.action or "").lower() not in ("hold", "watch"):
+            return False
+        # Penultimate-day window only. 0-DTE is owned by the time/cycle gates.
+        dte = leg.short_leg_dte
+        max_dte = int(cfg.get("max_dte", 1))
+        if dte is None or dte < 1 or dte > max_dte:
+            return False
+        exclude = {str(s).upper() for s in (cfg.get("exclude") or [])}
+        if (leg.symbol or "").upper() in exclude:
+            return False
+        # Near-worthless: reuse the 0-DTE cycle-continuity threshold so there is
+        # ONE definition of near-worthless across the early and 0-DTE paths.
+        zd = (self._cfg.get("zero_dte") or {}) if hasattr(self, "_cfg") else {}
+        mark_thr = float(
+            cfg.get("near_worthless_mark_threshold",
+                    zd.get("cycle_continuity_extrinsic_threshold", 0.15)) or 0.0
+        )
+        mark = leg.short_leg_mark
+        if mark_thr <= 0 or mark is None or float(mark) > mark_thr:
+            return False
+        return True
+
+    def _deep_otm_early_release(
+        self,
+        analysis: "PMCCAnalysis | None",
+        leg: "PMCCPosition | None",
+        *,
+        spot: float | None = None,
+    ) -> "PMCCAnalysis | None":
+        """Pre-0-DTE early theta-capture release.
+
+        Additive companion to `_terminal_dte_time_release`'s 0-DTE gates:
+        on the penultimate day(s), promote HOLD/WATCH → roll_short when the
+        short is BOTH near-worthless AND clearly deep out-of-the-money
+        relative to the underlying's typical overnight move, for eligible
+        names. All numbers come from config
+        (`robinhood_pmcc.near_worthless_early_roll`); the LLM rule text is
+        qualitative.
+
+        Returns a modified PMCCAnalysis, or None to leave the caller's
+        existing logic untouched. FAIL-SAFE: returns None unless EVERY
+        condition is satisfiable with the data in hand — config enabled,
+        action HOLD/WATCH, 1 <= short_leg_dte <= max_dte, name not excluded,
+        mark <= near-worthless threshold, spot present, and the spot-relative
+        OTM distance >= the name's band. Any missing input ⇒ no fire.
+        """
+        import dataclasses
+        # Pre-spot eligibility (config enabled, action HOLD/WATCH, penultimate-day
+        # window, not excluded, near-worthless mark) is the SHARED predicate — the
+        # SAME one the call sites use to decide whether to fetch a Robinhood spot,
+        # so the gate and the callers cannot drift.
+        if not self._early_release_needs_spot(leg, analysis):
+            return None
+        cfg = self._cfg.get("near_worthless_early_roll") or {}
+        zd = self._cfg.get("zero_dte") or {}
+        action = (analysis.action or "").lower()
+        dte = leg.short_leg_dte
+        max_dte = int(cfg.get("max_dte", 1))
+        symbol = (leg.symbol or "").upper()
+        mark_thr = float(
+            cfg.get("near_worthless_mark_threshold",
+                    zd.get("cycle_continuity_extrinsic_threshold", 0.15)) or 0.0
+        )
+        mark = leg.short_leg_mark
+
+        # Deep-OTM: SPOT-relative distance (strike - spot)/spot, directly
+        # comparable to the overnight up-gap the band was derived from — NOT
+        # the display code's strike-normalized (spot - strike)/strike.
+        strike = leg.short_leg_strike
+        if spot is None or float(spot) <= 0 or strike is None:
+            return None
+        otm = (float(strike) - float(spot)) / float(spot)
+        tame = {str(s).upper() for s in (cfg.get("tame_allowlist") or [])}
+        band = (float(cfg.get("moneyness_band_tame", 0.05)) if symbol in tame
+                else float(cfg.get("moneyness_band_default", 0.08)))
+        if otm < band:
+            return None
+
+        return dataclasses.replace(
+            analysis,
+            action="roll_short",
+            warnings=list(analysis.warnings) + [
+                f"Deep-OTM near-worthless early release: short_leg_mark "
+                f"${float(mark):.2f}/sh <= ${mark_thr:.2f}/sh AND spot "
+                f"${float(spot):.2f} is {otm*100:.1f}% below strike "
+                f"${float(strike):.2f} (>= {band*100:.1f}% band) AND "
+                f"short_leg_dte={dte} (<= {max_dte}). Original action "
+                f"'{action}' overridden to 'roll_short' to capture next-cycle "
+                f"premium early; the band exceeds this name's typical overnight "
+                f"up-gap so the short stays OTM overnight."
             ],
         )
 
@@ -3254,6 +3784,23 @@ Action reference:
             ),
             pair_id=pair_id,
         ))
+        # Route the OPEN as ONE atomic diagonal spread (buy LEAP + sell short) —
+        # net DEBIT (the LEAP costs more than the short's credit). Placeholder net
+        # from marks; the dispatch path re-prices from live quotes. B4 guarantees
+        # both legs here, but guard on len for safety.
+        if len(orders) == 2:
+            _leap_mark = float(leap_call.get("mark_price") or leap_call.get("ask") or 0)
+            _short_mark = float(weekly_call.get("mark_price") or weekly_call.get("bid") or 0)
+            _open_net = _short_mark - _leap_mark      # sell short (+), buy LEAP (−)
+            _open_dir = "credit" if _open_net >= 0 else "debit"
+            for _leg in orders:
+                _leg.extra.update({
+                    "is_multi_leg": True,
+                    "combo_id": pair_id,
+                    "combo_direction": _open_dir,
+                    "net_limit_price": round(abs(_open_net), 2) or 0.01,
+                    "ratio_quantity": 1,
+                })
         return orders, None
 
     @staticmethod
@@ -3313,12 +3860,45 @@ Action reference:
             leap_lifetime_key=leap_key,
         )]
 
+    async def _fresh_leg_quote(
+        self, broker: Broker, symbol: str, expiry: str | None, strike: float | None,
+    ) -> dict | None:
+        """Fetch a FRESH build-time quote (bid/ask/mark_price) for one option leg so a
+        credit gate can price BOTH legs at the same timestamp — not a fresh new-short
+        quote against a staler position-scan snapshot (the 2026-08-06 SECONDARY bug).
+        Returns the quote dict, or None on any missing quote / error (the caller falls
+        back to the scan mark). Read-only (a quote fetch); places nothing."""
+        if expiry is None or strike is None:
+            return None
+        try:
+            q = await broker.get_option_quote(symbol, expiry, float(strike), "call")
+        except Exception as e:      # noqa: BLE001 — any quote failure is fail-safe
+            log.warning("_fresh_leg_quote: get_option_quote raised for %s %s C%s: %s",
+                        symbol, expiry, strike, e)
+            return None
+        return q or None
+
+    @staticmethod
+    def _fresh_mark(q: dict | None, fallback: float) -> tuple[float, str]:
+        """Same-timestamp MID from a fresh leg quote (mark, else bid/ask midpoint),
+        falling back to the scan mark. Returns (mark, "fresh"|"scan")."""
+        if q:
+            mk = q.get("mark_price")
+            if mk is not None:
+                return float(mk), "fresh"
+            bid, ask = q.get("bid"), q.get("ask")
+            if bid is not None and ask is not None:
+                return (float(bid) + float(ask)) / 2.0, "fresh"
+        return fallback, "scan"
+
     async def _propose_roll_short(
         self,
         symbol: str,
         leg: PMCCPosition,
         broker: Broker,
         analysis: PMCCAnalysis | None = None,
+        *,
+        preview: bool = False,
     ) -> list[ProposedOrder]:
         """Roll short call: buy-to-close existing + sell-to-open new weekly.
 
@@ -3327,6 +3907,12 @@ Action reference:
         `pmcc_roll_aborted` payload carries a `gates` map of every gate evaluated
         up to the abort. B9/B2 are overridable via the LLM override contract
         (earnings_override / net_debit_justified); B7 is hard-enforced.
+
+        `preview=True` (2026-07-30): render/estimate build, not a dispatch attempt.
+        Selection still runs (so the card shows the real target strike + prices),
+        but every abort audit/alert and the earnings-unverified alert are withheld
+        — exec-alerts fire only on a genuine dispatch. The proposed legs are
+        identical to the non-preview build.
         """
         if not leg.short_leg_expiry or leg.short_leg_strike is None:
             return []
@@ -3344,7 +3930,7 @@ Action reference:
 
         # ── B9 (earnings gate) ── skill HARD RULE (L257): "No new short premium
         # within 7 DTE of earnings" — a roll OPENS a new short. Overridable via
-        # earnings_override (e.g. a black-sheep perpetual roll that must not let a
+        # earnings_override (e.g. a deliberate roll that must not let a
         # breached short run into earnings). FAIL-OPEN on missing data, but the
         # state (blocked/clear/data_unavailable) is recorded so a roll that shipped
         # only because the data source was DOWN is distinguishable from one that
@@ -3355,19 +3941,60 @@ Action reference:
             self._audit_roll_abort(
                 reason="earnings_window", symbol=symbol,
                 extra={"gates": dict(gates), "earnings_reason": earnings_reason},
+                preview=preview,
             )
             return []
+
+        # 2026-07-28: a roll that PROCEEDS with no confident earnings date (neither
+        # broker nor feed) must not do so SILENTLY — it may sell new short premium
+        # into an unseen print. Emit a deduped "earnings unverified" alert + audit
+        # so the operator sees it. Fires ONLY for source="none" (the RIOT-class
+        # fail-open, == the data_unavailable state); a resolved broker/feed date is
+        # already handled by the block/clear decision above. Never blocks/raises.
+        _eres = getattr(self, "_last_earnings_resolution", None)
+        if _eres is not None and getattr(_eres, "source", None) == "none" and not preview:
+            # preview: a render must not emit the unverified-earnings audit/alert —
+            # it fires only when a real roll is being dispatched (invariant 2026-07-30).
+            self._audit_division("pmcc_earnings_unverified", {
+                "symbol": symbol,
+                "reason": "no broker/feed earnings date; roll allowed (fail-open)",
+                "gate_state": earnings_state,
+            })
+            try:
+                from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+                emit_exec_alert(ExecOutcome(
+                    tier="EARN_UNVERIF", symbol=symbol, strategy="robinhood_pmcc",
+                    reason=("earnings unverified (no broker/feed date) — roll allowed; "
+                            "check for an upcoming print"),
+                ))
+            except Exception:
+                log.debug("earnings-unverified alert failed for %s (isolated)", symbol)
 
         # B4 (atomic roll) + B7 (roll-out): resolve the re-open leg BEFORE
         # proposing the close. No qualifying roll-out weekly → abort the WHOLE roll
         # (propose nothing) + audit — never ship a close-only "roll" that leaves the
         # LEAP uncovered. A deliberate bare close is the LLM's explicit close_short.
+        # FIX 2 (2026-08-07): fetch the FRESH buy-to-close quote BEFORE selection so the
+        # new-weekly picker can choose the BEST MID net vs this buyback. The SAME fresh
+        # quote feeds the credit gate below (one fetch, one build timestamp — preserves
+        # the 2026-08-06 same-timestamp / stale-scan-mark fix). Read-only; places nothing.
+        close_q = await self._fresh_leg_quote(
+            broker, symbol, leg.short_leg_expiry, leg.short_leg_strike)
+        close_mark_fresh, _cm_src = self._fresh_mark(close_q, fallback=close_mark)
+        # Dispatch buys the old short back at its ASK; fall back to the fresh/scan mark
+        # when no live ask (fail-safe — dispatch re-checks with real quotes).
+        _close_ask = (close_q or {}).get("ask")
+        close_ask = float(_close_ask) if _close_ask is not None else close_mark_fresh
+
         new_weekly = await self._find_best_weekly(
             symbol, broker,
             target_delta=analysis.target_delta if analysis else None,
             target_dte=analysis.target_dte if analysis else None,
             target_strike=analysis.target_strike if analysis else None,
+            target_delta_low=analysis.target_delta_low if analysis else None,
+            target_delta_high=analysis.target_delta_high if analysis else None,
             after_dte=leg.short_leg_dte,  # B7: new short must roll OUT
+            close_buyback=close_mark_fresh,  # FIX 2: pick best MID net vs the buy-to-close
         )
         if not new_weekly:
             gates["selection"] = "blocked"
@@ -3375,38 +4002,31 @@ Action reference:
                 reason="sparse_chain_no_weekly", symbol=symbol,
                 missing_leg="new_short", diag=self._last_weekly_diag,
                 extra={"gates": dict(gates)},
+                preview=preview,
             )
             return []
         gates["selection"] = "ok"
 
-        # ── B2 (credit gate) ── skill HARD RULE: rolls are for credit (BS L102
-        # "Always for credit"; STANDARD Major breach L199 "MUST credit"; FORBIDDEN
-        # L170 "Roll for debit to chase OTM"). STANDARD permits a small debit
-        # (≤8% LEAP, L255) — that latitude flows through the net_debit_justified
-        # override. CONSERVATIVE basis (amendment 2): sell the new weekly at BID,
-        # buy the old short back at MARK (the existing short exposes mark only, no
-        # ask). PRE-FEE (amendment 3): no fee data exists at proposal time (RH
-        # broker: none; FillEvent.fee is post-fill only) — the conservative net
-        # captures SPREAD, not fees. Both the conservative net and the card's mark
-        # net go in the audit so a blocked roll is understandable without re-derive.
-        conservative_net, mark_net, open_bid = _short_roll_credit(new_weekly, close_mark)
-        if conservative_net < 0 and override_kind != "net_debit_justified":
-            gates["credit"] = "blocked"
-            self._audit_roll_abort(
-                reason="net_debit_roll", symbol=symbol,
-                extra={
-                    "gates": dict(gates),
-                    "conservative_net": round(conservative_net, 4),
-                    "mark_net": round(mark_net, 4),
-                    "close_mark": round(close_mark, 4),
-                    "open_bid": open_bid,
-                    "fees_included": False,
-                    "fee_gap": ("pre-fee: RH per-contract regulatory/exchange "
-                                "fees excluded; net captures spread only"),
-                },
-            )
-            return []
-        gates["credit"] = "clear"
+        # ── B2 (credit rule → ADVISORY) ── FIX 3 (2026-08-07): "rolls are for credit"
+        # (skill BS L102 / STANDARD L199) is now ADVISORY, not a hard block. The best
+        # available roll is ALWAYS built and presented — credit OR debit — with the net
+        # clearly labelled; the HITL operator decides. The bounded-debit CAP is enforced
+        # only on the AUTONOMOUS path (source='auto') downstream by ceo_graph
+        # `_check_auto_execute` (rolling_for_debit_above_5_pct_of_long +
+        # max_roll_debit_dollars); source='board' (the panel) presents any debit. The
+        # LEAP guard is unaffected — a roll is short-leg-only (buy-to-close + sell-to-open).
+        #
+        # BASIS (FIX 1, 2026-08-07): the net is the MID net minus the dispatch `give_up`
+        # shave — new.mark − old.mark − give_up — the SAME basis the dispatch reprice +
+        # the combo tag now use (proposal == dispatch; approve == fires). The operator
+        # fills ~100% at MID, so the prior worst-case bid/ask basis was wrongly blocking
+        # rolls that ARE credits at mid. `natural` (new.bid − old.ask) is retained as a
+        # sanity/HOLD reference only. Both legs are quoted at the same build timestamp.
+        give_up = self._combo_give_up_dollars
+        conservative_net, mid_net, open_bid = _short_roll_credit(new_weekly, close_mark_fresh)
+        natural = (float(open_bid) if open_bid is not None else 0.0) - close_ask
+        mid_dispatch_net = mid_net - give_up      # MID basis — what dispatch fires on
+        gates["credit"] = "credit" if mid_dispatch_net >= 0 else "debit"
 
         orders: list[ProposedOrder] = []
         pair_id = str(uuid.uuid4())[:8]
@@ -3453,13 +4073,37 @@ Action reference:
         # order legs stay byte-identical to pre-Phase-2. Distinguishes a roll that
         # shipped because earnings were genuinely CLEAR from one that shipped only
         # because the earnings source was DOWN (`gates.earnings == data_unavailable`).
-        self._audit_division("pmcc_roll_gates", {
-            "symbol": symbol,
-            "gates": dict(gates),
-            "conservative_net": round(conservative_net, 4),
-            "mark_net": round(mark_net, 4),
-            "override_kind": override_kind,
-        })
+        if not preview:
+            # preview: don't write a shipped-roll audit for a mere card render.
+            self._audit_division("pmcc_roll_gates", {
+                "symbol": symbol,
+                "gates": dict(gates),
+                "mid_dispatch_net": round(mid_dispatch_net, 4),
+                "mid_net": round(mid_net, 4),
+                "natural": round(natural, 4),
+                "conservative_net": round(conservative_net, 4),
+                "direction": gates["credit"],
+                "override_kind": override_kind,
+            })
+        # Phase A: tag the two roll_short legs as ONE atomic combo so they dispatch
+        # through place_combo -> place_multi_leg (a single all-or-nothing POST)
+        # instead of two independent single-leg orders — closing the naked-leg fill
+        # window B4 fixed only at the proposal layer. combo_direction + net_limit_price
+        # are set on the MID − give_up basis (FIX 1, 2026-08-07) computed for the B2
+        # advisory gate, so the operator-approved snapshot MATCHES what the live reprice
+        # fires on (no sign-flip / credit-collapse consent abort): net credit -> "credit",
+        # net debit -> "debit"; the limit is |mid_dispatch_net| (reprice re-rounds to tick,
+        # re-derives on live MID and the consent guard aborts an adverse drift EITHER way).
+        _combo_direction = "credit" if mid_dispatch_net >= 0 else "debit"
+        _combo_net = round(abs(mid_dispatch_net), 2)
+        for _leg in orders:
+            _leg.extra.update({
+                "is_multi_leg": True,
+                "combo_id": pair_id,
+                "combo_direction": _combo_direction,
+                "net_limit_price": _combo_net,
+                "ratio_quantity": 1,
+            })
         return orders
 
     # -- Option chain queries ------------------------------------------------
@@ -3512,9 +4156,18 @@ Action reference:
         target_dte: int | None = None,
         target_strike: float | None = None,
         after_dte: int | None = None,
+        target_delta_low: float | None = None,
+        target_delta_high: float | None = None,
+        close_buyback: float | None = None,
     ) -> dict | None:
         """Find the best weekly short call, optionally using LLM-suggested
         delta / DTE / strike.
+
+        `close_buyback` (FIX 2 — 2026-08-07): the MID buy-to-close price of the
+        current short on a ROLL. When set (and no `target_strike` is prescribed),
+        strike selection switches to `_select_best_net_weekly` — best MID net vs
+        this buyback within the roll delta window — instead of nearest-delta. None
+        on OPEN paths (nothing to net against) = original nearest-delta behavior.
 
         `target_strike` (Item 3 — 2026-05-03): when set, the strike picker
         selects the listed strike CLOSEST to target_strike (subject to
@@ -3594,7 +4247,9 @@ Action reference:
         if not liquid:
             self._last_weekly_diag = {"reason": "no_liquid_weekly_contracts",
                                       "considered": len(calls), "liquid": 0,
-                                      "target_date": target_date}
+                                      "target_date": target_date,
+                                      "failed_by_gate": getattr(
+                                          self, "_last_liquidity_breakdown", {})}
             log.warning(
                 "PMCCAgent: no liquid weekly contracts for %s on %s "
                 "(%d candidates, all failed liquidity gate)",
@@ -3606,7 +4261,21 @@ Action reference:
         # _select_weekly_strike honors it directly and ignores delta —
         # see the helper's docstring.
         delta = target_delta if target_delta is not None else self._short_target_delta
-        best = _select_weekly_strike(liquid, delta, target_strike=target_strike)
+        if close_buyback is not None and target_strike is None:
+            # ROLL path (FIX 2): pick the BEST MID net vs the buy-to-close within the
+            # roll delta window, tie-broken to the roll δ target. A prescribed
+            # target_strike (halfway-roll rule) still overrides via the branch below.
+            best = _select_best_net_weekly(
+                liquid, close_buyback,
+                target_delta=self._short_roll_target_delta,
+                band_low=self._roll_best_net_delta_low,
+                band_high=self._roll_best_net_delta_high,
+            )
+        else:
+            best = _select_weekly_strike(
+                liquid, delta, target_strike=target_strike,
+                target_delta_low=target_delta_low, target_delta_high=target_delta_high,
+            )
         if not best:
             self._last_weekly_diag = {"reason": "no_qualifying_weekly_strike",
                                       "considered": len(liquid), "target_date": target_date}
@@ -3700,6 +4369,418 @@ Action reference:
             rationale=rationale,
             extra=extra,
         )
+
+    def on_combo_filled(self, combo_id: str, fills: list) -> None:
+        """State-update callback after an HITL-approved roll_short combo fills
+        (contract required by dispatch_approved_ic_combo). PMCC re-derives all
+        positions from the broker on every scan (no persistent position belief),
+        so there is no in-memory book to mutate — we AUDIT the atomic fill and let
+        the next scan pick up the new short. Must not raise (the dispatcher
+        re-raises on failure)."""
+        try:
+            self._audit_division("pmcc_combo_filled", {
+                "combo_id": combo_id,
+                "leg_count": len(fills or []),
+                "fills": [
+                    {"order_id": getattr(f, "order_id", None),
+                     "symbol": getattr(f, "symbol", None),
+                     "side": getattr(f, "side", None),
+                     "qty": getattr(f, "qty", None),
+                     "price": getattr(f, "price", None),
+                     "broker_order_id": getattr(f, "broker_order_id", None)}
+                    for f in (fills or [])
+                ],
+            })
+        except Exception:
+            log.exception("PMCC on_combo_filled audit failed for combo %s", combo_id)
+
+    @property
+    def _combo_give_up_dollars(self) -> float:
+        """Marketable give-up ($/share) shaved off (credit) / added to (debit) the
+        NATURAL when re-pricing a ROLL/OPEN combo at dispatch, so it fills instead
+        of resting. Config `robinhood_pmcc.combo.give_up_dollars`; default $0.02."""
+        v = (self._cfg.get("combo") or {}).get("give_up_dollars")
+        try:
+            return float(v) if v is not None else 0.02
+        except (TypeError, ValueError):
+            return 0.02
+
+    @property
+    def _close_all_give_up_dollars(self) -> float:
+        """Give-up for close_all — its OWN, MUCH LARGER knob because close_all is a
+        'get out now' exit (it was a market-out / 0.0 sell). A big give_up crosses
+        decisively so the exit FILLS instead of resting as a too-optimistic credit
+        limit (and can flip to a small debit — pay to get out). Config
+        `robinhood_pmcc.combo.close_all_give_up_dollars`; default $0.25."""
+        v = (self._cfg.get("combo") or {}).get("close_all_give_up_dollars")
+        try:
+            return float(v) if v is not None else 0.25
+        except (TypeError, ValueError):
+            return 0.25
+
+    async def reprice_combo(self, legs: list["ProposedOrder"], broker: Broker):
+        """Re-price a combo from LIVE per-leg quotes at dispatch time (the
+        proposal-time mid is stale by approval). Mutates each leg's
+        combo_direction/net_limit_price; returns (direction, limit). Fail-safe:
+        keeps the proposal-time limit if any quote is unavailable. close_all uses
+        its own (larger) give_up so an urgent exit stays marketable-through, not a
+        resting limit."""
+        from trading_corp.agents.strategies._pmcc_combo import (
+            reprice_combo_from_quotes,
+        )
+        _actions = {(l.extra or {}).get("action") for l in legs}
+        _is_close_all = bool(_actions & {"close_short_urgent", "close_leap_urgent"})
+        give_up = (self._close_all_give_up_dollars if _is_close_all
+                   else self._combo_give_up_dollars)
+        return await reprice_combo_from_quotes(
+            legs, broker, give_up=give_up,
+            max_spread_pct=self._reprice_max_spread_pct,
+            min_sell_bid=self._reprice_min_sell_bid,
+            min_spread_abs=self._reprice_min_spread_abs,
+        )
+
+    @property
+    def _reprice_max_spread_pct(self) -> float:
+        """Max per-leg bid/ask spread as a fraction of mid before reprice HOLDs
+        (opening-rotation garbage). Config
+        `robinhood_pmcc.combo.reprice_max_spread_pct`; default 0.60 (60% of mid)."""
+        v = (self._cfg.get("combo") or {}).get("reprice_max_spread_pct")
+        try:
+            return float(v) if v is not None else 0.60
+        except (TypeError, ValueError):
+            return 0.60
+
+    @property
+    def _reprice_min_sell_bid(self) -> float:
+        """Min sell-leg bid before reprice HOLDs (a 0-bid sell leg is garbage).
+        Config `robinhood_pmcc.combo.reprice_min_sell_bid`; default 0.0."""
+        v = (self._cfg.get("combo") or {}).get("reprice_min_sell_bid")
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
+    def _reprice_min_spread_abs(self) -> float:
+        """Absolute $ spread floor that a leg must ALSO exceed (in addition to
+        reprice_max_spread_pct) before reprice HOLDs — so a 1-tick spread on a
+        cheap leg doesn't false-trigger. Config
+        `robinhood_pmcc.combo.reprice_min_spread_abs`; default 0.10."""
+        v = (self._cfg.get("combo") or {}).get("reprice_min_spread_abs")
+        try:
+            return float(v) if v is not None else 0.10
+        except (TypeError, ValueError):
+            return 0.10
+
+    @property
+    def _combo_max_adverse_net_deviation(self) -> float:
+        """Max $/share the dispatch credit may fall BELOW the approved credit
+        before the consent guard bails. Config
+        `robinhood_pmcc.combo.max_adverse_net_deviation_dollars`; default 0.25."""
+        v = (self._cfg.get("combo") or {}).get("max_adverse_net_deviation_dollars")
+        try:
+            return float(v) if v is not None else 0.25
+        except (TypeError, ValueError):
+            return 0.25
+
+    def assess_combo_consent(self, legs, snapshot):
+        """Defense-in-depth: compare the dispatch-repriced combo to the approved
+        `snapshot`; return (ok, reason). Called by dispatch_approved_ic_combo after
+        reprice, before place_combo — a bail books nothing and re-surfaces for
+        re-approval. See _pmcc_combo.assess_combo_reprice_consent."""
+        from trading_corp.agents.strategies._pmcc_combo import (
+            assess_combo_reprice_consent,
+        )
+        return assess_combo_reprice_consent(
+            legs, snapshot,
+            max_adverse_net_deviation=self._combo_max_adverse_net_deviation,
+        )
+
+    # ------------------------------------------------------------------
+    # Scan split (2026-07-24): pre-open TRIAGE + post-settle liveness probe
+    # ------------------------------------------------------------------
+
+    @property
+    def _triage_near_dte_days(self) -> int:
+        """Short-leg DTE at/under which a leg enters the morning triage watchlist
+        ('expiring today/this week'). Config
+        `robinhood_pmcc.scan.triage_near_dte_days`; default 5."""
+        v = (self._cfg.get("scan") or {}).get("triage_near_dte_days")
+        try:
+            return int(v) if v is not None else 5
+        except (TypeError, ValueError):
+            return 5
+
+    @property
+    def _liveness_ref_symbols(self) -> list:
+        """Broadly-liquid reference underlyings for the GLOBAL post-settle liveness
+        probe (NOT thin single names). Config
+        `robinhood_pmcc.scan.liveness_ref_symbols`; default [SPY, QQQ]."""
+        v = (self._cfg.get("scan") or {}).get("liveness_ref_symbols")
+        if isinstance(v, (list, tuple)) and v:
+            return [str(s) for s in v]
+        return ["SPY", "QQQ"]
+
+    @property
+    def _liveness_max_spread_pct(self) -> float:
+        """Max reference-chain bid/ask spread (fraction of mid) that still counts
+        as 'quotes live'. Config `robinhood_pmcc.scan.liveness_max_spread_pct`;
+        default 0.15."""
+        v = (self._cfg.get("scan") or {}).get("liveness_max_spread_pct")
+        try:
+            return float(v) if v is not None else 0.15
+        except (TypeError, ValueError):
+            return 0.15
+
+    async def triage(self, broker: Broker) -> "list[dict]":
+        """Pre-open TRIAGE (Phase A only). Which shorts are near-DTE / breached /
+        assignment-risk, using ONLY static data + live-underlying spot
+        (broker.quote). NO option-chain reads, NO strike selection, NO credit/greek
+        math, NO Approve cards, NO ABORTED alerts. Writes a `pmcc_morning_triage`
+        audit and returns per-short-leg triage dicts (register: breach|routine)."""
+        self._reload()
+        existing = await self.detect_existing_legs(broker)
+        self._check_options_tier_once(broker)
+        near = self._triage_near_dte_days
+        out: list[dict] = []
+        for leg in existing:
+            if leg.short_leg_strike is None or leg.short_leg_dte is None:
+                continue                       # uncovered LEAP — no short to triage
+            dte = int(leg.short_leg_dte)
+            if dte > near:
+                continue                       # not near-term
+            strike = float(leg.short_leg_strike)
+            spot = None
+            try:
+                q = await broker.quote(leg.symbol)
+                spot = float(q) if q else None
+            except Exception as e:              # noqa: BLE001 — spot is best-effort
+                log.debug("triage: quote(%s) failed: %s", leg.symbol, e)
+            itm = bool(spot is not None and spot >= strike)
+            out.append({
+                "symbol": leg.symbol, "short_strike": strike, "short_dte": dte,
+                "spot": spot, "itm": itm,
+                "register": "breach" if itm else "routine",
+            })
+        self._audit_division("pmcc_morning_triage",
+                             {"near_dte_days": near, "legs": out})
+        return out
+
+    async def reference_quotes_live(self, broker: Broker) -> "tuple[bool, str]":
+        """GLOBAL liveness probe for the post-settle actionable pass: a broadly-
+        liquid reference (SPY/QQQ) returns two-sided option quotes with a sane
+        spread. Returns (live, reason). Never raises. Per-name thin-ness is handled
+        downstream by the existing liquidity gate, not here."""
+        for sym in self._liveness_ref_symbols:
+            try:
+                dates = await broker.get_expiration_dates(sym)
+                if not dates:
+                    continue
+                calls = await broker.get_calls_for_expiry(sym, dates[0])
+                for c in (calls or []):
+                    bid = float(c.get("bid") or 0)
+                    ask = float(c.get("ask") or 0)
+                    if bid > 0 and ask > 0:
+                        mid = (bid + ask) / 2.0
+                        if mid > 0 and (ask - bid) / mid <= self._liveness_max_spread_pct:
+                            return True, f"{sym} live (bid {bid:.2f}/ask {ask:.2f})"
+            except Exception as e:              # noqa: BLE001 — probe is best-effort
+                log.debug("liveness probe %s failed: %s", sym, e)
+        return False, "no reference chain returned sane two-sided quotes"
+
+    @staticmethod
+    def _format_triage_digest(report: "list") -> str:
+        """Calm two-register morning digest. Routine near-DTE -> reassuring +
+        'cards after open'; breach/assignment -> escalated. No per-name aborts."""
+        rep = report or []
+        breach = [r for r in rep if r.get("register") == "breach"]
+        routine = [r for r in rep if r.get("register") == "routine"]
+        if not breach and not routine:
+            return "PMCC morning triage: no shorts near expiry. Nothing to do pre-open."
+        lines = ["PMCC morning triage"]
+        if breach:
+            lines.append("")
+            lines.append(f"** BREACH / ASSIGNMENT RISK ({len(breach)}) — needs eyes:")
+            for r in breach:
+                spot_txt = f" (spot {r['spot']:g})" if r.get("spot") is not None else ""
+                lines.append(f"  - {r['symbol']} short {r['short_strike']:g}C, "
+                             f"{r['short_dte']}DTE, ITM{spot_txt}")
+        if routine:
+            lines.append("")
+            lines.append(f"Routine near-DTE ({len(routine)}):")
+            for r in routine:
+                spot_txt = f", spot {r['spot']:g}" if r.get("spot") is not None else ""
+                lines.append(f"  - {r['symbol']} short {r['short_strike']:g}C, "
+                             f"{r['short_dte']}DTE, OTM{spot_txt}")
+            lines.append("The engine will present roll cards after the open — "
+                         "no manual action needed before then.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _option_level_int(level: str) -> "int | None":
+        """Parse an RH options tier ('option_level_3') to its int (3), else None."""
+        try:
+            s = str(level or "").strip().lower()
+            if s.startswith("option_level_"):
+                return int(s.rsplit("_", 1)[1])
+            return int(s) if s.isdigit() else None
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _check_options_tier_once(self, broker) -> None:
+        """B-ARM #6: once per process, verify a LIVE PMCC broker's options tier is
+        spread-capable (level_3 — roll_short is a multi-leg spread). Below that, or
+        unverifiable, log + audit so it's visible at startup instead of only
+        surfacing as a live order reject. Never blocks; never raises."""
+        if getattr(self, "_options_tier_checked", False):
+            return
+        self._options_tier_checked = True
+        try:
+            if getattr(broker, "paper", True):
+                return                       # paper handle — tier is not exercised
+            level = getattr(broker, "option_level", "")
+            lvl = self._option_level_int(level)
+            if lvl is None:
+                log.warning("PMCC options-tier UNVERIFIED (option_level=%r) — cannot "
+                            "confirm spread eligibility", level)
+                self._audit_division("pmcc_options_tier_check",
+                                     {"ok": False, "verified": False, "level": str(level)})
+            elif lvl < 3:
+                log.warning("PMCC options-tier INSUFFICIENT: option_level_%d < 3 "
+                            "(spreads/roll_short need level_3) — live rolls will REJECT", lvl)
+                self._audit_division("pmcc_options_tier_check",
+                                     {"ok": False, "verified": True, "level": lvl, "required": 3})
+            else:
+                log.info("PMCC options-tier OK: option_level_%d (>= 3)", lvl)
+                self._audit_division("pmcc_options_tier_check",
+                                     {"ok": True, "verified": True, "level": lvl})
+        except Exception as e:               # never let a diagnostic break the scan
+            log.debug("PMCC options-tier check failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # B-AE assignment/exercise monitoring (2026-07-24) — MONITORING ONLY
+    # ------------------------------------------------------------------
+
+    @property
+    def _assignment_risk_dte(self) -> int:
+        """Short-leg DTE at/under which an ITM short is flagged for assignment RISK
+        (0 = expiring today, 1 = expiring tomorrow -> alert EOD *before* expiry).
+        Config `robinhood_pmcc.scan.assignment_risk_dte`; default 1."""
+        v = (self._cfg.get("scan") or {}).get("assignment_risk_dte")
+        try:
+            return int(v) if v is not None else 1
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _assignment_risk_items(shorts, spots, within_dte) -> "list[dict]":
+        """PRE-event risk: SHORT calls at DTE<=within_dte that are ITM (spot>=strike).
+        `shorts` = option-position dicts; `spots` = {symbol: spot|None}. Pure."""
+        out: list[dict] = []
+        for p in (shorts or []):
+            if (p.get("option_type") or "call") != "call":
+                continue                          # PMCC shorts are calls
+            dte = p.get("dte")
+            if dte is None or int(dte) > int(within_dte):
+                continue
+            strike = float(p.get("strike_price") or 0)
+            sym = (p.get("chain_symbol") or "").upper()
+            spot = (spots or {}).get(sym)
+            if spot is None or float(spot) < strike:
+                continue                          # not ITM, or spot unknown -> don't escalate
+            out.append({"symbol": sym, "strike": strike, "dte": int(dte),
+                        "spot": float(spot), "itm": True})
+        return out
+
+    @staticmethod
+    def _assignment_event_items(shorts) -> "list[dict]":
+        """EVENTS: any short with a non-zero pending assignment/exercise/expiration."""
+        out: list[dict] = []
+        for p in (shorts or []):
+            pa = float(p.get("pending_assignment_quantity") or 0)
+            pe = float(p.get("pending_exercise_quantity") or 0)
+            px = float(p.get("pending_expiration_quantity") or 0)
+            if pa or pe or px:
+                out.append({
+                    "symbol": (p.get("chain_symbol") or "").upper(),
+                    "strike": float(p.get("strike_price") or 0),
+                    "expiration": p.get("expiration_date"),
+                    "pending_assignment": pa, "pending_exercise": pe,
+                    "pending_expiration": px,
+                })
+        return out
+
+    @staticmethod
+    def _format_assignment_alert(items, kind: str) -> str:
+        """Urgent assignment alert body. STATES the manual remedy options — this is
+        HITL; the engine does NOT auto-act."""
+        if not items:
+            return ""
+        if kind == "event":
+            head = f"ASSIGNMENT/EXERCISE PENDING on {len(items)} PMCC short(s)"
+            rows = [f"  - {i['symbol']} {i['strike']:g}C exp {i.get('expiration')} "
+                    f"(assign={i['pending_assignment']:g} exer={i['pending_exercise']:g} "
+                    f"exp={i['pending_expiration']:g})" for i in items]
+        else:
+            head = f"ASSIGNMENT RISK: {len(items)} ITM PMCC short(s) near expiry"
+            rows = [f"  - {i['symbol']} {i['strike']:g}C {i['dte']}DTE, spot {i['spot']:g} (ITM)"
+                    for i in items]
+        remedy = ("Manual remedy (HITL): EXERCISE THE LEAP to cover delivery, OR "
+                  "BUY-TO-CLOSE the assigned short-stock position. Engine does NOT auto-act.")
+        return "\n".join([head, *rows, "", remedy])
+
+    @staticmethod
+    def _emit_assignment_exec_alert(tier, reason, *, symbol) -> None:
+        try:
+            from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+            emit_exec_alert(ExecOutcome(
+                tier=tier, symbol=str(symbol), strategy="robinhood_pmcc",
+                reason=reason, position_changed=(tier == "NAKED_LEG")))
+        except Exception:
+            pass
+
+    def _emit_assignment_alerts(self, risk, events) -> None:
+        """Audit + urgent exec-alert for events (NAKED_LEG) and risk (EXEC_FAIL). Both
+        tiers are no-dedupe so assignment alerts are never swallowed. Never raises."""
+        try:
+            if events:
+                self._audit_division("pmcc_assignment_detected", {"items": events})
+                self._emit_assignment_exec_alert(
+                    "NAKED_LEG", self._format_assignment_alert(events, "event"),
+                    symbol=(events[0].get("symbol") or "?"))
+            if risk:
+                self._audit_division("pmcc_assignment_risk", {"items": risk})
+                self._emit_assignment_exec_alert(
+                    "EXEC_FAIL", self._format_assignment_alert(risk, "risk"),
+                    symbol=(risk[0].get("symbol") or "?"))
+        except Exception as e:
+            log.debug("assignment alert emit failed: %s", e)
+
+    async def assignment_watch(self, broker) -> "dict":
+        """B-AE MONITORING: detect near-expiry ITM PMCC shorts (assignment RISK) and
+        non-zero pending_* signals (assignment/exercise EVENTS); alert + audit; surface
+        for HITL action. Monitoring ONLY — never auto-closes, never raises."""
+        try:
+            positions = await broker.get_option_positions_detail()
+        except Exception as e:
+            log.warning("assignment_watch: get_option_positions_detail failed: %s", e)
+            return {"risk": 0, "events": 0}
+        shorts = [p for p in (positions or []) if float(p.get("quantity") or 0) < 0]
+        events = self._assignment_event_items(shorts)
+        near = [p for p in shorts
+                if p.get("dte") is not None and int(p.get("dte")) <= self._assignment_risk_dte]
+        spots: dict = {}
+        for p in near:
+            sym = (p.get("chain_symbol") or "").upper()
+            if sym and sym not in spots:
+                try:
+                    q = await broker.quote(sym)
+                    spots[sym] = float(q) if q else None
+                except Exception:
+                    spots[sym] = None
+        risk = self._assignment_risk_items(near, spots, self._assignment_risk_dte)
+        self._emit_assignment_alerts(risk, events)
+        return {"risk": len(risk), "events": len(events)}
 
     # ------------------------------------------------------------------
     # Scout — survey the market for NEW PMCC opening candidates
@@ -3966,8 +5047,6 @@ Action reference:
             annualized = weekly_yield * 52.0
 
         # Notes
-        if self.is_black_sheep(symbol):
-            notes.append("Black Sheep — high-IV, perpetual-roll regime")
         if leap and (leap.get("delta") or 0) >= 0.85:
             notes.append("Deep ITM LEAP (delta ≥ 0.85)")
         if weekly_yield is not None and weekly_yield >= 0.025:
@@ -3978,7 +5057,6 @@ Action reference:
         return ScoutCandidate(
             symbol=symbol,
             spot_price=spot,
-            is_black_sheep=self.is_black_sheep(symbol),
             leap_leg=leap_leg,
             short_leg=short_leg,
             leap_debit_dollars=leap_debit,
@@ -4010,8 +5088,6 @@ Action reference:
             target = self._short_target_delta
             dist = abs(c.short_leg.delta - target)
             score -= float(weights.get("delta_distance_to_target", 0.30)) * (dist * 10.0)
-        if c.is_black_sheep:
-            score -= float(weights.get("black_sheep_penalty", 0.15))
         return score
 
     async def propose_opening_orders(
@@ -4114,7 +5190,8 @@ Action reference:
             log.warning("robinhood_pmcc audit write failed (%s): %s", kind, e)
 
     def _audit_roll_abort(self, *, reason: str, symbol: str, missing_leg: str = "",
-                          diag: dict | None = None, extra: dict | None = None) -> None:
+                          diag: dict | None = None, extra: dict | None = None,
+                          preview: bool = False) -> None:
         """B4 (Phase 1): record an aborted roll/open so `b4 -> 0` is
         distinguishable from 'chains are thin and we now do nothing'. Writes a
         structured `pmcc_roll_aborted` division audit + a loud log line. NO order
@@ -4122,7 +5199,14 @@ Action reference:
 
         Phase-2 (B9/B2): also used for proceed-gate aborts (earnings/credit),
         which pass `missing_leg=""` and an `extra` dict carrying the `gates` map
-        (every gate evaluated up to the abort) + the gate's figures."""
+        (every gate evaluated up to the abort) + the gate's figures.
+
+        `preview=True` (2026-07-30): the caller is a side-effect-free card render /
+        Re-analyze / estimate build, NOT a dispatch attempt. The invariant is that
+        exec-alerts (ABORTED &c.) fire ONLY on a genuine dispatch attempt — never a
+        render — so in preview we resolve the reason for on-screen display but
+        write NO `pmcc_roll_aborted` audit row and emit NO Telegram alert. The log
+        drops to debug so a mere preview can't read as a real abort in the logs."""
         payload = {
             "reason": reason,
             "symbol": symbol,
@@ -4131,13 +5215,55 @@ Action reference:
         }
         if extra:
             payload.update(extra)
-        log.warning(
-            "PMCCAgent: ABORTED roll/open on %s -- %s%s; chain=%s",
+        # FIX 3 (2026-08-04): ALWAYS stash the last abort — even in preview — so a card
+        # render can surface the SPECIFIC reason (`last_roll_abort_reason`). The
+        # investigation couldn't retrieve WHY a preview said "can't be priced" because
+        # preview wrote nothing; this in-process signal closes that gap. The full audit
+        # ROW stays preview-gated below; only the reason is retained.
+        self._last_roll_abort = dict(payload)
+        log.log(
+            # FIX 3: preview aborts now log at INFO (was DEBUG) — a forensic trail that
+            # still can't be mistaken for a real dispatch (the "PREVIEW " prefix marks it).
+            logging.INFO if preview else logging.WARNING,
+            "PMCCAgent: %sABORTED roll/open on %s -- %s%s; chain=%s",
+            "PREVIEW " if preview else "",
             symbol, reason,
             f" (missing {missing_leg})" if missing_leg else "",
             payload["chain_state"],
         )
+        if preview:
+            # Render-only path: no audit row, no exec-alert (invariant above).
+            return
         self._audit_division("pmcc_roll_aborted", payload)
+
+        # Observability: 🟡 ABORTED — self-blocked at build; nothing sent to broker.
+        # Deduped on (tier, symbol, reason) so the 08:30–09:25 scan can't spam the
+        # same abort every cycle. Double-isolated; never affects the build path.
+        try:
+            from trading_corp.comms.exec_alert import ExecOutcome, emit_exec_alert
+            d = diag or {}
+            # Reassuring wording: an ABORT means the engine chose NOT to act — no
+            # order was sent and the position is untouched. The old alarming
+            # "sparse_chain_no_weekly ... missing new_short" body triggered a
+            # panic manual roll (2026-07-24). Keep a short diagnostic tail with
+            # the sub-gate that bound so it's still actionable.
+            _detail = f" [{reason}"
+            if d.get("considered") is not None:
+                _detail += f": considered={d.get('considered')}, liquid={d.get('liquid', 0)}"
+                _fbg = d.get("failed_by_gate")
+                if _fbg:
+                    _detail += f", failed_by={_fbg}"
+            elif missing_leg:
+                _detail += f": missing {missing_leg}"
+            _detail += "]"
+            _r = ("no action - no order sent, position unchanged; "
+                  "will retry next scan." + _detail)
+            emit_exec_alert(ExecOutcome(
+                tier="ABORTED", symbol=symbol, strategy="robinhood_pmcc",
+                reason=_r, position_changed=False,
+            ))
+        except Exception:
+            pass
 
     async def _record_research_unavailable(
         self, *, engagement_id: str | None, reason: str,
@@ -4357,3 +5483,180 @@ Action reference:
             spec.engagement_id[:8], len(rec.candidates), len(all_orders),
         )
         return all_orders
+
+
+# ── Phase 2 (2026-07-31): judgment-digest pure helpers ─────────────────────
+# Snapshot + delta + full/delta/heartbeat builders, kept at MODULE scope (no
+# `self`) so tests exercise them directly. compose_slot_digest() assembles the
+# rows/snapshots; the scheduler slot handler in main.py captures the prior and
+# persists the snapshot returned here.
+
+PMCC_SLUG = "robinhood_pmcc"
+
+_ACTION_LABEL = {
+    "hold": "HOLD", "watch": "WATCH", "roll_short": "ROLL",
+    "roll_short_early": "ROLL-EARLY", "roll_leap": "ROLL-LEAP",
+    "close_short": "CLOSE", "open_short": "OPEN",
+}
+
+
+def format_action(action) -> str:
+    a = (action or "none").lower()
+    return _ACTION_LABEL.get(a, a.upper())
+
+
+def mid_delta_from_record(rec) -> "float | None":
+    """Midpoint of a stored judgment's delta band, or None when absent."""
+    if not rec:
+        return None
+    lo, hi = rec.get("target_delta_low"), rec.get("target_delta_high")
+    if lo is None or hi is None:
+        return None
+    try:
+        return (float(lo) + float(hi)) / 2.0
+    except (TypeError, ValueError):
+        return None
+
+
+def holding_snapshot(decision, estimate) -> dict:
+    """Compact per-holding snapshot for delta comparison + persistence. `decision`
+    is a load_decision() dict (or None); `estimate` is a PricedRoll.estimate (or None)."""
+    return {
+        "action": (decision.get("status") if decision else None),
+        "mid_delta": mid_delta_from_record(decision),
+        "target_dte": (decision.get("target_dte") if decision else None),
+        "confidence": (decision.get("confidence") if decision else None),
+        "net": (estimate.get("net") if estimate else None),
+        "urgency": (decision.get("urgency") if decision else None),
+        "warnings": (decision.get("warnings") if decision else []) or [],
+    }
+
+
+def digest_row(symbol, decision, priced) -> dict:
+    """One holding's render row: symbol + action/conf/urgency (from the stored
+    decision) + the live estimate (from the fresh price pull, only when buildable)."""
+    est = None
+    if priced is not None and getattr(priced, "buildable", False):
+        est = priced.estimate
+    return {
+        "symbol": symbol,
+        "action": (decision.get("status") if decision else "none"),
+        "confidence": (decision.get("confidence") if decision else None),
+        "urgency": (decision.get("urgency") if decision else None),
+        "estimate": est,
+        "warnings": (decision.get("warnings") if decision else []) or [],
+    }
+
+
+def _fmt_strike(strike) -> str:
+    try:
+        return f"{float(strike):g}"
+    except (TypeError, ValueError):
+        return str(strike)
+
+
+def format_digest_line(row) -> str:
+    """`SYM - ACTION - BTC $0.12 / STO $0.38 - net +$0.26 - new 185C - 82%`; the
+    pricing segment is omitted when there is no buildable estimate (hold/watch). An
+    urgent row carries the D1 deep-link."""
+    sym = row["symbol"]
+    parts = [sym, format_action(row.get("action"))]
+    est = row.get("estimate")
+    if est:
+        seg = (
+            f"BTC ${float(est.get('debit', 0) or 0):.2f} / "
+            f"STO ${float(est.get('credit', 0) or 0):.2f}"
+        )
+        net = est.get("net")
+        if net is not None:
+            seg += f" - net {'+' if float(net) >= 0 else '-'}${abs(float(net)):.2f}"
+        strike = est.get("open_strike")
+        if strike is not None:
+            seg += f" - new {_fmt_strike(strike)}C"
+        parts.append(seg)
+    conf = row.get("confidence")
+    parts.append(f"{float(conf) * 100:.0f}%" if conf is not None else "--%")
+    line = " - ".join(parts)
+    if (row.get("urgency") or "").lower() == "urgent":
+        line += f"  -> /division/{PMCC_SLUG}?pair={sym}"
+    return line
+
+
+def build_full_digest(header, rows) -> str:
+    """Full slot digest: header + one compact line per holding (ALL holdings, no
+    truncation — the caller sends via push_split so nothing is dropped)."""
+    lines = [header]
+    if not rows:
+        lines.append("(no open PMCC holdings)")
+    else:
+        lines.extend(format_digest_line(r) for r in rows)
+    return "\n".join(lines)
+
+
+def build_delta_digest(slot_label, prev_slot_label, material, closed) -> str:
+    """Material-changes-only digest, or a heartbeat when nothing is material.
+    `material` = list of (row, reasons); `closed` = symbols gone since the prior slot
+    (added holdings surface inside `material` via a None-prior 'added' reason)."""
+    if not material and not closed:
+        return f"{slot_label} - scan ran - no changes since {prev_slot_label}"
+    lines = [f"PMCC {slot_label} - changes since {prev_slot_label}:"]
+    for row, reasons in material:
+        suffix = f"  [{', '.join(reasons)}]" if reasons else ""
+        lines.append(format_digest_line(row) + suffix)
+    for s in closed:
+        lines.append(f"- {s} closed")
+    return "\n".join(lines)
+
+
+def judgment_delta(prior, new, thresholds) -> dict:
+    """Is the change from `prior` to `new` MATERIAL? Returns {material, reasons}.
+    Material iff: prior is None (added); action flip; a new earnings/assignment
+    warning; |mid-delta| shift >= target_delta_shift; |target_dte| shift >=
+    target_dte_shift; OR a pricing move >= net_move_dollars or >= net_move_pct of
+    |prior net|. Confidence drift alone is NEVER material."""
+    if prior is None:
+        return {"material": True, "reasons": ["added"]}
+    reasons: list[str] = []
+    if (prior.get("action") or None) != (new.get("action") or None):
+        reasons.append(f"action {prior.get('action')}->{new.get('action')}")
+    pw = " ".join(prior.get("warnings") or []).lower()
+    nw = " ".join(new.get("warnings") or []).lower()
+    for kw in ("earning", "assign"):
+        if kw in nw and kw not in pw:
+            reasons.append(f"{kw} flag")
+    pmd, nmd = prior.get("mid_delta"), new.get("mid_delta")
+    if pmd is not None and nmd is not None and abs(float(nmd) - float(pmd)) >= (
+        float(thresholds.get("target_delta_shift", 0.05)) - 1e-9   # float-boundary safe
+    ):
+        reasons.append(f"delta {float(pmd):.2f}->{float(nmd):.2f}")
+    pdte, ndte = prior.get("target_dte"), new.get("target_dte")
+    if pdte is not None and ndte is not None and abs(int(ndte) - int(pdte)) >= int(
+        thresholds.get("target_dte_shift", 2)
+    ):
+        reasons.append(f"dte {int(pdte)}->{int(ndte)}")
+    pnet, nnet = prior.get("net"), new.get("net")
+    if pnet is not None and nnet is not None:
+        move = abs(float(nnet) - float(pnet))
+        pct = float(thresholds.get("net_move_pct", 0.20))
+        if move >= (float(thresholds.get("net_move_dollars", 0.10)) - 1e-9) or (
+            abs(float(pnet)) > 0 and move >= pct * abs(float(pnet)) - 1e-9
+        ):
+            reasons.append(f"net {float(pnet):+.2f}->{float(nnet):+.2f}")
+    return {"material": bool(reasons), "reasons": reasons}
+
+
+def _prior_combined(prior_decision, prior_snap) -> "dict | None":
+    """Merge the delta baseline: action/band/DTE/conf/warnings from the prior stored
+    DECISION (load_decision at slot start -> reflects a manual Re-analyze between
+    slots); the prior NET from the last slot's persisted snapshot. None only when
+    BOTH are absent (a brand-new holding -> 'added')."""
+    if not prior_decision and not prior_snap:
+        return None
+    base = dict(prior_snap or {})
+    if prior_decision:
+        base["action"] = prior_decision.get("status")
+        base["mid_delta"] = mid_delta_from_record(prior_decision)
+        base["target_dte"] = prior_decision.get("target_dte")
+        base["confidence"] = prior_decision.get("confidence")
+        base["warnings"] = prior_decision.get("warnings") or []
+    return base

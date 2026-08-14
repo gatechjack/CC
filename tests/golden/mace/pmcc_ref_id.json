@@ -1,0 +1,29 @@
+{
+  "payload": {
+    "account": "https://api.robinhood.com/accounts/ACCT-123/",
+    "direction": "credit",
+    "legs": [
+      {
+        "option": "https://api.robinhood.com/options/instruments/OID-RKLB-2026-07-24-74.0-call/",
+        "position_effect": "close",
+        "ratio_quantity": 1,
+        "side": "buy"
+      },
+      {
+        "option": "https://api.robinhood.com/options/instruments/OID-RKLB-2026-07-31-75.0-call/",
+        "position_effect": "open",
+        "ratio_quantity": 1,
+        "side": "sell"
+      }
+    ],
+    "override_day_trade_checks": false,
+    "override_dtbp_checks": false,
+    "price": 1.14,
+    "quantity": 1,
+    "ref_id": "golden-ref-1",
+    "time_in_force": "gfd",
+    "trigger": "immediate",
+    "type": "limit"
+  },
+  "url": "https://api.robinhood.com/options/orders/"
+}
