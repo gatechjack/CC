@@ -170,7 +170,8 @@ def _exit_quotes(port: FakePort):
     }
 
 
-def _executor(port, store, chan, *, et_h=15, et_mi=45, risk_gate=None, resting_pt=True):
+def _executor(port, store, chan, *, et_h=15, et_mi=45, risk_gate=None, resting_pt=True,
+              now_et_fn=None):
     notifier = MaceNotifier(channel=chan, enabled=True)
     # Default to an APPROVING gate — the place-funnel is fail-closed (no gate =>
     # raises), so lifecycle tests inject a passing gate; the risk-chokepoint tests
@@ -184,7 +185,7 @@ def _executor(port, store, chan, *, et_h=15, et_mi=45, risk_gate=None, resting_p
         CFG, port, ex.RungStore(store) if isinstance(store, sqlite3.Connection) else store,
         notifier, risk_gate=risk_gate, resting_pt=resting_pt,
         now_utc_fn=lambda: datetime(2026, 8, 10, 19, 45, tzinfo=UTC),
-        now_et_fn=lambda: datetime(2026, 8, 10, et_h, et_mi, tzinfo=ET),
+        now_et_fn=now_et_fn or (lambda: datetime(2026, 8, 10, et_h, et_mi, tzinfo=ET)),
         poll_interval_s=0.001, poll_timeout_s=0.01)
 
 
@@ -331,6 +332,117 @@ async def test_run_entry_risk_reject_never_places_clean_standdown():
     assert port.place_calls == []                              # single-chokepoint: NEVER placed
     assert store.get(RUNG_ID) is None                          # clean stand-down
     assert chan.any("risk-rejected")
+
+
+# ── OQ-2 WINDOW BUDGET (manager's per-symbol deadline) ─────────────────────
+# run_entry calls _now_et() exactly ONCE per attempt (top of loop) — a popping
+# clock advances the ladder one attempt per pop.
+
+class _SeqClock:
+    """Pops one ET datetime per _now_et() call; sticks on the last."""
+
+    def __init__(self, *times):
+        self.times = list(times)
+
+    def __call__(self):
+        return self.times.pop(0) if len(self.times) > 1 else self.times[0]
+
+
+def _et(h, mi, s=0):
+    return datetime(2026, 8, 10, h, mi, s, tzinfo=ET)
+
+
+@pytest.mark.asyncio
+async def test_entry_window_budget_exhausted_stands_down_before_placing():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    out = await _executor(port, store, chan, et_h=15, et_mi=47).run_entry(
+        _ev(), SESSION, deadline=_et(15, 46))
+    assert not out.filled and out.standdown_reason == "window_budget"
+    assert store.get(RUNG_ID) is None                          # clean: anchor deleted
+    assert port.place_calls == []                              # nothing ever placed
+
+
+@pytest.mark.asyncio
+async def test_entry_window_budget_mid_ladder_stands_down_clean():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [_res(bp.STATE_QUEUED, "O1")]
+    port.status_script = {"O1": _res(bp.STATE_CANCELLED, "O1")}
+    clk = _SeqClock(_et(15, 45), _et(15, 47))                  # attempt 2 finds now>deadline
+    out = await _executor(port, store, chan, now_et_fn=clk).run_entry(
+        _ev(), SESSION, deadline=_et(15, 46))
+    assert not out.filled and out.standdown_reason == "window_budget"
+    assert out.attempts == 1 and len(port.place_calls) == 1
+    assert store.get(RUNG_ID) is None                          # attempt 1 confirmed dead -> clean
+
+
+@pytest.mark.asyncio
+async def test_entry_cutoff_wins_reason_over_window_budget():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    out = await _executor(port, store, chan, et_h=15, et_mi=59).run_entry(
+        _ev(), SESSION, deadline=_et(15, 50))                  # both exceeded
+    assert not out.filled and out.standdown_reason == "cutoff"  # global cutoff wins
+    assert store.get(RUNG_ID) is None and port.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_entry_thin_budget_attempt_one_fires_and_books():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [_res(bp.STATE_FILLED, "O1")]
+    out = await _executor(port, store, chan).run_entry(
+        _ev(), SESSION, deadline=_et(15, 45, 30))              # 30s of budget at 15:45
+    assert out.filled and out.credit == pytest.approx(1.18)
+    assert store.get(RUNG_ID).status == RUNG_OPEN              # attempt-1 floor honored
+
+
+@pytest.mark.asyncio
+async def test_entry_cancel_race_fill_past_deadline_still_books():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [_res(bp.STATE_QUEUED, "O1")]
+    port.status_script = {"O1": _res(bp.STATE_FILLED, "O1")}   # fills in the cancel race
+    clk = _SeqClock(_et(15, 45), _et(15, 47))                  # wall clock passes deadline
+    out = await _executor(port, store, chan, now_et_fn=clk).run_entry(
+        _ev(), SESSION, deadline=_et(15, 46))
+    assert out.filled                                          # deadline never recalls in-flight work
+    assert store.get(RUNG_ID).status == RUNG_OPEN
+
+
+@pytest.mark.asyncio
+async def test_entry_unconfirmed_with_deadline_behavior_identical():
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [_res(bp.STATE_QUEUED, "O1")]
+    port.status_script = {"O1": _res(bp.STATE_QUEUED, "O1")}   # never confirms terminal
+    out = await _executor(port, store, chan).run_entry(
+        _ev(), SESSION, deadline=_et(15, 57))
+    assert not out.filled and out.standdown_reason == "unconfirmed"
+    assert store.get(RUNG_ID).status == RUNG_SUBMITTING        # anchor kept; reconcile owns
+    assert len(port.place_calls) == 1                          # refused a 2nd attempt
+
+
+@pytest.mark.asyncio
+async def test_entry_cancel_error_with_deadline_proceeds_next_attempt():
+    # cancel 404s (brokeback quirk) but the poll confirms dead -> next attempt
+    # fires normally within budget; deadline changes nothing on this path.
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [_res(bp.STATE_QUEUED, "O1"), _res(bp.STATE_FILLED, "O2")]
+    port.status_script = {"O1": _res(bp.STATE_CANCELLED, "O1")}
+
+    async def bad_cancel(oid):
+        port.cancel_calls.append(oid)
+        raise RuntimeError("404 not found")
+
+    port.cancel = bad_cancel
+    out = await _executor(port, store, chan).run_entry(
+        _ev(), SESSION, deadline=_et(15, 57))
+    assert out.filled and out.attempts == 2
+    assert port.cancel_calls == ["O1"]
+    assert store.get(RUNG_ID).status == RUNG_OPEN
 
 
 # ── EXIT LADDER + PT-FIRST ─────────────────────────────────────────────────
