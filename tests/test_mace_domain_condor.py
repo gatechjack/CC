@@ -33,3 +33,17 @@ def test_closing_call_side_flattens_correctly():
 def test_effects_open_vs_close():
     assert all(l.effect == "open" for l in SPEC.opening_legs())
     assert all(l.effect == "close" for l in SPEC.closing_legs())
+
+
+def test_fallback_width_spec_closes_correctly():
+    # The 2026-08-14 width-fallback fix produces MORE narrow-width (w1) specs
+    # (XLE/GDX/IWM now fall back to the narrower width on credit_floor/risk_band).
+    # A fallback-width spec must flatten exactly like any other — exit-safety of
+    # the newly-produced w1 entries: closing reverses every opening side, close.
+    w1 = CondorSpec("XLE", date(2026, 9, 18), 84.0, 83.0, 96.0, 97.0, 1.0)
+    opening = {(l.opt_type, l.strike): l.side for l in w1.opening_legs()}
+    closing = {(l.opt_type, l.strike): l.side for l in w1.closing_legs()}
+    for key, oside in opening.items():
+        assert closing[key] == _REV[oside], f"{key} not reversed on close"
+    assert all(l.effect == "close" for l in w1.closing_legs())
+    assert w1.width_dollars == 1.0

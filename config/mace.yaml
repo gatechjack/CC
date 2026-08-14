@@ -8,13 +8,14 @@ account_number: "116637293063"          # JOINT — Phase-0 resolved, operator-c
                                         # (startup assertion refuses to arm on mismatch)
 acknowledge_foreign_positions: false    # foreign-position guard override; entries stay disabled
                                         # while foreign positions/orders exist and this is false
-universe: [IBIT, XLE, GDX]              # 2026-08-14: 3 actives (Board CP0 ratified 2026-08-13).
+universe: [IBIT, XLE, GDX, FXI, IWM, SPY]  # 2026-08-14 PM: 6 actives — CP0 3-active
+                                        # (IBIT/XLE/GDX) + tonight's FXI/IWM/SPY enable (this deploy).
                                         # OQ-2 entry-window serialization is BUILT (IVR-desc order
                                         # + per-symbol dynamic deadline) — the 2-symbol ceiling is
-                                        # lifted. Backfill ladder if a slot fails the live credit
-                                        # floor: FXI -> IWM (TWO slots out: IWM first — Board
-                                        # pre-ruling, FXI dead book caps it at one slot).
-                                        # SPY/GLD retired from entries (open SPY rungs still managed).
+                                        # lifted. ★6-symbol worst-case window ~13min == the 15:45-15:58
+                                        # budget; OQ-2 audits window_skip if the round is exhausted.
+                                        # FXI dead book (OI 0) -> frequent no_wing skips (accepted, CP0).
+                                        # SPY RE-ENABLED: new entries on top of its 2 open W33 rungs. GLD stays off.
 max_contracts: 1                        # LAUNCH cap (Board memo)
 
 entry:
@@ -108,19 +109,22 @@ symbols:
         # 12/21 in the calendar — *** TRIPWIRE: refresh from VanEck's December release
         # (never load-bearing before ~November at 30-45 DTE). Board CP0 Option A. ***
 
-  # ── backfills (enabled only by the Phase-5 roster pick) ────────────────────
-  FXI:  {enabled: false, width_dollars: 1, blackout_event_types: [PBOC, LPR_FIX], exdiv_guard: true}
+  # ── ENABLED 2026-08-14 PM (were Phase-5 backfills; now 6-active) ────────────
+  FXI:  {enabled: true,  width_dollars: 1, blackout_event_types: [], exdiv_guard: true}
+        # PBOC/LPR blackout DEFERRED — no formal blackout window exists; LPR is single
+        # monthly date (20th, holiday-roll). Known partial-coverage gap; revisit before
+        # relying on FXI China-macro gating.
         # Board 2026-08-13: width 1 (fallback_width_dollars REMOVED — validator requires
         # fallback < width). ex-div 12/15 + 12/30 ISSUER-CONFIRMED (iShares GPS0826-5839861).
         # Ref strikes VERY thin (OI 0) — liveness gate may bar entries; one-slot cap (Board).
-  IWM:  {enabled: false, width_dollars: 3, fallback_width_dollars: 2, blackout_event_types: [FOMC, CPI], exdiv_guard: true}
+  IWM:  {enabled: true,  width_dollars: 3, fallback_width_dollars: 2, blackout_event_types: [FOMC, CPI], exdiv_guard: true}
         # ex-div 3/17, 6/15, 9/15, 12/15 (+12/30 excise) ISSUER-CONFIRMED — the old
         # third-Monday projections (9/21, 12/21) were WRONG; corrected 2026-08-13.
 
-  # ── retired from entries (open rungs still managed — manage/exit never read
-  #    enabled; enabled:false also removes overflow-receiver eligibility) ──────
-  SPY:  {enabled: false, width_dollars: 3, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
-        # 2 open W33 rungs ride to their exits under the manage loop.
+  # ── SPY RE-ENABLED 2026-08-14 PM (was retired); GLD stays retired (open rungs
+  #    still managed — manage/exit never read enabled) ─────────────────────────
+  SPY:  {enabled: true,  width_dollars: 3, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
+        # RE-ENABLED for new entries on top of its 2 open W33 rungs (Board, this deploy).
   GLD:  {enabled: false, width_dollars: 3, blackout_event_types: [],                    exdiv_guard: false}
         # 0 open rungs (verified at deploy). Non-payer (gold bullion trust).
 

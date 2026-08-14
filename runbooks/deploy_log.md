@@ -12662,3 +12662,61 @@ Migration is ADDITIVE (new empty table + NULL column) - inert to old code, nothi
 
 **prod-live:** `561b89f` -> `552a9ca` (clean FF, same session). Box files LF-md5 == `552a9ca` blobs
 (deploy == prod-live tip). Engine 721092 running `552a9ca` code.
+
+---
+
+## 2026-08-14 ~23:38 UTC - MACE width-fallback fix (XLE/GDX/IWM) + 6-active enable (FXI/IWM/SPY) + FXI ex-div/blackout (RESTART; engine 721092 -> 722750)
+
+**Deployed LIVE** to `tc-prod-vm` / RG-SHARED-PROD via az run-command RunShellScript (root, self-gated):
+PRE-GATE (prod LF-md5 == `3772d5b` base) -> backup + server-side `rollback.sh` (ET-guarded 15:35-16:00)
+-> py_compile -> base64 swap (chown/chmod `--reference` azureuser) -> POST-GATE (== `3d1c284` target)
+-> py_compile -> ONE restart (ET re-asserted 19:38 EDT, outside 15:40-15:58). Prod box is a RUNTIME
+tree (no `tests/`) -> only the **3 runtime files** are file-swapped; the 4 test files are git-tracked
+(prod-live) but not on the box. Runners `cc\_mace_6a_{driftgate,deploy,restart,verify}.sh`.
+
+**Commits (converged deploy branch `mace-6active-deploy-2026-08-14`, off `3772d5b`):** `4573dad` (FXI
+ex-div seed) + `0a7d785` (width-fallback fix) + `4207004` (merge) + `cc15aec` (6-active enable) +
+`3d1c284` (ex-div test count). Three change sets converged on one branch, full suite re-verified.
+
+**Three change sets:**
+1. **build_condor width-fallback fix** (`trading_corp/mace/strategy.py`, LF-md5 `c8fb0d47` ->
+   `fbbf6d14`): a primary width that lists+prices but fails the RISK BAND or the CREDIT FLOOR now
+   `continue`s to the fallback width instead of returning; a spec is returned only when a width clears
+   wing + risk-band + credit-floor; else the furthest-progress skip (credit_floor > risk_band >
+   no_wing) with a detail. Fixes the missed w1 fallback on XLE (w2->w1) / GDX (w2->w1) / IWM (w3->w2).
+   FORWARD-LOOKING - no live entry was lost (today's XLE/GDX no_wing was genuine both-width geometry).
+2. **FXI ex-div seed + blackout defer** (`config/ex_dividend_calendar.yaml` `3feb4183` -> `12877dc4`):
+   FXI 2026-2027 semi-annual rows added (6/15/26, 12/15, 12/30 excise, 6/10/27, 12/14/27; iShares
+   GPS0826-5839861 extended-pay group, PDF-verified) - FXI now 5 entries. `config/mace.yaml` FXI
+   blackout `[PBOC, LPR_FIX]` -> `[]` (deferred-empty; no formal PBOC/LPR window - BACKLOG watch).
+3. **6-active enable** (`config/mace.yaml` `1dc7c276` -> `1753a9c8`): universe `[IBIT, XLE, GDX]` ->
+   `[IBIT, XLE, GDX, FXI, IWM, SPY]`; FXI/IWM/SPY `enabled:true`. Widths/blackouts/sizing UNCHANGED.
+   SPY RE-ENABLED (new entries atop its 2 open W33 rungs); GLD/TLT/USO/EWZ stay disabled.
+
+**config_hash `e9c0499886c4` -> `5e1647f96692`.** Engine MainPID **721092 -> 722750**, NRestarts=0.
+
+**★FXI note (unchanged behavior):** FXI is width-1 SINGLE (the width-fallback fix does NOT touch it -
+that fix is XLE/GDX/IWM only). FXI's OI-0 dead book -> frequent `no_wing` skips, accepted per CP0
+("dead book acceptable for one slot"). Enabling != expecting frequent FXI trades.
+
+**★6-symbol window caveat:** 6 x ~130s worst-case ~= 13min == the 15:45-15:58 window. OQ-2's dynamic
+per-symbol deadline audits `mace_entry_window_skip` if a full-ladder round exhausts the budget;
+lowest-IVR tail symbols could be squeezed on a slow day (monitorable, not a defect).
+
+**Backup:** `/home/azureuser/mace_6active_bak_20260814_233644/` (3 runtime `.bak` at `3772d5b` md5s +
+`rollback.sh`, ET-window-guarded). **Rollback:** `bash /home/azureuser/mace_6active_bak_20260814_233644/rollback.sh`
+(restores the 3 files to `3772d5b`, restarts).
+
+**Boot verify (23:38-23:41 UTC, ALL GREEN):** engine active/running, 0 tracebacks; /mace 200 with
+universe `IBIT,XLE,GDX,FXI,IWM,SPY` all `enabled:yes` + GLD/TLT/USO/EWZ off, ENTRIES: ARMED, `cfg
+5e1647f96692`; IVR fetched all 6 (IBIT 11.4 / XLE 57.9 / GDX 37.1 / FXI 14.1 / IWM 8.4 / SPY 24.7 -
+IBIT/FXI/IWM/SPY below the 25 floor -> blocked-ivr_floor, XLE/GDX eligible); **2 SPY W33 rungs intact +
+untouched** (`mace_rung ('SPY','open',2)`, DTE 42, manage-loop P&L); halt latch ARM->HALT->ARM PASS
+(halt/arm POST 200, tri-state flips, 2x mace_ui_halt + 2x mace_ui_arm audit, latch left ARMED); FXI
+loads enabled+guard with dates + blackout=() NO fail-closed; MACE ERRORS(1H) 0; divisions healthy
+(bitunix sfp + ws feed, PEAD, PMCC, web :8000 LIVE). Outputs `cc\_mace_6a_{deploy,restart,verify}_out.txt`.
+
+**prod-live:** `3772d5b` -> this entry (FF, same session). Runtime blobs at the advanced tip == `3d1c284`
+(this commit adds only runbooks/deploy_log.md), so the POST-GATE md5s (strategy `fbbf6d14`, mace.yaml
+`1753a9c8`, ex_dividend `12877dc4`) are the LF-md5 proof prod == prod-live tip. Kill-switches:
+auto_execute:false (hot), standby:true (hot), --live-divisions removal + restart, UI halt button.

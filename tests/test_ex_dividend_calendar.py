@@ -255,7 +255,8 @@ def test_production_yaml_loads_and_has_expected_universe():
     cal = ExDividendCalendar.load("config/ex_dividend_calendar.yaml")
     # SPY/QQQ quarterly (4 each); IWM quarterly + 12/30 excise (5, all
     # issuer-confirmed 2026-08-13); XLE remaining-2026 (2); GDX annual (1,
-    # PROJECTED); FXI semi-annual remaining (2).
+    # PROJECTED); FXI semi-annual (5: 6/15/26 + 12/15/26 + 12/30/26 excise +
+    # 6/10/27 + 12/14/27, extended-pay group, seeded 2026-08-14).
     spy_dates = [e.ex_date for e in cal._events if e.symbol == "SPY"]
     qqq_dates = [e.ex_date for e in cal._events if e.symbol == "QQQ"]
     iwm_dates = [e.ex_date for e in cal._events if e.symbol == "IWM"]
@@ -272,7 +273,7 @@ def test_production_yaml_loads_and_has_expected_universe():
     assert gld_dates == [], "GLD should have no ex-div entries"
     assert len(xle_dates) == 2, f"expected 2 XLE entries, got {len(xle_dates)}"
     assert len(gdx_dates) == 1, f"expected 1 GDX entry, got {len(gdx_dates)}"
-    assert len(fxi_dates) == 2, f"expected 2 FXI entries, got {len(fxi_dates)}"
+    assert len(fxi_dates) == 5, f"expected 5 FXI entries, got {len(fxi_dates)}"
 
     # Sanity: SPY Q1 is March 20, 2026 (issuer-confirmed).
     assert cal.next_ex_date("SPY", today=date(2026, 1, 1)) == date(2026, 3, 20)

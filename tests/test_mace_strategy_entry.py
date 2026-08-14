@@ -290,6 +290,107 @@ def test_fxi_fallback_width_viable_with_riskband():
     assert abs(b.credit_mid - 0.40) < 1e-9
 
 
+# ── width fallback on credit_floor / risk_band (2026-08-14 fix) ────────────
+# Pre-fix, build_condor's width loop fell back ONLY on wing-geometry failure
+# (unlisted/unpriceable). A primary width that listed but failed the risk band
+# or the credit floor short-circuited without ever trying the narrower fallback.
+# These pin the fix: floor + risk-band failures now `continue` to the fallback,
+# and the skip reason (when all widths fail) is the furthest-progress reason.
+
+def _fb_chain(sym, sp, sc, spot, wide, narrow, cw, cn,
+              list_wide=True, list_narrow=True):
+    """Condor with shorts at sp/sc and long wings at BOTH `wide` and `narrow`
+    widths. Net credit at each width == cw / cn (each short mid 2.05; each long
+    wing mid = 2.05 - credit/2). Omit a width's wings with list_*=False."""
+    S = 2.05
+    legs = [("put", sp, -0.20, S - 0.05, S + 0.05),
+            ("call", sc, 0.20, S - 0.05, S + 0.05)]
+    if list_wide:
+        lw = S - cw / 2.0
+        legs += [("put", sp - wide, -0.15, lw - 0.05, lw + 0.05),
+                 ("call", sc + wide, 0.15, lw - 0.05, lw + 0.05)]
+    if list_narrow:
+        ln = S - cn / 2.0
+        legs += [("put", sp - narrow, -0.12, ln - 0.05, ln + 0.05),
+                 ("call", sc + narrow, 0.12, ln - 0.05, ln + 0.05)]
+    quotes = {(EXPIRY, o, float(k)): OptionQuote(sym, EXPIRY, float(k), o, b, a, delta=d)
+              for o, k, d, b, a in legs}
+    return st.ChainView(sym, spot, (EXPIRY,), quotes)
+
+
+def test_fallback_clears_credit_floor():
+    # (a) w2 in-band but credit 0.55 < floor 0.30*2=0.60; w1 in-band, credit
+    # 0.35 >= floor 0.30*1=0.30 -> falls back to w1 and ENTERS. Pre-fix this
+    # returned SKIP_CREDIT_FLOOR at w2 without ever trying w1.
+    xle = CFG.symbols["XLE"]                       # w2 -> w1
+    ch = _fb_chain("XLE", 580, 620, 600.0, 2, 1, cw=0.55, cn=0.35)
+    b = st.build_condor("XLE", xle, ch, CFG, SESSION)
+    assert b.skip_reason is None and b.width == 1.0
+    assert abs(b.credit_mid - 0.35) < 1e-9
+    assert b.spec.long_put == 579 and b.spec.long_call == 621
+
+
+def test_both_widths_below_floor_skip_credit_floor():
+    # (b) w2 credit 0.50 (< 0.60) AND w1 credit 0.25 (< 0.30), both in band ->
+    # SKIP_CREDIT_FLOOR. detail reports the CLOSEST miss (w1 gap -0.05 beats w2 -0.10).
+    xle = CFG.symbols["XLE"]
+    ch = _fb_chain("XLE", 580, 620, 600.0, 2, 1, cw=0.50, cn=0.25)
+    b = st.build_condor("XLE", xle, ch, CFG, SESSION)
+    assert b.skip_reason == SKIP_CREDIT_FLOOR
+    assert b.detail == "credit 0.25 < floor 0.30"
+
+
+def test_fallback_clears_risk_band():
+    # (c) w2 credit 1.60 -> risk (2-1.6)*100=40 < min 100 (out of band); w1 credit
+    # 0.40 -> risk 60 in [50,260] and clears floor 0.30 -> falls back to w1, ENTERS.
+    xle = CFG.symbols["XLE"]
+    ch = _fb_chain("XLE", 580, 620, 600.0, 2, 1, cw=1.60, cn=0.40)
+    b = st.build_condor("XLE", xle, ch, CFG, SESSION)
+    assert b.skip_reason is None and b.width == 1.0
+    assert abs(b.credit_mid - 0.40) < 1e-9
+
+
+def test_both_widths_out_of_band_skip_risk_band():
+    # (d) w2 credit 1.60 -> risk 40 < 100; w1 credit 0.60 -> risk 40 < 50. wings
+    # listed at both widths but out of band everywhere -> SKIP_RISK_BAND (not no_wing).
+    xle = CFG.symbols["XLE"]
+    ch = _fb_chain("XLE", 580, 620, 600.0, 2, 1, cw=1.60, cn=0.60)
+    b = st.build_condor("XLE", xle, ch, CFG, SESSION)
+    assert b.skip_reason == SKIP_RISK_BAND
+
+
+def test_single_width_below_floor_credit_floor_no_fallback():
+    # (e) SPY is width 3 with NO fallback. Below-floor wing -> SKIP_CREDIT_FLOOR
+    # and NO fallback attempted (b.width is None). Single-width path unchanged.
+    spy = CFG.symbols["SPY"]                        # w3, no fallback
+    ch = _fb_chain("SPY", 585, 615, 600.0, 3, 3, cw=0.80, cn=0.80, list_narrow=False)
+    b = st.build_condor("SPY", spy, ch, CFG, SESSION)
+    assert b.skip_reason == SKIP_CREDIT_FLOOR
+    assert b.width is None
+
+
+def test_fallback_both_widths_no_wing_regression():
+    # (f) w2 -> w1 but NEITHER width lists a wing -> SKIP_NO_WING (unchanged).
+    xle = CFG.symbols["XLE"]
+    ch = _fb_chain("XLE", 580, 620, 600.0, 2, 1, cw=0.55, cn=0.35,
+                   list_wide=False, list_narrow=False)
+    b = st.build_condor("XLE", xle, ch, CFG, SESSION)
+    assert b.skip_reason == SKIP_NO_WING
+
+
+def test_evaluate_entry_credit_floor_detail_passthrough():
+    # build_condor now owns the credit-floor skip; its detail must reach the
+    # EvalResult via evaluate_entry filter 6 (detail=b.detail). SPY w3, credit
+    # 0.80 < floor 0.90.
+    legs = [
+        ("put", 582, -0.15, 1.60, 1.70), ("put", 585, -0.20, 2.00, 2.10),
+        ("call", 615, 0.20, 2.00, 2.10), ("call", 618, 0.15, 1.60, 1.70),
+    ]
+    r = st.evaluate_entry("SPY", CFG, ctx(iv=ivr(30.0), ch=chain(legs)))
+    assert r.skip_reason == SKIP_CREDIT_FLOOR
+    assert "credit" in r.detail and "floor" in r.detail
+
+
 # ── overflow routing (T6) — mechanics tested with risk_band off ───────────
 
 def _cfg_overflow(tmp_path):

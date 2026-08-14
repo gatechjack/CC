@@ -232,6 +232,18 @@ ex_dividends:
     source: "projected — first business day"
 
   # ── FXI (iShares, semi-annual — remaining 2026 dates confirmed) ─────
+  # 2026-2027 dates verified against the PDF 2026-08-14 (SEMI-ANNUAL Equity Funds
+  # group WITH EXTENDED PAY DATE, doc GPS0826-5839861): ex 15-Jun-26 / 15-Dec-26 /
+  # 10-Jun-27 / 14-Dec-27. Footnote (h) says semi-annual aligns with the quarterly
+  # group, but the published 2027 June ex (10-Jun) differs from quarterly 15-Jun —
+  # published date wins. NOTE: the 2026-12-15 pay (12-18) below is the NON-extended
+  # value; the extended-pay group pays 12-21. pay_date is informational only — left
+  # as-is per operator ruling 2026-08-14.
+  - symbol: FXI
+    ex_date: "2026-06-15"
+    pay_date: "2026-06-22"
+    confirmed: true
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861), footnote (h) semi-annual"
   - symbol: FXI
     ex_date: "2026-12-15"
     pay_date: "2026-12-18"
@@ -242,6 +254,16 @@ ex_dividends:
     pay_date: "2027-01-05"
     confirmed: true
     source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861) — potential excise distribution"
+  - symbol: FXI
+    ex_date: "2027-06-10"
+    pay_date: "2027-06-17"
+    confirmed: true
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861), footnote (h) semi-annual"
+  - symbol: FXI
+    ex_date: "2027-12-14"
+    pay_date: "2027-12-20"
+    confirmed: true
+    source: "iShares 2026-2028 Fund Distributions Schedule (GPS0826-5839861), footnote (h) semi-annual"
 
   # ── GLD (World Gold Trust) ──────────────────────────────────────────
   # Intentionally empty — see preamble.
