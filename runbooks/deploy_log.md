@@ -12579,3 +12579,86 @@ both Tastytrade creds to Azure KeyVault; `main` `06168c4`). The REFRESH_TOKEN wa
 
 **prod-live:** `a7ec388` -> this entry (FF, same session). Deployed blob == commit `8862795`
 (POST-GATE LF-md5 `b0f7c559...` == the 8862795 blob), the LF-md5 proof prod == prod-live tip.
+
+---
+
+## 2026-08-14 ~21:40 UTC - MACE /mace UI rebuild (reskin) + live read-model (mace_rung_live) + entry-IV (A3) + A4 daily-IV widen (DB migration + RESTART; engine 707835 -> 721092)
+
+**Deployed LIVE** to `tc-prod-vm` / RG-SHARED-PROD via az run-command RunShellScript (root). The
+prod box is NOT a git checkout -> deploy is FILE-OVERWRITE (not git pull). Sequence: PRE-drift-gate
+(LF-md5 of all 7 modified runtime files == `561b89f` blobs = zero hand-edit drift; mace_payoff.js
+absent) -> DB migration (additive) -> 8 runtime files (gzip+base64; backup -> write -> chown/chmod
+`--reference` azureuser:azureuser 664 -> POST-gate LF-md5 == `552a9ca` blob) -> ONE service restart.
+
+**Commits:** `88ee5dc`..`552a9ca` (6). prod-live `561b89f` -> `552a9ca` (clean FF). main `68abebf`
+-> `c63cfee` (clean `--no-ff` merge, 0 conflicts; the BACKLOG document-fork trap did NOT trigger -
+verified by merge-tree before merging).
+
+**Triggered by:** operator "GO ARM" (explicit, re-confirmed after a review pause). Path: CP-UI-0
+inventory -> approved plan -> build (SP2: 288 mace tests green) -> post-close deploy.
+
+**Backup tag:** `.bak_maceui_20260814` (the 7 modified runtime files; `mace_payoff.js` is a NEW file
+- rm to roll back).
+
+**DB migration (additive, non-destructive, idempotent - `scripts/migrate_mace_tables.py`):**
+- NEW table `mace_rung_live` (rung_id PK, symbol, mark, spot, ts) - VOLATILE per-rung live-state
+  the manage loop writes and the /mace read-model reads; overwritten each tick.
+- NEW column `mace_rung.entry_atm_iv` (REAL, via `_maybe_add_column`) - durable per-rung entry ATM IV.
+- verify() 5/5 tables, 5/5 indexes, 1/1 columns, unique OK; `--verify-only` pre-check + real run +
+  idempotent re-run all clean vs the live 2.49 GB DB. Ledger untouched (2 SPY rungs `('SPY','open',2)`).
+
+**Files deployed (8):**
+- `trading_corp/persistence/db.py` - SCHEMA += mace_rung_live; init_db += entry_atm_iv migration
+- `trading_corp/mace/execution.py` - `RungStore.set_live_state` (INSERT OR REPLACE); `promote_open`
+  gains `entry_atm_iv` (A3, written only when IV present); threaded via `_book_entry_fill` <- `run_entry`
+- `trading_corp/mace/manager.py` - `_manage_one` live-state write (A1/A2, fail-safe); `_snapshot_symbols`
+  (A4 = defined UNION open-rung); `build_entry_context` widens the metrics fetch + snapshot ONLY (not
+  chains); `evaluate_and_enter` threads the fresh ATM IV into `run_entry`
+- `trading_corp/web/mace_view.py` - broker-free enriched read-model (`_enriched_rungs`, `_ivr_for_view`
+  G3, `_equity_ctx` G4, `_session_ctx` G5, `_breakers_ctx`, `_symbol_states`, `_recent_audits`);
+  extended /mace ctx; halt endpoints/latch/tri-state UNCHANGED
+- `trading_corp/web/templates/mace_live.html` + `partials/mace_live_sections.html` - full reskin
+  (posture from mace_badge; ticker/IVR/equity/breakers/audit/config; per-rung payoff canvas + price
+  rail + PT/stop gauges + lifecycle timeline). Halt partial `mace_halt.html` UNCHANGED (`{% include %}`).
+- `trading_corp/web/static/js/mace_payoff.js` (NEW) - vanilla canvas payoff (ncdf/bs/condorT0/condorExp)
+- `scripts/migrate_mace_tables.py` - mace_rung_live + entry_atm_iv added to `MACE_TABLES` / verify()
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- /mace RESKIN live (observability only, zero-HITL; halt tri-state preserved byte-for-behavior).
+- Live per-rung mark/spot -> `mace_rung_live` written by the manage loop (A1/A2); read broker-free.
+- View-computed per-rung P&L / dist-to-PT/stop / PT+stop PROGRESS gauges / POP / payoff T+0.
+- G3 IVR filtered to `cfg.universe` (actives-first; retired-managed SPY kept; leaked GLD dropped).
+- G4 HWM = `MAX(equity)` + equity-curve sparkline. G5 session = market-phase + uptime + git_sha.
+- A3 durable entry ATM IV at promote (None-guarded). A4 daily IV snapshot widened to defined UNION
+  open-rung so retired-but-managed SPY still gets fresh daily IV.
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- The manage loop is WINDOW-GATED (09:35-15:55 ET weekdays): `mace_rung_live` does NOT accrue
+  off-hours. First live loop writes = Monday 2026-08-17 09:35 ET.
+- WEB + ENGINE are ONE process (uvicorn = an asyncio task inside the division event loop, main.py
+  `_start_web_server`). There is NO web-only restart - any restart reloads engine code too.
+- `deps.mode` (the "process:" chip) is process-global (read LIVE here); the AUTHORITATIVE MACE
+  posture is `mace_badge` (LIVE / REAL CAPITAL). The top-right base.html badge is a SEPARATE global.
+
+**Latent bugs caught + fixed:**
+- /mace 500 MID-DEPLOY (self-inflicted, transient): Jinja templates are disk-read (live on next
+  request) while `mace_view.py` is memory-cached until restart. Deploying the new templates AHEAD of
+  the restart fed the OLD ctx to the NEW templates -> `UndefinedError` -> 500 (web route only; engine/
+  trading unaffected). Resolved by the restart (loads the matching new view). LESSON: deploy templates
+  WITH the view restart, never ahead of it.
+- POP rendered "-" though enrichment was correct: Jinja `r.pop` resolves to `dict.pop` (a method),
+  not the `pop` key -> the pct filter swallowed a TypeError. Fixed to `r['pop']` (in `552a9ca`).
+
+**Verification (live, ~21:40 UTC / 17:40 ET, post-close):** restart rc=0, active, MainPID 707835 ->
+721092, NRestarts 0. /mace 200 with the reskin (payoff/gauges/breaker/positions markers); badge LIVE
+/ REAL CAPITAL / ENTRIES: ARMED; process: LIVE; cfg `e9c0499886c4`; 2 SPY rungs intact + untouched;
+no tracebacks; 0 orders. `mace_rung_live` SEEDED tonight with real EOD marks via `set_live_state`
+(rung1 0.965 / rung2 0.865 / spot 776.31 / ts `2026-08-14T20:14:59Z` from live RH close quotes) so
+the UI shows mark/P&L/gauges with an honest STALE "as of 16:14 ET" label; Monday 09:35 the loop
+overwrites them seamlessly (identical ts format). Row-accrual from the live loop is the Monday check.
+
+**Rollback:** restore `.bak_maceui_20260814` (7 files) + `rm mace_payoff.js` + restart -> old code.
+Migration is ADDITIVE (new empty table + NULL column) - inert to old code, nothing to undo.
+
+**prod-live:** `561b89f` -> `552a9ca` (clean FF, same session). Box files LF-md5 == `552a9ca` blobs
+(deploy == prod-live tip). Engine 721092 running `552a9ca` code.
