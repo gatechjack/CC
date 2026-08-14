@@ -10,6 +10,7 @@ drain by combo_id, abandon past horizon).
 """
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -32,6 +33,12 @@ from trading_corp.utils.time import ET, UTC
 ROOT = Path(__file__).resolve().parents[1]
 CFG = load_mace_config(ROOT / "config" / "mace.yaml",
                        exdiv_calendar_path=ROOT / "config" / "ex_dividend_calendar.yaml")
+# The ladder-MECHANISM tests below were written against the launch 5x60 entry
+# ladder. The shipped config is 2x30 as of 2026-08-13 (Board 3-active memo) —
+# shipped values are asserted in test_mace_config.py. Pin the old shape here so
+# walk-down / exhaustion / cancel-race coverage stays byte-identical.
+CFG = dataclasses.replace(CFG, execution=dataclasses.replace(
+    CFG.execution, entry_max_attempts=5, entry_fill_wait_sec=60))
 
 SESSION = date(2026, 8, 10)          # Monday
 EXPIRY = date(2026, 9, 18)

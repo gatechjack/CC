@@ -40,12 +40,14 @@ def _chain(sym, sp, sc, width, short_mid, long_mid, spot):
     return st.ChainView(sym, spot, (EXPIRY,), quotes)
 
 
-def _cfg(tmp_path, universe, enable):
+def _cfg(tmp_path, universe, enable, mutate=None):
     d = yaml.safe_load(MACE_YAML.read_text(encoding="utf-8"))
     d["entry"]["enforce_risk_band"] = False        # isolate credit-floor as GLD's skip
     d["universe"] = universe
-    for s in enable:
-        d["symbols"][s]["enabled"] = True
+    for name, blk in d["symbols"].items():
+        blk["enabled"] = name in enable      # explicit both ways — survives shipped-yaml flips
+    if mutate:
+        mutate(d)
     p = tmp_path / "mace.yaml"
     p.write_text(yaml.safe_dump(d), encoding="utf-8")
     return load_mace_config(p, exdiv_calendar_path=EXDIV_YAML)
@@ -65,7 +67,7 @@ _IBIT = lambda: _chain("IBIT", 54, 66, 2, 0.7, 0.3, 60.0)    # noqa: E731
 
 # ── pure route_overflow: today's exact scenario ──────────────────────────────
 def test_router_does_not_reroute_to_entered_primary(tmp_path):
-    cfg = _cfg(tmp_path, ["SPY", "GLD"], ["GLD"])          # IBIT stays disabled
+    cfg = _cfg(tmp_path, ["SPY", "GLD"], ["SPY", "GLD"])   # IBIT stays disabled
     prim = [EvalResult(symbol="SPY", entered=True),
             EvalResult(symbol="GLD", entered=False, skip_reason=SKIP_CREDIT_FLOOR)]
     ctx = _ctx({"SPY": _SPY(), "GLD": _GLD()})
@@ -74,7 +76,12 @@ def test_router_does_not_reroute_to_entered_primary(tmp_path):
 
 # ── pure route_overflow: legit IBIT receiver still works ──────────────────────
 def test_router_still_routes_to_eligible_ibit(tmp_path):
-    cfg = _cfg(tmp_path, ["SPY", "GLD"], ["GLD", "IBIT"])
+    # shipped yaml no longer marks IBIT overflow_only (OQ-3 reversal) — pin it
+    # back here so the overflow-receiver router path stays tested.
+    def pin_overflow(d):
+        d["symbols"]["IBIT"]["overflow_only"] = True
+        d["symbols"]["IBIT"]["width_dollars"] = 2   # _IBIT fixture is a w2 chain (shipped w1)
+    cfg = _cfg(tmp_path, ["SPY", "GLD"], ["SPY", "GLD", "IBIT"], mutate=pin_overflow)
     prim = [EvalResult(symbol="SPY", entered=True),
             EvalResult(symbol="GLD", entered=False, skip_reason=SKIP_CREDIT_FLOOR)]
     ctx = _ctx({"SPY": _SPY(), "GLD": _GLD(), "IBIT": _IBIT()})
@@ -103,7 +110,7 @@ class _FakeExecutor:
 
 @pytest.mark.asyncio
 async def test_manager_places_once_when_second_symbol_forfeits(tmp_path):
-    cfg = _cfg(tmp_path, ["SPY", "GLD"], ["GLD"])
+    cfg = _cfg(tmp_path, ["SPY", "GLD"], ["SPY", "GLD"])
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(dbmod.SCHEMA)

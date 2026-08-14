@@ -155,4 +155,5 @@ def test_mace_page_shows_config_hash_when_manager_present(tmp_path):
     html = resp.text
     assert cfg.config_hash[:12] in html        # header config_hash chip
     assert "Effective config" in html
-    assert "SPY" in html                        # launch universe symbol row
+    assert "SPY" in html                        # retired symbol still rendered (defined block)
+    assert "IBIT" in html and "XLE" in html and "GDX" in html   # 3-active universe rows

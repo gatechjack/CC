@@ -7,6 +7,7 @@ weekly / cooldown matrices, IVR stale/unavailable skip-annotation, and blackout
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import date
 from pathlib import Path
 
@@ -111,8 +112,8 @@ def test_no_equity_snapshot():
 
 
 def test_capacity_skip():
-    rungs = [rung(status="open"), rung(status="submitting"),
-             rung(status="closing"), rung(status="open")]   # 4 live == max_rungs
+    rungs = [rung(status="open"), rung(status="submitting"), rung(status="closing"),
+             rung(status="open"), rung(status="open")]      # 5 live == max_rungs
     assert _eval(iv=ivr(30.0), rungs=rungs).skip_reason == SKIP_CAPACITY
 
 
@@ -207,7 +208,7 @@ def test_risk_band_skip_when_credit_too_high():
 def test_credit_floor_skip():
     # enforce_risk_band is on, so pick a credit that clears risk_band but fails
     # the 0.30*width=0.90 floor is impossible (risk_band lower bound 150 => credit<=1.5,
-    # upper 250 => credit>=0.5). credit 0.80 -> risk 220 in band, 0.80 < 0.90 floor.
+    # upper 260 => credit>=0.4). credit 0.80 -> risk 220 in band, 0.80 < 0.90 floor.
     legs = [
         ("put", 582, -0.15, 1.60, 1.70), ("put", 585, -0.20, 2.00, 2.10),
         ("call", 615, 0.20, 2.00, 2.10), ("call", 618, 0.15, 1.60, 1.70),
@@ -219,8 +220,8 @@ def test_credit_floor_skip():
 # ── reserve (9) + risk gate (10) ─────────────────────────────────────────
 
 def test_reserve_skip():
-    # open risk 39_900 + candidate 200 > 0.80*50_000 = 40_000
-    rungs = [rung(status="open", max_risk=39_900.0)]
+    # open risk 47_400 + candidate 200 > 0.95*50_000 = 47_500
+    rungs = [rung(status="open", max_risk=47_400.0)]
     assert _eval(iv=ivr(30.0), rungs=rungs).skip_reason == SKIP_RESERVE
 
 
@@ -268,11 +269,14 @@ def test_risk_band_width2_min_100():
 
 
 def test_fxi_fallback_width_viable_with_riskband():
-    # width-1 band is [50,250] -> FXI's fallback_width_dollars=1 is now VIABLE
-    # (not ceremonially dead). width-2 wings (28p/35c) UNLISTED -> build falls to
-    # width 1 (29p/34c) and prices under the REAL config (risk_band ON).
-    # credit 0.40 -> risk (1-0.4)*100 = 60 in [50,250]; floor 0.30*1 = 0.30.
-    fxi_cfg = CFG.symbols["FXI"]           # width 2, fallback 1
+    # width-1 band is [50,260] -> a fallback_width_dollars=1 is VIABLE (not
+    # ceremonially dead). Shipped FXI is now width 1 with NO fallback (Board
+    # 2026-08-13; validator requires fallback < width) -- pin the OLD w2+fb1
+    # shape so the fallback MECHANISM stays tested: width-2 wings (28p/35c)
+    # UNLISTED -> build falls to width 1 (29p/34c), prices with risk_band ON.
+    # credit 0.40 -> risk (1-0.4)*100 = 60 in [50,260]; floor 0.30*1 = 0.30.
+    fxi_cfg = dataclasses.replace(CFG.symbols["FXI"],
+                                  width_dollars=2.0, fallback_width_dollars=1.0)
     legs = [
         ("put", 29, -0.15, 0.33, 0.37), ("put", 30, -0.20, 0.53, 0.57),
         ("call", 33, 0.20, 0.53, 0.57), ("call", 34, 0.15, 0.33, 0.37),
@@ -290,12 +294,16 @@ def test_fxi_fallback_width_viable_with_riskband():
 
 def _cfg_overflow(tmp_path):
     """SPY + GLD primaries, IBIT overflow receiver, risk_band off (so width-2
-    IBIT can enter — the shipped risk_band[150,250]+floor make width-2 inert)."""
+    IBIT can enter). Shipped yaml is 3-active with IBIT a primary now (OQ-3
+    reversed) — rebuild the old launch shape explicitly: enable ONLY
+    SPY/GLD/IBIT, re-mark IBIT overflow_only."""
     d = yaml.safe_load(MACE_YAML.read_text(encoding="utf-8"))
     d["entry"]["enforce_risk_band"] = False
     d["universe"] = ["SPY", "GLD"]
-    d["symbols"]["GLD"]["enabled"] = True      # width 3, exdiv_guard false
-    d["symbols"]["IBIT"]["enabled"] = True     # overflow_only, exdiv_guard false
+    for name, blk in d["symbols"].items():
+        blk["enabled"] = name in ("SPY", "GLD", "IBIT")   # explicit both ways
+    d["symbols"]["IBIT"]["overflow_only"] = True
+    d["symbols"]["IBIT"]["width_dollars"] = 2   # fixtures build w2 chains (shipped is w1 now)
     p = tmp_path / "mace.yaml"
     p.write_text(yaml.safe_dump(d), encoding="utf-8")
     return load_mace_config(p, exdiv_calendar_path=EXDIV_YAML)
@@ -332,10 +340,18 @@ def _chains_ivrs():
     return chains, ivrs
 
 
-def test_overflow_inert_at_launch():
-    # real CFG: universe [SPY], IBIT disabled -> SPY forfeit routes nowhere
+def test_overflow_inert_at_launch(tmp_path):
+    # the SPY-only launch shape (universe [SPY], IBIT disabled) — rebuilt in a
+    # tmp yaml now that the shipped config is 3-active: forfeit routes nowhere
+    d = yaml.safe_load(MACE_YAML.read_text(encoding="utf-8"))
+    d["universe"] = ["SPY"]
+    for name, blk in d["symbols"].items():
+        blk["enabled"] = name == "SPY"
+    p = tmp_path / "mace_launch.yaml"
+    p.write_text(yaml.safe_dump(d), encoding="utf-8")
+    cfg = load_mace_config(p, exdiv_calendar_path=EXDIV_YAML)
     prim = [EvalResult(symbol="SPY", entered=False, skip_reason=SKIP_BLACKOUT)]
-    assert st.route_overflow(prim, CFG, ctx(iv=ivr(30.0))) == []
+    assert st.route_overflow(prim, cfg, ctx(iv=ivr(30.0))) == []
 
 
 def test_overflow_routes_to_ibit_first(tmp_path):
@@ -354,9 +370,9 @@ def test_overflow_does_not_reroute_to_entered_primary(tmp_path):
     d = yaml.safe_load(MACE_YAML.read_text(encoding="utf-8"))
     d["entry"]["enforce_risk_band"] = False
     d["universe"] = ["SPY", "GLD", "TLT"]
-    d["symbols"]["GLD"]["enabled"] = True
-    d["symbols"]["TLT"]["enabled"] = True       # width 2, exdiv_guard true, HAS dates
-    d["symbols"]["IBIT"]["enabled"] = True
+    for name, blk in d["symbols"].items():      # explicit both ways (shipped is 3-active)
+        blk["enabled"] = name in ("SPY", "GLD", "TLT", "IBIT")
+    d["symbols"]["IBIT"]["overflow_only"] = True   # re-mark: receiver, not primary
     p = tmp_path / "mace3.yaml"; p.write_text(yaml.safe_dump(d), encoding="utf-8")
     cfg = load_mace_config(p, exdiv_calendar_path=EXDIV_YAML)
     chains = {
@@ -394,7 +410,8 @@ def test_overflow_excludes_forfeiting_symbol(tmp_path):
     d = yaml.safe_load(MACE_YAML.read_text(encoding="utf-8"))
     d["entry"]["enforce_risk_band"] = False
     d["universe"] = ["SPY", "GLD"]
-    d["symbols"]["GLD"]["enabled"] = True
+    for name, blk in d["symbols"].items():      # IBIT explicitly OFF (shipped enables it)
+        blk["enabled"] = name in ("SPY", "GLD")
     p = tmp_path / "mace2.yaml"; p.write_text(yaml.safe_dump(d), encoding="utf-8")
     cfg2 = load_mace_config(p, exdiv_calendar_path=EXDIV_YAML)
     prim = [EvalResult(symbol="SPY", entered=True),

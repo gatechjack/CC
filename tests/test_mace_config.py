@@ -39,17 +39,25 @@ def test_shipped_config_loads():
     assert isinstance(cfg, MaceConfig)
     assert cfg.account_number == "116637293063"
     assert cfg.acknowledge_foreign_positions is False
-    assert cfg.universe == ("SPY",)
+    assert cfg.universe == ("IBIT", "XLE", "GDX")            # 3-active (Board CP0 2026-08-13)
     assert cfg.max_contracts == 1
     assert cfg.entry.ivr_floor == 25
     assert cfg.entry.dte_min == 30 and cfg.entry.dte_max == 45
     assert cfg.entry.overflow_max_per_symbol_session == 1
     assert cfg.entry.risk_band_min_per_width_usd == 50       # width-scaled band
-    assert cfg.entry.risk_band_max_usd == 250
+    assert cfg.entry.risk_band_max_usd == 260                # 250 -> 260 (Board 2026-08-13)
+    assert cfg.entry.weekly_new_rungs_per_symbol == 1        # back to 1/week at 3 actives
+    assert cfg.sizing.rung_risk_pct == 0.10
+    assert cfg.sizing.deployment_target_pct == 0.95
+    assert cfg.execution.entry_fill_wait_sec == 30           # 3-symbol window math
+    assert cfg.execution.entry_max_attempts == 2
     assert cfg.management.pt_pct_of_credit == 0.50
     assert cfg.breakers.breaker_enforcement == "off"
-    assert cfg.symbols["IBIT"].overflow_only is True
-    assert cfg.symbols["FXI"].fallback_width_dollars == 1
+    assert cfg.symbols["IBIT"].overflow_only is False        # OQ-3 REVERSED — IBIT primary
+    assert cfg.symbols["IBIT"].enabled is True
+    assert cfg.symbols["XLE"].enabled and cfg.symbols["GDX"].enabled
+    assert cfg.symbols["FXI"].fallback_width_dollars is None  # width 1 — no fallback allowed
+    assert cfg.symbols["SPY"].enabled is False               # retired from entries
     assert cfg.symbols["SPY"].blackout_event_types == ("FOMC", "CPI")
     assert cfg.config_hash == hashlib.sha256(MACE_YAML.read_bytes()).hexdigest()
 
@@ -79,7 +87,9 @@ def test_hwm_soft_must_exceed_hard(tmp_path):
 
 
 def test_overflow_only_in_universe_rejected(tmp_path):
-    d = _base(); d["universe"] = ["SPY", "IBIT"]           # OQ-3: IBIT never primary
+    # shipped IBIT is a primary now (OQ-3 reversed) — re-mark it overflow_only
+    # to prove the validator still rejects an overflow-only symbol in universe.
+    d = _base(); d["symbols"]["IBIT"]["overflow_only"] = True   # universe has IBIT
     with pytest.raises(ValueError, match="overflow_only"):
         _load(tmp_path, d)
 
@@ -103,7 +113,7 @@ def test_snapshot_must_precede_eval(tmp_path):
 
 
 def test_universe_symbol_needs_enabled_block(tmp_path):
-    d = _base(); d["symbols"]["SPY"]["enabled"] = False
+    d = _base(); d["symbols"]["GDX"]["enabled"] = False     # GDX is in the universe
     with pytest.raises(ValueError, match="enabled is false"):
         _load(tmp_path, d)
 
@@ -133,27 +143,32 @@ def _exdiv(tmp_path: Path, *symbols: str) -> Path:
 
 
 def test_shipped_config_passes_exdiv_gate():
-    # SPY (the only enabled symbol at launch) has real dates in the shipped calendar
+    # XLE + GDX (enabled + guarded) have real dates in the shipped calendar;
+    # IBIT ships guard-off (non-payer precedent — validator refuses guard-on
+    # with an empty calendar).
     cfg = load_mace_config(MACE_YAML, exdiv_calendar_path=EXDIV_YAML)
-    assert cfg.symbols["SPY"].enabled and cfg.symbols["SPY"].exdiv_guard
+    assert cfg.symbols["XLE"].enabled and cfg.symbols["XLE"].exdiv_guard
+    assert cfg.symbols["GDX"].enabled and cfg.symbols["GDX"].exdiv_guard
+    assert cfg.symbols["IBIT"].enabled and not cfg.symbols["IBIT"].exdiv_guard
 
 
 def test_enabled_guard_without_dates_fails(tmp_path):
     d = _base(); d["symbols"]["EWZ"]["enabled"] = True   # EWZ exdiv_guard is true
-    exdiv = _exdiv(tmp_path, "SPY")                       # calendar has SPY, NOT EWZ
+    exdiv = _exdiv(tmp_path, "XLE", "GDX")                # calendar has actives, NOT EWZ
     with pytest.raises(ValueError, match="EWZ"):
         _load(tmp_path, d, exdiv)
 
 
 def test_enabled_guard_off_without_dates_ok(tmp_path):
     d = _base(); d["symbols"]["USO"]["enabled"] = True    # USO exdiv_guard is false
-    cfg = _load(tmp_path, d, _exdiv(tmp_path, "SPY"))
+    # tmp calendar must still carry the shipped enabled+guarded actives (XLE, GDX)
+    cfg = _load(tmp_path, d, _exdiv(tmp_path, "XLE", "GDX"))
     assert cfg.symbols["USO"].enabled is True
 
 
 def test_enabled_guard_with_dates_ok(tmp_path):
     d = _base(); d["symbols"]["EWZ"]["enabled"] = True
-    cfg = _load(tmp_path, d, _exdiv(tmp_path, "SPY", "EWZ"))
+    cfg = _load(tmp_path, d, _exdiv(tmp_path, "XLE", "GDX", "EWZ"))
     assert cfg.symbols["EWZ"].enabled is True
 
 

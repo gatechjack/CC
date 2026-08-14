@@ -8,10 +8,13 @@ account_number: "116637293063"          # JOINT — Phase-0 resolved, operator-c
                                         # (startup assertion refuses to arm on mismatch)
 acknowledge_foreign_positions: false    # foreign-position guard override; entries stay disabled
                                         # while foreign positions/orders exist and this is false
-universe: [SPY, GLD]                    # 2026-08-12: GLD added as 2nd symbol (OQ-2 2-symbol ceiling). Expansion order:
-                                        # SPY, GLD, TLT, USO, EWZ, FXI, IBIT.
-                                        # DO NOT expand past 2 symbols until entry-window
-                                        # serialization work is built (Board ruling 7 / OQ-2).
+universe: [IBIT, XLE, GDX]              # 2026-08-14: 3 actives (Board CP0 ratified 2026-08-13).
+                                        # OQ-2 entry-window serialization is BUILT (IVR-desc order
+                                        # + per-symbol dynamic deadline) — the 2-symbol ceiling is
+                                        # lifted. Backfill ladder if a slot fails the live credit
+                                        # floor: FXI -> IWM (TWO slots out: IWM first — Board
+                                        # pre-ruling, FXI dead book caps it at one slot).
+                                        # SPY/GLD retired from entries (open SPY rungs still managed).
 max_contracts: 1                        # LAUNCH cap (Board memo)
 
 entry:
@@ -23,24 +26,30 @@ entry:
   short_delta_band: [0.15, 0.25]
   credit_floor_pct_of_width: 0.30
   risk_band_min_per_width_usd: 50       # min max-risk = 50 * width_dollars (width-scaled:
-                                        # w3=>150 [SPY launch, byte-identical], w2=>100,
-                                        # w1=>50 [FXI fallback viable]). Board ruling
+                                        # w3=>150, w2=>100, w1=>50). Board ruling
                                         # risk-band-width-scaling 2026-08-09 (was fixed
                                         # [150,250], which made ALL width-2 names unenterable)
-  risk_band_max_usd: 250               # absolute max-risk ceiling ((width-credit)*100)
+  risk_band_max_usd: 260               # absolute max-risk ceiling ((width-credit)*100)
+                                        # 250 -> 260 Board-ruled 2026-08-13 (3-active memo)
   enforce_risk_band: true               # "where strike listings allow"
   ivr_floor: 25                         # 0-100 scale. Tasty rank fields are 0-1 —
                                         # ivr_provider normalizes x100 BEFORE this compare
                                         # (SPY 0.272 == IVR 27.2; stage-A probe-proven)
-  weekly_new_rungs_per_symbol: 2        # 2026-08-12: 2/week (+refill) — per-rung still 1 contract
-  max_rungs_per_symbol: 5               # 2026-08-12: 5 concurrent rungs/symbol (was 4)
+  weekly_new_rungs_per_symbol: 1        # 2026-08-13 Board: back to 1/week at 3 actives
+                                        # (3 symbols x 1 rung replaces 1-2 symbols x 2)
+  max_rungs_per_symbol: 5
   stop_cooldown_sessions: 2
-  ibit_overflow_cap: 6
-  overflow_max_per_symbol_session: 1    # T6 Board ruling 2026-08-09
+  ibit_overflow_cap: 6                  # vestigial at 3-active (IBIT is a primary now; no
+                                        # overflow_only receiver exists) — key retained
+                                        # because the validator requires it
+  overflow_max_per_symbol_session: 1    # T6 Board ruling 2026-08-09 — vestigial, see above
 
 sizing:
-  rung_risk_pct: 0.055               # 2026-08-11: admit 1 contract at ~$4k equity (0.055*4000=$220 > $206 max-risk); per-trade risk UNCHANGED — max_contracts:1 is the binding cap
-  deployment_target_pct: 0.80
+  rung_risk_pct: 0.10                   # 2026-08-13 Board (3-active memo): 0.055 -> 0.10.
+                                        # ~$400/rung at $4k equity; per-trade risk still
+                                        # bounded by max_contracts:1 + risk_band_max 260
+  deployment_target_pct: 0.95           # 2026-08-13 Board: 0.80 -> 0.95 (reserve gate;
+                                        # worst-case book ~5 rungs x $260 = $1.3k << 0.95*E)
   equity_snapshot_time_et: "15:40"      # settled snapshot-E; never intraday buying power
 
 management:
@@ -57,8 +66,10 @@ execution:
   entry_start_offset_usd: 0.02          # attempt 1 limit = fresh mid - 0.02 (credit walks
                                         # DOWN toward marketability; never below the floor)
   entry_tick_usd: 0.01
-  entry_fill_wait_sec: 60
-  entry_max_attempts: 5
+  entry_fill_wait_sec: 30               # 2026-08-13 Board: 60 -> 30 (3-symbol window math;
+                                        # ~70-80s/symbol typical, worst ~6.5 min vs 13-min window)
+  entry_max_attempts: 2                 # 2026-08-13 Board: 5 -> 2 (same ruling; both SPY
+                                        # live entries filled on attempt 1)
   exit_fill_wait_sec: 20
   exit_max_attempts: 5
   exit_hard_ceiling_mult_of_width: 1.00 # exit debit ladder hard ceiling (walks UP)
@@ -81,10 +92,39 @@ notifications:
   daily_summary_time_et: "15:50"
 
 symbols:
-  SPY:  {enabled: true,  width_dollars: 3, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
-  GLD:  {enabled: true,  width_dollars: 3, blackout_event_types: [],                    exdiv_guard: false}
+  # ── actives (Board CP0 2026-08-13: roster IBIT+XLE+GDX; final pick re-gated
+  #    on the live 0.30*width credit floor the morning of 2026-08-14) ─────────
+  IBIT: {enabled: true,  width_dollars: 1, blackout_event_types: [],              exdiv_guard: false}
+        # OQ-3 REVERSED (Board 2026-08-13): overflow_only removed, IBIT is a primary.
+        # exdiv_guard false = the GLD/USO non-payer precedent (spot-BTC grantor trust,
+        # no distributions; validator refuses guard-on with an empty calendar).
+        # w1: BTC overnight gap risk. IVR floor may legitimately skip it day 1.
+  XLE:  {enabled: true,  width_dollars: 2, fallback_width_dollars: 1, blackout_event_types: [OPEC], exdiv_guard: true}
+        # ex-div 2026-09-21 + 2026-12-21 ISSUER-CONFIRMED (SSGA SPD003792) — 9/21 is
+        # inside the Sep rung windows, guard live day 1. Strike gap 68/69 (67->70):
+        # a 66-67 short call at w2 fail-safes to no_wing SKIP (known watch item).
+  GDX:  {enabled: true,  width_dollars: 2, fallback_width_dollars: 1, blackout_event_types: [FOMC], exdiv_guard: true}
+        # annual December payer (VanEck; 2025 actual ex 12/22). 2026 date PROJECTED
+        # 12/21 in the calendar — *** TRIPWIRE: refresh from VanEck's December release
+        # (never load-bearing before ~November at 30-45 DTE). Board CP0 Option A. ***
+
+  # ── backfills (enabled only by the Phase-5 roster pick) ────────────────────
+  FXI:  {enabled: false, width_dollars: 1, blackout_event_types: [PBOC, LPR_FIX], exdiv_guard: true}
+        # Board 2026-08-13: width 1 (fallback_width_dollars REMOVED — validator requires
+        # fallback < width). ex-div 12/15 + 12/30 ISSUER-CONFIRMED (iShares GPS0826-5839861).
+        # Ref strikes VERY thin (OI 0) — liveness gate may bar entries; one-slot cap (Board).
+  IWM:  {enabled: false, width_dollars: 3, fallback_width_dollars: 2, blackout_event_types: [FOMC, CPI], exdiv_guard: true}
+        # ex-div 3/17, 6/15, 9/15, 12/15 (+12/30 excise) ISSUER-CONFIRMED — the old
+        # third-Monday projections (9/21, 12/21) were WRONG; corrected 2026-08-13.
+
+  # ── retired from entries (open rungs still managed — manage/exit never read
+  #    enabled; enabled:false also removes overflow-receiver eligibility) ──────
+  SPY:  {enabled: false, width_dollars: 3, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
+        # 2 open W33 rungs ride to their exits under the manage loop.
+  GLD:  {enabled: false, width_dollars: 3, blackout_event_types: [],                    exdiv_guard: false}
+        # 0 open rungs (verified at deploy). Non-payer (gold bullion trust).
+
+  # ── defined-disabled bench (Board ruling: blocks stay defined) ─────────────
   TLT:  {enabled: false, width_dollars: 2, blackout_event_types: [FOMC, CPI],           exdiv_guard: true}
   USO:  {enabled: false, width_dollars: 2, blackout_event_types: [OPEC],                exdiv_guard: false}  # zero distributions — stage-A verified
   EWZ:  {enabled: false, width_dollars: 2, blackout_event_types: [COPOM, BR_ELECTION],  exdiv_guard: true}
-  FXI:  {enabled: false, width_dollars: 2, fallback_width_dollars: 1, blackout_event_types: [PBOC, LPR_FIX], exdiv_guard: true}
-  IBIT: {enabled: false, width_dollars: 2, blackout_event_types: [], overflow_only: true, exdiv_guard: false}  # overflow receiver ONLY, never a primary (OQ-3)

@@ -69,9 +69,13 @@ def test_window_boundary_5_vs_4(tmp_path):
 def test_shipped_yaml_uso_ewz_inert_spy_live():
     cal = MaceExDiv.load(REAL_YAML)
     now = datetime(2026, 9, 16, 19, 45, tzinfo=timezone.utc)
-    # USO/IBIT/EWZ/FXI carry no dates in the shipped config -> guard inert
+    # USO/IBIT/EWZ carry no dates in the shipped config -> guard inert
+    # (FXI got issuer-confirmed dates 2026-08-13 -> asserted live below)
     assert cal.check("USO", now, 5, guard_on=True).next_ex_date is None
     assert cal.check("EWZ", now, 5, guard_on=True).next_ex_date is None
     assert cal.check("IBIT", now, 5, guard_on=True).next_ex_date is None
-    # SPY has real dates
+    # SPY has real dates; the 3-active additions + FXI now do too
     assert cal.next_ex_date("SPY", today=date(2026, 1, 1)) is not None
+    assert cal.next_ex_date("XLE", today=date(2026, 8, 14)) == date(2026, 9, 21)
+    assert cal.next_ex_date("GDX", today=date(2026, 8, 14)) == date(2026, 12, 21)
+    assert cal.next_ex_date("FXI", today=date(2026, 8, 14)) == date(2026, 12, 15)

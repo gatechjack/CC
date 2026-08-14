@@ -211,6 +211,7 @@ async def test_reserve_binds_after_first_fill_second_superseded(tmp_path):
     # and SPY's too (200+200 > 280) -> both superseded SKIP_RESERVE.
     def bump(d):
         d["sizing"]["rung_risk_pct"] = 0.8      # keep budget filter out of the way
+        d["sizing"]["deployment_target_pct"] = 0.80   # pin the 280-cap math (shipped 0.95 -> 332.5 would fit USO)
     cfg = _cfg(tmp_path, ["SPY", "GLD", "USO"], ["SPY", "GLD", "USO"], mutate=bump)
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
