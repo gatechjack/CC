@@ -1,5 +1,9 @@
 # DRAFT — Board Memo: MACE 3-Active Expansion + OQ-2 + Entry-Halt Button
 
+**SUPERSEDED — final memo: `planning/mace_3active_oq2_board_memo_2026-08-13.md`**
+(adds the ratified Checkpoint 0 rulings: GDX Option A + December tripwire, the
+two-slots-out backfill flip to IWM-first, and the IBIT guard:false deviation).
+
 Draft for Phase 3 finalization (final memo lands in planning/ with the deploy_log
 entry once the roster is picked). Records the 2026-08-13 Board rulings.
 
