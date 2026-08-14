@@ -54,9 +54,13 @@ _RANKS = {"SPY": 0.30, "GLD": 0.90, "USO": 0.60}
 
 
 def _metrics(symbols):
+    # Return metrics ONLY for symbols we have ranks for — Tasty likewise returns
+    # rows only for symbols it knows. The A4 snapshot widen asks for the full
+    # defined set (all 10 config symbols), so unknown ones are legitimately absent
+    # from the response -> read_metrics marks them UNAVAILABLE (not an error).
     return [{"symbol": s, FIELD_RANK: _RANKS[s],
              FIELD_UPDATED_AT: datetime(2026, 8, 12, 18, 0, tzinfo=UTC)}
-            for s in symbols]
+            for s in symbols if s in _RANKS]
 
 
 class _Clock:
@@ -90,7 +94,8 @@ class _CaptureExecutor:
         self.standdown_on = set(standdown_on)
         self.book_into = book_into            # RungStore: insert a rung on fill (reserve test)
 
-    async def run_entry(self, ev, session_date, *, deadline=None, halt_fn=None):
+    async def run_entry(self, ev, session_date, *, deadline=None, halt_fn=None,
+                        entry_atm_iv=None):
         self.calls.append((ev.symbol, deadline))
         if ev.symbol in self.raise_on:
             raise RuntimeError(f"{ev.symbol} ladder blew up mid-flight")

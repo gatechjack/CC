@@ -60,7 +60,8 @@ class _LatchAfterFirst(_CaptureExecutor):
         super().__init__(**kw)
         self._conn = conn
 
-    async def run_entry(self, ev, session_date, *, deadline=None, halt_fn=None):
+    async def run_entry(self, ev, session_date, *, deadline=None, halt_fn=None,
+                        entry_atm_iv=None):
         out = await super().run_entry(ev, session_date, deadline=deadline)
         _write_latch(self._conn, True)
         return out
