@@ -168,12 +168,61 @@ def _date_ok(s: str) -> bool:
 
 # ── Tasty IVR fetch closure ──────────────────────────────────────────────────
 
+def _load_tasty_creds():
+    """Resolve (provider_secret, refresh_token) for the Tasty IVR fetch.
+
+    The creds live in /etc/trading-corp/tastytrade.env (root-only 0600). This
+    script runs as `azureuser` via `runuser`, which cannot read that root file
+    -- so the shadow-eval WRAPPER (which runs as root) reads the file and
+    injects the two vars into this process's environment via `runuser -w`,
+    exactly as systemd's EnvironmentFile mechanism injects them into the live
+    engine. The file stays root-only; only root ever reads it. We resolve creds
+    from the first source that yields BOTH:
+      1. this process's own environment (the wrapper's injection lands here, or
+         we are running inside the service env);
+      2. the root env file directly (works only when run as root).
+
+    2026-08-14 IVR-harness fix: the original code did (2) only and always hit
+    `PermissionError [Errno 13]` under runuser, so IVR was silently
+    unavailable on every shadow-eval run (the engine's own IVR path -- which
+    reads these from its injected env -- was never affected). Returns
+    (None, None) if no source yields both; the caller raises on that.
+    """
+    import os
+
+    # 1. own environment (the root wrapper injects the creds here via runuser -w)
+    ps = os.environ.get("TASTYTRADE_PROVIDER_SECRET")
+    rt = os.environ.get("TASTYTRADE_REFRESH_TOKEN")
+    if ps and rt:
+        return ps, rt
+
+    # 2. root env file directly (works only when this script is run as root)
+    try:
+        creds: dict[str, str] = {}
+        with open("/etc/trading-corp/tastytrade.env") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    creds[k.strip()] = v.strip().strip('"').strip("'")
+        ps = creds.get("TASTYTRADE_PROVIDER_SECRET")
+        rt = creds.get("TASTYTRADE_REFRESH_TOKEN")
+        if ps and rt:
+            return ps, rt
+    except OSError:
+        pass  # PermissionError/FileNotFoundError -> fall through
+
+    return None, None
+
+
 def _make_fetch_metrics():
     """Build a fetch_metrics(symbols) -> list closure backed by Tasty creds.
 
-    Reads /etc/trading-corp/tastytrade.env for credentials.  Creates a
-    fresh tastytrade.Session each call (token management is outside scope).
-    Uses asyncio.run() if get_market_metrics is a coroutine function.
+    Creds are resolved by `_load_tasty_creds()` (own env -> root file ->
+    running engine's /proc environ) rather than opening the root-only
+    tastytrade.env directly, which this script's `runuser` user cannot read.
+    Creates a fresh tastytrade.Session each call (token management is outside
+    scope). Uses asyncio.run() if get_market_metrics is a coroutine function.
     Heavy imports are INSIDE the closure so the module stays import-clean.
     """
     def fetch_metrics(symbols_list):
@@ -182,16 +231,7 @@ def _make_fetch_metrics():
         from tastytrade import Session
         from tastytrade.metrics import get_market_metrics
 
-        creds: dict[str, str] = {}
-        with open("/etc/trading-corp/tastytrade.env") as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    k, v = line.split("=", 1)
-                    creds[k.strip()] = v.strip().strip('"').strip("'")
-
-        ps = creds.get("TASTYTRADE_PROVIDER_SECRET")
-        rt = creds.get("TASTYTRADE_REFRESH_TOKEN")
+        ps, rt = _load_tasty_creds()
         if not (ps and rt):
             raise RuntimeError("TASTYTRADE_PROVIDER_SECRET or TASTYTRADE_REFRESH_TOKEN missing")
 
