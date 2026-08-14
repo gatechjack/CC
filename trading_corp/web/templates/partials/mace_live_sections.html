@@ -1,68 +1,565 @@
-{# MACE open-rungs table fragment. Self-polls every 30s (hx-get + hx-swap
-   outerHTML), initial paint via {% include %} from mace_live.html. The live MARK
-   / P&L / distance-to-stop / distance-to-PT are computed by the manage LOOP (4
-   fresh leg quotes per rung), NOT by the dashboard — a GET must not place broker
-   API load — so they render "—" here (the dashboard is a read model). Stored
-   entry credit / max-risk / PT target come straight from mace_rung. #}
+{# MACE open-rungs fragment — polled every 30s (hx-get outerHTML).
+   Initial paint via {% include %} from mace_live.html.
+   Live mark / P&L / gauges come from mace_rung_live (written by manage loop);
+   when not yet present they render HONESTLY — never a fabricated number.
+   Payoff canvas always draws the EXPIRY curve (needs only strikes+credit);
+   T+0 curve is skipped with an honest caption when iv/spot/t are absent.
+#}
 <div id="mace-rungs"
      hx-get="/mace/partials/rungs"
      hx-trigger="every 30s"
-     hx-swap="outerHTML"
-     class="bg-pane border border-edge rounded-lg p-4">
-  <div class="flex items-baseline justify-between mb-2">
-    <div class="text-[11px] text-muted uppercase tracking-wider">
-      Open rungs{% if rungs %} · {{ rungs|length }}{% endif %}
-    </div>
-    <div class="text-[10px] text-muted font-mono">mark / P&amp;L / dist = manage-loop owned</div>
-  </div>
+     hx-swap="outerHTML">
 
-  {% if rungs %}
-    <div class="overflow-x-auto">
-    <table class="w-full text-xs font-mono whitespace-nowrap">
-      <thead><tr class="text-muted text-left">
-        <th class="pb-1">sym</th>
-        <th class="pb-1">status</th>
-        <th class="pb-1">strikes</th>
-        <th class="pb-1">expiry</th>
-        <th class="pb-1 text-right">DTE</th>
-        <th class="pb-1 text-right">x</th>
-        <th class="pb-1 text-right">width</th>
-        <th class="pb-1 text-right">credit</th>
-        <th class="pb-1 text-right">max risk</th>
-        <th class="pb-1 text-right">PT tgt</th>
-        <th class="pb-1 text-right">mark</th>
-        <th class="pb-1 text-right">P&amp;L</th>
-        <th class="pb-1 text-right">→stop</th>
-        <th class="pb-1 text-right">→PT</th>
-      </tr></thead>
-      <tbody>
+  {# ── section header ─────────────────────────────────────────────────────── #}
+  <div class="bg-pane border border-edge rounded-lg overflow-hidden">
+    <div class="flex flex-wrap items-center gap-3 px-4 py-3
+                border-b border-edge bg-gradient-to-r from-accent/5 to-transparent">
+      <span class="text-[11px] text-mono font-semibold uppercase tracking-wider">
+        Open Positions
+      </span>
+      {% if rungs %}
+        <span class="text-[10px] text-muted font-mono">
+          {{ rungs|length }} rung{{ 's' if rungs|length != 1 else '' }}
+          · click a row to expand
+        </span>
+      {% endif %}
+      <div class="ml-auto flex items-center gap-3">
+        {# aggregate net P&L across rungs that have a live mark #}
+        {% set ns = namespace(total=0, any_live=false) %}
+        {% for r in rungs %}
+          {% if r.pnl is not none %}
+            {% set ns.total = ns.total + r.pnl %}
+            {% set ns.any_live = true %}
+          {% endif %}
+        {% endfor %}
+        {% if ns.any_live %}
+          <span class="text-[11px] font-mono font-semibold
+                       {{ 'text-gain' if ns.total >= 0 else 'text-loss' }}">
+            NET {{ ns.total | money_signed }}
+          </span>
+        {% endif %}
+        <span class="text-[10px] text-muted font-mono">
+          mark · P&amp;L = manage-loop owned
+        </span>
+      </div>
+    </div>
+
+    {% if rungs %}
       {% for r in rungs %}
-        <tr class="border-t border-edge/40">
-          <td class="py-1 font-semibold">{{ r.symbol }}</td>
-          <td class="py-1 uppercase
-            {% if r.status == 'closing' %}text-warn{% else %}text-mono{% endif %}">{{ r.status }}</td>
-          <td class="py-1">{{ r.strikes }}</td>
-          <td class="py-1">{{ r.expiry }}</td>
-          <td class="py-1 text-right
-            {% if r.dte is not none and r.dte <= 21 %}text-warn{% endif %}">
-            {{ r.dte if r.dte is not none else '—' }}</td>
-          <td class="py-1 text-right">{{ r.contracts }}</td>
-          <td class="py-1 text-right">${{ r.width | int }}</td>
-          <td class="py-1 text-right">{{ r.credit | money if r.credit is not none else '—' }}</td>
-          <td class="py-1 text-right">{{ r.max_risk | money if r.max_risk is not none else '—' }}</td>
-          <td class="py-1 text-right">{{ r.pt_debit | money if r.pt_debit is not none else '—' }}</td>
-          <td class="py-1 text-right text-muted">—</td>
-          <td class="py-1 text-right text-muted">—</td>
-          <td class="py-1 text-right text-muted">—</td>
-          <td class="py-1 text-right text-muted">—</td>
-        </tr>
+        {# unique id for the expand toggle #}
+        {% set rung_detail_id = 'rung-detail-' ~ loop.index %}
+        {% set rung_canvas_id = 'payoff-canvas-' ~ loop.index %}
+        {% set rung_island_id = 'payoff-data-' ~ loop.index %}
+
+        <div class="border-b border-edge/60 last:border-b-0">
+
+          {# ── collapsed row ─────────────────────────────────────────────── #}
+          <div class="grid items-center gap-3 px-4 py-3 cursor-pointer
+                      hover:bg-pane-2/60 transition-colors select-none"
+               style="grid-template-columns: 96px minmax(220px,1fr) 56px 72px 72px 80px 160px 22px"
+               onclick="(function(){var d=document.getElementById('{{ rung_detail_id }}');var c=document.getElementById('{{ rung_detail_id }}-caret');if(d.classList.contains('hidden')){d.classList.remove('hidden');c.style.transform='rotate(90deg)'}else{d.classList.add('hidden');c.style.transform='rotate(0deg)'}})()">
+
+            {# sym + rung label #}
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-sm font-semibold text-mono">{{ r.symbol }}</span>
+                <span class="text-[8px] uppercase tracking-wider font-mono px-1 py-0.5
+                             rounded border border-accent/35 text-accent">IC</span>
+              </div>
+              <div class="text-[9px] font-mono text-muted mt-0.5">
+                {{ r.status | upper }}
+                {% if r.status == 'closing' %}
+                  <span class="text-warn">· closing</span>
+                {% endif %}
+              </div>
+            </div>
+
+            {# inline price rail (compact, collapsed view) #}
+            {% if r.rail %}
+              <div class="relative h-[36px]">
+                {# full track #}
+                <div class="absolute left-0 right-0 top-[14px] h-[8px]
+                            bg-loss/10 rounded-sm"></div>
+                {# LP..SP loss wing (left) #}
+                <div class="absolute top-[14px] h-[8px] rounded-sm bg-warn/20"
+                     style="left:{{ r.rail.lp }}%;width:{{ r.rail.sp - r.rail.lp }}%"></div>
+                {# SC..LC loss wing (right) #}
+                <div class="absolute top-[14px] h-[8px] rounded-sm bg-warn/20"
+                     style="left:{{ r.rail.sc }}%;width:{{ r.rail.lc - r.rail.sc }}%"></div>
+                {# SP..SC profit zone #}
+                <div class="absolute top-[14px] h-[8px] rounded-sm
+                            bg-gain/25 border-l border-r border-gain/50"
+                     style="left:{{ r.rail.sp }}%;width:{{ r.rail.sc - r.rail.sp }}%"></div>
+                {# tick marks #}
+                {% for label, pct, color, top_offset in [
+                    ('LP ' ~ (r.lp | strike if r.lp is not none else '?'), r.rail.lp, 'loss', -11),
+                    ('SP ' ~ (r.sp | strike if r.sp is not none else '?'), r.rail.sp, 'gain',  22),
+                    ('SC ' ~ (r.sc | strike if r.sc is not none else '?'), r.rail.sc, 'gain',  22),
+                    ('LC ' ~ (r.lc | strike if r.lc is not none else '?'), r.rail.lc, 'loss', -11)] %}
+                  <div class="absolute" style="left:{{ pct }}%;top:10px">
+                    <div class="w-px h-[16px] bg-{{ color }}/80"></div>
+                    <div class="absolute whitespace-nowrap font-mono text-[7.5px]
+                                text-{{ color }}"
+                         style="top:{{ top_offset }}px;
+                                {% if loop.index <= 2 %}left:1px{% else %}left:0;transform:translateX(-100%){% endif %}">
+                      {{ label }}
+                    </div>
+                  </div>
+                {% endfor %}
+                {# spot marker #}
+                {% if r.rail.spot is not none %}
+                  <div class="absolute" style="left:{{ r.rail.spot }}%;top:4px;transform:translateX(-50%)">
+                    <div class="w-px h-[28px] bg-mono/70 mx-auto"
+                         style="box-shadow:0 0 5px rgba(226,232,240,.6)"></div>
+                  </div>
+                {% endif %}
+              </div>
+            {% else %}
+              {# no rail yet: show strikes text label #}
+              <div class="font-mono text-xs text-muted">
+                {{ r.strikes_label }}
+              </div>
+            {% endif %}
+
+            {# DTE #}
+            <div>
+              <div class="text-[8px] text-muted uppercase tracking-wider">DTE</div>
+              <div class="font-mono text-sm
+                          {{ 'text-warn' if r.dte is not none and r.dte <= 21 else 'text-mono' }}">
+                {{ r.dte if r.dte is not none else '—' }}
+              </div>
+            </div>
+
+            {# credit #}
+            <div>
+              <div class="text-[8px] text-muted uppercase tracking-wider">Credit</div>
+              <div class="font-mono text-sm text-mono">
+                {{ r.credit | money if r.credit is not none else '—' }}
+              </div>
+            </div>
+
+            {# mark — honest stale state #}
+            <div>
+              <div class="text-[8px] text-muted uppercase tracking-wider">Mark</div>
+              {% if r.mark is not none %}
+                <div class="font-mono text-sm text-mono
+                            {{ 'opacity-50' if r.stale else '' }}"
+                     title="{{ 'STALE as of ' ~ r.mark_ts if r.stale else 'as of ' ~ r.mark_ts }}">
+                  {{ r.mark | money }}
+                  {% if r.stale %}
+                    <span class="text-warn text-[8px]">STALE</span>
+                  {% endif %}
+                </div>
+              {% else %}
+                <div class="font-mono text-sm text-muted" title="awaiting first manage tick">—</div>
+              {% endif %}
+            </div>
+
+            {# P&L + mini progress bars #}
+            <div>
+              <div class="text-[8px] text-muted uppercase tracking-wider">P&amp;L</div>
+              {% if r.pnl is not none %}
+                <div class="font-mono text-base font-semibold
+                            {{ 'text-gain' if r.pnl >= 0 else 'text-loss' }}">
+                  {{ r.pnl | money_signed }}
+                </div>
+              {% else %}
+                <div class="font-mono text-sm text-muted">—</div>
+              {% endif %}
+            </div>
+
+            {# PT + stop progress mini-bars #}
+            <div class="flex flex-col gap-1.5">
+              <div>
+                <div class="flex justify-between font-mono text-[8px] text-muted mb-0.5">
+                  <span>TO PT</span>
+                  <span class="text-gain">
+                    {% if r.pt_prog is not none %}{{ (r.pt_prog * 100) | round(0) | int }}%{% else %}—{% endif %}
+                  </span>
+                </div>
+                <div class="h-[4px] bg-edge rounded-full">
+                  <div class="h-[4px] bg-gain rounded-full transition-all duration-500"
+                       style="width:{{ ((r.pt_prog or 0) * 100) | round(1) }}%"></div>
+                </div>
+              </div>
+              <div>
+                {% set stop_pct = ((r.stop_prog or 0) * 100) | round(1) %}
+                {% set stop_color = 'loss' if (r.stop_prog is not none and r.stop_prog > 0.6)
+                                    else 'warn' if (r.stop_prog is not none and r.stop_prog > 0.2)
+                                    else 'muted' %}
+                <div class="flex justify-between font-mono text-[8px] text-muted mb-0.5">
+                  <span>TO STOP</span>
+                  <span class="text-{{ stop_color }}">
+                    {% if r.stop_prog is not none %}
+                      {% if r.stop_prog == 0 %}SAFE{% else %}{{ (r.stop_prog * 100) | round(0) | int }}%{% endif %}
+                    {% else %}—{% endif %}
+                  </span>
+                </div>
+                <div class="h-[4px] bg-edge rounded-full">
+                  <div class="h-[4px] bg-{{ stop_color }} rounded-full transition-all duration-500"
+                       style="width:{{ stop_pct }}%"></div>
+                </div>
+              </div>
+            </div>
+
+            {# expand caret #}
+            <div id="{{ rung_detail_id }}-caret"
+                 class="text-muted text-base font-mono transition-transform duration-200"
+                 style="transform:rotate(0deg)">›</div>
+          </div>
+
+          {# ── expanded panel ────────────────────────────────────────────── #}
+          <div id="{{ rung_detail_id }}" class="hidden">
+            <div class="bg-bg/60 border-t border-accent/20 p-4">
+              <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+
+                {# ── LEFT: payoff canvas ─────────────────────────────────── #}
+                <div class="bg-pane border border-edge rounded-lg p-3">
+                  <div class="flex justify-between items-baseline mb-2">
+                    <span class="text-[10px] text-muted uppercase tracking-wider">
+                      Simulated Returns
+                    </span>
+                    <span class="flex gap-3 font-mono text-[9px]">
+                      <span class="text-gain">— EXP</span>
+                      {% if r.iv is not none %}
+                        <span class="text-accent">
+                          — T+0 ({{ (r.iv * 100) | round(1) }}%
+                          {% if r.iv_source == 'entry' %}entry{% elif r.iv_source == 'daily' %}daily {{ r.iv_asof }}{% endif %}
+                          IV)
+                        </span>
+                      {% else %}
+                        <span class="text-muted">T+0 needs live IV + spot</span>
+                      {% endif %}
+                    </span>
+                  </div>
+
+                  {# payoff data island #}
+                  <script type="application/json" id="{{ rung_island_id }}">{{ r.payoff | tojson }}</script>
+
+                  <canvas id="{{ rung_canvas_id }}"
+                          class="mace-payoff w-full block cursor-crosshair"
+                          data-island="{{ rung_island_id }}"
+                          style="height:220px"></canvas>
+
+                  {# below-canvas summary #}
+                  <div class="flex flex-wrap gap-4 mt-2 pt-2 border-t border-edge font-mono text-[10px] text-muted">
+                    <span>MAX PROFIT
+                      <span class="text-gain">
+                        {{ r.max_profit | money_signed if r.max_profit is not none else '—' }}
+                      </span>
+                    </span>
+                    <span>MAX LOSS
+                      <span class="text-loss">
+                        {% if r.max_loss is not none %}−{{ r.max_loss | money }}{% else %}—{% endif %}
+                      </span>
+                    </span>
+                    <span>BREAKEVENS
+                      <span class="text-mono">
+                        {% if r.be_low is not none and r.be_high is not none %}
+                          {{ r.be_low | strike }} / {{ r.be_high | strike }}
+                        {% else %}—{% endif %}
+                      </span>
+                    </span>
+                    <span>POP
+                      <span class="text-mono">
+                        {{ r.pop | pct if r.pop is not none else '—' }}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                {# ── RIGHT: detail panels ────────────────────────────────── #}
+                <div class="flex flex-col gap-3">
+
+                  {# stat grid #}
+                  <div class="bg-pane border border-edge rounded-lg p-3">
+                    <div class="text-[10px] text-muted uppercase tracking-wider mb-3">
+                      Rung Detail
+                    </div>
+                    <div class="grid grid-cols-3 gap-x-3 gap-y-3">
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">Structure</div>
+                        <div class="font-mono text-[11px] text-mono mt-0.5">{{ r.strikes_label }}</div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">Entry Credit</div>
+                        <div class="font-mono text-[11px] text-mono mt-0.5">
+                          {{ r.credit | money if r.credit is not none else '—' }}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">
+                          Current Mark
+                          {% if r.iv_source == 'entry' %}
+                            <span class="text-muted/60 normal-case">(entry IV)</span>
+                          {% elif r.iv_source == 'daily' %}
+                            <span class="text-muted/60 normal-case">(daily {{ r.iv_asof }})</span>
+                          {% endif %}
+                        </div>
+                        {% if r.mark is not none %}
+                          <div class="font-mono text-[11px] mt-0.5
+                                      {{ 'text-gain' if r.pnl is not none and r.pnl >= 0 else 'text-loss' if r.pnl is not none else 'text-mono' }}
+                                      {{ 'opacity-50' if r.stale else '' }}">
+                            {{ r.mark | money }}
+                            {% if r.stale %}<span class="text-warn text-[8px]">STALE</span>{% endif %}
+                          </div>
+                        {% else %}
+                          <div class="font-mono text-[11px] text-muted mt-0.5"
+                               title="awaiting first manage tick">—</div>
+                        {% endif %}
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">PT Target</div>
+                        <div class="font-mono text-[11px] text-gain mt-0.5">
+                          {{ r.pt_debit | money if r.pt_debit is not none else '—' }}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">Stop Level</div>
+                        <div class="font-mono text-[11px] text-loss mt-0.5">
+                          {{ r.stop_level | money if r.stop_level is not none else '—' }}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">Max Risk</div>
+                        <div class="font-mono text-[11px] text-warn mt-0.5">
+                          {{ r.max_loss | money if r.max_loss is not none else '—' }}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">Max Profit</div>
+                        <div class="font-mono text-[11px] text-gain mt-0.5">
+                          {{ r.max_profit | money if r.max_profit is not none else '—' }}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">Breakevens</div>
+                        <div class="font-mono text-[11px] text-mono mt-0.5">
+                          {% if r.be_low is not none and r.be_high is not none %}
+                            {{ r.be_low | strike }} / {{ r.be_high | strike }}
+                          {% else %}—{% endif %}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">POP</div>
+                        <div class="font-mono text-[11px] text-mono mt-0.5">
+                          {{ r.pop | pct if r.pop is not none else '—' }}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">DTE</div>
+                        <div class="font-mono text-[11px]
+                                    {{ 'text-warn' if r.dte is not none and r.dte <= 21 else 'text-mono' }} mt-0.5">
+                          {{ r.dte if r.dte is not none else '—' }}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">Time Exit</div>
+                        <div class="font-mono text-[11px] text-warn mt-0.5">
+                          {{ r.time_exit_date if r.time_exit_date else '—' }}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-[8px] text-muted uppercase tracking-wider">IV</div>
+                        <div class="font-mono text-[11px] text-mono mt-0.5">
+                          {{ (r.iv * 100) | round(1) | string ~ '%' if r.iv is not none else '—' }}
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+
+                  {# PT + stop gauges with dollar distances #}
+                  <div class="bg-pane border border-edge rounded-lg p-3">
+                    <div class="text-[10px] text-muted uppercase tracking-wider mb-3">
+                      Exit Gauges
+                    </div>
+                    <div class="flex flex-col gap-3">
+
+                      <div>
+                        <div class="flex justify-between items-baseline font-mono text-[9px] mb-1">
+                          <span class="text-muted">TO PROFIT TARGET</span>
+                          <div class="flex items-baseline gap-2">
+                            {% if r.pt_prog is not none %}
+                              <span class="text-gain font-semibold">{{ (r.pt_prog * 100) | round(0) | int }}%</span>
+                            {% else %}
+                              <span class="text-muted">—</span>
+                            {% endif %}
+                            {% if r.dist_pt is not none %}
+                              <span class="text-muted">{{ r.dist_pt | money_signed }} away</span>
+                            {% endif %}
+                          </div>
+                        </div>
+                        <div class="h-[6px] bg-edge rounded-full">
+                          <div class="h-[6px] bg-gain rounded-full transition-all duration-500"
+                               style="width:{{ ((r.pt_prog or 0) * 100) | round(1) }}%"></div>
+                        </div>
+                      </div>
+
+                      <div>
+                        {% set sg = 'loss' if (r.stop_prog is not none and r.stop_prog > 0.6)
+                                    else 'warn' if (r.stop_prog is not none and r.stop_prog > 0.2)
+                                    else 'muted' %}
+                        <div class="flex justify-between items-baseline font-mono text-[9px] mb-1">
+                          <span class="text-muted">TO STOP LEVEL</span>
+                          <div class="flex items-baseline gap-2">
+                            {% if r.stop_prog is not none %}
+                              <span class="text-{{ sg }} font-semibold">
+                                {% if r.stop_prog == 0 %}SAFE{% else %}{{ (r.stop_prog * 100) | round(0) | int }}%{% endif %}
+                              </span>
+                            {% else %}
+                              <span class="text-muted">—</span>
+                            {% endif %}
+                            {% if r.dist_stop is not none %}
+                              <span class="text-muted">{{ r.dist_stop | money_signed }} buffer</span>
+                            {% endif %}
+                          </div>
+                        </div>
+                        <div class="h-[6px] bg-edge rounded-full">
+                          <div class="h-[6px] bg-{{ sg }} rounded-full transition-all duration-500"
+                               style="width:{{ ((r.stop_prog or 0) * 100) | round(1) }}%"></div>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+
+                  {# lifecycle timeline #}
+                  <div class="bg-pane border border-edge rounded-lg p-3">
+                    <div class="text-[10px] text-muted uppercase tracking-wider mb-5">
+                      Lifecycle
+                    </div>
+                    {% if r.life %}
+                      <div class="relative h-[44px] mx-2">
+                        {# track #}
+                        <div class="absolute left-0 right-0 top-[14px] h-[6px]
+                                    bg-edge/80 rounded-full"></div>
+                        {# elapsed fill #}
+                        <div class="absolute left-0 top-[14px] h-[6px] rounded-full
+                                    bg-gradient-to-r from-accent/50 to-accent"
+                             style="width:{{ r.life.today | round(1) }}%"></div>
+                        {# time-exit marker #}
+                        {% if r.life.time_exit is not none %}
+                          <div class="absolute top-[8px]"
+                               style="left:{{ r.life.time_exit | round(1) }}%">
+                            <div class="w-px h-[18px] bg-warn"></div>
+                            <div class="absolute top-[20px] left-0 transform -translate-x-1/2
+                                        font-mono text-[7.5px] text-warn whitespace-nowrap">
+                              T-EXIT
+                            </div>
+                          </div>
+                        {% endif %}
+                        {# today marker #}
+                        <div class="absolute top-[8px] transform -translate-x-1/2"
+                             style="left:{{ r.life.today | round(1) }}%">
+                          <div class="w-[9px] h-[9px] rounded-full bg-accent
+                                      mt-[5px] mx-auto"
+                               style="box-shadow:0 0 8px rgba(59,130,246,.7)"></div>
+                          <div class="absolute bottom-[22px] left-1/2 transform -translate-x-1/2
+                                      font-mono text-[7.5px] text-accent whitespace-nowrap">
+                            TODAY
+                          </div>
+                        </div>
+                        {# date labels #}
+                        <div class="absolute top-[36px] left-0 font-mono text-[8px] text-muted">
+                          {{ r.entry_date if r.entry_date else '—' }}
+                        </div>
+                        <div class="absolute top-[36px] right-0 font-mono text-[8px] text-muted">
+                          {{ r.expiry }}
+                        </div>
+                      </div>
+                    {% else %}
+                      {# no entry_ts yet — honest #}
+                      <div class="relative h-[44px] mx-2">
+                        <div class="absolute left-0 right-0 top-[14px] h-[6px] bg-edge/60 rounded-full"></div>
+                        <div class="absolute top-[36px] right-0 font-mono text-[8px] text-muted">{{ r.expiry }}</div>
+                        <div class="font-mono text-[10px] text-muted mt-1">awaiting entry timestamp</div>
+                      </div>
+                    {% endif %}
+                  </div>
+
+                  {# per-rung audit trail #}
+                  {% if audits is defined %}
+                    {% set rung_audits = [] %}
+                    {% for a in audits %}
+                      {% if a.payload.get('rung_id') == r.rung_id
+                            or a.payload.get('symbol') == r.symbol %}
+                        {% set _ = rung_audits.append(a) %}
+                      {% endif %}
+                    {% endfor %}
+                    <div class="bg-pane border border-edge rounded-lg p-3">
+                      <div class="text-[10px] text-muted uppercase tracking-wider mb-2">
+                        Rung Audit Trail
+                      </div>
+                      {% if rung_audits %}
+                        <div class="flex flex-col gap-1 max-h-[120px] overflow-y-auto">
+                          {% for a in rung_audits[:8] %}
+                            {# kind chip color #}
+                            {% if 'halt' in a.kind %}
+                              {% set kc = 'loss' %}
+                            {% elif a.kind in ('mace_entry_exception','mace_manage_error','mace_chain_error','mace_ivr_outage','mace_live_state_error','mace_iv_snapshot_error','mace_entry_partial','mace_entry_unconfirmed') %}
+                              {% set kc = 'warn' %}
+                            {% elif a.kind in ('entry_fill','manage_exit','mace_ui_arm') %}
+                              {% set kc = 'gain' %}
+                            {% else %}
+                              {% set kc = 'muted' %}
+                            {% endif %}
+                            <div class="grid font-mono text-[9.5px] gap-2 items-baseline"
+                                 style="grid-template-columns:80px 110px 1fr">
+                              <span class="text-muted/70">{{ a.ts | et_hms }}</span>
+                              <span class="px-1 rounded text-{{ kc }} border border-{{ kc }}/30
+                                           bg-{{ kc }}/8 text-center leading-relaxed tracking-wide">
+                                {{ a.kind | replace('_', ' ') | truncate(14, True, '') }}
+                              </span>
+                              <span class="text-mono/80 truncate">
+                                {% if a.payload.get('reason') %}{{ a.payload.reason }}
+                                {% elif a.payload.get('detail') %}{{ a.payload.detail }}
+                                {% elif a.payload.get('symbol') %}{{ a.payload.symbol }}
+                                {% else %}{{ a.kind }}{% endif %}
+                              </span>
+                            </div>
+                          {% endfor %}
+                        </div>
+                      {% else %}
+                        <div class="text-[10px] text-muted font-mono">— no audit events for this rung yet</div>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+
+                </div>{# end right column #}
+              </div>{# end 2-col grid #}
+            </div>{# end expanded inner #}
+          </div>{# end expanded panel #}
+
+        </div>{# end rung wrapper #}
       {% endfor %}
-      </tbody>
-    </table>
-    </div>
-  {% else %}
-    <div class="text-sm text-muted font-mono py-2">— no open rungs
-      <span class="text-[11px]">(MACE is standby / no positions)</span>
-    </div>
-  {% endif %}
-</div>
+
+    {% else %}
+      {# ── honest empty ───────────────────────────────────────────────────── #}
+      <div class="px-4 py-8 text-center">
+        <div class="text-sm text-muted font-mono">
+          no open rungs
+          <span class="text-[11px] text-muted/60">
+            (MACE standby / no positions)
+          </span>
+        </div>
+        <div class="text-[10px] text-muted/50 font-mono mt-1">
+          rungs appear here after the first condor entry at the 15:45 ET eval slot
+        </div>
+      </div>
+    {% endif %}
+
+  </div>{# end .bg-pane card #}
+</div>{# end #mace-rungs #}
