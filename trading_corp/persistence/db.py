@@ -475,6 +475,24 @@ CREATE TABLE IF NOT EXISTS mace_iv_history (
     PRIMARY KEY (symbol, snap_date)
 );
 
+-- mace_rung_live (UI rebuild 2026-08-14): a VOLATILE per-rung live-state snapshot
+-- written by the manage loop each tick (INSERT OR REPLACE keyed on rung_id) and
+-- read ONLY by the /mace web view via a short-lived SELECT. This is NOT the
+-- position ledger — mace_rung is durable; this row is overwritten every tick and
+-- carries no history. A missed tick simply leaves the last row in place and the
+-- view judges staleness off `ts` (never fabricates a value). Deliberately shaped
+-- for forward-compat: a per-rung `live_atm_iv` column is a future _maybe_add_column
+-- WIDENING (not a rewrite), and the rung_id PK generalises to universe-wide spot
+-- rows later. WAL (loop writes via the persistent autocommit conn; view reads via a
+-- short-lived db.connect, identical pragmas) makes the write/read concurrency-safe.
+CREATE TABLE IF NOT EXISTS mace_rung_live (
+    rung_id      TEXT PRIMARY KEY,            -- FK-ish to mace_rung.rung_id
+    symbol       TEXT NOT NULL,
+    mark         REAL,                        -- per-contract combo mid (executor.mark); NULL if unpriceable
+    spot         REAL,                        -- underlying spot; NULL on quote miss
+    ts           TEXT NOT NULL                -- ISO-8601 UTC of this write; the view's staleness source
+);
+
 -- economic_event is DELIBERATELY unprefixed (T2 — the plan spec names it thus;
 -- documented exception to the mace_ prefix rule). Blackout source of truth:
 -- FOMC/CPI seeded from macro_calendar.yaml (source='seed'), LPR-fix rule rows
@@ -544,6 +562,13 @@ def init_db(db_url: str = "sqlite:///data/trading_corp.db") -> Path:
             conn, "paper_trade_record", "execution_mode",
             "TEXT NOT NULL DEFAULT 'paper'",
         )
+        # MACE entry-IV (A3, UI rebuild 2026-08-14): the underlying's ATM IV
+        # captured ONCE at rung promotion — a durable, never-recapturable per-rung
+        # fact (unlike the volatile mark/spot in mace_rung_live, so it lives on the
+        # ledger). Written only when IV was actually available on the promoting tick
+        # (never a silent NULL — see RungStore.promote_open); the T+0 payoff falls
+        # back to the daily mace_iv_history value (labeled as-of) when this is NULL.
+        _maybe_add_column(conn, "mace_rung", "entry_atm_iv", "REAL")
         # Indexes that reference columns added by the migration above must
         # be created here (not in SCHEMA) so they apply AFTER the column
         # exists on upgraded DBs.

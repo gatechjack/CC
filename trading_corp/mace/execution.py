@@ -245,7 +245,8 @@ class RungStore:
         )
 
     def promote_open(self, rung_id: str, *, credit_actual: float,
-                     entry_order_id: Optional[str], entry_ts: str) -> None:
+                     entry_order_id: Optional[str], entry_ts: str,
+                     entry_atm_iv: Optional[float] = None) -> None:
         row = self.conn.execute(
             "SELECT width_dollars, contracts FROM mace_rung WHERE rung_id=?",
             (rung_id,)
@@ -253,11 +254,23 @@ class RungStore:
         w = float(row["width_dollars"]) if row else 0.0
         c = int(row["contracts"]) if row else 0
         max_risk = (w - credit_actual) * 100.0 * c
-        self.conn.execute(
-            "UPDATE mace_rung SET status=?, credit_actual=?, max_risk_usd=?, "
-            "entry_order_id=?, entry_ts=? WHERE rung_id=?",
-            (RUNG_OPEN, credit_actual, max_risk, entry_order_id, entry_ts, rung_id),
-        )
+        # entry_atm_iv (A3): the durable per-rung entry ATM IV, captured ONCE here.
+        # Written ONLY when actually available on the fill tick — a None (IV
+        # unavailable) leaves the column NULL rather than silently recording a
+        # bogus "0 vol"; the T+0 payoff then falls back to the daily IV (labeled).
+        if entry_atm_iv is not None:
+            self.conn.execute(
+                "UPDATE mace_rung SET status=?, credit_actual=?, max_risk_usd=?, "
+                "entry_order_id=?, entry_ts=?, entry_atm_iv=? WHERE rung_id=?",
+                (RUNG_OPEN, credit_actual, max_risk, entry_order_id, entry_ts,
+                 float(entry_atm_iv), rung_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE mace_rung SET status=?, credit_actual=?, max_risk_usd=?, "
+                "entry_order_id=?, entry_ts=? WHERE rung_id=?",
+                (RUNG_OPEN, credit_actual, max_risk, entry_order_id, entry_ts, rung_id),
+            )
 
     def set_pt(self, rung_id: str, pt_order_id: str, pt_debit: float) -> None:
         self.conn.execute(
@@ -271,6 +284,23 @@ class RungStore:
         dashboard + entry notification read pt_debit."""
         self.conn.execute(
             "UPDATE mace_rung SET pt_debit=? WHERE rung_id=?", (pt_debit, rung_id),
+        )
+
+    def set_live_state(self, rung_id: str, symbol: str,
+                       mark: Optional[float], spot: Optional[float],
+                       ts: str) -> None:
+        """UI-rebuild (2026-08-14): upsert this rung's VOLATILE live state
+        (per-contract mark + underlying spot) into mace_rung_live for the /mace
+        read model. INSERT OR REPLACE keyed on rung_id — one current row per rung,
+        no history; the view judges staleness off `ts`. Dashboard write ONLY: it
+        never affects an exit decision, and the caller (_manage_one) wraps it
+        fail-safe so a write error can never sink a manage tick. mark/spot may be
+        None (unpriceable / quote miss) — stored as NULL, which the view renders as
+        an honest '—' (never a fabricated number)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO mace_rung_live (rung_id, symbol, mark, spot, ts) "
+            "VALUES (?,?,?,?,?)",
+            (rung_id, symbol, mark, spot, ts),
         )
 
     def clear_pt(self, rung_id: str) -> None:
@@ -500,7 +530,8 @@ class MaceExecutor:
     # -- ENTRY LADDER ---------------------------------------------------------
     async def run_entry(self, ev, session_date: date, *,
                         deadline: Optional[datetime] = None,
-                        halt_fn: Optional[Callable[[], bool]] = None) -> EntryOutcome:
+                        halt_fn: Optional[Callable[[], bool]] = None,
+                        entry_atm_iv: Optional[float] = None) -> EntryOutcome:
         """Entry credit ladder (plan § Entry ladder). `ev` is a strategy
         EvalResult with `entered=True` carrying spec/contracts/max_risk_usd.
         Writes the durable `submitting` anchor first, walks the credit DOWN toward
@@ -590,7 +621,7 @@ class MaceExecutor:
             # confirmed filled -> book (the normal in-window fill).
             if res.is_filled:
                 return await self._book_entry_fill(rung_id, spec, contracts, limit,
-                                                   res, k)
+                                                   res, k, entry_atm_iv=entry_atm_iv)
             # a terminal partial = broken structure (naked legs) -> URGENT, never book.
             if self._is_partial(res):
                 return self._entry_partial(spec, rung_id, k, res)
@@ -607,7 +638,8 @@ class MaceExecutor:
                     # Filled in the cancel race — the ONE entry-side manual booking,
                     # guarded by confirmed state == "filled".
                     return await self._book_entry_fill(rung_id, spec, contracts,
-                                                       limit, confirmed, k)
+                                                       limit, confirmed, k,
+                                                       entry_atm_iv=entry_atm_iv)
                 if confirmed is not None and self._is_partial(confirmed):
                     return self._entry_partial(spec, rung_id, k, confirmed)
                 if confirmed is None or not confirmed.is_terminal:
@@ -656,11 +688,13 @@ class MaceExecutor:
                             standdown_reason="partial")
 
     async def _book_entry_fill(self, rung_id: str, spec: CondorSpec, contracts: int,
-                               credit: float, res: OrderResult, attempts: int) -> EntryOutcome:
+                               credit: float, res: OrderResult, attempts: int,
+                               entry_atm_iv: Optional[float] = None) -> EntryOutcome:
         # FAKE-FILL GUARD: only reached with a confirmed state == "filled".
         entry_ts = self._utc_iso()
         self.store.promote_open(rung_id, credit_actual=credit,
-                                entry_order_id=res.order_id or rung_id, entry_ts=entry_ts)
+                                entry_order_id=res.order_id or rung_id, entry_ts=entry_ts,
+                                entry_atm_iv=entry_atm_iv)
         max_risk = (spec.width_dollars - credit) * 100.0 * contracts
         pt_debit = self._pt_debit_for(credit)
         self.notifier.entry(

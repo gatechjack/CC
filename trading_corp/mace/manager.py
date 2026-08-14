@@ -94,6 +94,23 @@ class MaceManager:
     def _enabled_symbols(self) -> list[str]:
         return [s for s, c in self.cfg.symbols.items() if c.enabled]
 
+    def _snapshot_symbols(self, rungs) -> list[str]:
+        """A4 (UI rebuild 2026-08-14): the daily IV-snapshot symbol set — EVERY
+        defined symbol plus any symbol still holding an open/closing rung even if
+        disabled (e.g. SPY, retired from entries but managing 2 rungs). This gives
+        a retired-but-managed name fresh daily ATM IV for its payoff, and
+        generalises to any future retired-with-open-rungs symbol. Superset of
+        _enabled_symbols(); config order first, then any extra managed symbols.
+        Used ONLY to widen the (single) market-metrics call + the snapshot write —
+        chains/entries stay on the enabled universe (no extra chain fetches)."""
+        out = list(self.cfg.symbols.keys())
+        seen = set(out)
+        for r in rungs:
+            if r.status in _MANAGED_STATUSES and r.symbol not in seen:
+                out.append(r.symbol)
+                seen.add(r.symbol)
+        return out
+
     # ── DB reads/writes not owned by the RungStore (events / equity / IVR) ─
     def _load_events(self) -> list[dict]:
         try:
@@ -149,6 +166,14 @@ class MaceManager:
                 self._audit("mace_chain_error", symbol=sym, error=str(exc))
                 chains[sym] = st.ChainView(sym, None, (), {})
 
+        rungs = self.store.load_all()
+        # A4 (UI rebuild): the daily IV snapshot covers a WIDER set than the traded
+        # (enabled) universe — every defined symbol plus any symbol still holding
+        # open rungs even if disabled — so a retired-but-managed name (e.g. SPY)
+        # gets fresh daily ATM IV for its payoff. This widens ONLY the single
+        # market-metrics call + the snapshot write; chains/entries are unaffected.
+        snap_symbols = self._snapshot_symbols(rungs)
+
         if self._fetch_metrics is not None:
             # Run the (blocking, internally-async) Tasty fetch OFF the event loop:
             # read_metrics -> _mace_fetch_metrics calls asyncio.run(), which is
@@ -156,25 +181,24 @@ class MaceManager:
             # >=25 floor fooled OPEN). to_thread gives the worker a loop-less context
             # so asyncio.run() is legal.
             ivr_readings = await asyncio.to_thread(
-                ivr.read_metrics, self._fetch_metrics, symbols, now=self._now_utc())
+                ivr.read_metrics, self._fetch_metrics, snap_symbols, now=self._now_utc())
             # A TOTAL IVR outage must NOT pass silently — the floor fails open, so a
             # silent outage means no IVR gate at all. Fires at most once per round.
-            if symbols and all(r.status == ivr.IVR_UNAVAILABLE
-                               for r in ivr_readings.values()):
-                self._audit("mace_ivr_outage", symbols=symbols,
+            if snap_symbols and all(r.status == ivr.IVR_UNAVAILABLE
+                                    for r in ivr_readings.values()):
+                self._audit("mace_ivr_outage", symbols=snap_symbols,
                             detail=next((r.detail for r in ivr_readings.values()), ""))
                 try:
                     self.notifier.error(loop="ivr", exc=RuntimeError(
-                        f"IVR unavailable for all {len(symbols)} symbols "
+                        f"IVR unavailable for all {len(snap_symbols)} symbols "
                         f"(floor fails open)"))
                 except Exception:  # noqa: BLE001 — an alert must never break eval
                     pass
         else:
             ivr_readings = {s: ivr.IvrReading(
                 s, ivr.IVR_UNAVAILABLE, None, None, None, None,
-                "no IVR fetch wired") for s in symbols}
+                "no IVR fetch wired") for s in snap_symbols}
 
-        rungs = self.store.load_all()
         events = self._load_events()
         equity = self._load_equity()
 
@@ -266,9 +290,15 @@ class MaceManager:
                     self._audit("mace_entry_superseded", symbol=res.symbol,
                                 skip_reason=recheck.skip_reason, detail=res.detail)
                     continue
+                # A3: capture the symbol's fresh ATM IV as this rung's permanent
+                # entry IV. None when IV was unavailable this round (promote_open
+                # then leaves entry_atm_iv NULL — never a bogus 0).
+                reading = ctx.ivr.get(recheck.symbol)
+                entry_iv = reading.atm_iv if reading is not None else None
                 out = await self.executor.run_entry(recheck, session_date,
                                                     deadline=deadline,
-                                                    halt_fn=self._entry_halted)
+                                                    halt_fn=self._entry_halted,
+                                                    entry_atm_iv=entry_iv)
                 result.outcomes.append(out)
             except Exception as exc:  # noqa: BLE001 — top-level loop guard
                 self._audit("mace_entry_exception", symbol=res.symbol, error=str(exc))
@@ -305,6 +335,17 @@ class MaceManager:
         if rung.symbol not in spot_cache:
             spot_cache[rung.symbol] = await self._spot(rung.symbol)
         spot = spot_cache[rung.symbol]
+
+        # UI read-model (A1/A2): persist this tick's live mark + spot to
+        # mace_rung_live so the /mace GET can render them WITHOUT ever touching the
+        # broker. FAIL-SAFE: a dashboard-write error is logged and swallowed — it
+        # must NEVER be able to sink a manage tick or block an exit decision.
+        try:
+            self.store.set_live_state(
+                rung.rung_id, rung.symbol, mark, spot,
+                self._now_utc().isoformat(timespec="seconds"))
+        except Exception as exc:  # noqa: BLE001 — dashboard write is non-load-bearing
+            self._audit("mace_live_state_error", rung_id=rung.rung_id, error=str(exc))
 
         exdiv_within = False
         if sym_cfg.exdiv_guard and self._exdiv is not None:
