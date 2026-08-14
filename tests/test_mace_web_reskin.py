@@ -107,6 +107,8 @@ def test_reskin_renders_enriched_rung(tmp_path):
     assert "742/739P 802/805C" in h
     # live P&L present (credit 0.93 - mark 0.71 = +$22.00) — a real number, not a stub
     assert "22.00" in h
+    # POP renders as a real % (guards the r.pop -> r['pop'] dict-method-collision fix)
+    assert "58.9%" in h
     # config hash chip + universe + retired SPY
     assert cfg.config_hash[:12] in h
     assert "IBIT" in h and "XLE" in h and "GDX" in h and "SPY" in h

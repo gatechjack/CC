@@ -262,7 +262,7 @@
                     </span>
                     <span>POP
                       <span class="text-mono">
-                        {{ r.pop | pct if r.pop is not none else '—' }}
+                        {{ r['pop'] | pct if r['pop'] is not none else '—' }}
                       </span>
                     </span>
                   </div>
@@ -352,7 +352,7 @@
                       <div>
                         <div class="text-[8px] text-muted uppercase tracking-wider">POP</div>
                         <div class="font-mono text-[11px] text-mono mt-0.5">
-                          {{ r.pop | pct if r.pop is not none else '—' }}
+                          {{ r['pop'] | pct if r['pop'] is not none else '—' }}
                         </div>
                       </div>
 
