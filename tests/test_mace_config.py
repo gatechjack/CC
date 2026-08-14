@@ -39,7 +39,7 @@ def test_shipped_config_loads():
     assert isinstance(cfg, MaceConfig)
     assert cfg.account_number == "116637293063"
     assert cfg.acknowledge_foreign_positions is False
-    assert cfg.universe == ("IBIT", "XLE", "GDX")            # 3-active (Board CP0 2026-08-13)
+    assert cfg.universe == ("IBIT", "XLE", "GDX", "FXI", "IWM", "SPY")  # 6-active (CP0 3-active + FXI/IWM/SPY enable 2026-08-14 PM)
     assert cfg.max_contracts == 1
     assert cfg.entry.ivr_floor == 25
     assert cfg.entry.dte_min == 30 and cfg.entry.dte_max == 45
@@ -56,8 +56,10 @@ def test_shipped_config_loads():
     assert cfg.symbols["IBIT"].overflow_only is False        # OQ-3 REVERSED — IBIT primary
     assert cfg.symbols["IBIT"].enabled is True
     assert cfg.symbols["XLE"].enabled and cfg.symbols["GDX"].enabled
+    assert cfg.symbols["FXI"].enabled and cfg.symbols["IWM"].enabled   # ENABLED 2026-08-14 PM
     assert cfg.symbols["FXI"].fallback_width_dollars is None  # width 1 — no fallback allowed
-    assert cfg.symbols["SPY"].enabled is False               # retired from entries
+    assert cfg.symbols["SPY"].enabled is True                # RE-ENABLED 2026-08-14 PM (was retired)
+    assert cfg.symbols["GLD"].enabled is False               # GLD stays retired
     assert cfg.symbols["SPY"].blackout_event_types == ("FOMC", "CPI")
     assert cfg.config_hash == hashlib.sha256(MACE_YAML.read_bytes()).hexdigest()
 
@@ -154,21 +156,21 @@ def test_shipped_config_passes_exdiv_gate():
 
 def test_enabled_guard_without_dates_fails(tmp_path):
     d = _base(); d["symbols"]["EWZ"]["enabled"] = True   # EWZ exdiv_guard is true
-    exdiv = _exdiv(tmp_path, "XLE", "GDX")                # calendar has actives, NOT EWZ
+    exdiv = _exdiv(tmp_path, "XLE", "GDX", "FXI", "IWM", "SPY")   # all shipped actives, NOT EWZ
     with pytest.raises(ValueError, match="EWZ"):
         _load(tmp_path, d, exdiv)
 
 
 def test_enabled_guard_off_without_dates_ok(tmp_path):
     d = _base(); d["symbols"]["USO"]["enabled"] = True    # USO exdiv_guard is false
-    # tmp calendar must still carry the shipped enabled+guarded actives (XLE, GDX)
-    cfg = _load(tmp_path, d, _exdiv(tmp_path, "XLE", "GDX"))
+    # tmp calendar must still carry ALL shipped enabled+guarded actives
+    cfg = _load(tmp_path, d, _exdiv(tmp_path, "XLE", "GDX", "FXI", "IWM", "SPY"))
     assert cfg.symbols["USO"].enabled is True
 
 
 def test_enabled_guard_with_dates_ok(tmp_path):
     d = _base(); d["symbols"]["EWZ"]["enabled"] = True
-    cfg = _load(tmp_path, d, _exdiv(tmp_path, "XLE", "GDX", "EWZ"))
+    cfg = _load(tmp_path, d, _exdiv(tmp_path, "XLE", "GDX", "FXI", "IWM", "SPY", "EWZ"))
     assert cfg.symbols["EWZ"].enabled is True
 
 
