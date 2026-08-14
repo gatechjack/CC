@@ -2149,3 +2149,34 @@ strikes / World Cup / Iran–Israel peace-deal deadlines) does persist in clean
 data (assessment §6), but a series-level cap is a risk-control refinement with
 no edge left to protect. Reopen only if a NEW Board memo revives the division
 on a new thesis.
+
+---
+
+## SECURITY / P2 — Rotate TASTYTRADE_PROVIDER_SECRET + migrate Tastytrade creds to Azure KeyVault (filed 2026-08-14)
+
+**Rotate.** `TASTYTRADE_PROVIDER_SECRET` was exposed in cleartext in an agent
+session transcript on 2026-08-14 — a read-only diagnostic script's
+`${VAR:-no}` shell expansion printed the value instead of a placeholder. The
+credential is **read-only** (Tastytrade market-metrics / IVR provider secret —
+no order-placement or withdrawal scope), so blast radius is low and **rotation
+is NOT urgent** (operator ruling 2026-08-14: deferred to backlog). When done:
+regenerate the provider secret in the Tastytrade developer/OAuth console.
+
+**Migrate to KeyVault.** The Tastytrade creds (`TASTYTRADE_PROVIDER_SECRET`
++ `TASTYTRADE_REFRESH_TOKEN`) currently live **only** in the root-only systemd
+EnvironmentFile `/etc/trading-corp/tastytrade.env` (0600 root) — they are
+**NOT** in Azure KeyVault (verified 2026-08-14: `load_secrets()` as azureuser
+returned them absent from KV). Add both as KeyVault secrets so the engine +
+tooling source them via the VM managed identity (`load_secrets()` already pulls
+`KEY_VAULT_URI` → KV), matching every other secret. Do the rotation + KV-add
+**together**: regenerate → write the new value to KeyVault → update/retire the
+env file → restart the engine (outside 15:40–15:58 ET).
+
+**Cross-ref.** Once the creds are in KeyVault, the 2026-08-14 IVR-harness fix's
+interim wrapper-injection (root reads the root-only file → `runuser -w` →
+azureuser python) can be **simplified**: `scripts/mace_shadow_eval.py` could
+call `load_secrets()` (KeyVault via managed identity) directly, dropping the
+wrapper's file-read + injection entirely. See `runbooks/deploy_log.md`
+(2026-08-14 IVR-harness fix) + memory.
+
+**Priority: P2 / security-hygiene (read-only cred, low blast radius; operator-queued).**
