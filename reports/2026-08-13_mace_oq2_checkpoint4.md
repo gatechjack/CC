@@ -110,6 +110,27 @@ tables A+B above (17 named tests + 2 module-level fixture pins), of which 3
 surfaced as live failures on the first targeted run (the IBIT w1/w2 fixture
 mismatch) and the rest were caught pre-run. This table is authoritative.
 
+### E. Mandated-matrix case → test-name map (CP4-acceptance closure)
+
+All PASS in the targeted run AND inside the 3436 full suite (0 MACE failures):
+
+| # | Mandated case | Test(s) |
+|---|---|---|
+| 1 | Window-overflow (symbol's window exhausted → audited skip, no run_entry) | `test_mace_manager_window.py::test_window_exhausted_symbol_skipped_with_audit`; executor-side `test_mace_execution.py::test_entry_window_budget_exhausted_stands_down_before_placing` + `::test_entry_window_budget_mid_ladder_stands_down_clean` |
+| 2 | Ladder fails mid-flight, others proceed | `test_mace_manager_window.py::test_ladder_exception_on_second_symbol_third_still_runs` |
+| 3 | Cancel-404 under the serialized model (deadline set, behavior identical) | `test_mace_execution.py::test_entry_cancel_error_with_deadline_proceeds_next_attempt` + `::test_entry_unconfirmed_with_deadline_behavior_identical` |
+| 4 | RiskAgent reject on symbol 2 of 3 → S3 still runs | `test_mace_manager_window.py::test_risk_reject_standdown_on_second_symbol_third_still_runs`; executor-side `test_mace_execution.py::test_run_entry_risk_reject_never_places_clean_standdown` |
+| 5 | Dup-entry regression under the serialized model | `test_mace_overflow_dup_entry.py::test_router_does_not_reroute_to_entered_primary` + `::test_manager_places_once_when_second_symbol_forfeits` (e2e, exactly-one-placement); 3-symbol-universe form `test_mace_strategy_entry.py::test_overflow_does_not_reroute_to_entered_primary` + `::test_overflow_excludes_forfeiting_symbol` |
+| 6 | Deployment-cap (reserve) binding mid-eval | `test_mace_manager_window.py::test_reserve_binds_after_first_fill_second_superseded` (S1 fills → fresh load_all → S2 superseded at 0.95×E) |
+| 7 | Fill on last attempt at cutoff (in-flight fill past deadline still books, fake-fill path) | `test_mace_execution.py::test_entry_cancel_race_fill_past_deadline_still_books`; attempt-1 floor `::test_entry_thin_budget_attempt_one_fires_and_books` |
+| 8a | Halt latch mid-round halts next symbol + audits | `test_mace_halt_button.py::test_latch_mid_round_halts_next_symbol_with_audit` |
+| 8b | Per-attempt halt → `operator_halt` clean stand-down | `test_mace_halt_button.py::test_executor_halt_stands_down_before_placing` + `::test_mid_ladder_halt_stands_down_after_confirmed_dead`; precedence `::test_cutoff_wins_reason_over_operator_halt` + `::test_operator_halt_wins_reason_over_window_budget` |
+| 8c | Manage/exits run normally while halted (Board-required proof) | `test_mace_halt_button.py::test_manage_exits_still_run_while_halted` |
+| 8d | Endpoints write audit BEFORE state | `test_mace_halt_button.py::test_endpoints_audit_before_state` |
+| 8e | Tri-state renders (+ latch durability, honest latency) | `test_mace_halt_button.py::test_tri_state_renders_and_latch_is_durable` + `::test_full_page_includes_halt_pill` + `::test_halt_never_recalls_inflight_fill_honest_latency` |
+
+Supporting fail-safe/round-start halt coverage: `test_latch_at_round_start_no_placements_evals_still_audited`, `test_latch_read_error_fails_safe_not_halted`, `test_cleared_latch_runs_normally`, `test_halt_routes_registered`.
+
 ## 4. Drift-base evidence (Board ruling 5)
 
 `git log --oneline e113843..b11af9b` (the span from the Board-named base to the

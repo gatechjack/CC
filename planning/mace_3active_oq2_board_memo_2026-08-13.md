@@ -51,13 +51,23 @@ is coherent behavior, not a defect.
 
 ## 4. SURFACED DEVIATION — IBIT ships `exdiv_guard: false`
 
-The config boot gate (config.py: enabled + guard-on requires real calendar
-dates or `load_mace_config` raises) forces the choice: IBIT has NO ex-dividend
-dates (spot-bitcoin ETP, non-payer — same class as GLD/USO, which already ship
-guard:false on the identical rationale). Shipping guard:true would brick boot;
-shipping placeholder dates would violate the never-guessed-dates rule. IBIT
-therefore ships `exdiv_guard: false` with the non-payer rationale in the yaml
-comment. This is a DEVIATION from the "guard on for every active" ideal,
+The config boot gate (`mace/config.py:396-416`, itself a Board ruling —
+2026-08-09 Checkpoint 1) validates: any symbol BOTH `enabled` AND
+`exdiv_guard: true` with ZERO entries for it in the ex-div calendar collects a
+validation error and `load_mace_config` raises ValueError — boot REFUSAL, not
+a warning. The WHY, per the gate's own rationale: an enabled+guard-on symbol
+with no dates means the position-CLOSING guard is **silently inert** — a
+zero-HITL engine would run believing it has ex-div protection it does not
+have. Fail-closed at boot is the only honest behavior.
+
+That gate forces the IBIT choice among exactly three options: (1)
+`guard: true` + no dates = boot refusal (bricks the engine); (2) `guard: true`
++ fabricated dates = violates the never-guessed-dates rule AND is
+meaningless — IBIT is a spot-bitcoin ETP that has never paid and has no
+distribution schedule to guess FROM (nothing to be silently-inert ABOUT);
+(3) `guard: false` with the non-payer rationale documented = the GLD/USO
+precedent (both non-payers, both already ship guard:false on identical
+grounds). IBIT ships (3). This is a DEVIATION from the "guard on for every active" ideal,
 surfaced here for the record; it is the established non-payer precedent, not
 a new policy.
 
