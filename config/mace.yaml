@@ -109,7 +109,10 @@ symbols:
         # (never load-bearing before ~November at 30-45 DTE). Board CP0 Option A. ***
 
   # ── backfills (enabled only by the Phase-5 roster pick) ────────────────────
-  FXI:  {enabled: false, width_dollars: 1, blackout_event_types: [PBOC, LPR_FIX], exdiv_guard: true}
+  FXI:  {enabled: false, width_dollars: 1, blackout_event_types: [], exdiv_guard: true}
+        # PBOC/LPR blackout DEFERRED — no formal blackout window exists; LPR is single
+        # monthly date (20th, holiday-roll). Known partial-coverage gap; revisit before
+        # relying on FXI China-macro gating.
         # Board 2026-08-13: width 1 (fallback_width_dollars REMOVED — validator requires
         # fallback < width). ex-div 12/15 + 12/30 ISSUER-CONFIRMED (iShares GPS0826-5839861).
         # Ref strikes VERY thin (OI 0) — liveness gate may bar entries; one-slot cap (Board).
