@@ -498,13 +498,16 @@ class MaceExecutor:
         return await self.port.place_resting_close(spec, contracts, net_debit_limit, ref_id)
 
     # -- ENTRY LADDER ---------------------------------------------------------
-    async def run_entry(self, ev, session_date: date) -> EntryOutcome:
+    async def run_entry(self, ev, session_date: date, *,
+                        deadline: Optional[datetime] = None) -> EntryOutcome:
         """Entry credit ladder (plan § Entry ladder). `ev` is a strategy
         EvalResult with `entered=True` carrying spec/contracts/max_risk_usd.
         Writes the durable `submitting` anchor first, walks the credit DOWN toward
         marketability across ≤ entry_max_attempts, books ONLY on a confirmed
         `filled`, and stands down (no fill = no trade) on floor-drift / cutoff /
-        exhaustion."""
+        exhaustion. `deadline` (OQ-2) is the manager's per-symbol share of the
+        entry window — past it, stand down `window_budget` so later symbols
+        still get their turn; the global 15:58 cutoff always wins the reason."""
         spec: CondorSpec = ev.spec
         contracts: int = ev.contracts
         rung_id = spec.rung_id(session_date)
@@ -522,9 +525,15 @@ class MaceExecutor:
         for k in range(1, x.entry_max_attempts + 1):
             # 15:58 cutoff — every prior attempt was confirmed dead, so a clean
             # stand-down can delete the anchor (nothing filled, nothing working).
-            if self._now_et().time() >= cutoff:
+            now_t = self._now_et().time()
+            if now_t >= cutoff:
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "cutoff", clean=True)
+            # OQ-2 window budget (checked AFTER cutoff so the global cutoff always
+            # wins the reason) — the manager's per-symbol share of the window ran out.
+            if deadline is not None and now_t >= deadline.time():
+                return self._entry_standdown(spec, rung_id, k - 1, last_price,
+                                             "window_budget", clean=True)
 
             quotes = await self._fresh_quotes(spec)
             credit_mid = self._credit_mid(quotes)

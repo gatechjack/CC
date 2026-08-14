@@ -95,7 +95,7 @@ class _FakeExecutor:
     def __init__(self):
         self.entries = []
 
-    async def run_entry(self, ev, session_date):
+    async def run_entry(self, ev, session_date, **kw):  # kw: OQ-2 deadline=
         self.entries.append(ev.symbol)
         return ex.EntryOutcome(ev.spec.rung_id(session_date), True,
                                credit=ev.credit_mid, attempts=1)

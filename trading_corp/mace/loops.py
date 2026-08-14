@@ -57,7 +57,7 @@ async def _fire_slot(division, name: str, session_date, logger_agent) -> None:
 
 
 async def mace_daily_slots_loop(division, logger_agent, *, now_et_fn=now_et,
-                                slots=_DEFAULT_SLOTS, poll_interval_sec: int = 30) -> None:
+                                slots=_DEFAULT_SLOTS, poll_interval_sec: int = 5) -> None:
     """15:40 snapshot -> 15:45 entry -> 15:50 summary, ET weekdays, deduped per
     (date, slot). Fires a slot's op once `now >= slot time` on that date."""
     fired: set = set()

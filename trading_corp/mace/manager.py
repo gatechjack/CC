@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Callable, Optional
 
 from trading_corp.mace import ivr_provider as ivr
@@ -191,13 +191,42 @@ class MaceManager:
                         entered=sum(1 for r in primary + overflow if r.entered))
             return result
 
-        # Place each ENTER in order, RE-VALIDATING against post-placement state: the
+        # Place each ENTER, RE-VALIDATING against post-placement state: the
         # capacity/reserve/duplicate gates depend on `rungs`, so reload it before each
         # placement (cheap: reuse the round's chains/IVR via dataclasses.replace,
         # refresh only rungs). Without this, a rung placed earlier this round is
         # invisible to the next placement's gates (the stale pre-placement snapshot).
-        for res in [r for r in primary + overflow if r.entered]:
+        #
+        # OQ-2 (entry-window serialization, Board-approved 2026-08-13): placements
+        # are PRIORITIZED — entered primaries highest-IVR first (the same
+        # missing-IVR=-1.0 convention route_overflow's ivr_of uses; the sort is
+        # stable, so IVR-less symbols keep config order), overflow entries after
+        # primaries — and each symbol gets a DYNAMIC time budget:
+        #   deadline = now + (cutoff - now) / symbols_remaining
+        # recomputed from the ACTUAL clock before each ladder, so an early fill
+        # donates its unused window to later symbols. A symbol whose turn arrives
+        # with no window left is SKIPPED with a mace_entry_window_skip audit
+        # (never silently starved); inside the ladder the deadline stands down as
+        # "window_budget" through the same clean stand-down path as the 15:58
+        # cutoff. Ladders stay strictly SEQUENTIAL — one in flight, ever (the
+        # dup-entry recheck above and the reserve gate depend on it).
+        to_place = sorted(
+            [r for r in primary if r.entered],
+            key=lambda r: r.ivr_value if r.ivr_value is not None else -1.0,
+            reverse=True) + [r for r in overflow if r.entered]
+        cutoff_t = dtime.fromisoformat(self.cfg.entry.entry_cutoff_et)
+        for i, res in enumerate(to_place):
             try:
+                now = self._now_et()
+                cutoff_dt = now.replace(hour=cutoff_t.hour, minute=cutoff_t.minute,
+                                        second=0, microsecond=0)
+                remaining = (cutoff_dt - now).total_seconds()
+                if remaining <= 0:
+                    self._audit("mace_entry_window_skip", symbol=res.symbol,
+                                position=i + 1, of=len(to_place),
+                                reason="window_exhausted")
+                    continue
+                deadline = now + timedelta(seconds=remaining / (len(to_place) - i))
                 recheck = st.evaluate_entry(
                     res.symbol, self.cfg,
                     replace(ctx, rungs=self.store.load_all()),
@@ -206,7 +235,8 @@ class MaceManager:
                     self._audit("mace_entry_superseded", symbol=res.symbol,
                                 skip_reason=recheck.skip_reason, detail=res.detail)
                     continue
-                out = await self.executor.run_entry(recheck, session_date)
+                out = await self.executor.run_entry(recheck, session_date,
+                                                    deadline=deadline)
                 result.outcomes.append(out)
             except Exception as exc:  # noqa: BLE001 — top-level loop guard
                 self._audit("mace_entry_exception", symbol=res.symbol, error=str(exc))
