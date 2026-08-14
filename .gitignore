@@ -81,3 +81,11 @@ Goals/
 tree.txt
 data/*.bak-*
 tmp/
+
+# Ad-hoc az run-command paste-runners (per command-paste-rule) — session
+# scratch generated during deploys, never committed. Root-anchored so no
+# tracked script under scripts/ or deploy/ is ever masked.
+/mace_*.ps1
+/mace_*.sh
+/_mace_*.ps1
+/_mace_*.sh
