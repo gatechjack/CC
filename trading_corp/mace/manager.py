@@ -22,6 +22,7 @@ side effects.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time as dtime, timedelta
@@ -118,6 +119,25 @@ class MaceManager:
         except (TypeError, ValueError):
             return None
 
+    def _entry_halted(self) -> bool:
+        """The /mace UI halt latch (agent_state robinhood_mace/entry_halt).
+
+        FAIL-SAFE = NOT halted: an absent row or a read error must not halt
+        entries (auto_execute stays the primary kill-switch); the latch only
+        ADDS a halt. Checked at round start, per symbol, and per attempt
+        (via run_entry's halt_fn) — an already-resting order still completes
+        its fill-or-cancel cycle (the honest latency shown in the UI)."""
+        try:
+            row = self.store.conn.execute(
+                "SELECT value_json FROM agent_state WHERE agent=? AND key=?",
+                ("robinhood_mace", "entry_halt")).fetchone()
+            if row is None:
+                return False
+            return bool(json.loads(row["value_json"]).get("halted"))
+        except Exception:  # noqa: BLE001
+            _LOG.exception("mace entry_halt latch read failed (fail-safe: NOT halted)")
+            return False
+
     # ── entry ────────────────────────────────────────────────────────────
     async def build_entry_context(self, session_date: date) -> st.EntryContext:
         symbols = self._enabled_symbols()
@@ -190,6 +210,10 @@ class MaceManager:
             self._audit("mace_entry_halted", reason="auto_execute=false",
                         entered=sum(1 for r in primary + overflow if r.entered))
             return result
+        if self._entry_halted():
+            self._audit("mace_entry_halted", reason="operator_halt_latch",
+                        entered=sum(1 for r in primary + overflow if r.entered))
+            return result
 
         # Place each ENTER, RE-VALIDATING against post-placement state: the
         # capacity/reserve/duplicate gates depend on `rungs`, so reload it before each
@@ -217,6 +241,13 @@ class MaceManager:
         cutoff_t = dtime.fromisoformat(self.cfg.entry.entry_cutoff_et)
         for i, res in enumerate(to_place):
             try:
+                # Operator halt latch re-checked before EVERY ladder (not just at
+                # round start) — a mid-round /mace HALT stops the NEXT symbol.
+                if self._entry_halted():
+                    self._audit("mace_entry_halted_midround",
+                                remaining=[r.symbol for r in to_place[i:]],
+                                reason="operator_halt_latch")
+                    break
                 now = self._now_et()
                 cutoff_dt = now.replace(hour=cutoff_t.hour, minute=cutoff_t.minute,
                                         second=0, microsecond=0)
@@ -236,7 +267,8 @@ class MaceManager:
                                 skip_reason=recheck.skip_reason, detail=res.detail)
                     continue
                 out = await self.executor.run_entry(recheck, session_date,
-                                                    deadline=deadline)
+                                                    deadline=deadline,
+                                                    halt_fn=self._entry_halted)
                 result.outcomes.append(out)
             except Exception as exc:  # noqa: BLE001 — top-level loop guard
                 self._audit("mace_entry_exception", symbol=res.symbol, error=str(exc))

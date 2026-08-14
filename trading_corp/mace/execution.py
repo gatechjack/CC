@@ -499,7 +499,8 @@ class MaceExecutor:
 
     # -- ENTRY LADDER ---------------------------------------------------------
     async def run_entry(self, ev, session_date: date, *,
-                        deadline: Optional[datetime] = None) -> EntryOutcome:
+                        deadline: Optional[datetime] = None,
+                        halt_fn: Optional[Callable[[], bool]] = None) -> EntryOutcome:
         """Entry credit ladder (plan § Entry ladder). `ev` is a strategy
         EvalResult with `entered=True` carrying spec/contracts/max_risk_usd.
         Writes the durable `submitting` anchor first, walks the credit DOWN toward
@@ -507,7 +508,10 @@ class MaceExecutor:
         `filled`, and stands down (no fill = no trade) on floor-drift / cutoff /
         exhaustion. `deadline` (OQ-2) is the manager's per-symbol share of the
         entry window — past it, stand down `window_budget` so later symbols
-        still get their turn; the global 15:58 cutoff always wins the reason."""
+        still get their turn; the global 15:58 cutoff always wins the reason.
+        `halt_fn` is the operator /mace halt latch, re-checked per attempt —
+        a resting order still completes its fill-or-cancel cycle (honest
+        latency); precedence: cutoff > operator_halt > window_budget."""
         spec: CondorSpec = ev.spec
         contracts: int = ev.contracts
         rung_id = spec.rung_id(session_date)
@@ -529,6 +533,11 @@ class MaceExecutor:
             if now_t >= cutoff:
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "cutoff", clean=True)
+            # Operator halt latch (/mace HALT button) — before window_budget so a
+            # deliberate operator action wins the reason over a passive timeout.
+            if halt_fn is not None and halt_fn():
+                return self._entry_standdown(spec, rung_id, k - 1, last_price,
+                                             "operator_halt", clean=True)
             # OQ-2 window budget (checked AFTER cutoff so the global cutoff always
             # wins the reason) — the manager's per-symbol share of the window ran out.
             if deadline is not None and now_t >= deadline.time():

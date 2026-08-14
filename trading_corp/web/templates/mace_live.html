@@ -33,6 +33,9 @@
       process: {{ mode }}
     </span>
 
+    {# entry-halt kill switch (the ONE write surface) — tri-state, self-polling #}
+    {% include "partials/mace_halt.html" %}
+
     <div class="ml-auto flex items-center gap-2">
       {% for name, on in [('enabled', b.enabled), ('standby', b.standby), ('auto_execute', b.auto_execute)] %}
         <span class="text-[10px] uppercase font-mono tracking-wider px-1.5 py-0.5 rounded
@@ -211,6 +214,6 @@
 </div>
 
 <div class="text-center text-muted text-[10px] font-mono py-3">
-  Robinhood MACE · v1 · zero-HITL · open-rungs HTMX-poll ~30s · go-live blocked on the RH cancel-path fix
+  Robinhood MACE · v1 · zero-HITL · open-rungs HTMX-poll ~30s · entry-halt button = kill switch (exits always run)
 </div>
 {% endblock %}

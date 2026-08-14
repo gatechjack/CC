@@ -90,7 +90,7 @@ class _CaptureExecutor:
         self.standdown_on = set(standdown_on)
         self.book_into = book_into            # RungStore: insert a rung on fill (reserve test)
 
-    async def run_entry(self, ev, session_date, *, deadline=None):
+    async def run_entry(self, ev, session_date, *, deadline=None, halt_fn=None):
         self.calls.append((ev.symbol, deadline))
         if ev.symbol in self.raise_on:
             raise RuntimeError(f"{ev.symbol} ladder blew up mid-flight")

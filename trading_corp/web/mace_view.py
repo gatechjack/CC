@@ -10,6 +10,9 @@ Routes:
 
     GET /mace                    full cockpit page (shell)
     GET /mace/partials/rungs     open-rungs table fragment (htmx-polled ~30s)
+    GET /mace/partials/halt      entry-halt tri-state pill (htmx-polled ~30s)
+    POST /mace/halt              set the entry-halt latch (audit-before-state)
+    POST /mace/arm               clear the entry-halt latch (audit-before-state)
 
 DATA-READINESS DISCIPLINE (mirrors the SFP cockpit): MACE launches STANDBY with
 zero open rungs. Every panel renders an HONEST-EMPTY state until real rows exist
@@ -22,9 +25,15 @@ the broker (a GET must not place API load or hit RH). The live per-rung MARK /
 distance-to-stop / distance-to-PT are computed by the manage LOOP, not the
 dashboard, so they render "—" here (honest — the dashboard is a read model).
 
-MACE is zero-HITL: this cockpit is observability only. There are NO approve/
-reject controls (CLAUDE.md's web-app-is-the-HITL-surface rule is not engaged —
-MACE has no approval gates in its order path).
+MACE is zero-HITL: there are NO approve/reject controls (CLAUDE.md's
+web-app-is-the-HITL-surface rule is not engaged — MACE has no approval gates in
+its order path). The ONE write surface is the entry-HALT button (Board-added
+2026-08-13): a kill-switch latch in `agent_state (robinhood_mace, entry_halt)`
+with auto_execute:false semantics — it halts NEW entries at the next
+symbol/attempt boundary (an already-resting order completes its fill-or-cancel
+cycle; HONEST latency, stated in the UI) and open-position management is
+deliberately unaffected. The engine reads the latch fail-safe (absent/error =
+NOT halted; auto_execute stays the primary kill).
 """
 from __future__ import annotations
 
@@ -38,7 +47,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
 from trading_corp.persistence import db
-from trading_corp.utils.time import now_et
+from trading_corp.utils.time import now_et, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -252,6 +261,31 @@ def _upcoming_events(db_url: str, days: int = 7) -> list[dict]:
     return out
 
 
+# ── entry-halt latch (the ONE write surface) ─────────────────────────────
+def _halt_ctx(deps: Any, db_url: str) -> dict:
+    """Tri-state for the halt pill: HALTED (config) when auto_execute is off
+    (the latch is moot — config is the stronger kill), HALTED (button) when the
+    latch is set, else ARMED. Latch read errors render as unlatched here (read
+    model only — the ENGINE's own fail-safe read is what governs behavior)."""
+    badge = mace_badge(deps)
+    latch = {"halted": False, "ts": None, "source": None}
+    try:
+        row = db.load_agent_state(DIVISION, "entry_halt", db_url=db_url)
+        if row is not None and isinstance(row[0], dict):
+            latch = {"halted": bool(row[0].get("halted")), "ts": row[0].get("ts"),
+                     "source": row[0].get("source")}
+    except Exception:  # noqa: BLE001 — a latch read must never 500 the pill
+        log.exception("mace_view: entry_halt latch read failed")
+    if not badge["auto_execute"]:
+        state = "halted_config"
+    elif latch["halted"]:
+        state = "halted_button"
+    else:
+        state = "armed"
+    return {"halt": {"state": state, "latch": latch,
+                     "auto_execute": badge["auto_execute"]}}
+
+
 def register(app: FastAPI) -> None:
     templates = app.state.templates
     deps = app.state.deps
@@ -274,6 +308,7 @@ def register(app: FastAPI) -> None:
             "events": await _q(_upcoming_events, db_url, 7),
             "closed": await _q(_recent_closed, db_url, 10),
             "mode": getattr(deps, "mode", "PAPER"),
+            **(await _q(_halt_ctx, deps, db_url)),
             **(await _rungs_ctx()),
         }
         return templates.TemplateResponse(request, "mace_live.html", ctx)
@@ -282,3 +317,42 @@ def register(app: FastAPI) -> None:
     async def mace_rungs(request: Request):
         return templates.TemplateResponse(
             request, "partials/mace_live_sections.html", await _rungs_ctx())
+
+    async def _halt_partial(request: Request):
+        return templates.TemplateResponse(
+            request, "partials/mace_halt.html", await _q(_halt_ctx, deps, db_url))
+
+    def _set_latch(halted: bool, kind: str) -> None:
+        """AUDIT BEFORE STATE (CLAUDE.md #2): the durable mace_operations event
+        lands before the latch flips. Telemetry failure must never block the
+        halt itself (engine convention), so the audit is guarded — but it is
+        always ATTEMPTED first."""
+        ts = now_utc().isoformat(timespec="seconds")
+        payload = {"division": DIVISION, "halted": halted, "ts": ts,
+                   "source": "dashboard_button"}
+        try:
+            if deps.logger_agent is not None:
+                deps.logger_agent.log_event("mace_operations", kind, payload)
+        except Exception:  # noqa: BLE001
+            log.exception("mace_view: %s audit failed (latch still applied)", kind)
+        db.set_agent_state(DIVISION, "entry_halt",
+                           {"halted": halted, "ts": ts, "source": "dashboard_button"},
+                           db_url=db_url)
+        log.info("%s: latch halted=%s", kind, halted)
+
+    @app.get("/mace/partials/halt", response_class=HTMLResponse)
+    async def mace_halt_state(request: Request):
+        return await _halt_partial(request)
+
+    @app.post("/mace/halt", response_class=HTMLResponse)
+    async def mace_halt(request: Request):
+        """Halt NEW entries (auto_execute:false semantics — manage/exits keep
+        running; a resting order completes its ≤fill-wait cancel cycle)."""
+        await asyncio.to_thread(_set_latch, True, "mace_ui_halt")
+        return await _halt_partial(request)
+
+    @app.post("/mace/arm", response_class=HTMLResponse)
+    async def mace_arm(request: Request):
+        """Clear the entry-halt latch (entries resume at the next eval slot)."""
+        await asyncio.to_thread(_set_latch, False, "mace_ui_arm")
+        return await _halt_partial(request)
