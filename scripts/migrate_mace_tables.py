@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MACE Phase 1 migration: create the 4 net-new MACE tables on a target DB.
+"""MACE migration: create the net-new MACE tables/columns on a target DB.
 
 Plan: planning/mace_v1_plan.md § DB / Phase 1. The tables (`mace_rung`,
 `mace_equity_snapshot`, `mace_iv_history`, `economic_event`) live in the
@@ -38,7 +38,13 @@ MACE_TABLES = (
     "mace_rung",
     "mace_equity_snapshot",
     "mace_iv_history",
+    "mace_rung_live",       # UI rebuild 2026-08-14 — volatile per-rung live-state snapshot
     "economic_event",
+)
+# Columns added by _maybe_add_column (idempotent ALTER, not in CREATE TABLE) that
+# the verify must also confirm on an upgraded prod DB.
+MACE_COLUMNS = (
+    ("mace_rung", "entry_atm_iv"),   # A3 — durable per-rung entry ATM IV
 )
 MACE_INDEXES = (
     "ix_mace_rung_symbol_status",
@@ -57,6 +63,18 @@ def _present(conn: sqlite3.Connection, kind: str, names: tuple[str, ...]) -> dic
         ).fetchall()
     }
     return {n: (n in have) for n in names}
+
+
+def _columns_present(conn: sqlite3.Connection) -> dict[str, bool]:
+    """Confirm _maybe_add_column migrations landed (upgraded prod DBs)."""
+    out: dict[str, bool] = {}
+    for table, col in MACE_COLUMNS:
+        try:
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        except sqlite3.OperationalError:
+            cols = set()
+        out[f"{table}.{col}"] = col in cols
+    return out
 
 
 def _economic_event_has_unique(conn: sqlite3.Connection) -> bool:
@@ -81,6 +99,7 @@ def verify(db_url: str) -> bool:
     try:
         tabs = _present(conn, "table", MACE_TABLES)
         idxs = _present(conn, "index", MACE_INDEXES)
+        cols = _columns_present(conn)
         uniq = _economic_event_has_unique(conn)
     finally:
         conn.close()
@@ -90,12 +109,15 @@ def verify(db_url: str) -> bool:
         print(f"  table  {'OK ' if ok else 'MISS'}  {name}")
     for name, ok in idxs.items():
         print(f"  index  {'OK ' if ok else 'MISS'}  {name}")
+    for name, ok in cols.items():
+        print(f"  column {'OK ' if ok else 'MISS'}  {name}")
     print(f"  unique {'OK ' if uniq else 'MISS'}  economic_event(event_type,event_date,symbol_scope)")
 
-    all_ok = all(tabs.values()) and all(idxs.values()) and uniq
+    all_ok = all(tabs.values()) and all(idxs.values()) and all(cols.values()) and uniq
     print(f"[verify] {'PASS' if all_ok else 'FAIL'} — "
           f"{sum(tabs.values())}/{len(MACE_TABLES)} tables, "
           f"{sum(idxs.values())}/{len(MACE_INDEXES)} indexes, "
+          f"{sum(cols.values())}/{len(MACE_COLUMNS)} columns, "
           f"unique={'yes' if uniq else 'no'}")
     return all_ok
 
