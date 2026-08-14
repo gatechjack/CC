@@ -1,0 +1,23 @@
+﻿Enable succeeded: 
+[stdout]
+=== STEP 1: CLI add ===
+ADDED: OPEC 2026-09-07 scope=ALL source=manual
+
+=== STEP 2: OPEC rows on record ===
+DATE         TYPE           SCOPE    SOURCE   FETCHED_AT
+2026-09-07   OPEC           ALL      manual   2026-08-14T04:41:25+00:00
+-- 1 event(s)
+
+=== STEP 3: end-to-end gate proof (deployed code + live DB, read-only) ===
+XLE blackout_event_types: ['OPEC']
+events loaded: 46
+eval 2026-09-04 window: {2026-09-04, 2026-09-07}
+is_blackout XLE @ 2026-09-04 eval: True -> PASS (gate FIRES)
+is_blackout XLE @ 2026-09-08 eval: False -> PASS (re-eligible, event passed)
+counterfactual raw Sunday 2026-09-06 row @ 9/4 eval: False -> CONFIRMED INERT (weekend date can never match)
+bonus: is_blackout GDX @ 2026-09-15 eval (FOMC 9/16): True -> PASS
+
+RESULT: OK
+
+[stderr]
+

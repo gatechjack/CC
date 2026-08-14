@@ -1,0 +1,45 @@
+﻿Enable succeeded: 
+[stdout]
+== unit state (want new MainPID, active, NRestarts=0) ==
+MainPID=707835
+NRestarts=0
+ActiveState=active
+boot: 2026-08-14 04:04:48 UTC
+== tracebacks since boot (want 0) ==
+0
+== config_hash lines (want NEW hash; pre-deploy was fe177fcd3882) ==
+Aug 14 04:05:07 tc-prod-vm xvfb-run[707849]: 2026-08-14 04:05:07,133 INFO trading_corp.main: Robinhood MACE wired (execution_mode=live, config_hash=e9c0499886c4; standby-gated, 4 loops online; go-live BLOCKED on cancel-path fix).
+== MACE scheduler-online lines (want all 4) ==
+      1 MACE daily-slots scheduler online
+      1 MACE manage scheduler online
+      1 MACE reconcile scheduler online
+      1 MACE weekly-calendar scheduler online
+== GET /mace ==
+GET /mace HTTP 200
+IBIT on page: 2
+XLE on page: 2
+GDX on page: 2
+SPY on page: 4
+ENTRIES: ARMED
+== halt latch cycle ARM->HALT->ARM (latch only, no orders) ==
+HALT: OK - HALTED (button) rendered
+ARM: OK - ENTRIES: ARMED rendered
+== DB: latch + ui audits + rung counts (want latch cleared, halt+arm audits, SPY open=2, GLD no open) ==
+entry_halt latch: [('{"halted":false,"ts":"2026-08-14T04:09:44+00:00","source":"dashboard_button"}', '2026-08-14T04:09:44.112736+00:00')]
+ui audits (last 4): [('mace_ui_arm', '2026-08-14T04:09:44+00:00', 'mace_operations'), ('mace_ui_halt', '2026-08-14T04:09:44+00:00', 'mace_operations')]
+rung counts: [('SPY', 'open', 2)]
+== division health ==
+bitunix boot lines: 59
+pead boot lines: 5
+pmcc boot lines: 3
+kalshi boot lines: 53
+Aug 14 04:07:23 tc-prod-vm xvfb-run[707849]: 2026-08-14 04:07:23,223 INFO trading_corp.main: bitunix restart-resume [bitunix_futures] at startup: matched=0 orphan=0 case_c_deferred=0
+Aug 14 04:07:23 tc-prod-vm xvfb-run[707849]: 2026-08-14 04:07:23,638 INFO trading_corp.main: bitunix restart-resume [bitunix_sfp] at startup: matched=0 orphan=0 case_c_deferred=0
+home HTTP 200
+
+VERIFY DONE - checklist: new PID / 0 tracebacks / NEW config_hash /
+IBIT+XLE+GDX on page + ENTRIES: ARMED / halt cycle OK-OK / 4 MACE loops /
+SPY open=2, GLD no open rungs / divisions healthy / home+mace HTTP 200
+
+[stderr]
+
