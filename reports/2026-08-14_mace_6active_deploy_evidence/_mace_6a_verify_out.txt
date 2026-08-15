@@ -1,0 +1,41 @@
+﻿Enable succeeded: 
+[stdout]
+=== [1] /mace 200 + 6-active present ===
+  HTTP 200
+    active IBIT: present
+    active XLE: present
+    active GDX: present
+    active FXI: present
+    active IWM: present
+    active SPY: present
+  config_hash on page:
+5e1647f96692
+  ENTRIES state (armed/halted tokens):
+      1 ARMED
+=== [2] mace_rung by symbol/status (SPY open must be EXACTLY 2; no new FXI/IWM) ===
+    ('SPY', 'open', 2)
+=== [3] halt latch ARM->HALT->ARM ===
+   halt POST HTTP 200
+   after HALT: HALTED (button)
+   arm POST HTTP 200
+   after ARM:  ARMED
+   halt/arm audit rows (journal):
+           2 mace_ui_arm
+           2 mace_ui_halt
+=== [4] FXI enabled + dates + blackout empty, NO fail-closed (config loaded) ===
+   universe: ('IBIT', 'XLE', 'GDX', 'FXI', 'IWM', 'SPY')
+   FXI enabled=True guard=True blackout=() in_exdiv_cal=True
+   config_hash: 5e1647f96692
+=== [5] divisions healthy (boot log) ===
+Aug 14 23:38:10 tc-prod-vm xvfb-run[722765]: 2026-08-14 23:38:10,674 INFO trading_corp.agents.data_exec: Registered robinhood broker for division=robinhood_pmcc (paper=False)
+Aug 14 23:38:10 tc-prod-vm xvfb-run[722765]: 2026-08-14 23:38:10,831 INFO trading_corp.main: bitunix_sfp observer wired: symbols=['BTC/USDT.P', 'ETH/USDT.P', 'SOL/USDT.P', 'XRP/USDT.P'] execution_mode=live auto_execute=True mode_b=True symbol_modes={'BTCUSDT': ('3m', 'trading'), 'ETHUSDT': ('3m', 'trading'), 'SOLUSDT': ('3m', 'trading'), 'XRPUSDT': ('3m', 'trading')}
+Aug 14 23:38:24 tc-prod-vm xvfb-run[722765]: 2026-08-14 23:38:24,137 INFO trading_corp.main: Robinhood PEAD wired (execution_mode=live; standby-gated).
+Aug 14 23:38:24 tc-prod-vm xvfb-run[722765]: 2026-08-14 23:38:24,431 INFO trading_corp.agents.pmcc_approval_reconciler: pmcc approval reconcile loop starting (interval=300s grace=90min canary=180min)
+Aug 14 23:38:24 tc-prod-vm xvfb-run[722765]: 2026-08-14 23:38:24,434 INFO trading_corp.main: PMCC scan scheduler online: weekdays 08:30�09:25 ET
+Aug 14 23:40:43 tc-prod-vm xvfb-run[722765]: 2026-08-14 23:40:43,361 INFO trading_corp.main: bitunix ws feed started (11 caches, 11 channels)
+Aug 14 23:40:46 tc-prod-vm xvfb-run[722765]: Loading Market Data /2026-08-14 23:40:46,338 INFO trading_corp.web.app: Web command center initialized � mode=LIVE
+Aug 14 23:40:46 tc-prod-vm xvfb-run[722765]: 2026-08-14 23:40:46,340 INFO trading_corp.main: Web command center listening on http://0.0.0.0:8000
+=== done ===
+
+[stderr]
+

@@ -1,0 +1,25 @@
+﻿Enable succeeded: 
+[stdout]
+=== PRE-GATE: prod == 3772d5b base ===
+  base OK trading_corp/mace/strategy.py
+  base OK config/mace.yaml
+  base OK config/ex_dividend_calendar.yaml
+=== BACKUP -> /home/azureuser/mace_6active_bak_20260814_233644 ===
+  backup + rollback.sh created
+=== py_compile pre (current strategy.py) ===
+  pre OK
+=== SWAP ===
+  swapped trading_corp/mace/strategy.py
+  swapped config/mace.yaml
+  swapped config/ex_dividend_calendar.yaml
+=== POST-GATE: new == 3d1c284 target ===
+  target OK trading_corp/mace/strategy.py
+  target OK config/mace.yaml
+  target OK config/ex_dividend_calendar.yaml
+=== py_compile post (new strategy.py) ===
+  post OK
+=== SWAP COMPLETE (NO restart in this script) ===
+BACKUP_DIR=/home/azureuser/mace_6active_bak_20260814_233644
+
+[stderr]
+

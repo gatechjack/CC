@@ -1,0 +1,20 @@
+﻿Enable succeeded: 
+[stdout]
+ET now (server): 2026-08-14 19:38:05 EDT
+old MainPID=721092
+=== restarting trading-corp.service ===
+up after ~160s (web HTTP 200)
+=== unit state ===
+MainPID=722750
+NRestarts=0
+ExecMainStartTimestamp=Fri 2026-08-14 23:38:06 UTC
+ActiveState=active
+SubState=running
+=== Traceback/Exception in boot log? (since 2026-08-14 23:38:06 UTC) ===
+(blank above = no tracebacks)
+=== MACE wired line (config_hash) ===
+Aug 14 23:38:24 tc-prod-vm xvfb-run[722765]: 2026-08-14 23:38:24,375 INFO trading_corp.main: Robinhood MACE wired (execution_mode=live, config_hash=5e1647f96692; standby-gated, 4 loops online; go-live BLOCKED on cancel-path fix).
+=== done ===
+
+[stderr]
+
