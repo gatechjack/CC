@@ -91,12 +91,16 @@ def _load_name_wallet(db_url: str) -> list[tuple[str, str, str]]:
         if not isinstance(val, list):
             continue
         for v in val:
-            if isinstance(v, dict) and v.get("wallet"):
-                w = str(v["wallet"]).lower()
-                if w in seen:
-                    continue
-                seen.add(w)
-                out.append((str(v.get("user_name", "")), w, key))
+            if not isinstance(v, dict):
+                continue
+            # watch_only_whales (leaderboard sweep) uses proxy_wallet, not wallet
+            # -- mirror refresh_polymarket_whales.py's `wallet or proxy_wallet`.
+            w = str(v.get("wallet") or v.get("proxy_wallet") or v.get("proxyWallet") or "").lower()
+            if not w or w in seen:
+                continue
+            seen.add(w)
+            n = str(v.get("user_name") or v.get("userName") or "")
+            out.append((n, w, key))
     return out
 
 
