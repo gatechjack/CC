@@ -29,7 +29,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # --- tunable defaults (all overridable by the CLI) --------------------------
-DEFAULT_HALF_LIFE_DAYS = 45.0          # provisional; locked by calibration
+DEFAULT_HALF_LIFE_DAYS = 30.0          # LOCKED 2026-08-15 by ground-truth calibration:
+#   30d flags known-fading llllllII (ratio 0.64) while durable DegenKingBetter (0.99)
+#   / ox1star84 (1.53) stay non-fading -- widest margin. 45d also separates but puts
+#   llllllII at 0.74 (1bp from the 0.75 fade line); 60d/90d FAIL (llllllII reads steady).
+#   Tunable via --half-life-days. See reports/2026-08-15_whale_recency_scorer/.
 DEFAULT_ACCEL_RATIO = 1.25             # recent_vs_lifetime >= this -> accelerating
 DEFAULT_FADE_RATIO = 0.75              # recent_vs_lifetime <= this -> fading
 DEFAULT_DORMANT_HALF_LIVES = 2.0       # last_active older than N*half_life -> dormant
