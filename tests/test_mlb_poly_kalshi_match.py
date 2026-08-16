@@ -9,7 +9,7 @@ from __future__ import annotations
 from trading_corp.data.sports_team_mapping import MLB_TEAMS
 from trading_corp.data.mlb_poly_kalshi_match import (
     ParsedPolyBet, build_kalshi_game_index, iso_to_kalshi_date, kalshi_to_iso_date,
-    match_poly_to_kalshi, parse_poly_mlb_bet, resolve_side,
+    match_poly_to_kalshi, parse_kalshi_mlb_ticker, parse_poly_mlb_bet, resolve_side,
 )
 
 
@@ -56,6 +56,11 @@ def test_spread_outcome_is_team_but_still_skip():
 def test_prop_and_non_mlb():
     assert parse_poly_mlb_bet("mlb-sd-cle-2026-08-14-nrfi", "Yes").market_type == "prop"
     assert parse_poly_mlb_bet("nba-bos-nyk-2026-08-16", "Boston Celtics").market_type == "non_mlb"
+
+
+def test_mlb_futures_is_non_game_not_other_sport():
+    # mlb- prefix but not a single-game slug => futures/series, its own skip bucket.
+    assert parse_poly_mlb_bet("mlb-world-series-2026", "New York Yankees").market_type == "mlb_non_game"
 
 
 def test_unrecognized_team_code_fails_loudly():
@@ -106,6 +111,28 @@ def test_doubleheader_is_ambiguous_not_guessed():
     r = match_poly_to_kalshi(b, idx, dates)
     assert r.status == "doubleheader_ambiguous"
     assert len(r.kalshi_candidates) == 4 and r.kalshi_ticker is None
+
+
+def test_kalshi_dh_ticker_parse_g1_g2():
+    # Real DH convention: trailing G<n> on the team blob (verified live).
+    p1 = parse_kalshi_mlb_ticker("KXMLBGAME-26AUG171340STLCING1-STL")
+    assert p1 and p1.game_no == 1 and p1.yes_code == "STL" and p1.other_code == "CIN"
+    p2 = parse_kalshi_mlb_ticker("KXMLBGAME-26JUL171910TBBOSG2-BOS")
+    assert p2 and p2.game_no == 2 and p2.yes_code == "BOS" and p2.other_code == "TB"
+    # non-DH game: no game number
+    assert parse_kalshi_mlb_ticker("KXMLBGAME-26AUG161337NYYTOR-NYY").game_no is None
+    # AL-vs-NL all-star: not two clubs -> None (must not pollute the index)
+    assert parse_kalshi_mlb_ticker("KXMLBGAME-26JUL142000ALNL-AL") is None
+
+
+def test_real_g1_g2_dh_indexes_as_ambiguous():
+    # A whale bet on a real DH matchup must surface both G1/G2 contracts.
+    tickers = ["KXMLBGAME-26JUL171335TBBOSG1-TB", "KXMLBGAME-26JUL171335TBBOSG1-BOS",
+               "KXMLBGAME-26JUL171910TBBOSG2-TB", "KXMLBGAME-26JUL171910TBBOSG2-BOS"]
+    idx, dates = _index(tickers)
+    b = parse_poly_mlb_bet("mlb-tb-bos-2026-07-17", "Tampa Bay Rays")
+    r = match_poly_to_kalshi(b, idx, dates)
+    assert r.status == "doubleheader_ambiguous" and len(r.kalshi_candidates) == 4
 
 
 def test_no_contract_vs_out_of_window():

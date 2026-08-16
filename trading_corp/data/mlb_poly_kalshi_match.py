@@ -33,7 +33,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from trading_corp.data.sports_team_mapping import MLB_TEAMS, parse_sports_ticker
+from trading_corp.data.sports_team_mapping import MLB_TEAMS
 
 # ── Poly slug parsing ──────────────────────────────────────────────────────
 # mlb-{away}-{home}-{YYYY-MM-DD}{optional suffix}. Team codes are lowercase
@@ -129,7 +129,9 @@ def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str
     raw = {"slug": slug, "outcome": outcome, "title": title, "event_slug": event_slug}
     m = _POLY_SLUG_RE.match(slug or "")
     if not m:
-        mt = "non_mlb" if not (slug or "").startswith("mlb-") else "unparseable"
+        # mlb- prefix but not a single-game slug => MLB futures/series/awards
+        # (World Series, division, MVP, season wins). Not a non-failure other-sport.
+        mt = "mlb_non_game" if (slug or "").startswith("mlb-") else "non_mlb"
         return ParsedPolyBet(mt, None, None, None, None, None, None, None,
                              fail_reason=f"slug_no_game_match:{slug!r}", raw=raw)
 
@@ -163,13 +165,68 @@ def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str
                          side, side_name, raw=raw)
 
 
+# ── Kalshi KXMLBGAME ticker parser (DH-aware) ──────────────────────────────
+# KXMLBGAME-{YYMMMDD}{HHMM}{TEAM_BLOB}[G{n}]-{YES}. The DH suffix `G1`/`G2` on
+# the team blob is the real doubleheader discriminator (verified live 2026-08-15:
+# STLCING1/STLCING2, TBBOSG1/TBBOSG2, MILSTLG1/MILSTLG2), alongside distinct HHMM.
+# We DON'T reuse sports_team_mapping.parse_sports_ticker here because its `[A-Z]+`
+# blob silently drops these DH tickers (they'd read as no_contract). That module
+# stays byte-unchanged; this sibling parser adds DH awareness for MLB only.
+_KALSHI_MLB_RE = re.compile(
+    r"^KXMLBGAME-(?P<date>\d{2}[A-Z]{3}\d{2})(?P<time>\d{4})?"
+    r"(?P<mid>[A-Z0-9]+)-(?P<yes>[A-Z]+)\d*$"
+)
+
+
+@dataclass(frozen=True)
+class ParsedKalshiTicker:
+    date_str: str
+    time_str: str | None
+    yes_code: str            # YES-side team code
+    other_code: str          # the other team's code
+    yes_name: str
+    other_name: str
+    game_no: int | None      # 1/2 for doubleheaders, else None
+
+
+def parse_kalshi_mlb_ticker(ticker: str) -> ParsedKalshiTicker | None:
+    """Parse a KXMLBGAME ticker (DH-aware). None if it isn't a two-team MLB game
+    (e.g. the AL-vs-NL all-star ticker, whose 'teams' aren't clubs)."""
+    m = _KALSHI_MLB_RE.match(ticker or "")
+    if not m:
+        return None
+    mid, yes = m.group("mid"), m.group("yes")
+    if yes in ("TIE", "DRAW"):
+        return None
+    game_no = None
+    dm = re.search(r"G(\d)$", mid)      # trailing G<digit> == doubleheader game number
+    if dm:
+        game_no = int(dm.group(1))
+        mid = mid[:dm.start()]
+    # yes-anchored split of the remaining blob into the two team codes.
+    if mid.startswith(yes):
+        other = mid[len(yes):]
+    elif mid.endswith(yes):
+        other = mid[:-len(yes)]
+    else:
+        return None
+    if not other:
+        return None
+    yes_name, other_name = MLB_TEAMS.get(yes), MLB_TEAMS.get(other)
+    if yes_name is None or other_name is None:
+        return None
+    return ParsedKalshiTicker(m.group("date"), m.group("time"), yes, other,
+                             yes_name, other_name, game_no)
+
+
 # ── Kalshi game index ──────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class KalshiGame:
     date_iso: str
     date_str: str            # YYMMMDD
     time_str: str | None     # HHMM (doubleheader discriminator)
-    team_a_code: str         # YES-side team of ticker_a
+    game_no: int | None      # doubleheader game number (1/2), else None
+    team_a_code: str
     team_b_code: str
     team_a_name: str
     team_b_name: str
@@ -183,32 +240,31 @@ def _game_key(date_iso: str, name1: str, name2: str):
 def build_kalshi_game_index(tickers) -> dict:
     """Group KXMLBGAME tickers into games keyed by (date_iso, frozenset{names}).
 
-    A key mapping to >1 KalshiGame == a doubleheader (same clubs+date, two HHMM).
-    Each KalshiGame collects both side tickers (`-{YES}`) so the matcher can pick
-    the side the whale bet. Tickers that don't parse / unmapped teams are skipped."""
-    # First collect per (date,time,teams) -> {side_code: ticker}
+    A key mapping to >1 KalshiGame == a doubleheader (same clubs+date; distinct
+    G-number + HHMM). Each KalshiGame collects both side tickers (`-{YES}`) so the
+    matcher can pick the side the whale bet. Non-club tickers are skipped."""
+    # collect per (date, time, game_no, teams) -> {side_code: ticker}
     by_game: dict = {}
     for t in tickers:
-        p = parse_sports_ticker(t)
-        if p is None or p.team_a_name is None or p.team_b_name is None:
+        p = parse_kalshi_mlb_ticker(t)
+        if p is None:
             continue
         date_iso = kalshi_to_iso_date(p.date_str)
         if date_iso is None:
             continue
-        gk = (date_iso, p.date_str, p.time_str, frozenset({p.team_a_name, p.team_b_name}))
-        by_game.setdefault(gk, {"codes": {p.team_a: p.team_a_name, p.team_b: p.team_b_name},
+        gk = (date_iso, p.date_str, p.time_str, p.game_no,
+              frozenset({p.yes_name, p.other_name}))
+        by_game.setdefault(gk, {"codes": {p.yes_code: p.yes_name, p.other_code: p.other_name},
                                "tickers": {}})
-        # ticker's YES side = p.team_a (the code after the final '-')
-        by_game[gk]["tickers"][p.team_a] = t
+        by_game[gk]["tickers"][p.yes_code] = t
 
     index: dict = {}
-    for (date_iso, date_str, time_str, names), info in by_game.items():
+    for (date_iso, date_str, time_str, game_no, names), info in by_game.items():
         codes = info["codes"]
         code_list = list(codes)
-        # team_a/team_b assignment is arbitrary for a game object; keep both.
         a_code, b_code = code_list[0], (code_list[1] if len(code_list) > 1 else code_list[0])
         game = KalshiGame(
-            date_iso=date_iso, date_str=date_str, time_str=time_str,
+            date_iso=date_iso, date_str=date_str, time_str=time_str, game_no=game_no,
             team_a_code=a_code, team_b_code=b_code,
             team_a_name=codes[a_code], team_b_name=codes[b_code],
             ticker_by_side_code=dict(info["tickers"]),
