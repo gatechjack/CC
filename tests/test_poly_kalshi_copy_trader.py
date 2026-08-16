@@ -13,8 +13,8 @@ from trading_corp.data.polymarket_data_api_client import PolymarketRateLimitErro
 from trading_corp.data.mlb_poly_kalshi_match import build_kalshi_game_index
 from trading_corp.persistence import db as _db
 from trading_corp.persistence.models import StrategyState
-from trading_corp.agents.strategies.poly_kalshi_executor import PolyKalshiExecutor
-from trading_corp.agents.strategies.poly_kalshi_copy_trader import PolyKalshiCopyTrader
+from trading_corp.agents.strategies.poly_kalshi_executor import PolyKalshiExecutor, translate_whale_action
+from trading_corp.agents.strategies.poly_kalshi_copy_trader import PolyKalshiCopyTrader, _utc_day
 
 NYYTOR = ["KXMLBGAME-26AUG161337NYYTOR-NYY", "KXMLBGAME-26AUG161337NYYTOR-TOR"]
 
@@ -192,6 +192,48 @@ def test_loop_quote_fetch_exception_is_caught(hdb):
 
 
 # ── [G-halt] daily-loss auto-detection -> persist_halt -> block ────────────
+# ── fix (a): settlement-sweep -> $100 auto-halt (the SWEEP calls record_realized) ──
+def test_settlement_sweep_trips_100_halt_and_blocks(hdb):
+    lp, ex = _loop(hdb, daily_cap=100.0)
+    strat = ex._strategy
+    today = _utc_day()
+
+    async def get_settled():
+        return [("KXMLBGAME-A", today + "T20:00:00Z", -60.0),
+                ("KXMLBGAME-B", today + "T21:30:00Z", -45.0),      # today sum = -105
+                ("KXMLBGAME-OLD", "2026-01-01T00:00:00Z", -999.0)]  # not today -> ignored
+
+    assert _run(lp.run_settlement_sweep(get_settled)) is True       # sweep tripped the halt
+    assert StrategyState.from_persistence(strat, db_url=hdb).halted is True
+    assert lp._realized_pnl_day == -105.0                            # only today counted
+    o = translate_whale_action(whale="w", whale_wallet="0xW", kalshi_ticker=NYYTOR[0],
+                               confidence=1.0, whale_side="BUY", base_price=0.55, stake_usd=5.0)
+    assert _run(ex.submit(o))["status"] == "blocked_halt"           # enforced downstream
+
+
+def test_settlement_sweep_idempotent_no_double_count(hdb):
+    lp, ex = _loop(hdb, daily_cap=100.0)
+    today = _utc_day()
+
+    async def get_settled():
+        return [("KXMLBGAME-A", today + "T20:00:00Z", -50.0)]       # -50, above -100
+
+    assert _run(lp.run_settlement_sweep(get_settled)) is False and lp._realized_pnl_day == -50.0
+    assert _run(lp.run_settlement_sweep(get_settled)) is False      # re-sweep same settlements
+    assert lp._realized_pnl_day == -50.0                            # NOT -100 (delta 0, no double-count)
+
+
+def test_rollover_resets_trade_count(hdb):
+    day = {"v": "2026-08-16"}
+    lp, ex = _loop(hdb, day_key_fn=lambda: day["v"])
+    ex._orders_today = 10
+    _run(lp.poll_cycle(FakeClient([[_row(100)]])))     # boot day, no reset
+    assert ex._orders_today == 10
+    day["v"] = "2026-08-17"
+    _run(lp.poll_cycle(FakeClient([[_row(100)]])))     # rollover -> reset
+    assert ex._orders_today == 0
+
+
 def test_ghalt_autodetect_fires_persist_halt_and_blocks(hdb):
     lp, ex = _loop(hdb, daily_cap=10.0)
     strat = ex._strategy

@@ -57,7 +57,8 @@ class PolyKalshiCopyTrader:
         self._kidx: dict = {}
         self._kdates = frozenset()
         self._day_key = None
-        self._realized_pnl_day = 0.0
+        self._realized_pnl_day = 0.0        # accrued realized P&L for the day (fed by the sweep)
+        self._swept_realized_today = 0.0    # total the sweep has already fed (idempotent re-sweeps)
         self.shadow_log: list[dict] = []
         self.backoff_events: list[dict] = []
         self.poll_count = 0
@@ -90,10 +91,12 @@ class PolyKalshiCopyTrader:
         if self._day_key is None:      # boot: initialize, do NOT reset (counter starts 0)
             self._day_key = k
             return False
-        if k != self._day_key:         # genuine day change -> reset the in-memory counter
+        if k != self._day_key:         # genuine day change -> reset the in-memory counters
             self._day_key = k
             self._executor._deployed_usd = 0.0    # [G-daily] counter reset
+            self._executor._orders_today = 0      # [G-count] trade-count reset
             self._realized_pnl_day = 0.0
+            self._swept_realized_today = 0.0
             return True
         return False
 
@@ -111,6 +114,37 @@ class PolyKalshiCopyTrader:
                 db_url=self._executor._db_url,
             )
             return True
+        return False
+
+    async def run_settlement_sweep(self, get_settled_fn) -> bool:
+        """[G-halt loss-detection] Read settled positions -> today's realized P&L ->
+        feed the INCREMENT to record_realized (idempotent across re-sweeps -> no
+        double-count) -> the existing $100 halt path. Returns True if this sweep tripped
+        the halt.
+
+        TIMING (by design): a Kalshi position's realized P&L is only known at
+        SETTLEMENT (game end), so this loss-halt fires only AFTER settlements post --
+        HOURS after the trades. The [G-count] trade-count ceiling is the real-time
+        same-day backstop the loss-halt cannot provide.
+
+        `get_settled_fn`: awaitable -> iterable of (ticker, settled_time_iso, pnl_usd)."""
+        self._rollover_if_needed()
+        try:
+            settled = await get_settled_fn()
+        except Exception as e:  # noqa: BLE001 — a sweep fetch failure must not kill the loop
+            log.warning("poly_kalshi: settlement sweep fetch failed: %s", e)
+            return False
+        today = self._day_key_fn()
+        total_today = 0.0
+        for _ticker, settled_iso, pnl_usd in (settled or []):
+            if isinstance(settled_iso, str) and settled_iso[:10] == today:
+                total_today += float(pnl_usd)
+        delta = total_today - self._swept_realized_today
+        self._swept_realized_today = total_today
+        log.info("poly_kalshi: settlement sweep -- today realized $%.2f (new delta $%.2f)",
+                 total_today, delta)
+        if delta:
+            return self.record_realized(delta)
         return False
 
     async def _fetch(self, client, wallet: str) -> list:

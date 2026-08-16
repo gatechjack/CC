@@ -1499,6 +1499,8 @@ async def run(argv: list[str] | None = None) -> int:
                     per_trade_cap_usd=_pk_cfg.get("per_trade_cap_usd"),
                     daily_deployment_cap_usd=_pk_cfg.get("daily_deployment_cap_usd"),
                     max_slippage_cents=int(_pk_cfg.get("max_slippage_cents", 2)),
+                    max_orders_per_day=_pk_cfg.get("max_orders_per_day", 25),
+                    logger=logger_agent,   # [audit] journals every placement/reject/suppress
                 )
                 _pk_loop = PolyKalshiCopyTrader(
                     executor=_pk_executor, db_url=secrets.db_url,
@@ -1514,6 +1516,7 @@ async def run(argv: list[str] | None = None) -> int:
                     _scheduled_poly_kalshi_loop(
                         _pk_loop, broker=_pk_broker, logger_agent=logger_agent,
                         poll_sec=float(_pk_cfg.get("poll_interval_sec", 7)),
+                        sweep_sec=float(_pk_cfg.get("settlement_sweep_interval_sec", 600)),
                     )
                 )
                 log.info(
@@ -5107,13 +5110,26 @@ async def _handle_copy_order_placement(
 
 
 async def _scheduled_poly_kalshi_loop(loop, *, broker, logger_agent, poll_sec,
-                                      index_refresh_sec=900.0):
+                                      index_refresh_sec=900.0, sweep_sec=600.0):
     """Poly->Kalshi MLB copy loop (Phase 1). Refresh the KXMLBGAME index
-    periodically, then poll_cycle each interval (detect -> match -> guardrails ->
-    execute). The executor's dry_run gates real placement (auto_execute=false => shadow)."""
+    periodically, run the settlement sweep (-> $100 loss-halt) periodically, then
+    poll_cycle each interval (detect -> match -> guardrails -> execute). The
+    executor's dry_run gates real placement (auto_execute=false => shadow)."""
     import time as _pk_time
     from trading_corp.data.polymarket_data_api_client import PolymarketDataAPIClient
     from trading_corp.data.mlb_poly_kalshi_match import build_kalshi_game_index
+
+    async def _pk_get_settled():
+        # settled KAREN positions -> (ticker, settled_time_iso, pnl_usd); MLB games only.
+        st = await broker._read._client.portfolio.get_settlements(limit=200)
+        out = []
+        for s in (st or []):
+            tk = getattr(s, "ticker", "") or ""
+            pnl = getattr(s, "pnl_dollars", None)
+            settled = getattr(s, "settled_time", None)
+            if tk.startswith("KXMLBGAME") and pnl is not None and settled:
+                out.append((tk, str(settled), float(pnl)))
+        return out
 
     async def _pk_refresh_index():
         try:
@@ -5137,13 +5153,21 @@ async def _scheduled_poly_kalshi_loop(loop, *, broker, logger_agent, poll_sec,
     log.info("Poly->Kalshi MLB copy loop online (poll=%ss, dry_run=%s)",
              poll_sec, loop._executor._dry_run)
     await _pk_refresh_index()
+    try:
+        await loop.run_settlement_sweep(_pk_get_settled)   # startup: catch pre-restart losses
+    except Exception as e:  # noqa: BLE001
+        log.warning("poly_kalshi: startup settlement sweep failed: %s", e)
     _last_idx = _pk_time.time()
+    _last_sweep = _pk_time.time()
     async with PolymarketDataAPIClient() as _client:
         while True:
             try:
                 if _pk_time.time() - _last_idx > index_refresh_sec:
                     await _pk_refresh_index()
                     _last_idx = _pk_time.time()
+                if _pk_time.time() - _last_sweep > sweep_sec:
+                    await loop.run_settlement_sweep(_pk_get_settled)   # -> $100 loss-halt
+                    _last_sweep = _pk_time.time()
                 await loop.poll_cycle(_client)
             except Exception as e:  # noqa: BLE001 — a bad cycle must never kill the loop
                 log.exception("poly_kalshi loop cycle failed: %s", e)

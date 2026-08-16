@@ -1789,7 +1789,9 @@ poly_kalshi_mlb:
   poll_interval_sec: 7             # 5-10s fast-poll; 429 backoff in the loop
   activity_limit_per_poll: 50
   stake_usd: 5.0                   # operator gate: $5/trade fixed
-  daily_loss_cap_usd: 100.0        # operator gate: $100 realized loss/day -> persist_halt
+  daily_loss_cap_usd: 100.0        # $100 realized loss/day -> persist_halt (fed by the settlement sweep)
+  settlement_sweep_interval_sec: 600   # read settled positions -> realized P&L -> loss-halt (post-settlement)
+  max_orders_per_day: 25           # [G-count] real-time same-day trade-count ceiling -> halt
   per_trade_cap_usd: null          # operator: NO per-trade size cap
   daily_deployment_cap_usd: null   # operator: NO daily-deployment cap
   max_slippage_cents: 2            # thin-book guard on the market order

@@ -186,3 +186,44 @@ def test_dry_run_default_needs_no_broker(hdb):
     ex = PolyKalshiExecutor(db_url=hdb)         # dry_run defaults True, broker None
     assert ex._dry_run is True
     assert _run(ex.submit(_order()))["status"] == "DRY_RUN_would_place"
+
+
+# ── fix (b): trade-count ceiling (real-time, count-only) ────────────────────
+def test_gcount_ceiling_25_pass_26th_trips_halt_27th_blocked(hdb):
+    ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, per_trade_cap_usd=None,
+                            daily_deployment_cap_usd=None, max_orders_per_day=25,
+                            strategy="poly_kalshi_mlb_counttest")
+    for i in range(25):                                   # 25 distinct orders all place
+        o = _order(ticker=f"KXMLBGAME-26AUG16{i:04d}AAABBB-AAA")
+        assert _run(ex.submit(o))["status"] == "DRY_RUN_would_place"
+    assert ex._orders_today == 25
+    o26 = _order(ticker="KXMLBGAME-26AUG160026CCCDDD-CCC")
+    assert _run(ex.submit(o26))["status"] == "blocked_count_ceiling"   # 26th trips
+    assert StrategyState.from_persistence("poly_kalshi_mlb_counttest", db_url=hdb).halted is True
+    o27 = _order(ticker="KXMLBGAME-26AUG160027EEEFFF-EEE")
+    assert _run(ex.submit(o27))["status"] == "blocked_halt"            # 27th blocked by [G-halt]
+    assert ex._orders_today == 25                                      # blocked orders don't count
+
+
+# ── fix (c): every outcome is journaled ─────────────────────────────────────
+class _FakeLogger:
+    def __init__(self):
+        self.events = []
+
+    def log_event(self, strategy, kind, payload):
+        self.events.append((strategy, kind, dict(payload)))
+
+
+def test_placed_and_rejected_both_write_journal_rows(hdb):
+    lg = _FakeLogger()
+    ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, per_trade_cap_usd=5.0, logger=lg,
+                            strategy="poly_kalshi_mlb_journaltest")
+    _run(ex.submit(_order(stake=2.0, ticker=NYY)))          # would-place
+    _run(ex.submit(_order(stake=6.0, ticker=COLSF_SF)))     # blocked_size_cap
+    assert [k for _s, k, _p in lg.events] == ["poly_kalshi_order", "poly_kalshi_order"]
+    by_status = {p["status"]: p for _s, _k, p in lg.events}
+    assert "DRY_RUN_would_place" in by_status and "blocked_size_cap" in by_status
+    # deployed_usd + count queryable from the journal, not just in-memory:
+    assert by_status["DRY_RUN_would_place"]["deployed_usd_after"] == 2.0
+    assert by_status["DRY_RUN_would_place"]["orders_today_after"] == 1
+    assert by_status["blocked_size_cap"]["deployed_usd_after"] == 2.0   # reject added nothing
