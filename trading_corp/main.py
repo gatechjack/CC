@@ -5109,6 +5109,51 @@ async def _handle_copy_order_placement(
     )
 
 
+async def _pk_guarded_refresh(do_fetch, *, timeout=None, log=None) -> bool:
+    """Run ONE KXMLBGAME index-refresh attempt, bounded by `timeout` seconds
+    (None => unbounded) and never raising. `do_fetch` is a zero-arg coroutine
+    factory returning the game count on success. Returns True iff the index was
+    refreshed. The bound matters at boot: the box's cold connection can HANG for
+    ~2 min before dropping ("Server disconnected"), which used to leave us
+    index-blind; wait_for makes a hung attempt fail fast so the retry can catch
+    it. Every other error degrades to a logged False (a bad refresh must never
+    kill the loop)."""
+    try:
+        coro = do_fetch()
+        n = await (asyncio.wait_for(coro, timeout=timeout) if timeout else coro)
+        if log:
+            log.info("poly_kalshi: KXMLBGAME index refreshed (%d games)", n)
+        return True
+    except Exception as e:  # noqa: BLE001 — incl. asyncio.TimeoutError
+        if log:
+            log.warning("poly_kalshi: index refresh failed: %s", e)
+        return False
+
+
+async def _pk_boot_refresh_retry(refresh_fn, *, tries=3, timeout=12.0,
+                                 backoff=10.0, sleep_fn=None, log=None) -> bool:
+    """BOOT-ONLY fast retry around the index refresh. Calls
+    `refresh_fn(timeout=timeout)` up to `tries` times with `backoff`s between,
+    stopping on the first success. Closes the cold-connection blind spot — the
+    index goes live in ~(timeout+backoff)s instead of waiting a full steady
+    `index_refresh_sec` cycle. `refresh_fn` must return truthy on success and
+    never raise. `sleep_fn` is injectable for tests. The steady-state cadence is
+    unaffected: it calls the refresh directly (no timeout, no retry)."""
+    _sleep = sleep_fn or asyncio.sleep
+    for attempt in range(1, tries + 1):
+        if await refresh_fn(timeout=timeout):
+            return True
+        if attempt < tries:
+            if log:
+                log.info("poly_kalshi: boot index refresh try %d/%d failed; "
+                         "retrying in %.0fs", attempt, tries, backoff)
+            await _sleep(backoff)
+    if log:
+        log.warning("poly_kalshi: boot index refresh failed after %d tries; "
+                    "falling through to the steady refresh cycle", tries)
+    return False
+
+
 async def _scheduled_poly_kalshi_loop(loop, *, broker, logger_agent, poll_sec,
                                       index_refresh_sec=900.0, sweep_sec=600.0):
     """Poly->Kalshi MLB copy loop (Phase 1). Refresh the KXMLBGAME index
@@ -5131,8 +5176,10 @@ async def _scheduled_poly_kalshi_loop(loop, *, broker, logger_agent, poll_sec,
                 out.append((tk, str(settled), float(pnl)))
         return out
 
-    async def _pk_refresh_index():
-        try:
+    async def _pk_refresh_index(timeout=None) -> bool:
+        # timeout=None (steady-state default) => unbounded, behaviour unchanged.
+        # The boot retry passes a timeout so a hung cold connection fails fast.
+        async def _do():
             from pykalshi import MarketStatus
             client = broker._read._client
             min_ts = int(_pk_time.time()) - 160 * 86400
@@ -5145,14 +5192,14 @@ async def _scheduled_poly_kalshi_loop(loop, *, broker, logger_agent, poll_sec,
                 tickers += [getattr(m, "ticker", "") or "" for m in _ms]
             idx = build_kalshi_game_index(tickers)
             loop.set_kalshi_index(idx, [k[0] for k in idx])
-            log.info("poly_kalshi: KXMLBGAME index refreshed (%d games)",
-                     sum(len(v) for v in idx.values()))
-        except Exception as e:  # noqa: BLE001
-            log.warning("poly_kalshi: index refresh failed: %s", e)
+            return sum(len(v) for v in idx.values())
+        return await _pk_guarded_refresh(_do, timeout=timeout, log=log)
 
     log.info("Poly->Kalshi MLB copy loop online (poll=%ss, dry_run=%s)",
              poll_sec, loop._executor._dry_run)
-    await _pk_refresh_index()
+    # BOOT: fast bounded retry so a cold-connection stall doesn't leave us
+    # index-blind until the first steady cycle. Steady-state (below) unchanged.
+    await _pk_boot_refresh_retry(_pk_refresh_index, log=log)
     try:
         await loop.run_settlement_sweep(_pk_get_settled)   # startup: catch pre-restart losses
     except Exception as e:  # noqa: BLE001
