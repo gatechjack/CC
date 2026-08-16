@@ -1459,6 +1459,72 @@ async def run(argv: list[str] | None = None) -> int:
             )
         )
 
+        # --- Poly->Kalshi MLB copy (Phase 1) — the converted polymarket_copy_trader ---
+        # Reads the SAME selected_whales roster (the 4 MLB whales), matches to
+        # KXMLBGAME, executes via its OWN KAREN-keyed KalshiLiveBroker. dry_run is
+        # driven by strategies.yaml poly_kalshi_mlb.auto_execute (false => shadow).
+        # FAIL-SAFE: any construction/connect error is logged and does NOT break boot.
+        try:
+            import yaml as _pk_yaml
+            with open("config/strategies.yaml", "r", encoding="utf-8") as _pk_f:
+                _pk_cfg = (_pk_yaml.safe_load(_pk_f) or {}).get("poly_kalshi_mlb") or {}
+            if _pk_cfg.get("enabled"):
+                from trading_corp.brokers.kalshi_live import KalshiLiveBroker
+                from trading_corp.agents.strategies.poly_kalshi_executor import PolyKalshiExecutor
+                from trading_corp.agents.strategies.poly_kalshi_copy_trader import PolyKalshiCopyTrader
+                _pk_auto = bool(_pk_cfg.get("auto_execute", False))
+                _pk_broker = KalshiLiveBroker(
+                    api_key_id=secrets.kalshi_karen_api_key_id,
+                    private_key_pem=secrets.kalshi_karen_private_key_pem,
+                    demo=(os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")),
+                    order_type="ioc",
+                    max_slippage_cents=int(_pk_cfg.get("max_slippage_cents", 2)),
+                )
+                await _pk_broker.connect()
+
+                async def _pk_quote_fn(ticker, _b=_pk_broker):
+                    try:
+                        m = await _b._read._client.get_market(ticker)
+                        ya = getattr(m, "yes_ask_dollars", None)
+                        yb = getattr(m, "yes_bid_dollars", None)
+                        if ya is None or not (0.0 < float(ya) < 1.0):
+                            return None
+                        return {"yes_ask": float(ya), "yes_bid": float(yb or 0.0)}
+                    except Exception:  # noqa: BLE001 — no quote => [G-slip] fail-closed in live
+                        return None
+
+                _pk_executor = PolyKalshiExecutor(
+                    dry_run=(not _pk_auto), broker=_pk_broker, db_url=secrets.db_url,
+                    strategy="poly_kalshi_mlb",
+                    per_trade_cap_usd=_pk_cfg.get("per_trade_cap_usd"),
+                    daily_deployment_cap_usd=_pk_cfg.get("daily_deployment_cap_usd"),
+                    max_slippage_cents=int(_pk_cfg.get("max_slippage_cents", 2)),
+                )
+                _pk_loop = PolyKalshiCopyTrader(
+                    executor=_pk_executor, db_url=secrets.db_url,
+                    stake_usd=float(_pk_cfg.get("stake_usd", 5.0)),
+                    daily_loss_cap_usd=_pk_cfg.get("daily_loss_cap_usd"),
+                    poll_interval_sec=float(_pk_cfg.get("poll_interval_sec", 7)),
+                    activity_limit=int(_pk_cfg.get("activity_limit_per_poll", 50)),
+                    quote_fn=_pk_quote_fn,
+                    roster_actor=_pk_cfg.get("roster_actor", "polymarket_copy_trader"),
+                    roster_key=_pk_cfg.get("roster_key", "selected_whales"),
+                )
+                poly_kalshi_task = asyncio.create_task(
+                    _scheduled_poly_kalshi_loop(
+                        _pk_loop, broker=_pk_broker, logger_agent=logger_agent,
+                        poll_sec=float(_pk_cfg.get("poll_interval_sec", 7)),
+                    )
+                )
+                log.info(
+                    "Poly->Kalshi MLB copy WIRED (auto_execute=%s -> dry_run=%s, stake=$%s, halt=$%s)",
+                    _pk_auto, not _pk_auto, _pk_cfg.get("stake_usd"), _pk_cfg.get("daily_loss_cap_usd"),
+                )
+            else:
+                log.info("Poly->Kalshi MLB copy: poly_kalshi_mlb.enabled=false — not wired")
+        except Exception as _pk_exc:  # noqa: BLE001 — never break engine boot
+            log.exception("Poly->Kalshi MLB copy wiring FAILED (engine continues): %s", _pk_exc)
+
         # --- Kalshi Tail-Price Arb scanner (Phase K2.1; default off) ---
         # Detects same-market YES+NO arb at price tails (≤5¢ or ≥95¢)
         # where Kalshi's 1¢ rounding floor compresses round-trip cost
@@ -5038,6 +5104,50 @@ async def _handle_copy_order_placement(
         tag=f"PLACED LIVE @ ${float(getattr(fill, 'price', 0.0)):.3f} "
             f"x{float(getattr(fill, 'qty', 0.0)):g}",
     )
+
+
+async def _scheduled_poly_kalshi_loop(loop, *, broker, logger_agent, poll_sec,
+                                      index_refresh_sec=900.0):
+    """Poly->Kalshi MLB copy loop (Phase 1). Refresh the KXMLBGAME index
+    periodically, then poll_cycle each interval (detect -> match -> guardrails ->
+    execute). The executor's dry_run gates real placement (auto_execute=false => shadow)."""
+    import time as _pk_time
+    from trading_corp.data.polymarket_data_api_client import PolymarketDataAPIClient
+    from trading_corp.data.mlb_poly_kalshi_match import build_kalshi_game_index
+
+    async def _pk_refresh_index():
+        try:
+            from pykalshi import MarketStatus
+            client = broker._read._client
+            min_ts = int(_pk_time.time()) - 160 * 86400
+            tickers = []
+            for _st, _ex in ((MarketStatus.OPEN, {}),
+                             (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+                _ms = await client.get_markets(
+                    series_ticker="KXMLBGAME", status=_st, limit=1000,
+                    fetch_all=(_st == MarketStatus.SETTLED), **_ex)
+                tickers += [getattr(m, "ticker", "") or "" for m in _ms]
+            idx = build_kalshi_game_index(tickers)
+            loop.set_kalshi_index(idx, [k[0] for k in idx])
+            log.info("poly_kalshi: KXMLBGAME index refreshed (%d games)",
+                     sum(len(v) for v in idx.values()))
+        except Exception as e:  # noqa: BLE001
+            log.warning("poly_kalshi: index refresh failed: %s", e)
+
+    log.info("Poly->Kalshi MLB copy loop online (poll=%ss, dry_run=%s)",
+             poll_sec, loop._executor._dry_run)
+    await _pk_refresh_index()
+    _last_idx = _pk_time.time()
+    async with PolymarketDataAPIClient() as _client:
+        while True:
+            try:
+                if _pk_time.time() - _last_idx > index_refresh_sec:
+                    await _pk_refresh_index()
+                    _last_idx = _pk_time.time()
+                await loop.poll_cycle(_client)
+            except Exception as e:  # noqa: BLE001 — a bad cycle must never kill the loop
+                log.exception("poly_kalshi loop cycle failed: %s", e)
+            await asyncio.sleep(poll_sec)
 
 
 async def _scheduled_polymarket_copy_trader_loop(
