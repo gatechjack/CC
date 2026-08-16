@@ -1775,6 +1775,27 @@ polymarket_copy_trader:
     tier_boundaries_usdc: [100.0, 1000.0]
     tier_sizes_usdc: [1.0, 2.0, 5.0]
 
+# ── Poly->Kalshi MLB copy (Phase 1) — the converted polymarket_copy_trader ──
+# Detection loop agents/strategies/poly_kalshi_copy_trader.py reads the SAME
+# selected_whales roster (now the 4 Kalshi-matchable MLB whales), matches to
+# KXMLBGAME, places market orders on Kalshi via its OWN KAREN-keyed broker.
+# Idempotency keys on WALLET. Guardrails in poly_kalshi_executor.py.
+# ★ARM SWITCH = auto_execute. false => shadow (executor dry_run=True; the V2 POST
+#   is unreachable). Flipping to true is the single live-arm (operator's go).
+poly_kalshi_mlb:
+  enabled: true
+  auto_execute: false              # ★ARM SWITCH (OFF) — shadow/dry-run until the operator flips
+  division: polymarket_copy_trading
+  poll_interval_sec: 7             # 5-10s fast-poll; 429 backoff in the loop
+  activity_limit_per_poll: 50
+  stake_usd: 5.0                   # operator gate: $5/trade fixed
+  daily_loss_cap_usd: 100.0        # operator gate: $100 realized loss/day -> persist_halt
+  per_trade_cap_usd: null          # operator: NO per-trade size cap
+  daily_deployment_cap_usd: null   # operator: NO daily-deployment cap
+  max_slippage_cents: 2            # thin-book guard on the market order
+  roster_actor: polymarket_copy_trader
+  roster_key: selected_whales
+
 # ── Robinhood Joint Iron Condor v1 ──
 robinhood_joint_iron_condor:
   enabled: false
