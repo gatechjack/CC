@@ -201,11 +201,17 @@ class PolyKalshiExecutor:
                  db_url: str = "sqlite:///data/trading_corp.db",
                  per_trade_cap_usd: float = 5.00,
                  daily_deployment_cap_usd: float = 20.00,
-                 max_slippage_cents: int = 2):
+                 max_slippage_cents: int = 2,
+                 max_orders_per_day: int | None = 25,
+                 logger=None):
         self._broker = broker            # own KalshiLiveBroker instance (live path only)
         self._dry_run = bool(dry_run)
         self._strategy = strategy        # [G-halt] key into the shared StrategyState halt row
         self._db_url = db_url
+        self._logger = logger            # [audit] logger_agent.log_event(strategy, kind, payload)
+        # [G-count] real-time same-day trade-count ceiling (count-only; no P&L/settlement)
+        self._max_orders_per_day = None if max_orders_per_day is None else int(max_orders_per_day)
+        self._orders_today: int = 0
         # ── guardrail config. None => that cap is DISABLED (operator's launch
         #    choice: no per-trade cap, no daily-deployment cap; the $100 daily-loss
         #    halt is the active backstop). ──
@@ -224,6 +230,11 @@ class PolyKalshiExecutor:
         to not-halted (the primitive's documented contract)."""
         from trading_corp.persistence.models import StrategyState
         return StrategyState.from_persistence(self._strategy, db_url=self._db_url).halted
+
+    def _persist_halt(self, reason: str) -> None:
+        """Trip the SAME persistent halt (survives restart); [G-halt] then blocks all."""
+        from trading_corp.persistence.models import StrategyState
+        StrategyState.persist_halt(self._strategy, reason, db_url=self._db_url)
 
     def _exceeds_slippage(self, order: ProposedKalshiOrder, quote: dict) -> bool:
         """[G-slip] Thin-book protection. True when the marketable fill price is more
@@ -264,6 +275,14 @@ class PolyKalshiExecutor:
                 return self._record("blocked_slippage", order)
         elif not self._dry_run:
             return self._record("blocked_slippage_no_quote", order)
+        # [G-count] real-time same-day trade-count ceiling (count-only; no P&L/settlement
+        # dependency). At the ceiling, trip a PERSISTENT halt so every subsequent submit
+        # is [G-halt]-blocked. The counter increments at commit (would-place) and resets
+        # on UTC day-rollover (loop._rollover_if_needed).
+        if self._max_orders_per_day is not None and self._orders_today >= self._max_orders_per_day:
+            self._persist_halt(
+                f"trade-count ceiling: {self._orders_today} >= {self._max_orders_per_day}/day")
+            return self._record("blocked_count_ceiling", order)
 
         # ── ALL GATES PASSED — commit state exactly once ──
         if not self._dry_run:
@@ -271,6 +290,7 @@ class PolyKalshiExecutor:
                 raise RuntimeError("PolyKalshiExecutor: live submit requires a connected broker")
             resp = await self._broker._client().post(_V2_ORDERS_PATH, order.body)  # duplicated V2 POST
         self._deployed_usd += order.stake_usd            # [G-daily] counts only would-place
+        self._orders_today += 1                          # [G-count] same-day placed/would-place count
         self._placed[order.idempotency_key] = order      # [G-idem] key burned only on placement
         rec = self._record("DRY_RUN_would_place" if self._dry_run else "placed", order)
         if not self._dry_run:
@@ -279,13 +299,20 @@ class PolyKalshiExecutor:
 
     def _record(self, status: str, order: ProposedKalshiOrder) -> dict:
         rec = {
-            "status": status, "whale": order.whale, "action": order.action,
-            "ticker": order.ticker, "side": order.v2_side, "outcome": order.outcome,
-            "count": order.count, "stake_usd": order.stake_usd,
+            "status": status, "whale": order.whale, "whale_wallet": order.whale_wallet,
+            "action": order.action, "ticker": order.ticker, "side": order.v2_side,
+            "outcome": order.outcome, "count": order.count, "stake_usd": order.stake_usd,
             "order_type": _ORDER_TYPE, "tif": order.tif, "price": order.body.get("price"),
             "idempotency_key": order.idempotency_key, "reduce_only": order.reduce_only,
             "confidence": order.confidence, "dry_run": self._dry_run,
-            "deployed_usd_after": self._deployed_usd,
+            "deployed_usd_after": self._deployed_usd, "orders_today_after": self._orders_today,
         }
         self.log.append(rec)
+        # [audit] durable journal row for EVERY outcome (placed / would-place / blocked_* /
+        # suppressed / skip) so deployed_usd + placed-count are queryable without polling Kalshi.
+        if self._logger is not None:
+            try:
+                self._logger.log_event(self._strategy, "poly_kalshi_order", rec)
+            except Exception:  # noqa: BLE001 — audit must never break the execute path
+                pass
         return rec
