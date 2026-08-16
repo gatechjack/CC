@@ -4750,6 +4750,30 @@ def _query_pm_pending_count(
         if rows:
             total += int(rows[0].get("n") or 0)
 
+    # Poly->Kalshi copy (live): the OPEN badge must equal the OPEN list, so this
+    # COUNT uses the SAME WHERE as _query_pm_open_trades' poly_kalshi branch —
+    # kind='poly_kalshi_order' (single writer poly_kalshi_executor.py:368, so
+    # actor==division; the division predicate fully scopes it), placed/would-place
+    # ENTRY rows not yet resolved (order_id LEFT-JOIN -> r.order_id IS NULL). The
+    # arb COUNT above is untouched.
+    pk_slugs = [s for s in division_slugs if s.startswith(_POLY_KALSHI_PREFIX)]
+    if pk_slugs:
+        pk_ph = ",".join("?" for _ in pk_slugs)
+        rows = _query(
+            db_url,
+            f"SELECT COUNT(*) AS n FROM audit_event a "
+            f"LEFT JOIN kalshi_round_trips r "
+            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            f"WHERE a.kind = 'poly_kalshi_order' "
+            f"  AND json_extract(a.payload_json, '$.status') IN ('placed', 'DRY_RUN_would_place') "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.action'), 'entry') = 'entry' "
+            f"  AND json_extract(a.payload_json, '$.division') IN ({pk_ph}) "
+            f"  AND r.order_id IS NULL",
+            tuple(pk_slugs),
+        )
+        if rows:
+            total += int(rows[0].get("n") or 0)
+
     return total
 
 

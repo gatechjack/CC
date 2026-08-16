@@ -1148,3 +1148,33 @@ def test_open_trades_poly_kalshi_disjoint_from_arb_and_pm_views(fresh_db):
     _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order", _pk_order_payload())
     assert wd._query_pm_open_trades(db_url, ["kalshi_llm_arbitrage"], 100) == []
     assert wd._query_pm_open_trades(db_url, ["polymarket_arbitrage"], 100) == []
+
+
+def test_pending_count_equals_open_list_poly_kalshi_three_fills(fresh_db):
+    """badge == list: the OPEN badge (_query_pm_pending_count) reads the SAME
+    count as the OPEN list length on the 3 real live fills — not 0."""
+    db_url, _ = fresh_db
+    for oid, whale, tkr, cnt, fp in [
+        ("7000441c-mia", "SDTrading",   "KXMLBGAME-26AUG161340MIACIN-MIA", 9, 0.54),
+        ("d4645fb2-cin", "0x0x23kj",    "KXMLBGAME-26AUG161340MIACIN-CIN", 10, 0.48),
+        ("5eb8437f-az",  "xifutloong3", "KXMLBGAME-26AUG161335AZATL-AZ",   10, 0.47),
+    ]:
+        _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order", _pk_order_payload(
+            order_id=oid, whale=whale, ticker=tkr, count=cnt, fill_count=cnt, fill_price=fp))
+    n_list = len(wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100))
+    n_badge = wd._query_pm_pending_count(db_url, ["poly_kalshi_mlb"])
+    assert n_list == 3
+    assert n_badge == n_list          # badge == list, not 0
+
+
+def test_pending_count_tracks_list_when_one_resolves(fresh_db):
+    """When one of the 3 resolves (a kalshi_round_trips row appears), badge AND
+    list both drop to 2 in lockstep."""
+    db_url, _ = fresh_db
+    for oid in ("7000441c-mia", "d4645fb2-cin", "5eb8437f-az"):
+        _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order",
+                      _pk_order_payload(order_id=oid))
+    _insert_kalshi_round_trip(db_url, order_id="5eb8437f-az", division="poly_kalshi_mlb")
+    n_list = len(wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100))
+    n_badge = wd._query_pm_pending_count(db_url, ["poly_kalshi_mlb"])
+    assert n_list == 2 and n_badge == 2
