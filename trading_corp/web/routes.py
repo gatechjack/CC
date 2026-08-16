@@ -513,6 +513,15 @@ def register(app: FastAPI) -> None:
             {"view": view},
         )
 
+    @app.get("/partials/prediction-markets/poly_kalshi_mlb/live", response_class=HTMLResponse)
+    async def poly_kalshi_live_partial(request: Request):
+        # Phase 2b CP3: broker-free live section (marks + trigger + copy-moments) for the
+        # poly_kalshi_mlb dashboard. SELECT-only; the section's hx-trigger re-fetches it.
+        live = await asyncio.to_thread(data.build_poly_kalshi_live_view, deps.db_url)
+        return templates.TemplateResponse(
+            request, "partials/poly_kalshi_live_inner.html", {"live": live},
+        )
+
     # ── Division drill-down (Phase 2) ────────────────────────────────────
 
     @app.get("/division/{slug}", response_class=HTMLResponse)

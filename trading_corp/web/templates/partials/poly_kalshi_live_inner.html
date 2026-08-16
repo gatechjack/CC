@@ -1,0 +1,89 @@
+{# Phase 2b CP3 — Poly->Kalshi live section CONTENT (broker-free; refreshed every 60s by
+   the shell's hx-trigger). Renders total unrealized + open positions (marks / sparkline /
+   "as of {mark_ts}" + stale) + the copy-moment feed. Graceful when a trigger or a mark is
+   absent (pre-CP1 rows / unmarked positions) — never fabricates a value.
+   latest_order_id/ts are exposed for later client-side new-row (sound/flash) detection. #}
+<div data-latest-order-id="{{ live.latest_order_id or '' }}" data-latest-ts="{{ live.latest_ts or '' }}">
+
+  <div class="px-4 py-2 flex items-baseline gap-2 border-b border-edge">
+    <span class="text-[10px] uppercase tracking-wider text-muted">Live unrealized</span>
+    {% if live.total_unrealized is not none %}
+      <span class="font-mono text-sm {{ 'text-warn' if live.total_unrealized < 0 else '' }}">{{ '%+.2f' | format(live.total_unrealized) }}</span>
+    {% else %}
+      <span class="font-mono text-sm text-muted" title="no marks yet">&#8212;</span>
+    {% endif %}
+    <span class="text-[9px] text-muted ml-auto">{{ live.n_open }} open</span>
+  </div>
+
+  {% if live.open_positions %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-[12px] font-mono">
+        <thead>
+          <tr class="text-[9px] uppercase tracking-wider text-muted border-b border-edge">
+            <th class="text-left px-3 py-1">Game / ticker</th>
+            <th class="text-left px-3 py-1">Why (copied)</th>
+            <th class="text-right px-3 py-1">Contracts @ fill</th>
+            <th class="text-right px-3 py-1">Mark</th>
+            <th class="text-left px-3 py-1">Trend</th>
+            <th class="text-right px-3 py-1">Unrealized</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pos in live.open_positions %}
+            <tr class="border-b border-edge">
+              <td class="px-3 py-1">
+                <div>{{ pos.market_title }}</div>
+                <div class="text-[9px] text-muted">{{ pos.outcome | upper }}{% if pos.whale %} &#183; @{{ pos.whale }}{% endif %}</div>
+              </td>
+              <td class="px-3 py-1">
+                {% if pos.poly_outcome %}
+                  <div>{{ pos.poly_outcome }}</div>
+                  <div class="text-[9px] text-muted">{{ pos.poly_side or '' }} {{ pos.poly_slug or '' }}</div>
+                {% else %}
+                  <span class="text-muted" title="pre-CP1 row: trigger not journaled">&#8212;</span>
+                {% endif %}
+              </td>
+              <td class="px-3 py-1 text-right">{{ '%g' | format(pos.contracts) }} @ {{ '%.2f' | format(pos.fill_price) }}</td>
+              <td class="px-3 py-1 text-right {{ 'opacity-50' if pos.stale else '' }}">
+                {% if pos.yes_mid is not none %}
+                  <span title="{{ ('STALE as of ' ~ pos.mark_ts) if pos.stale else ('as of ' ~ pos.mark_ts) }}">{{ '%.2f' | format(pos.yes_mid) }}{% if pos.stale %} <span class="text-warn text-[8px]">STALE</span>{% endif %}</span>
+                {% else %}
+                  <span class="text-muted" title="awaiting first mark">marking&#8230;</span>
+                {% endif %}
+              </td>
+              <td class="px-3 py-1 text-left" title="live yes-price trend">{{ pos.sparkline_text }}</td>
+              <td class="px-3 py-1 text-right">
+                {% if pos.unrealized is not none %}
+                  <span class="{{ 'text-warn' if pos.unrealized < 0 else '' }}">{{ '%+.2f' | format(pos.unrealized) }}{% if pos.unrealized_pct is not none %} <span class="text-[9px] text-muted">({{ '%+.1f' | format(pos.unrealized_pct) }}%)</span>{% endif %}</span>
+                {% else %}
+                  <span class="text-muted">&#8212;</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="p-6 text-muted text-[12px]">No open positions.</div>
+  {% endif %}
+
+  <div class="border-t border-edge">
+    <header class="px-4 py-1.5 text-[10px] uppercase tracking-wider text-muted">Recent copies</header>
+    {% if live.copy_moments %}
+      <ul>
+        {% for m in live.copy_moments %}
+          <li class="px-4 py-1.5 text-[11px] font-mono flex items-center gap-2 border-b border-edge">
+            <span class="text-muted text-[9px]">{{ m.ts }}</span>
+            <span>{{ m.ticker }}</span>
+            <span class="text-[9px]">{{ '%g' | format(m.count) }}@{% if m.fill_price is not none %}{{ '%.2f' | format(m.fill_price) }}{% else %}?{% endif %}</span>
+            {% if m.whale %}<span class="text-[9px] text-muted">@{{ m.whale }}</span>{% endif %}
+            {% if m.poly_outcome %}<span class="text-[9px] text-muted ml-auto">&#8592; {{ m.poly_outcome }}</span>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="p-4 text-muted text-[11px]">No copies yet.</div>
+    {% endif %}
+  </div>
+</div>
