@@ -1297,3 +1297,86 @@ def test_existing_kalshi_division_cutoff_unaffected_without_agent_state(fresh_db
         resolved_ts="2026-08-11T00:00:00+00:00")
     rts = wd._query_pm_round_trips(db_url, ["kalshi_llm_arbitrage"], 100)
     assert [r.order_id for r in rts] == ["llm-post"]   # pre-cutoff still hidden
+
+
+# ── Kalshi division epoch: SYMMETRIC across OPEN tab + pending badge (CP5) ───
+def test_open_and_badge_honor_division_epoch_symmetric(fresh_db):
+    """A set agent_state epoch drops pre-epoch OPEN rows from BOTH the OPEN list AND
+    the pending badge; badge == list holds; delete -> reversible."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order",
+                  _pk_order_payload(order_id="pre", ticker="KX-pre"),
+                  ts="2026-08-10T12:00:00+00:00")
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order",
+                  _pk_order_payload(order_id="post", ticker="KX-post"),
+                  ts="2026-08-16T12:00:00+00:00")
+
+    def snap():
+        lst = sorted(o.order_id for o in wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100))
+        badge = wd._query_pm_pending_count(db_url, ["poly_kalshi_mlb"])
+        assert badge == len(lst)           # badge == list, always
+        return lst, badge
+
+    assert snap() == (["post", "pre"], 2)          # unset -> both
+    _db.set_agent_state("poly_kalshi_mlb", "metrics_epoch", "2026-08-15T00:00:00+00:00", db_url=db_url)
+    assert snap() == (["post"], 1)                 # set -> pre-epoch dropped from list AND badge
+    with _db.connect(db_url) as c:
+        c.execute("DELETE FROM agent_state WHERE agent='poly_kalshi_mlb' AND key='metrics_epoch'")
+    assert snap() == (["post", "pre"], 2)          # delete -> restored (reversible)
+
+
+def test_division_epoch_is_symmetric_across_open_and_resolved(fresh_db):
+    """One agent_state epoch scopes ALL FOUR surfaces uniformly: OPEN list, pending
+    badge, History, resolved tiles."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order",
+                  _pk_order_payload(order_id="open-pre", ticker="KX-op"),
+                  ts="2026-08-10T12:00:00+00:00")
+    _pk_round_trip(db_url, order_id="rt-pre", ticker="KX-rt",
+                   entry_ts="2026-08-10T12:00:00+00:00", resolved_ts="2026-08-10T13:00:00+00:00",
+                   won=1, market_result="yes", realized_pnl=1.0)
+    # before epoch: all four show their one row
+    assert len(wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100)) == 1
+    assert wd._query_pm_pending_count(db_url, ["poly_kalshi_mlb"]) == 1
+    assert len(wd._query_pm_round_trips(db_url, ["poly_kalshi_mlb"], 100)) == 1
+    assert wd._query_pm_resolved_stats(db_url, ["poly_kalshi_mlb"])["n_resolved"] == 1
+    # set epoch after both -> ALL four drop to 0
+    _db.set_agent_state("poly_kalshi_mlb", "metrics_epoch", "2026-08-15T00:00:00+00:00", db_url=db_url)
+    assert wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100) == []
+    assert wd._query_pm_pending_count(db_url, ["poly_kalshi_mlb"]) == 0
+    assert wd._query_pm_round_trips(db_url, ["poly_kalshi_mlb"], 100) == []
+    assert wd._query_pm_resolved_stats(db_url, ["poly_kalshi_mlb"])["n_resolved"] == 0
+
+
+def test_pre_cp3_open_row_absent_from_open_regardless_of_epoch(fresh_db):
+    """The 3 pre-CP3 fills (MIA/CIN/AZ) carry NO division/order_id in their audit
+    payload, so the CP3 OPEN filter already excludes them — with or without an epoch.
+    The epoch governs POST-CP3 pre-split rows; for these it is belt-and-suspenders."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order",
+                  {"status": "placed", "action": "entry", "outcome": "yes",
+                   "ticker": "KXMLBGAME-A-MIA", "side": "bid", "count": 9, "price": "0.5400"},
+                  ts="2026-08-16T13:40:00+00:00")   # pre-CP3: no division / no order_id
+    assert wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100) == []
+    assert wd._query_pm_pending_count(db_url, ["poly_kalshi_mlb"]) == 0
+    _db.set_agent_state("poly_kalshi_mlb", "metrics_epoch", "2026-08-01T00:00:00+00:00", db_url=db_url)
+    assert wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100) == []   # still absent
+    assert wd._query_pm_pending_count(db_url, ["poly_kalshi_mlb"]) == 0
+
+
+def test_arb_open_badge_unaffected_by_poly_kalshi_epoch(fresh_db):
+    """A poly_kalshi_mlb epoch must not touch the 6-actor arb OPEN/badge path, and the
+    hardcoded _llm_cut still filters pre-cutoff arb OPEN rows (unchanged)."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "kalshi_llm_arbitrage", "would_have_placed",
+                  {"order_id": "llm-open", "division": "kalshi_llm_arbitrage",
+                   "ticker": "KX-1", "outcome": "yes", "qty": 1.0, "limit_price": 0.5},
+                  ts="2026-08-11T00:00:00+00:00")   # post _llm_cut -> shows
+    _insert_audit(db_url, "kalshi_llm_arbitrage", "would_have_placed",
+                  {"order_id": "llm-preCut", "division": "kalshi_llm_arbitrage",
+                   "ticker": "KX-2", "outcome": "yes", "qty": 1.0, "limit_price": 0.5},
+                  ts="2026-05-11T00:00:00+00:00")   # pre _llm_cut -> hidden
+    _db.set_agent_state("poly_kalshi_mlb", "metrics_epoch", "2026-08-15T00:00:00+00:00", db_url=db_url)
+    ots = wd._query_pm_open_trades(db_url, ["kalshi_llm_arbitrage"], 100)
+    assert [o.order_id for o in ots] == ["llm-open"]     # arb OPEN unchanged by the poly_kalshi epoch
+    assert wd._query_pm_pending_count(db_url, ["kalshi_llm_arbitrage"]) == 1

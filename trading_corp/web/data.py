@@ -4018,6 +4018,30 @@ def _kalshi_cutoff_clause(
     return "".join(parts)
 
 
+def _kalshi_division_epoch_clause(
+    division_slugs: list[str], db_url: str, *, ts_col: str, div_col: str,
+) -> str:
+    """CP5 (symmetric): the audit-event-path counterpart of `_kalshi_cutoff_clause`,
+    for the OPEN tab + pending badge. Per passed slug, emits an
+    `AND NOT (<div_col>='<slug>' AND <ts_col> < '<cutoff>')` term where the cutoff is
+    the agent_state[<slug>/metrics_epoch] override (precedence) ELSE the hardcoded
+    `DASHBOARD_RT_CUTOFFS` entry — so a set epoch hides pre-epoch OPEN rows exactly as
+    it hides resolved rows.
+
+    SCOPED to the passed `division_slugs` (does NOT touch the 6-actor arb audit path /
+    the inline `_llm_cut`), and takes a parameterizable `div_col` because the audit
+    path filters on `json_extract(a.payload_json,'$.division')`, not a bare column —
+    same shape as `_polymarket_cutoff_clause`'s div_col. '' (no-op) when no slug has a
+    cutoff. Injection-safe: agent_state epochs ISO-validated, hardcoded values literal.
+    """
+    parts = []
+    for slug in division_slugs:
+        cutoff = _get_kalshi_division_epoch(db_url, slug) or DASHBOARD_RT_CUTOFFS.get(slug)
+        if cutoff:
+            parts.append(f" AND NOT ({div_col}='{slug}' AND {ts_col} < '{cutoff}')")
+    return "".join(parts)
+
+
 # ── Kalshi copy-trading Paper/Live/All go-live epoch ────────────────────
 #
 # kalshi_round_trips has NO paper/live discriminator column — the split is
@@ -4651,7 +4675,10 @@ def _query_pm_open_trades(
             f"  AND json_extract(a.payload_json, '$.status') IN ('placed', 'DRY_RUN_would_place') "
             f"  AND COALESCE(json_extract(a.payload_json, '$.action'), 'entry') = 'entry' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({pk_ph}) "
-            f"  AND r.order_id IS NULL "
+            + _kalshi_division_epoch_clause(
+                pk_slugs, db_url, ts_col="a.ts",
+                div_col="json_extract(a.payload_json, '$.division')")
+            + f"  AND r.order_id IS NULL "
             f"ORDER BY a.ts DESC LIMIT ?",
             (*pk_slugs, limit),
         )
@@ -4797,7 +4824,10 @@ def _query_pm_pending_count(
             f"  AND json_extract(a.payload_json, '$.status') IN ('placed', 'DRY_RUN_would_place') "
             f"  AND COALESCE(json_extract(a.payload_json, '$.action'), 'entry') = 'entry' "
             f"  AND json_extract(a.payload_json, '$.division') IN ({pk_ph}) "
-            f"  AND r.order_id IS NULL",
+            + _kalshi_division_epoch_clause(
+                pk_slugs, db_url, ts_col="a.ts",
+                div_col="json_extract(a.payload_json, '$.division')")
+            + f"  AND r.order_id IS NULL",
             tuple(pk_slugs),
         )
         if rows:
