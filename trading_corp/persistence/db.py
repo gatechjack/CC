@@ -508,6 +508,34 @@ CREATE TABLE IF NOT EXISTS economic_event (
     UNIQUE (event_type, event_date, symbol_scope)  -- idempotent re-seeds
 );
 CREATE INDEX IF NOT EXISTS ix_economic_event_date ON economic_event(event_date);
+
+-- poly_kalshi_mark_live (Phase 2b CP2): a VOLATILE per-open-position live mark, one
+-- row per OPEN poly_kalshi_order position (INSERT OR REPLACE keyed on order_id),
+-- written by the ~60s mark poller and read ONLY by the dashboard via a short SELECT
+-- ("as of mark_ts" + stale-by-time). NOT the position ledger (audit_event is durable);
+-- overwritten each tick and pruned when a position resolves. Marks NEVER belong in the
+-- audit journal. A missed quote leaves the last row in place (view judges staleness off
+-- mark_ts), so yes_mid/unrealized are nullable only for a first-tick quote miss.
+CREATE TABLE IF NOT EXISTS poly_kalshi_mark_live (
+    order_id       TEXT PRIMARY KEY,        -- the open poly_kalshi_order's order_id
+    ticker         TEXT NOT NULL,
+    yes_mid        REAL,                    -- current yes-mid (0-1); NULL on a quote miss
+    unrealized     REAL,                    -- (yes_mid - fill_price) * fill_count; NULL on miss
+    unrealized_pct REAL,
+    mark_ts        TEXT NOT NULL            -- ISO-8601 UTC of this write; the staleness source
+);
+
+-- poly_kalshi_mark_history (Phase 2b CP2): a VOLATILE bounded rolling yes-mid series per
+-- open position (powers the live price sparkline), capped per order_id by the poller.
+-- Ephemeral (never in audit_event); pruned when a position resolves.
+CREATE TABLE IF NOT EXISTS poly_kalshi_mark_history (
+    id       INTEGER PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    ticker   TEXT NOT NULL,
+    yes_mid  REAL NOT NULL,
+    ts       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_pk_mark_history_order ON poly_kalshi_mark_history(order_id, id);
 """
 
 

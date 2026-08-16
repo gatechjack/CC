@@ -2139,6 +2139,7 @@ async def run(argv: list[str] | None = None) -> int:
             start_equity_snapshot_loop as start_kalshi_equity_snapshot_loop,
             start_resolver_loop as start_kalshi_resolver_loop,
         )
+        from trading_corp.agents.poly_kalshi_marks import start_poly_kalshi_mark_loop
         kalshi_broker_for_resolver = data_exec.brokers.get(
             kalshi_arb_agent.division
         )
@@ -2154,6 +2155,12 @@ async def run(argv: list[str] | None = None) -> int:
                 kalshi_broker_for_resolver,
                 interval_sec=300,
             )
+            # Phase 2b CP2: live mark-to-market poller for poly_kalshi_mlb open
+            # positions -> volatile poly_kalshi_mark_live/_history (dashboard reads
+            # broker-free). Reuses the funded kalshi read-broker (quotes are public).
+            poly_kalshi_mark_task = start_poly_kalshi_mark_loop(
+                secrets.db_url, kalshi_broker_for_resolver, interval_sec=60,
+            )
         else:
             log.warning(
                 "Kalshi resolver/equity-snapshot (kalshi_arbitrage) not started: "
@@ -2162,6 +2169,7 @@ async def run(argv: list[str] | None = None) -> int:
             )
             kalshi_resolver_task = None
             kalshi_equity_task_arb = None
+            poly_kalshi_mark_task = None
 
         kalshi_broker_for_llm = data_exec.brokers.get(
             kalshi_llm_agent.division
@@ -2671,6 +2679,7 @@ async def run(argv: list[str] | None = None) -> int:
                 kalshi_resolver_task,
                 kalshi_equity_task_arb,
                 kalshi_equity_task_llm,
+                poly_kalshi_mark_task,
             ):
                 if _kalshi_task is not None:
                     _kalshi_task.cancel()
