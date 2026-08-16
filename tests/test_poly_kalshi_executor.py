@@ -227,3 +227,84 @@ def test_placed_and_rejected_both_write_journal_rows(hdb):
     assert by_status["DRY_RUN_would_place"]["deployed_usd_after"] == 2.0
     assert by_status["DRY_RUN_would_place"]["orders_today_after"] == 1
     assert by_status["blocked_size_cap"]["deployed_usd_after"] == 2.0   # reject added nothing
+
+
+# ── FLAG 1 (CP3 prerequisite): the REAL fill is persisted WITH the journal row ─
+from trading_corp.agents.strategies.poly_kalshi_executor import _fill_fields_from_v2_resp
+
+
+class _FakeClient:
+    """Stands in for pykalshi's client — the executor calls _client().post()."""
+    def __init__(self, resp):
+        self._resp = resp
+        self.posted = []
+
+    async def post(self, path, body):
+        self.posted.append((path, body))
+        return self._resp
+
+
+class _FakeBroker:
+    def __init__(self, resp):
+        self._c = _FakeClient(resp)
+
+    def _client(self):
+        return self._c
+
+
+def test_flag1_extractor_maps_v2_response_fields_always_yes():
+    # same field reads as kalshi_live.fill_event_from_v2_response (YES leg).
+    f = _fill_fields_from_v2_resp(
+        {"order_id": "7000441c", "fill_count": 9, "remaining_count": 0,
+         "average_fill_price": "0.54", "average_fee_paid": "0.01"}, outcome="yes")
+    assert f == {"order_id": "7000441c", "fill_count": 9,
+                 "fill_price": 0.54, "fill_fee": pytest.approx(0.09)}
+
+
+def test_flag1_extractor_no_leg_is_book_side_converted():
+    # defensive parity with kalshi_live.py:211 (the $163.84 book-side bug); this
+    # strategy is always-YES, but the extractor stays honest for a NO leg.
+    f = _fill_fields_from_v2_resp(
+        {"order_id": "x", "fill_count": 2, "average_fill_price": 0.987}, outcome="no")
+    assert f["fill_price"] == pytest.approx(0.013)
+
+
+def test_flag1_extractor_missing_or_zero_fill_never_raises():
+    assert _fill_fields_from_v2_resp({"order_id": "z"}, outcome="yes") == {
+        "order_id": "z", "fill_count": 0, "fill_price": None, "fill_fee": 0.0}
+    assert _fill_fields_from_v2_resp(None, outcome="yes")["order_id"] == ""
+
+
+def test_flag1_live_submit_journals_real_fill_not_limit(hdb):
+    """A LIVE placement journals the REAL fill (order_id/fill_count/fill_price)
+    IN the audit row. Pre-CP3 this data was lost: rec['resp'] was set AFTER
+    _record had already written the row, so only the limit price persisted."""
+    lg = _FakeLogger()
+    resp = {"order_id": "7000441c-aaaa", "fill_count": 9, "remaining_count": 0,
+            "average_fill_price": "0.55", "average_fee_paid": "0.01"}  # filled @0.55; limit was 0.56
+    ex = PolyKalshiExecutor(
+        dry_run=False, broker=_FakeBroker(resp), db_url=hdb, logger=lg,
+        per_trade_cap_usd=None, daily_deployment_cap_usd=None,
+        strategy="poly_kalshi_mlb_filltest")
+    r = _run(ex.submit(_order(base=0.54, stake=5.0, ticker=NYY),
+                       market_quote={"yes_ask": 0.55, "yes_bid": 0.53}))
+    assert r["status"] == "placed"
+    payload = lg.events[-1][2]                       # exactly what log_event journaled
+    assert payload["division"] == "poly_kalshi_mlb_filltest"
+    assert payload["order_id"] == "7000441c-aaaa"
+    assert payload["fill_count"] == 9
+    assert payload["fill_price"] == 0.55             # REAL fill, not the 0.56 limit
+    assert payload["fill_fee"] == pytest.approx(0.09)
+    assert payload["price"] == "0.5600"              # limit still kept for reference
+    assert "resp" not in payload                     # fill is IN the row, not a post-hoc mutation
+
+
+def test_flag1_dry_run_row_has_division_but_no_fill(hdb):
+    lg = _FakeLogger()
+    ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, logger=lg,
+                            strategy="poly_kalshi_mlb_drydiv")
+    _run(ex.submit(_order(ticker=NYY)))
+    payload = lg.events[-1][2]
+    assert payload["status"] == "DRY_RUN_would_place"
+    assert payload["division"] == "poly_kalshi_mlb_drydiv"
+    assert "order_id" not in payload and "fill_price" not in payload   # no live fill

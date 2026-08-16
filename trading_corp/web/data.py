@@ -3949,6 +3949,10 @@ class PMDashboardView:
 
 _POLYMARKET_PREFIX = "polymarket_"
 _KALSHI_PREFIX = "kalshi_"
+# Poly->Kalshi copy divisions (live) — slug 'poly_kalshi_*'. Disjoint from the two
+# prefixes above ('poly_kalshi_mlb' starts with neither 'polymarket_' nor 'kalshi_'),
+# so these rows are bucketed by their OWN branch (different kind/actor/field names).
+_POLY_KALSHI_PREFIX = "poly_kalshi_"
 
 # Per-division entry_ts cutoffs. Round-trips with `entry_ts < cutoff` are
 # excluded from dashboard aggregates (tile counts, win rate, history list)
@@ -4594,6 +4598,75 @@ def _query_pm_open_trades(
                 llm_confidence=p.get("llm_confidence"),
                 subtitle=p.get("subtitle"),
                 leg_date=p.get("leg_date"),
+            ))
+
+    # Poly->Kalshi copy (live) open trades — kind='poly_kalshi_order',
+    # actor/division = 'poly_kalshi_mlb'. This division's journal differs from the
+    # arb actors: fields are `count`/`price` (+ Flag-1 `fill_count`/`fill_price`),
+    # NOT qty/limit_price, and `side` is the V2 leg (bid/ask), so an OPEN row is
+    # keyed off `action='entry'`. Additive branch — the arb query above is left
+    # byte-identical. An entry drops off OPEN once CP4's resolver composes its
+    # kalshi_round_trips row (the LEFT JOIN on order_id -> `r.order_id IS NULL`
+    # gate); a placed row with no order_id yet stays open, which is correct
+    # pre-resolution.
+    pk_slugs = [s for s in division_slugs if s.startswith(_POLY_KALSHI_PREFIX)]
+    if pk_slugs:
+        pk_ph = ",".join("?" for _ in pk_slugs)
+        rows = _query(
+            db_url,
+            f"SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
+            f"FROM audit_event a "
+            f"LEFT JOIN kalshi_round_trips r "
+            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            f"WHERE a.kind = 'poly_kalshi_order' "
+            f"  AND json_extract(a.payload_json, '$.status') IN ('placed', 'DRY_RUN_would_place') "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.action'), 'entry') = 'entry' "
+            f"  AND json_extract(a.payload_json, '$.division') IN ({pk_ph}) "
+            f"  AND r.order_id IS NULL "
+            f"ORDER BY a.ts DESC LIMIT ?",
+            (*pk_slugs, limit),
+        )
+        for r in rows:
+            try:
+                p = json.loads(r["payload_json"])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            # Prefer the REAL fill (Flag 1) when present; fall back to the
+            # requested count / limit price for a not-yet-/never-filled row.
+            qty = float(
+                p["fill_count"] if p.get("fill_count") is not None
+                else (p.get("count") or 0)
+            )
+            price = float(
+                p["fill_price"] if p.get("fill_price") is not None
+                else (p.get("price") or 0)
+            )
+            whale = p.get("whale")
+            out.append(PMOpenTrade(
+                order_id=str(p.get("order_id") or ""),
+                venue="kalshi",
+                division=str(p.get("division") or ""),
+                strategy=str(r["actor"] or "poly_kalshi_mlb"),
+                whale_handle=str(whale) if whale else None,
+                emit_ts=str(r["ts"] or ""),
+                market_title=str(p.get("ticker") or ""),
+                market_id=str(p.get("ticker") or ""),
+                category=None,
+                outcome_bet=str(p.get("outcome") or ""),
+                qty=qty,
+                entry_price=price,
+                notional=qty * price,
+                divergence_pct=None,
+                edge_cents=None,
+                arb_type="poly_kalshi_copy",
+                resolves_at=None,
+                age_hours=_age_hours(r["ts"] or ""),
+                rationale=(f"copy @{whale}" if whale else None),
+                llm_reasoning=None,
+                key_unknowns=[],
+                llm_confidence=None,
+                subtitle=None,
+                leg_date=None,
             ))
 
     out.sort(key=lambda t: t.emit_ts, reverse=True)

@@ -125,6 +125,47 @@ _ORDER_TYPE = "ioc"
 _DRYRUN_MAX_SLIPPAGE_CENTS = 2   # CP3 [G-slip] owns the real value
 
 
+def _fill_fields_from_v2_resp(resp: dict | None, *, outcome: str) -> dict:
+    """FLAG 1 — extract the persistable fill facts from a Kalshi V2 create-order
+    response, so the REAL fill (not the limit) is journaled with the order row.
+
+    `resp` is the flat dict returned by `client.post(_V2_ORDERS_PATH, body)` — the
+    SAME dict the canonical parser `kalshi_live.fill_event_from_v2_response`
+    consumes (kalshi_live.py:200-218), so the field reads here are byte-for-byte
+    that parser's: `order_id`, `fill_count`, `average_fill_price`,
+    `average_fee_paid`. Returns {order_id, fill_count, fill_price, fill_fee}.
+
+    `fill_price` is the OUTCOME-LEG per-contract cost: for a NO leg it is
+    (1 - yes_price) (kalshi_live.py:211 — the $163.84 book-side bug); this strategy
+    is always YES (module docstring), so it equals `average_fill_price` here. Never
+    raises: a missing/zero fill yields fill_count=0 / fill_price=None so the row
+    still records the order_id (unlike the parser, which raises KalshiNoFill — we
+    keep the audit row for a 0-fill placement rather than dropping it)."""
+    resp = resp or {}
+    try:
+        filled = int(float(resp.get("fill_count") or 0))
+    except (TypeError, ValueError):
+        filled = 0
+    avg = resp.get("average_fill_price")
+    try:
+        yes_px = float(avg) if avg not in (None, "") else None
+    except (TypeError, ValueError):
+        yes_px = None
+    fill_price = None if yes_px is None else (
+        (1.0 - yes_px) if str(outcome).lower() == "no" else yes_px)
+    fee_avg = resp.get("average_fee_paid")
+    try:
+        fee_per = float(fee_avg) if fee_avg not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        fee_per = 0.0
+    return {
+        "order_id": str(resp.get("order_id") or ""),
+        "fill_count": filled,
+        "fill_price": fill_price,
+        "fill_fee": fee_per * filled,
+    }
+
+
 @dataclass(frozen=True)
 class ProposedKalshiOrder:
     whale: str             # display label (user_name) — NOT the idempotency key
@@ -285,21 +326,29 @@ class PolyKalshiExecutor:
             return self._record("blocked_count_ceiling", order)
 
         # ── ALL GATES PASSED — commit state exactly once ──
+        fill: dict | None = None
         if not self._dry_run:
             if self._broker is None:
                 raise RuntimeError("PolyKalshiExecutor: live submit requires a connected broker")
             resp = await self._broker._client().post(_V2_ORDERS_PATH, order.body)  # duplicated V2 POST
+            # FLAG 1: parse the REAL fill NOW and journal it WITH the row via
+            # _record. The old code set rec["resp"] = resp AFTER _record had
+            # already written the audit row, so the fill (order_id/count/price)
+            # was never persisted — only the limit price was.
+            fill = _fill_fields_from_v2_resp(resp, outcome=order.outcome)
         self._deployed_usd += order.stake_usd            # [G-daily] counts only would-place
         self._orders_today += 1                          # [G-count] same-day placed/would-place count
         self._placed[order.idempotency_key] = order      # [G-idem] key burned only on placement
-        rec = self._record("DRY_RUN_would_place" if self._dry_run else "placed", order)
-        if not self._dry_run:
-            rec["resp"] = resp
-        return rec
+        return self._record(
+            "DRY_RUN_would_place" if self._dry_run else "placed", order, fill=fill)
 
-    def _record(self, status: str, order: ProposedKalshiOrder) -> dict:
+    def _record(self, status: str, order: ProposedKalshiOrder, *,
+                fill: dict | None = None) -> dict:
         rec = {
-            "status": status, "whale": order.whale, "whale_wallet": order.whale_wallet,
+            # CP3: `division` scopes the dashboard OPEN query ($.division IN slugs);
+            # it equals the audit actor (self._strategy) this row is logged under.
+            "status": status, "division": self._strategy,
+            "whale": order.whale, "whale_wallet": order.whale_wallet,
             "action": order.action, "ticker": order.ticker, "side": order.v2_side,
             "outcome": order.outcome, "count": order.count, "stake_usd": order.stake_usd,
             "order_type": _ORDER_TYPE, "tif": order.tif, "price": order.body.get("price"),
@@ -307,6 +356,10 @@ class PolyKalshiExecutor:
             "confidence": order.confidence, "dry_run": self._dry_run,
             "deployed_usd_after": self._deployed_usd, "orders_today_after": self._orders_today,
         }
+        if fill:
+            # FLAG 1: the REAL fill facts (order_id/fill_count/fill_price/fill_fee)
+            # are journaled IN this row now, not lost to a post-_record mutation.
+            rec.update(fill)
         self.log.append(rec)
         # [audit] durable journal row for EVERY outcome (placed / would-place / blocked_* /
         # suppressed / skip) so deployed_usd + placed-count are queryable without polling Kalshi.

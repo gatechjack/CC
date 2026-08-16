@@ -1039,3 +1039,112 @@ def test_wr_mode_does_not_affect_non_kalshi_division(fresh_db, monkeypatch):
         )
     # All three modes identical for the polymarket division.
     assert seen["live"] == seen["paper"] == seen["all"] == (2, 1, 2.0)
+
+
+# ── Poly->Kalshi copy (live) OPEN trades (CP3) ──────────────────────────────
+def _pk_order_payload(**over):
+    """A poly_kalshi_order audit payload as poly_kalshi_executor._record writes it
+    post-CP3 (division + Flag-1 fill fields). Defaults model live fill #1:
+    SDTrading YES MIA 9 contracts, limit 0.56, filled 0.54."""
+    p = {
+        "status": "placed", "division": "poly_kalshi_mlb",
+        "whale": "SDTrading", "whale_wallet": "0x16bb99",
+        "action": "entry", "ticker": "KXMLBGAME-26AUG161340MIACIN-MIA",
+        "side": "bid", "outcome": "yes", "count": 9, "stake_usd": 5.0,
+        "order_type": "ioc", "tif": "immediate_or_cancel", "price": "0.5600",
+        "confidence": 1.0, "dry_run": False,
+        "order_id": "7000441c-mia", "fill_count": 9, "fill_price": 0.54, "fill_fee": 0.09,
+    }
+    p.update(over)
+    return p
+
+
+def test_open_trades_poly_kalshi_placed_renders_real_fill(fresh_db):
+    """A real poly_kalshi_order 'placed' row (live fill #1) renders on OPEN with
+    the REAL fill qty/price, not the requested count / limit price."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order", _pk_order_payload())
+    ots = wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100)
+    assert len(ots) == 1
+    ot = ots[0]
+    assert ot.venue == "kalshi"
+    assert ot.division == "poly_kalshi_mlb"
+    assert ot.strategy == "poly_kalshi_mlb"
+    assert ot.order_id == "7000441c-mia"
+    assert ot.market_id.endswith("-MIA")
+    assert ot.outcome_bet == "yes"
+    assert ot.qty == 9.0                          # from fill_count
+    assert ot.entry_price == 0.54                 # REAL fill, not the 0.56 limit
+    assert ot.notional == pytest.approx(9 * 0.54)
+    assert ot.whale_handle == "SDTrading"
+    assert ot.arb_type == "poly_kalshi_copy"
+
+
+def test_open_trades_poly_kalshi_three_live_fills(fresh_db):
+    """All three real 2026-08-16 fills surface as distinct rows; #1 MIA and #2
+    CIN are opposite sides of the SAME game (two whales disagreeing) and both
+    render."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order", _pk_order_payload(
+        order_id="7000441c-mia", whale="SDTrading",
+        ticker="KXMLBGAME-26AUG161340MIACIN-MIA", count=9, fill_count=9, fill_price=0.54))
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order", _pk_order_payload(
+        order_id="d4645fb2-cin", whale="0x0x23kj",
+        ticker="KXMLBGAME-26AUG161340MIACIN-CIN", count=10, fill_count=10, fill_price=0.48))
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order", _pk_order_payload(
+        order_id="5eb8437f-az", whale="xifutloong3",
+        ticker="KXMLBGAME-26AUG161335AZATL-AZ", count=10, fill_count=10, fill_price=0.47))
+    ots = wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100)
+    assert len(ots) == 3
+    by_oid = {o.order_id: o for o in ots}
+    assert by_oid["7000441c-mia"].market_id.endswith("-MIA")
+    assert by_oid["d4645fb2-cin"].market_id.endswith("-CIN")   # opposite side, same game
+    assert by_oid["5eb8437f-az"].qty == 10.0
+    assert by_oid["5eb8437f-az"].entry_price == 0.47
+
+
+def test_open_trades_poly_kalshi_resolved_drops_off_open(fresh_db):
+    """Once a kalshi_round_trips row exists for the order_id (CP4 resolution),
+    the entry leaves OPEN — LEFT JOIN makes r.order_id NOT NULL. This is why
+    Flag-1 order_id persistence must land WITH CP3."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order",
+                  _pk_order_payload(order_id="k-resolved"))
+    assert len(wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100)) == 1
+    _insert_kalshi_round_trip(db_url, order_id="k-resolved", division="poly_kalshi_mlb")
+    assert wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100) == []
+
+
+def test_open_trades_poly_kalshi_exit_and_blocked_excluded(fresh_db):
+    """Only placed/would-place ENTRY rows are OPEN positions — exit rows and
+    blocked/skip audit rows are not."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order",
+                  _pk_order_payload(order_id="exit-1", action="exit", side="ask"))
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order",
+                  _pk_order_payload(order_id="blk-1", status="blocked_slippage"))
+    assert wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100) == []
+
+
+def test_open_trades_poly_kalshi_dry_run_falls_back_to_requested(fresh_db):
+    """A shadow/paper DRY_RUN_would_place row (no Flag-1 fill) still renders,
+    using the requested count + limit price."""
+    db_url, _ = fresh_db
+    p = _pk_order_payload(status="DRY_RUN_would_place", dry_run=True)
+    for k in ("order_id", "fill_count", "fill_price", "fill_fee"):
+        p.pop(k)                                   # a dry-run journal carries no fill
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order", p)
+    ots = wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100)
+    assert len(ots) == 1
+    assert ots[0].qty == 9.0                       # requested count
+    assert ots[0].entry_price == 0.56              # limit price string
+    assert ots[0].order_id == ""
+
+
+def test_open_trades_poly_kalshi_disjoint_from_arb_and_pm_views(fresh_db):
+    """poly_kalshi rows must not bleed into a kalshi_ arb or polymarket_ view
+    (disjoint slug prefix + different kind/actor)."""
+    db_url, _ = fresh_db
+    _insert_audit(db_url, "poly_kalshi_mlb", "poly_kalshi_order", _pk_order_payload())
+    assert wd._query_pm_open_trades(db_url, ["kalshi_llm_arbitrage"], 100) == []
+    assert wd._query_pm_open_trades(db_url, ["polymarket_arbitrage"], 100) == []
