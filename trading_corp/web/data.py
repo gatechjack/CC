@@ -3975,20 +3975,46 @@ DASHBOARD_RT_CUTOFFS: dict[str, str] = {
 }
 
 
-def _kalshi_cutoff_clause(ts_col: str) -> str:
-    """SQL fragment that excludes pre-cutoff `kalshi_round_trips` rows
-    per `DASHBOARD_RT_CUTOFFS`. Returns a string starting with a leading
-    space, suitable to concatenate after any existing WHERE clause.
-    Empty string when the dict is empty (rollback path).
+def _get_kalshi_division_epoch(db_url: str, slug: str) -> str | None:
+    """CP5: runtime, reversible per-division dashboard cutoff for a kalshi division,
+    read from agent_state[<slug>/metrics_epoch] (ISO-validated by `_get_metrics_epoch`).
 
-    Cutoffs are hardcoded ISO timestamps — no injection surface, so inline
-    literals are safe.
+    Mirror of `_get_polymarket_metrics_epoch`, keyed on the division slug itself
+    (which IS the audit actor for these divisions, e.g. 'poly_kalshi_mlb'). Returns
+    None when unset -> the hardcoded `DASHBOARD_RT_CUTOFFS` fallback applies. Set at
+    runtime with agent_state(<slug>,'metrics_epoch','<ISO>'); revert to all-time by
+    deleting that row (no redeploy)."""
+    return _get_metrics_epoch(db_url, slug)
+
+
+def _kalshi_cutoff_clause(
+    ts_col: str, *, division_slugs: list[str] | None = None, db_url: str | None = None,
+) -> str:
+    """SQL fragment that excludes pre-cutoff `kalshi_round_trips` rows. Returns a
+    string starting with a leading space, suitable to concatenate after any existing
+    WHERE clause; empty string when there are no cutoffs (rollback path).
+
+    Per-division cutoff resolution (CP5): the effective cutoff for a division is an
+    `agent_state[<slug>/metrics_epoch]` override (runtime, reversible) when set, ELSE
+    the hardcoded `DASHBOARD_RT_CUTOFFS` entry. agent_state overrides are resolved
+    ONLY for the passed `division_slugs` (needs `db_url`); called with neither (the
+    default), the behavior is EXACTLY the pre-CP5 hardcoded dict — so back-compat
+    callers and the cross-division overview are unchanged.
+
+    Injection-safe: agent_state epochs are ISO-validated (`_get_kalshi_division_epoch`
+    -> `_get_metrics_epoch`) and hardcoded cutoffs are literals, so both inline safely
+    — same pattern as `_polymarket_cutoff_clause`.
     """
-    parts = []
-    for div, cutoff in DASHBOARD_RT_CUTOFFS.items():
-        parts.append(
-            f" AND NOT (division='{div}' AND {ts_col} < '{cutoff}')"
-        )
+    cutoffs = dict(DASHBOARD_RT_CUTOFFS)
+    if division_slugs and db_url:
+        for slug in division_slugs:
+            epoch = _get_kalshi_division_epoch(db_url, slug)
+            if epoch:                 # agent_state override wins over the hardcoded entry
+                cutoffs[slug] = epoch
+    parts = [
+        f" AND NOT (division='{div}' AND {ts_col} < '{cutoff}')"
+        for div, cutoff in cutoffs.items()
+    ]
     return "".join(parts)
 
 
@@ -4264,7 +4290,7 @@ def _query_pm_round_trips(
             f"       extra_json "
             f"FROM kalshi_round_trips "
             f"WHERE division IN ({kalshi_ph})"
-            + _kalshi_cutoff_clause("entry_ts")
+            + _kalshi_cutoff_clause("entry_ts", division_slugs=kalshi_slugs, db_url=db_url)
             + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
             + " "
             f"ORDER BY resolved_ts DESC LIMIT ?",
@@ -4839,7 +4865,7 @@ def _query_pm_resolved_stats(
             f"       COALESCE(SUM(realized_pnl), 0.0) AS total_pnl "
             f"FROM kalshi_round_trips "
             f"WHERE division IN ({kalshi_ph})"
-            + _kalshi_cutoff_clause("entry_ts")
+            + _kalshi_cutoff_clause("entry_ts", division_slugs=kalshi_slugs, db_url=db_url)
             + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts"),
             tuple(kalshi_slugs),
         )
@@ -4900,7 +4926,7 @@ def _query_kalshi_distinct_market_stats(
         f"         ) AS rn "
         f"  FROM kalshi_round_trips "
         f"  WHERE division IN ({kalshi_ph})"
-        + _kalshi_cutoff_clause("entry_ts")
+        + _kalshi_cutoff_clause("entry_ts", division_slugs=kalshi_slugs, db_url=db_url)
         + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
         + f") "
         f"SELECT COUNT(*) AS n_resolved, "

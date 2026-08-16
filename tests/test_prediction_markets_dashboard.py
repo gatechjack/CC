@@ -48,8 +48,11 @@ def _insert_kalshi_round_trip(db_url, **overrides):
         "qty": 10.0,
         "entry_price": 0.30,
         "notional": 3.0,
-        "entry_ts": "2026-05-11T02:00:00+00:00",
-        "resolved_ts": "2026-05-11T03:00:00+00:00",
+        # Post-cutoff by default (> DASHBOARD_RT_CUTOFFS['kalshi_llm_arbitrage']
+        # 2026-07-07) so default-fixture rows are current-regime and visible; the
+        # cutoff itself is still exercised by the cutoff-specific tests below.
+        "entry_ts": "2026-08-11T02:00:00+00:00",
+        "resolved_ts": "2026-08-11T03:00:00+00:00",
         "market_result": "yes",
         "won": 1,
         "realized_pnl": 7.0,
@@ -82,8 +85,10 @@ def _insert_poly_round_trip(db_url, **overrides):
         "qty": 5.0,
         "entry_price": 0.40,
         "notional": 2.0,
-        "entry_ts": "2026-05-11T01:00:00+00:00",
-        "resolved_ts": "2026-05-11T03:30:00+00:00",
+        # Bumped in lockstep with the kalshi helper (kept newer: 03:30 > kalshi
+        # 03:00) so the all-mode resolved_ts-DESC sort assertions still hold.
+        "entry_ts": "2026-08-11T01:00:00+00:00",
+        "resolved_ts": "2026-08-11T03:30:00+00:00",
         "yes_won": 0,
         "won": 0,
         "realized_pnl": -2.0,
@@ -581,13 +586,13 @@ def test_open_trades_all_mode_unions_and_sorts(fresh_db):
         db_url, "kalshi_llm_arbitrage", "would_have_placed",
         {"order_id": "k-old", "division": "kalshi_llm_arbitrage",
          "ticker": "KX-OLD", "outcome": "yes", "qty": 1.0, "limit_price": 0.5},
-        ts="2026-05-11T01:00:00+00:00",
+        ts="2026-08-11T01:00:00+00:00",   # post-cutoff so the kalshi_llm OPEN cutoff keeps it
     )
     _insert_audit(
         db_url, "polymarket_arbitrage", "would_have_placed",
         {"order_id": "p-new", "condition_id": "0x", "market_slug": "p-new",
          "outcome": "yes", "qty": 1.0, "limit_price": 0.5},
-        ts="2026-05-11T03:00:00+00:00",
+        ts="2026-08-11T03:00:00+00:00",   # newer than k-old (01:00) -> sorts first
     )
     ots = wd._query_pm_open_trades(
         db_url,
@@ -1220,3 +1225,75 @@ def test_resolved_poly_kalshi_not_bled_into_arb_view(fresh_db):
                    realized_pnl=4.14)
     assert wd._query_pm_resolved_stats(db_url, ["kalshi_llm_arbitrage"])["n_resolved"] == 0
     assert wd._query_pm_round_trips(db_url, ["kalshi_llm_arbitrage"], 100) == []
+
+
+# ── Kalshi division agent_state metrics-epoch (CP5) ─────────────────────────
+def test_get_kalshi_division_epoch_unset_is_none(fresh_db):
+    db_url, _ = fresh_db
+    assert wd._get_kalshi_division_epoch(db_url, "poly_kalshi_mlb") is None
+
+
+def test_get_kalshi_division_epoch_reads_agent_state(fresh_db):
+    db_url, _ = fresh_db
+    _db.set_agent_state("poly_kalshi_mlb", "metrics_epoch",
+                        "2026-08-15T00:00:00+00:00", db_url=db_url)
+    assert wd._get_kalshi_division_epoch(db_url, "poly_kalshi_mlb") == "2026-08-15T00:00:00+00:00"
+
+
+def _pk_rt(db_url, oid, entry_ts):
+    _insert_kalshi_round_trip(
+        db_url, order_id=oid, ticker=f"KXMLBGAME-{oid}", division="poly_kalshi_mlb",
+        strategy="poly_kalshi_mlb", arb_type="poly_kalshi_copy", outcome_bet="yes",
+        entry_ts=entry_ts, resolved_ts=entry_ts, won=1, market_result="yes",
+        realized_pnl=1.0)
+
+
+def test_kalshi_division_epoch_filters_and_is_reversible(fresh_db):
+    """Set agent_state epoch -> pre-epoch rows drop from History + tiles; delete it
+    -> all rows show again (rows never deleted). Runtime, reversible, per-division."""
+    db_url, _ = fresh_db
+    _pk_rt(db_url, "pre", "2026-08-10T12:00:00+00:00")
+    _pk_rt(db_url, "post", "2026-08-16T12:00:00+00:00")
+    # unset -> both show (poly_kalshi_mlb has no hardcoded cutoff)
+    assert {r.order_id for r in wd._query_pm_round_trips(db_url, ["poly_kalshi_mlb"], 100)} == {"pre", "post"}
+    assert wd._query_pm_resolved_stats(db_url, ["poly_kalshi_mlb"])["n_resolved"] == 2
+    # set epoch 2026-08-15 -> only 'post' survives (History AND tiles)
+    _db.set_agent_state("poly_kalshi_mlb", "metrics_epoch", "2026-08-15T00:00:00+00:00", db_url=db_url)
+    assert {r.order_id for r in wd._query_pm_round_trips(db_url, ["poly_kalshi_mlb"], 100)} == {"post"}
+    assert wd._query_pm_resolved_stats(db_url, ["poly_kalshi_mlb"])["n_resolved"] == 1
+    # reversible: delete the row -> both show again
+    with _db.connect(db_url) as c:
+        c.execute("DELETE FROM agent_state WHERE agent='poly_kalshi_mlb' AND key='metrics_epoch'")
+    assert {r.order_id for r in wd._query_pm_round_trips(db_url, ["poly_kalshi_mlb"], 100)} == {"pre", "post"}
+
+
+def test_kalshi_division_epoch_overrides_hardcoded_cutoff(fresh_db):
+    """agent_state epoch takes precedence over DASHBOARD_RT_CUTOFFS: an EARLIER
+    agent_state epoch un-hides a row the hardcoded 2026-07-07 cutoff would hide."""
+    db_url, _ = fresh_db
+    _insert_kalshi_round_trip(
+        db_url, order_id="llm-old", division="kalshi_llm_arbitrage",
+        strategy="kalshi_llm_arbitrage", entry_ts="2026-05-11T00:00:00+00:00",
+        resolved_ts="2026-05-11T00:00:00+00:00")
+    assert wd._query_pm_round_trips(db_url, ["kalshi_llm_arbitrage"], 100) == []   # hardcoded hides it
+    _db.set_agent_state("kalshi_llm_arbitrage", "metrics_epoch",
+                        "2026-01-01T00:00:00+00:00", db_url=db_url)
+    rts = wd._query_pm_round_trips(db_url, ["kalshi_llm_arbitrage"], 100)
+    assert [r.order_id for r in rts] == ["llm-old"]   # agent_state override wins
+
+
+def test_existing_kalshi_division_cutoff_unaffected_without_agent_state(fresh_db):
+    """No agent_state epoch -> kalshi_llm_arbitrage keeps its hardcoded 2026-07-07
+    cutoff: pre-cutoff hidden, post-cutoff shown. Proves the fix is real (the cutoff
+    still filters), not a hidden/disabled cutoff."""
+    db_url, _ = fresh_db
+    _insert_kalshi_round_trip(
+        db_url, order_id="llm-pre", division="kalshi_llm_arbitrage",
+        strategy="kalshi_llm_arbitrage", entry_ts="2026-05-11T00:00:00+00:00",
+        resolved_ts="2026-05-11T00:00:00+00:00")
+    _insert_kalshi_round_trip(
+        db_url, order_id="llm-post", division="kalshi_llm_arbitrage",
+        strategy="kalshi_llm_arbitrage", entry_ts="2026-08-11T00:00:00+00:00",
+        resolved_ts="2026-08-11T00:00:00+00:00")
+    rts = wd._query_pm_round_trips(db_url, ["kalshi_llm_arbitrage"], 100)
+    assert [r.order_id for r in rts] == ["llm-post"]   # pre-cutoff still hidden
