@@ -304,3 +304,22 @@ divisions:
     target_annual_return: 0.50
     standby: false
     enabled: true
+
+  # Two-division split Phase 1 (2026-08-16): LIVE Poly->Kalshi MLB copy. The
+  # poly_kalshi_mlb strategy detects roster whales' Polymarket moneyline bets
+  # and executes on Kalshi KXMLBGAME via its OWN KAREN-keyed KalshiLiveBroker
+  # (wired in main.py, not the generic division order path). Registered here so
+  # its live fills/P&L surface on the Prediction Markets dashboard by reusing
+  # kalshi_round_trips (resolver adapter, CP4). secret_ref shares the
+  # KALSHI-KAREN-* account with kalshi_arbitrage (which is standby) — CP7 must
+  # verify equity is not double-counted before wiring equity snapshots.
+  - slug: poly_kalshi_mlb
+    name: Poly Kalshi Copy
+    broker: kalshi
+    account_filter: main
+    secret_ref: kalshi_karen
+    intent: aggressive
+    benchmark: SPY
+    target_annual_return: 0.50
+    standby: false
+    enabled: true
