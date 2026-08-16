@@ -118,6 +118,15 @@ def test_gdaily_blocks_breach_and_counter_is_in_memory(hdb):
     assert isinstance(ex._deployed_usd, float)        # plain in-process counter, not a DB query
 
 
+def test_caps_none_disables_size_and_daily_gates(hdb):
+    # launch config: no per-trade cap, no daily-deployment cap (halt is the backstop)
+    ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, per_trade_cap_usd=None,
+                            daily_deployment_cap_usd=None)
+    assert _run(ex.submit(_order(stake=1000.0, ticker=NYY)))["status"] == "DRY_RUN_would_place"
+    assert _run(ex.submit(_order(stake=1000.0, ticker=COLSF_SF)))["status"] == "DRY_RUN_would_place"
+    assert ex._deployed_usd == 2000.0        # neither gate blocked
+
+
 def test_gslip_blocks_thin_book(hdb):
     ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, max_slippage_cents=2)
     o = _order(base=0.55)

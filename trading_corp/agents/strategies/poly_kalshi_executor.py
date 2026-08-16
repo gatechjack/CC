@@ -206,9 +206,11 @@ class PolyKalshiExecutor:
         self._dry_run = bool(dry_run)
         self._strategy = strategy        # [G-halt] key into the shared StrategyState halt row
         self._db_url = db_url
-        # ── guardrail config (PLACEHOLDERS; the real $ are CP5 operator gates) ──
-        self._per_trade_cap_usd = float(per_trade_cap_usd)                 # [G-size]
-        self._daily_deployment_cap_usd = float(daily_deployment_cap_usd)   # [G-daily]
+        # ── guardrail config. None => that cap is DISABLED (operator's launch
+        #    choice: no per-trade cap, no daily-deployment cap; the $100 daily-loss
+        #    halt is the active backstop). ──
+        self._per_trade_cap_usd = None if per_trade_cap_usd is None else float(per_trade_cap_usd)          # [G-size]
+        self._daily_deployment_cap_usd = None if daily_deployment_cap_usd is None else float(daily_deployment_cap_usd)  # [G-daily]
         self._max_slippage_cents = int(max_slippage_cents)                 # [G-slip]
         # ── state: IN-PROCESS ONLY. No audit_event / DB aggregate query. ──
         self._placed: dict[str, ProposedKalshiOrder] = {}   # [G-idem] coid -> order
@@ -240,8 +242,8 @@ class PolyKalshiExecutor:
         # [G-halt] FIRST — short-circuit before any counter/idempotency mutation.
         if self._is_halted():
             return self._record("blocked_halt", order)
-        # [G-size] per-trade size cap.
-        if order.stake_usd > self._per_trade_cap_usd:
+        # [G-size] per-trade size cap (None => disabled).
+        if self._per_trade_cap_usd is not None and order.stake_usd > self._per_trade_cap_usd:
             return self._record("blocked_size_cap", order)
         # [G-conf] auto-execute threshold (>= 0.97).
         if order.confidence < AUTO_EXEC_MIN_CONFIDENCE:
@@ -252,7 +254,8 @@ class PolyKalshiExecutor:
         # [G-daily] in-memory daily deployment cap. Reads self._deployed_usd — a plain
         #           in-process float, NOT an audit_event aggregate query (that full-scan
         #           froze the engine; removed 2026-06-16).
-        if self._deployed_usd + order.stake_usd > self._daily_deployment_cap_usd:
+        if (self._daily_deployment_cap_usd is not None
+                and self._deployed_usd + order.stake_usd > self._daily_deployment_cap_usd):
             return self._record("blocked_daily_cap", order)
         # [G-slip] max-slippage on the market order. Evaluated whenever a book quote is
         #          present; live with NO quote fails CLOSED (cannot verify -> reject).

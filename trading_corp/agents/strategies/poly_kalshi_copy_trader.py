@@ -34,18 +34,24 @@ def _utc_day(ts: float | None = None) -> str:
 
 
 class PolyKalshiCopyTrader:
-    def __init__(self, *, whales: dict, executor, poll_interval_sec: float = 7.0,
-                 activity_limit: int = 50, stake_usd: float = 2.00,
-                 quote_fn=None, day_key_fn=_utc_day, daily_loss_cap_usd: float | None = None,
+    def __init__(self, *, executor, poll_interval_sec: float = 7.0,
+                 activity_limit: int = 50, stake_usd: float = 5.00,
+                 quote_fn=None, day_key_fn=_utc_day, daily_loss_cap_usd: float | None = 100.0,
+                 db_url: str = "sqlite:///data/trading_corp.db",
+                 roster_actor: str = "polymarket_copy_trader", roster_key: str = "selected_whales",
                  now_fn=time.time):
-        self._whales = dict(whales)           # {name: wallet}
+        # Trigger roster is read from agent_state(selected_whales) each cycle — NO
+        # hardcoded whale dict. Idempotency keys on wallet (name is display-only).
         self._executor = executor             # PolyKalshiExecutor (dry_run for shadow)
         self._poll = float(poll_interval_sec)
         self._limit = int(activity_limit)
-        self._stake = float(stake_usd)
+        self._stake = float(stake_usd)        # CP5 operator gate: $5/trade fixed
         self._quote_fn = quote_fn             # async (ticker) -> {yes_ask,yes_bid} | None
         self._day_key_fn = day_key_fn
-        self._daily_loss_cap_usd = daily_loss_cap_usd
+        self._daily_loss_cap_usd = daily_loss_cap_usd   # CP5 operator gate: $100 realized loss/day
+        self._db_url = db_url
+        self._roster_actor = roster_actor
+        self._roster_key = roster_key
         self._now = now_fn
         self._last_seen_ts: dict[str, int] = {}   # wallet -> high-water timestamp
         self._kidx: dict = {}
@@ -58,6 +64,25 @@ class PolyKalshiCopyTrader:
 
     def set_kalshi_index(self, index: dict, dates) -> None:
         self._kidx, self._kdates = index, frozenset(dates)
+
+    def _load_roster(self) -> list[tuple[str, str]]:
+        """Read the trigger roster from agent_state(selected_whales), fresh each
+        cycle (mirrors the legacy loop's per-cycle reload). Returns
+        [(user_name, wallet), ...]. Tolerates the rich dict form and a bare
+        wallet-string list. Idempotency keys on wallet downstream."""
+        from trading_corp.persistence.db import load_agent_state
+        rec = load_agent_state(self._roster_actor, self._roster_key, db_url=self._db_url)
+        if not rec:
+            return []
+        value = rec[0]
+        out: list[tuple[str, str]] = []
+        if isinstance(value, list):
+            for v in value:
+                if isinstance(v, dict) and v.get("wallet"):
+                    out.append((str(v.get("user_name") or ""), str(v["wallet"])))
+                elif isinstance(v, str):
+                    out.append(("", v))
+        return out
 
     # ── day-rollover: reset the in-memory daily counter at the UTC boundary ──
     def _rollover_if_needed(self) -> bool:
@@ -145,7 +170,7 @@ class PolyKalshiCopyTrader:
         self._rollover_if_needed()
         self.poll_count += 1
         out = []
-        for name, wallet in self._whales.items():
+        for name, wallet in self._load_roster():   # roster reloaded from selected_whales each cycle
             rows = await self._fetch(client, wallet)
             if not rows:
                 continue

@@ -68,8 +68,16 @@ async def main() -> int:
     idx, dates = await _build_index(broker)
     print(f"kalshi index: {sum(len(v) for v in idx.values())} games; starting {DURATION_S}s shadow @ {POLL_S}s", flush=True)
 
-    ex = PolyKalshiExecutor(dry_run=True, strategy="poly_kalshi_mlb")
-    loop = PolyKalshiCopyTrader(whales=WHALES, executor=ex, poll_interval_sec=POLL_S,
+    # roster now comes from selected_whales (no hardcoded dict); seed a local
+    # staging row from WHALES so this historical runner still executes.
+    from trading_corp.persistence import db as _db
+    STAGING = f"sqlite:///{WT / 'reports/2026-08-15_poly_kalshi_mlb_phase1/shadow_staging.db'}"
+    _db.init_db(STAGING)
+    _db.set_agent_state("polymarket_copy_trader", "selected_whales",
+                        [{"wallet": w, "user_name": n, "category": "mlb"} for n, w in WHALES.items()],
+                        db_url=STAGING)
+    ex = PolyKalshiExecutor(dry_run=True, strategy="poly_kalshi_mlb", db_url=STAGING)
+    loop = PolyKalshiCopyTrader(executor=ex, db_url=STAGING, poll_interval_sec=POLL_S,
                                 stake_usd=2.00, quote_fn=_make_quote_fn(broker))
     loop.set_kalshi_index(idx, dates)
 

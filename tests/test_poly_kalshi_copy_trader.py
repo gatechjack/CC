@@ -53,16 +53,38 @@ class FakeClient:
         return page
 
 
-def _loop(hdb, *, quote_fn=None, daily_cap=None, day_key_fn=None, now=1000.0):
+def _loop(hdb, *, quote_fn=None, daily_cap=None, day_key_fn=None, now=1000.0, roster=None):
     ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, strategy="poly_kalshi_mlb_looptest")
+    # seed the trigger roster (selected_whales) — the loop reads THIS, no hardcoded dict
+    if roster is None:
+        roster = [{"wallet": "0xwallet", "user_name": "SDTrading", "category": "mlb"}]
+    _db.set_agent_state("polymarket_copy_trader", "selected_whales", roster, db_url=hdb)
     kw = {}
     if day_key_fn is not None:
         kw["day_key_fn"] = day_key_fn
-    lp = PolyKalshiCopyTrader(whales={"SDTrading": "0xwallet"}, executor=ex, poll_interval_sec=5.0,
+    lp = PolyKalshiCopyTrader(executor=ex, poll_interval_sec=5.0, db_url=hdb,
                               stake_usd=2.0, quote_fn=quote_fn, daily_loss_cap_usd=daily_cap,
                               now_fn=lambda: now, **kw)
     lp.set_kalshi_index(*_index())
     return lp, ex
+
+
+def test_loop_reads_roster_from_selected_whales_and_reloads(hdb):
+    lp, ex = _loop(hdb, roster=[{"wallet": "0xA", "user_name": "SDTrading", "category": "mlb"},
+                                {"wallet": "0xB", "user_name": "xifutloong3", "category": "mlb"}])
+    assert lp._load_roster() == [("SDTrading", "0xA"), ("xifutloong3", "0xB")]
+    # per-cycle reload: mutate selected_whales, loop sees it on the next read
+    _db.set_agent_state("polymarket_copy_trader", "selected_whales",
+                        [{"wallet": "0xC", "user_name": "monkeymashingkeyboard", "category": "mlb"}],
+                        db_url=hdb)
+    assert lp._load_roster() == [("monkeymashingkeyboard", "0xC")]
+
+
+def test_poll_iterates_roster_wallet_not_hardcoded(hdb):
+    lp, ex = _loop(hdb, roster=[{"wallet": "0xZ", "user_name": "SDTrading", "category": "mlb"}])
+    _run(lp.poll_cycle(FakeClient([[_row(100)]])))
+    assert lp._last_seen_ts.get("0xZ") == 100      # polled the roster's wallet
+    assert "0xwallet" not in lp._last_seen_ts       # no hardcoded default
 
 
 def _index():
