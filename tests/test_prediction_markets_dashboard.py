@@ -1178,3 +1178,45 @@ def test_pending_count_tracks_list_when_one_resolves(fresh_db):
     n_list = len(wd._query_pm_open_trades(db_url, ["poly_kalshi_mlb"], 100))
     n_badge = wd._query_pm_pending_count(db_url, ["poly_kalshi_mlb"])
     assert n_list == 2 and n_badge == 2
+
+
+# ── Poly->Kalshi copy (live) RESOLVED tiles + History (CP4) ──────────────────
+def _pk_round_trip(db_url, **over):
+    base = dict(division="poly_kalshi_mlb", strategy="poly_kalshi_mlb",
+                arb_type="poly_kalshi_copy", outcome_bet="yes",
+                entry_ts="2026-08-16T13:40:00+00:00", resolved_ts="2026-08-16T16:30:00+00:00")
+    base.update(over)
+    _insert_kalshi_round_trip(db_url, **base)
+
+
+def test_resolved_tiles_and_history_populate_poly_kalshi(fresh_db):
+    """CP4: composed poly_kalshi_mlb round-trips populate the resolved tiles
+    (count / wins / realized) and the History list, sourced by division."""
+    db_url, _ = fresh_db
+    _pk_round_trip(db_url, order_id="mia", ticker="KXMLBGAME-A-MIA", event_title="MIA vs CIN",
+                   qty=9.0, entry_price=0.54, notional=9 * 0.54, won=1, market_result="yes",
+                   realized_pnl=9 * (1 - 0.54), roi_pct=85.2)
+    _pk_round_trip(db_url, order_id="cin", ticker="KXMLBGAME-A-CIN", event_title="MIA vs CIN",
+                   qty=10.0, entry_price=0.48, notional=10 * 0.48, won=0, market_result="no",
+                   realized_pnl=-10 * 0.48, roi_pct=-100.0)
+    stats = wd._query_pm_resolved_stats(db_url, ["poly_kalshi_mlb"])
+    assert stats["n_resolved"] == 2
+    assert stats["n_wins"] == 1
+    assert stats["total_realized_pnl"] == pytest.approx(9 * (1 - 0.54) - 10 * 0.48)   # -0.66
+    hist = wd._query_pm_round_trips(db_url, ["poly_kalshi_mlb"], 100)
+    assert {h.order_id for h in hist} == {"mia", "cin"}
+    mia = next(h for h in hist if h.order_id == "mia")
+    assert mia.venue == "kalshi" and mia.division == "poly_kalshi_mlb"
+    assert mia.outcome_bet == "yes" and mia.qty == 9.0 and mia.entry_price == 0.54
+    assert mia.won == 1 and mia.realized_pnl == pytest.approx(9 * (1 - 0.54))
+    assert mia.arb_type == "poly_kalshi_copy"
+
+
+def test_resolved_poly_kalshi_not_bled_into_arb_view(fresh_db):
+    """Resolved poly_kalshi rows are scoped by division -- they do not appear under a
+    kalshi_ arb division view."""
+    db_url, _ = fresh_db
+    _pk_round_trip(db_url, order_id="mia", ticker="KXMLBGAME-A-MIA", won=1,
+                   realized_pnl=4.14)
+    assert wd._query_pm_resolved_stats(db_url, ["kalshi_llm_arbitrage"])["n_resolved"] == 0
+    assert wd._query_pm_round_trips(db_url, ["kalshi_llm_arbitrage"], 100) == []

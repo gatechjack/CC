@@ -4248,7 +4248,10 @@ def _query_pm_round_trips(
 
     # kalshi_round_trips DOES have a division column (one table covers all 3
     # kalshi strategies across both kalshi_arbitrage and kalshi_llm_arbitrage).
-    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    # CP4: poly_kalshi_mlb round-trips also live here (composed by the resolver),
+    # so include the poly_kalshi_ prefix — cutoff/copy-mode clauses are no-ops for it.
+    kalshi_slugs = [s for s in division_slugs
+                    if s.startswith(_KALSHI_PREFIX) or s.startswith(_POLY_KALSHI_PREFIX)]
     if kalshi_slugs:
         kalshi_ph = ",".join("?" for _ in kalshi_slugs)
         kalshi_rows = _query(
@@ -4823,7 +4826,9 @@ def _query_pm_resolved_stats(
             out["n_voids"] += int(rows[0].get("n_voids") or 0)
             out["total_realized_pnl"] += float(rows[0].get("total_pnl") or 0.0)
 
-    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    # CP4: poly_kalshi_mlb round-trips live in kalshi_round_trips too.
+    kalshi_slugs = [s for s in division_slugs
+                    if s.startswith(_KALSHI_PREFIX) or s.startswith(_POLY_KALSHI_PREFIX)]
     if kalshi_slugs:
         kalshi_ph = ",".join("?" for _ in kalshi_slugs)
         rows = _query(
@@ -4877,7 +4882,9 @@ def _query_kalshi_distinct_market_stats(
     or equal to the per-emission Option-A count.
     """
     out: dict = {"n_resolved": 0, "n_wins": 0, "n_voids": 0, "total_realized_pnl": 0.0}
-    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    # CP4: poly_kalshi_mlb round-trips live in kalshi_round_trips too.
+    kalshi_slugs = [s for s in division_slugs
+                    if s.startswith(_KALSHI_PREFIX) or s.startswith(_POLY_KALSHI_PREFIX)]
     if not kalshi_slugs:
         return out
 
