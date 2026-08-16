@@ -3949,6 +3949,10 @@ class PMDashboardView:
 
 _POLYMARKET_PREFIX = "polymarket_"
 _KALSHI_PREFIX = "kalshi_"
+# Poly->Kalshi copy divisions (live) — slug 'poly_kalshi_*'. Disjoint from the two
+# prefixes above ('poly_kalshi_mlb' starts with neither 'polymarket_' nor 'kalshi_'),
+# so these rows are bucketed by their OWN branch (different kind/actor/field names).
+_POLY_KALSHI_PREFIX = "poly_kalshi_"
 
 # Per-division entry_ts cutoffs. Round-trips with `entry_ts < cutoff` are
 # excluded from dashboard aggregates (tile counts, win rate, history list)
@@ -3971,20 +3975,70 @@ DASHBOARD_RT_CUTOFFS: dict[str, str] = {
 }
 
 
-def _kalshi_cutoff_clause(ts_col: str) -> str:
-    """SQL fragment that excludes pre-cutoff `kalshi_round_trips` rows
-    per `DASHBOARD_RT_CUTOFFS`. Returns a string starting with a leading
-    space, suitable to concatenate after any existing WHERE clause.
-    Empty string when the dict is empty (rollback path).
+def _get_kalshi_division_epoch(db_url: str, slug: str) -> str | None:
+    """CP5: runtime, reversible per-division dashboard cutoff for a kalshi division,
+    read from agent_state[<slug>/metrics_epoch] (ISO-validated by `_get_metrics_epoch`).
 
-    Cutoffs are hardcoded ISO timestamps — no injection surface, so inline
-    literals are safe.
+    Mirror of `_get_polymarket_metrics_epoch`, keyed on the division slug itself
+    (which IS the audit actor for these divisions, e.g. 'poly_kalshi_mlb'). Returns
+    None when unset -> the hardcoded `DASHBOARD_RT_CUTOFFS` fallback applies. Set at
+    runtime with agent_state(<slug>,'metrics_epoch','<ISO>'); revert to all-time by
+    deleting that row (no redeploy)."""
+    return _get_metrics_epoch(db_url, slug)
+
+
+def _kalshi_cutoff_clause(
+    ts_col: str, *, division_slugs: list[str] | None = None, db_url: str | None = None,
+) -> str:
+    """SQL fragment that excludes pre-cutoff `kalshi_round_trips` rows. Returns a
+    string starting with a leading space, suitable to concatenate after any existing
+    WHERE clause; empty string when there are no cutoffs (rollback path).
+
+    Per-division cutoff resolution (CP5): the effective cutoff for a division is an
+    `agent_state[<slug>/metrics_epoch]` override (runtime, reversible) when set, ELSE
+    the hardcoded `DASHBOARD_RT_CUTOFFS` entry. agent_state overrides are resolved
+    ONLY for the passed `division_slugs` (needs `db_url`); called with neither (the
+    default), the behavior is EXACTLY the pre-CP5 hardcoded dict — so back-compat
+    callers and the cross-division overview are unchanged.
+
+    Injection-safe: agent_state epochs are ISO-validated (`_get_kalshi_division_epoch`
+    -> `_get_metrics_epoch`) and hardcoded cutoffs are literals, so both inline safely
+    — same pattern as `_polymarket_cutoff_clause`.
+    """
+    cutoffs = dict(DASHBOARD_RT_CUTOFFS)
+    if division_slugs and db_url:
+        for slug in division_slugs:
+            epoch = _get_kalshi_division_epoch(db_url, slug)
+            if epoch:                 # agent_state override wins over the hardcoded entry
+                cutoffs[slug] = epoch
+    parts = [
+        f" AND NOT (division='{div}' AND {ts_col} < '{cutoff}')"
+        for div, cutoff in cutoffs.items()
+    ]
+    return "".join(parts)
+
+
+def _kalshi_division_epoch_clause(
+    division_slugs: list[str], db_url: str, *, ts_col: str, div_col: str,
+) -> str:
+    """CP5 (symmetric): the audit-event-path counterpart of `_kalshi_cutoff_clause`,
+    for the OPEN tab + pending badge. Per passed slug, emits an
+    `AND NOT (<div_col>='<slug>' AND <ts_col> < '<cutoff>')` term where the cutoff is
+    the agent_state[<slug>/metrics_epoch] override (precedence) ELSE the hardcoded
+    `DASHBOARD_RT_CUTOFFS` entry — so a set epoch hides pre-epoch OPEN rows exactly as
+    it hides resolved rows.
+
+    SCOPED to the passed `division_slugs` (does NOT touch the 6-actor arb audit path /
+    the inline `_llm_cut`), and takes a parameterizable `div_col` because the audit
+    path filters on `json_extract(a.payload_json,'$.division')`, not a bare column —
+    same shape as `_polymarket_cutoff_clause`'s div_col. '' (no-op) when no slug has a
+    cutoff. Injection-safe: agent_state epochs ISO-validated, hardcoded values literal.
     """
     parts = []
-    for div, cutoff in DASHBOARD_RT_CUTOFFS.items():
-        parts.append(
-            f" AND NOT (division='{div}' AND {ts_col} < '{cutoff}')"
-        )
+    for slug in division_slugs:
+        cutoff = _get_kalshi_division_epoch(db_url, slug) or DASHBOARD_RT_CUTOFFS.get(slug)
+        if cutoff:
+            parts.append(f" AND NOT ({div_col}='{slug}' AND {ts_col} < '{cutoff}')")
     return "".join(parts)
 
 
@@ -4244,7 +4298,10 @@ def _query_pm_round_trips(
 
     # kalshi_round_trips DOES have a division column (one table covers all 3
     # kalshi strategies across both kalshi_arbitrage and kalshi_llm_arbitrage).
-    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    # CP4: poly_kalshi_mlb round-trips also live here (composed by the resolver),
+    # so include the poly_kalshi_ prefix — cutoff/copy-mode clauses are no-ops for it.
+    kalshi_slugs = [s for s in division_slugs
+                    if s.startswith(_KALSHI_PREFIX) or s.startswith(_POLY_KALSHI_PREFIX)]
     if kalshi_slugs:
         kalshi_ph = ",".join("?" for _ in kalshi_slugs)
         kalshi_rows = _query(
@@ -4257,7 +4314,7 @@ def _query_pm_round_trips(
             f"       extra_json "
             f"FROM kalshi_round_trips "
             f"WHERE division IN ({kalshi_ph})"
-            + _kalshi_cutoff_clause("entry_ts")
+            + _kalshi_cutoff_clause("entry_ts", division_slugs=kalshi_slugs, db_url=db_url)
             + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
             + " "
             f"ORDER BY resolved_ts DESC LIMIT ?",
@@ -4596,6 +4653,78 @@ def _query_pm_open_trades(
                 leg_date=p.get("leg_date"),
             ))
 
+    # Poly->Kalshi copy (live) open trades — kind='poly_kalshi_order',
+    # actor/division = 'poly_kalshi_mlb'. This division's journal differs from the
+    # arb actors: fields are `count`/`price` (+ Flag-1 `fill_count`/`fill_price`),
+    # NOT qty/limit_price, and `side` is the V2 leg (bid/ask), so an OPEN row is
+    # keyed off `action='entry'`. Additive branch — the arb query above is left
+    # byte-identical. An entry drops off OPEN once CP4's resolver composes its
+    # kalshi_round_trips row (the LEFT JOIN on order_id -> `r.order_id IS NULL`
+    # gate); a placed row with no order_id yet stays open, which is correct
+    # pre-resolution.
+    pk_slugs = [s for s in division_slugs if s.startswith(_POLY_KALSHI_PREFIX)]
+    if pk_slugs:
+        pk_ph = ",".join("?" for _ in pk_slugs)
+        rows = _query(
+            db_url,
+            f"SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
+            f"FROM audit_event a "
+            f"LEFT JOIN kalshi_round_trips r "
+            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            f"WHERE a.kind = 'poly_kalshi_order' "
+            f"  AND json_extract(a.payload_json, '$.status') IN ('placed', 'DRY_RUN_would_place') "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.action'), 'entry') = 'entry' "
+            f"  AND json_extract(a.payload_json, '$.division') IN ({pk_ph}) "
+            + _kalshi_division_epoch_clause(
+                pk_slugs, db_url, ts_col="a.ts",
+                div_col="json_extract(a.payload_json, '$.division')")
+            + f"  AND r.order_id IS NULL "
+            f"ORDER BY a.ts DESC LIMIT ?",
+            (*pk_slugs, limit),
+        )
+        for r in rows:
+            try:
+                p = json.loads(r["payload_json"])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            # Prefer the REAL fill (Flag 1) when present; fall back to the
+            # requested count / limit price for a not-yet-/never-filled row.
+            qty = float(
+                p["fill_count"] if p.get("fill_count") is not None
+                else (p.get("count") or 0)
+            )
+            price = float(
+                p["fill_price"] if p.get("fill_price") is not None
+                else (p.get("price") or 0)
+            )
+            whale = p.get("whale")
+            out.append(PMOpenTrade(
+                order_id=str(p.get("order_id") or ""),
+                venue="kalshi",
+                division=str(p.get("division") or ""),
+                strategy=str(r["actor"] or "poly_kalshi_mlb"),
+                whale_handle=str(whale) if whale else None,
+                emit_ts=str(r["ts"] or ""),
+                market_title=str(p.get("ticker") or ""),
+                market_id=str(p.get("ticker") or ""),
+                category=None,
+                outcome_bet=str(p.get("outcome") or ""),
+                qty=qty,
+                entry_price=price,
+                notional=qty * price,
+                divergence_pct=None,
+                edge_cents=None,
+                arb_type="poly_kalshi_copy",
+                resolves_at=None,
+                age_hours=_age_hours(r["ts"] or ""),
+                rationale=(f"copy @{whale}" if whale else None),
+                llm_reasoning=None,
+                key_unknowns=[],
+                llm_confidence=None,
+                subtitle=None,
+                leg_date=None,
+            ))
+
     out.sort(key=lambda t: t.emit_ts, reverse=True)
     return out[:limit]
 
@@ -4677,6 +4806,33 @@ def _query_pm_pending_count(
         if rows:
             total += int(rows[0].get("n") or 0)
 
+    # Poly->Kalshi copy (live): the OPEN badge must equal the OPEN list, so this
+    # COUNT uses the SAME WHERE as _query_pm_open_trades' poly_kalshi branch —
+    # kind='poly_kalshi_order' (single writer poly_kalshi_executor.py:368, so
+    # actor==division; the division predicate fully scopes it), placed/would-place
+    # ENTRY rows not yet resolved (order_id LEFT-JOIN -> r.order_id IS NULL). The
+    # arb COUNT above is untouched.
+    pk_slugs = [s for s in division_slugs if s.startswith(_POLY_KALSHI_PREFIX)]
+    if pk_slugs:
+        pk_ph = ",".join("?" for _ in pk_slugs)
+        rows = _query(
+            db_url,
+            f"SELECT COUNT(*) AS n FROM audit_event a "
+            f"LEFT JOIN kalshi_round_trips r "
+            f"  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            f"WHERE a.kind = 'poly_kalshi_order' "
+            f"  AND json_extract(a.payload_json, '$.status') IN ('placed', 'DRY_RUN_would_place') "
+            f"  AND COALESCE(json_extract(a.payload_json, '$.action'), 'entry') = 'entry' "
+            f"  AND json_extract(a.payload_json, '$.division') IN ({pk_ph}) "
+            + _kalshi_division_epoch_clause(
+                pk_slugs, db_url, ts_col="a.ts",
+                div_col="json_extract(a.payload_json, '$.division')")
+            + f"  AND r.order_id IS NULL",
+            tuple(pk_slugs),
+        )
+        if rows:
+            total += int(rows[0].get("n") or 0)
+
     return total
 
 
@@ -4726,7 +4882,9 @@ def _query_pm_resolved_stats(
             out["n_voids"] += int(rows[0].get("n_voids") or 0)
             out["total_realized_pnl"] += float(rows[0].get("total_pnl") or 0.0)
 
-    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    # CP4: poly_kalshi_mlb round-trips live in kalshi_round_trips too.
+    kalshi_slugs = [s for s in division_slugs
+                    if s.startswith(_KALSHI_PREFIX) or s.startswith(_POLY_KALSHI_PREFIX)]
     if kalshi_slugs:
         kalshi_ph = ",".join("?" for _ in kalshi_slugs)
         rows = _query(
@@ -4737,7 +4895,7 @@ def _query_pm_resolved_stats(
             f"       COALESCE(SUM(realized_pnl), 0.0) AS total_pnl "
             f"FROM kalshi_round_trips "
             f"WHERE division IN ({kalshi_ph})"
-            + _kalshi_cutoff_clause("entry_ts")
+            + _kalshi_cutoff_clause("entry_ts", division_slugs=kalshi_slugs, db_url=db_url)
             + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts"),
             tuple(kalshi_slugs),
         )
@@ -4780,7 +4938,9 @@ def _query_kalshi_distinct_market_stats(
     or equal to the per-emission Option-A count.
     """
     out: dict = {"n_resolved": 0, "n_wins": 0, "n_voids": 0, "total_realized_pnl": 0.0}
-    kalshi_slugs = [s for s in division_slugs if s.startswith(_KALSHI_PREFIX)]
+    # CP4: poly_kalshi_mlb round-trips live in kalshi_round_trips too.
+    kalshi_slugs = [s for s in division_slugs
+                    if s.startswith(_KALSHI_PREFIX) or s.startswith(_POLY_KALSHI_PREFIX)]
     if not kalshi_slugs:
         return out
 
@@ -4796,7 +4956,7 @@ def _query_kalshi_distinct_market_stats(
         f"         ) AS rn "
         f"  FROM kalshi_round_trips "
         f"  WHERE division IN ({kalshi_ph})"
-        + _kalshi_cutoff_clause("entry_ts")
+        + _kalshi_cutoff_clause("entry_ts", division_slugs=kalshi_slugs, db_url=db_url)
         + _kalshi_copy_mode_clause(kalshi_copy_mode, kalshi_copy_epoch, "entry_ts")
         + f") "
         f"SELECT COUNT(*) AS n_resolved, "

@@ -60,6 +60,9 @@ _KALSHI_ACTORS = (
     "kalshi_crypto_arb",
 )
 _KALSHI_DIVISIONS = ("kalshi_arbitrage", "kalshi_llm_arbitrage", "kalshi_copy_trading", "kalshi_weather", "kalshi_crypto")
+# Poly->Kalshi copy (live) division — its own audit actor/kind (poly_kalshi_order),
+# resolved by _fetch_unresolved_poly_kalshi (separate from the 6-actor arb fetch).
+_POLY_KALSHI_ACTOR = "poly_kalshi_mlb"
 _ACTOR_TO_DIVISION = {
     "kalshi_tail_price_arb": "kalshi_arbitrage",
     "kalshi_temporal_bucket_arb": "kalshi_arbitrage",
@@ -67,6 +70,7 @@ _ACTOR_TO_DIVISION = {
     "kalshi_copy_trader": "kalshi_copy_trading",
     "kalshi_weather_arb": "kalshi_weather",
     "kalshi_crypto_arb": "kalshi_crypto",
+    "poly_kalshi_mlb": "poly_kalshi_mlb",   # CP4: live Poly->Kalshi copy division
 }
 _ACTOR_TO_ARB_TYPE_DEFAULT = {
     "kalshi_tail_price_arb": "tail",
@@ -74,6 +78,7 @@ _ACTOR_TO_ARB_TYPE_DEFAULT = {
     "kalshi_copy_trader": "copy_trade",
     "kalshi_weather_arb": "weather_forecast",
     "kalshi_crypto_arb": "crypto_spot",
+    "poly_kalshi_mlb": "poly_kalshi_copy",   # CP4: History arb_type label
     # kalshi_temporal_bucket_arb keeps the payload's own kalshi_arb_type
     # field which is either 'temporal' or 'bucket'.
 }
@@ -179,6 +184,59 @@ def _fetch_unresolved_orders(
                 except (json.JSONDecodeError, ValueError, TypeError):
                     continue
     return rows
+
+
+def _fetch_unresolved_poly_kalshi(db_url: str, *, max_rows: int = 50) -> list[dict]:
+    """Poly->Kalshi copy (live) fills awaiting settlement, as `_compute_round_trip_row`
+    input rows. SEPARATE from `_fetch_unresolved_orders` so the 6-actor arb query is
+    byte-unchanged.
+
+    Reads `kind='poly_kalshi_order'` PLACED ENTRY rows (the REAL fills CP3 persists:
+    fill_count / fill_price / order_id) that have no kalshi_round_trips row yet, then
+    normalizes each into the fill_qty/fill_price/leg_priced shape the shared
+    `_compute_round_trip_row` already books (gross settlement, outcome-leg price):
+      - fill_count -> fill_qty (contracts actually filled; NOT the requested count)
+      - fill_price -> fill_price (this strategy is always-YES, so it IS the
+        outcome-leg per-contract cost -> leg_priced=True, no YES->NO inversion)
+
+    Rows without a persisted order_id or fill data (the pre-CP3 fills placed before
+    Flag 1) are EXCLUDED at the SQL/guard level rather than booked off the limit price
+    — booking those would be dishonest (wrong basis) and un-reconcilable.
+    """
+    out: list[dict] = []
+    with _db.connect(db_url) as conn:
+        cur = conn.execute(
+            "SELECT a.ts AS ts, a.actor AS actor, a.payload_json "
+            "FROM audit_event a "
+            "LEFT JOIN kalshi_round_trips r "
+            "  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+            "WHERE a.actor = ? "
+            "  AND a.kind = 'poly_kalshi_order' "
+            "  AND json_extract(a.payload_json, '$.status') = 'placed' "
+            "  AND COALESCE(json_extract(a.payload_json, '$.action'), 'entry') = 'entry' "
+            "  AND COALESCE(json_extract(a.payload_json, '$.order_id'), '') != '' "
+            "  AND r.order_id IS NULL "
+            "ORDER BY a.ts ASC LIMIT ?",
+            (_POLY_KALSHI_ACTOR, max_rows),
+        )
+        for r in cur.fetchall():
+            try:
+                p = json.loads(r["payload_json"])
+            except (json.JSONDecodeError, ValueError, TypeError):
+                continue
+            fc = p.get("fill_count")
+            fp = p.get("fill_price")
+            if fc is None or fp is None:
+                continue   # no REAL fill persisted -> cannot book honestly; skip
+            p["_ts"] = r["ts"]
+            p["_actor"] = r["actor"]
+            # Normalize onto the shared booking contract (same branch the live-copy
+            # kalshi_copy_placed_live rows use): the REAL fill books the round-trip.
+            p["fill_qty"] = fc
+            p["fill_price"] = fp
+            p["leg_priced"] = True
+            out.append(p)
+    return out
 
 
 def _compute_round_trip_row(row: dict, res: dict) -> dict | None:
@@ -470,6 +528,10 @@ async def resolve_pending_round_trips(
     pair_counts = _pair_pending_exits(db_url)
     rows = _fetch_unresolved_orders(db_url, max_per_actor=max_per_actor)
     rows = rows[:max_per_tick]
+    # CP4: append live Poly->Kalshi copy fills (own actor/kind poly_kalshi_order;
+    # low-volume, so added on TOP of the arb budget rather than competing for it —
+    # never starved behind the arb backlog). Resolved by the SAME loop below.
+    rows += _fetch_unresolved_poly_kalshi(db_url, max_rows=max_per_actor)
     counts = {
         "scanned": len(rows),
         "resolved": 0,
