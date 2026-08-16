@@ -365,6 +365,24 @@ async def refresh_polymarket_selection(
         finalists = sorted(
             selected.items(), key=lambda kv: kv[1][1].composite_score, reverse=True,
         )
+        # CP5 Kalshi-matchable gate: keep only whales whose DOMINANT category is
+        # tradeable on Kalshi (MLB moneyline at launch) so a reseed can never drag
+        # esports/mixed whales back into selected_whales. Dominant is classified
+        # from the whale's activity titles.
+        from trading_corp.data.kalshi_matchable import (
+            MATCHABLE_CATEGORIES, classify_dominant, is_kalshi_matchable,
+        )
+        _pre = len(finalists)
+        _dropped = [(w, entry.user_name, classify_dominant(activity_by_wallet.get(w, [])))
+                    for w, (entry, _sw, _c) in finalists
+                    if not is_kalshi_matchable(activity_by_wallet.get(w, []))]
+        finalists = [f for f in finalists
+                     if is_kalshi_matchable(activity_by_wallet.get(f[0], []))]
+        if _dropped:
+            log.info("refresh_polymarket_whales: Kalshi-matchable gate (%s) kept %d/%d; "
+                     "dropped non-matchable: %s",
+                     set(MATCHABLE_CATEGORIES), len(finalists), _pre,
+                     [(n, d) for _w, n, d in _dropped])
         selected_records: list[dict[str, Any]] = []
         details: list[dict[str, Any]] = []
         for rank_i, (wallet, (entry, sw, source_cat)) in enumerate(finalists):

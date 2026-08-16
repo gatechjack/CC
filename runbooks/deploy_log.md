@@ -12720,3 +12720,43 @@ loads enabled+guard with dates + blackout=() NO fail-closed; MACE ERRORS(1H) 0; 
 (this commit adds only runbooks/deploy_log.md), so the POST-GATE md5s (strategy `fbbf6d14`, mace.yaml
 `1753a9c8`, ex_dividend `12877dc4`) are the LF-md5 proof prod == prod-live tip. Kill-switches:
 auto_execute:false (hot), standby:true (hot), --live-divisions removal + restart, UI halt button.
+
+---
+
+## 2026-08-16 - Poly->Kalshi MLB copy (Phase 1) CODE+CONFIG deploy (INERT, arm OFF, nothing placed)
+
+**What:** staged the Phase-1 Poly->Kalshi MLB copy division onto prod (code + config only). The engine
+does NOT run it yet (main.py NOT wired - 0 refs) and the arm switch is OFF, so nothing can place.
+Converts the dead polymarket_copy_trader thesis into Kalshi execution (detect listed whales' MLB
+moneyline bets -> match to KXMLBGAME -> would-place market orders on Kalshi; shadow until armed).
+
+**Files deployed (6; LF-md5 prod == prod-live tip):**
+- `trading_corp/agents/strategies/poly_kalshi_executor.py`   `f8968570355a81c602df0e34a82d5823` (NEW)
+- `trading_corp/agents/strategies/poly_kalshi_copy_trader.py` `4c94bedbf1a9510b32b03c9fad88149c` (NEW)
+- `trading_corp/data/kalshi_matchable.py`                     `fdd6e8c22aba8eddf05c0e544c64eaf0` (NEW)
+- `trading_corp/data/mlb_poly_kalshi_match.py`                `4b2a5c49fb737d54d5a964868a4cd9fa` (NEW)
+- `trading_corp/scripts/refresh_polymarket_whales.py`         `a970b20eab8b201511e29f12dee0ae35` (Kalshi-matchable gate added; else unchanged)
+- `config/strategies.yaml`                                    `780351540aef5ba460c245c925219574` (added INERT `poly_kalshi_mlb` block; other blocks unchanged)
+
+**Roster (agent_state; separate write, same session):** `selected_whales` + `pinned_whales` replaced
+(8 legacy -> the 4 discovered MLB whales SDTrading / xifutloong3 / monkeymashingkeyboard /
+0x0x23kjookhaiuohduoayh8c9) + recency-rank column. Pinned set too so a pins_only reseed cannot revert.
+
+**Drift-gate (PASS):** prod `refresh_polymarket_whales.py` == base `fcb79bc9`, `strategies.yaml` == base
+`4bc4627d` (no drift); the 3 new modules were absent pre-deploy. Both modified files are PURELY ADDITIVE.
+
+**Safety (post-deploy, ALL GREEN):** executor `dry_run: bool = True` default (line 199);
+`poly_kalshi_mlb.auto_execute: false` (ARM SWITCH OFF); `main.py` poly_kalshi refs = 0 (loop NOT
+registered -> engine never imports/runs it); all 4 loop modules import clean on the prod venv.
+**NO restart** (deploy is inert to the running engine; the strategies.yaml block has no consumer).
+
+**Guardrails (config gates):** $5/trade fixed stake; $100 realized-loss/day auto-halt (persist_halt);
+max-slippage 2c; wallet-keyed idempotency. NO per-trade cap, NO daily-deployment cap (operator choice).
+
+**HELD - operator's separate explicit go:** (3) main.py loop registration; (4) flip `auto_execute:true`
++ restart = first live trade. Nothing placed this session.
+
+**Rollback:** `rm` the 4 new modules; restore `refresh_polymarket_whales.py`/`strategies.yaml` to
+`fcb79bc9`/`4bc4627d`; roster revert by re-writing selected/pinned. No positions to unwind (0 placed).
+
+**prod-live:** `2528aaa` -> this entry (FF, same session). Source branch `poly-kalshi-mlb-phase1-2026-08-15`.
