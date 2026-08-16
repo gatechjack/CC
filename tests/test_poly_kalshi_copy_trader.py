@@ -152,7 +152,7 @@ def test_gslip_fail_closed_live_no_quote(hdb):
     ex = PolyKalshiExecutor(dry_run=False, broker=FakeBroker(), db_url=hdb,
                             strategy="poly_kalshi_mlb_slip")
     from trading_corp.agents.strategies.poly_kalshi_executor import translate_whale_action
-    o = translate_whale_action(whale="w", kalshi_ticker=NYYTOR[0], confidence=1.0,
+    o = translate_whale_action(whale="w", whale_wallet="0xW", kalshi_ticker=NYYTOR[0], confidence=1.0,
                                whale_side="BUY", base_price=0.55, stake_usd=2.0)
     r = _run(ex.submit(o, market_quote=None))          # live + no quote
     assert r["status"] == "blocked_slippage_no_quote"
@@ -179,6 +179,6 @@ def test_ghalt_autodetect_fires_persist_halt_and_blocks(hdb):
     assert StrategyState.from_persistence(strat, db_url=hdb).halted is True
     # enforcement: subsequent submit is blocked by the same halt row
     from trading_corp.agents.strategies.poly_kalshi_executor import translate_whale_action
-    o = translate_whale_action(whale="w", kalshi_ticker=NYYTOR[0], confidence=1.0,
+    o = translate_whale_action(whale="w", whale_wallet="0xW", kalshi_ticker=NYYTOR[0], confidence=1.0,
                                whale_side="BUY", base_price=0.55, stake_usd=2.0)
     assert _run(ex.submit(o))["status"] == "blocked_halt"

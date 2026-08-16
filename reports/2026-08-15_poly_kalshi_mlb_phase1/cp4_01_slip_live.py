@@ -50,10 +50,10 @@ async def main() -> int:
         quote = {"yes_ask": ya, "yes_bid": yb}
         tight_base = round(ya - 0.01, 2)     # whale price 1c under ask -> slip 1c < 2c cap
         wide_base = round(ya - 0.10, 2)      # whale price 10c under ask -> slip 10c > 2c cap
-        o_ok = translate_whale_action(whale="w", kalshi_ticker=t, confidence=1.0, whale_side="BUY",
-                                      base_price=max(0.02, tight_base), stake_usd=2.0)
-        o_wide = translate_whale_action(whale="w2", kalshi_ticker=t, confidence=1.0, whale_side="BUY",
-                                        base_price=max(0.02, wide_base), stake_usd=2.0)
+        o_ok = translate_whale_action(whale="w", whale_wallet="0xW1", kalshi_ticker=t, confidence=1.0,
+                                      whale_side="BUY", base_price=max(0.02, tight_base), stake_usd=2.0)
+        o_wide = translate_whale_action(whale="w2", whale_wallet="0xW2", kalshi_ticker=t, confidence=1.0,
+                                        whale_side="BUY", base_price=max(0.02, wide_base), stake_usd=2.0)
         r_ok = await ex.submit(o_ok, market_quote=quote)
         r_wide = await ex.submit(o_wide, market_quote=quote)
         print(f"  {t}")

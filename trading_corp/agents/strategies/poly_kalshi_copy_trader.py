@@ -107,7 +107,7 @@ class PolyKalshiCopyTrader:
                 return []
         return []
 
-    async def _pipeline(self, name: str, r, detected_ts: float, *, backlog: bool = False) -> dict:
+    async def _pipeline(self, name: str, wallet: str, r, detected_ts: float, *, backlog: bool = False) -> dict:
         p = parse_poly_mlb_bet(r.slug, r.outcome or "", r.title or "", r.event_slug or "")
         e = {"seen_ts": round(detected_ts, 1), "action_ts": r.timestamp,
              "latency_s": round(detected_ts - r.timestamp, 1), "backlog": backlog, "whale": name,
@@ -125,7 +125,7 @@ class PolyKalshiCopyTrader:
             e.update(stage="bad_price", decision="no_order")
             self.shadow_log.append(e); return e
         order = translate_whale_action(
-            whale=name, kalshi_ticker=m.kalshi_ticker, confidence=m.confidence,
+            whale=name, whale_wallet=wallet, kalshi_ticker=m.kalshi_ticker, confidence=m.confidence,
             whale_side=r.side, base_price=float(r.price), stake_usd=self._stake)
         quote = None
         if self._quote_fn is not None:
@@ -156,10 +156,10 @@ class PolyKalshiCopyTrader:
                 self._last_seen_ts[wallet] = newest
                 if emit_backlog and backlog_n:
                     for r in sorted(trades, key=lambda x: x.timestamp)[-backlog_n:]:
-                        out.append(await self._pipeline(name, r, self._now(), backlog=True))
+                        out.append(await self._pipeline(name, wallet, r, self._now(), backlog=True))
                 continue
             for r in sorted((t for t in trades if t.timestamp > last), key=lambda x: x.timestamp):
-                out.append(await self._pipeline(name, r, self._now()))
+                out.append(await self._pipeline(name, wallet, r, self._now()))
             self._last_seen_ts[wallet] = max(newest, last)
         return out
 

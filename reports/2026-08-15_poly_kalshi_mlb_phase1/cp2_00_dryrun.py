@@ -72,8 +72,9 @@ async def main() -> int:
                 if not (0.0 < float(r.price) < 1.0):
                     continue
                 o = translate_whale_action(
-                    whale=name, kalshi_ticker=m.kalshi_ticker, confidence=m.confidence,
-                    whale_side=r.side, base_price=float(r.price), stake_usd=DRYRUN_STAKE_USD)
+                    whale=name, whale_wallet=wallet, kalshi_ticker=m.kalshi_ticker,
+                    confidence=m.confidence, whale_side=r.side, base_price=float(r.price),
+                    stake_usd=DRYRUN_STAKE_USD)
                 orders.append((name, r, p, m, o))
 
     # de-dup to distinct idempotency keys for the "how many routed" count

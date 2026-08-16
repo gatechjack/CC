@@ -29,9 +29,9 @@ def hdb(tmp_path):
     return f"sqlite:///{p}"
 
 
-def _order(*, conf=1.0, side="BUY", stake=2.0, base=0.55, ticker=NYY, whale="w"):
-    return translate_whale_action(whale=whale, kalshi_ticker=ticker, confidence=conf,
-                                  whale_side=side, base_price=base, stake_usd=stake)
+def _order(*, conf=1.0, side="BUY", stake=2.0, base=0.55, ticker=NYY, whale="w", wallet="0xWALLET"):
+    return translate_whale_action(whale=whale, whale_wallet=wallet, kalshi_ticker=ticker,
+                                  confidence=conf, whale_side=side, base_price=base, stake_usd=stake)
 
 
 # ── CP2: translation + side mapping (pure) ──────────────────────────────────
@@ -58,8 +58,21 @@ def test_side_mapping_away_and_home_both_yes():
 def test_non_trade_side_rejected_not_treated_as_exit():
     for bad in ("", "REDEEM", "redeem", "TAKER_REBATE", None):
         with pytest.raises(ValueError):
-            translate_whale_action(whale="w", kalshi_ticker=NYY, confidence=1.0,
+            translate_whale_action(whale="w", whale_wallet="0xW", kalshi_ticker=NYY, confidence=1.0,
                                    whale_side=bad, base_price=0.5, stake_usd=2.0)
+
+
+def test_idempotency_keyed_on_wallet_not_display_name(hdb):
+    # Same wallet + different display user_name -> SAME key (immune to name edits).
+    ex = PolyKalshiExecutor(dry_run=True, db_url=hdb)
+    o1 = _order(whale="monkeymashingke", wallet="0x684baa57c338c2549aec0aa3f034f695d72a8409")
+    o2 = _order(whale="monkeymashingkeyboard", wallet="0x684baa57c338c2549aec0aa3f034f695d72a8409")
+    assert o1.idempotency_key == o2.idempotency_key
+    assert _run(ex.submit(o1))["status"] == "DRY_RUN_would_place"
+    assert _run(ex.submit(o2))["status"] == "suppressed_duplicate"   # one whale action -> <=1 order
+    # a different wallet is a different action -> different key
+    o3 = _order(whale="monkeymashingke", wallet="0x0000000000000000000000000000000000000000")
+    assert o3.idempotency_key != o1.idempotency_key
 
 
 # ── CP2: idempotency + threshold (still active after CP3 wiring) ─────────────

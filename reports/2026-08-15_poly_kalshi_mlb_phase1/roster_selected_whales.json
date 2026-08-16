@@ -1,0 +1,38 @@
+[
+ {
+  "wallet": "0x16bb9951a36fce71e2ef57890b786145e0ba8492",
+  "user_name": "SDTrading",
+  "category": "mlb",
+  "recency_rank": 1,
+  "recency_matchable_ts": 1786847094,
+  "recency_matchable_iso": "2026-08-16T02:24:54+00:00",
+  "recency_as_of": "2026-08-16T06:28:52+00:00"
+ },
+ {
+  "wallet": "0x9c3ce009c9b039956665cecc4cd14de862b5e8c9",
+  "user_name": "0x0x23kjookhaiuohduoayh8c9",
+  "category": "mlb",
+  "recency_rank": 2,
+  "recency_matchable_ts": 1786835328,
+  "recency_matchable_iso": "2026-08-15T23:08:48+00:00",
+  "recency_as_of": "2026-08-16T06:28:52+00:00"
+ },
+ {
+  "wallet": "0x2dc13c6bda81b202281e796953a7323de675b33c",
+  "user_name": "xifutloong3",
+  "category": "mlb",
+  "recency_rank": 3,
+  "recency_matchable_ts": 1786834663,
+  "recency_matchable_iso": "2026-08-15T22:57:43+00:00",
+  "recency_as_of": "2026-08-16T06:28:52+00:00"
+ },
+ {
+  "wallet": "0x684baa57c338c2549aec0aa3f034f695d72a8409",
+  "user_name": "monkeymashingkeyboard",
+  "category": "mlb",
+  "recency_rank": 4,
+  "recency_matchable_ts": 1786833261,
+  "recency_matchable_iso": "2026-08-15T22:34:21+00:00",
+  "recency_as_of": "2026-08-16T06:28:52+00:00"
+ }
+]

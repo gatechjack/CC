@@ -127,7 +127,8 @@ _DRYRUN_MAX_SLIPPAGE_CENTS = 2   # CP3 [G-slip] owns the real value
 
 @dataclass(frozen=True)
 class ProposedKalshiOrder:
-    whale: str
+    whale: str             # display label (user_name) — NOT the idempotency key
+    whale_wallet: str      # true identity; the idempotency key is keyed on THIS
     action: str            # "entry" (whale BUY) | "exit" (whale SELL)
     ticker: str
     outcome: str           # always "yes" (matcher resolves the bet-club's YES ticker)
@@ -144,10 +145,14 @@ class ProposedKalshiOrder:
 
 
 def translate_whale_action(
-    *, whale: str, kalshi_ticker: str, confidence: float, whale_side: str,
+    *, whale: str, whale_wallet: str, kalshi_ticker: str, confidence: float, whale_side: str,
     base_price: float, stake_usd: float, max_slippage_cents: int = _DRYRUN_MAX_SLIPPAGE_CENTS,
 ) -> ProposedKalshiOrder:
     """A CP1-matched whale MLB action -> a fully-formed Kalshi order object.
+
+    `whale` is the display label (user_name); `whale_wallet` is the true identity.
+    The idempotency key is keyed on WALLET, not the display name — the wallet is
+    byte-stable everywhere and immune to display-name edits.
 
     `whale_side` is the Poly activity side of a TRADE: BUY == entry, SELL == exit.
     Only TRADE BUY/SELL are copy signals — REDEEM / *_REBATE rows carry an empty side
@@ -161,17 +166,20 @@ def translate_whale_action(
             f"whale_side must be BUY/SELL (TRADE copy signals only); got {whale_side!r}. "
             "REDEEM/rebate rows are not copy signals — filter type=='TRADE' upstream."
         )
+    if not whale_wallet:
+        raise ValueError("whale_wallet is required — the idempotency key is keyed on wallet")
     action = "entry" if side_up == "BUY" else "exit"
     is_buy = action == "entry"
     outcome = "yes"
-    coid = client_order_id(DIVISION, whale, kalshi_ticker, outcome, action)
+    # idempotency keyed on WALLET (true identity), NOT the display user_name.
+    coid = client_order_id(DIVISION, whale_wallet, kalshi_ticker, outcome, action)
     body, count, yes_price = build_v2_event_order(
         ticker=kalshi_ticker, outcome=outcome, is_buy=is_buy, base_price=base_price,
         copy_usd=stake_usd, max_slippage_cents=max_slippage_cents,
         tif=_TIF[_ORDER_TYPE], client_order_id=coid,
     )
     return ProposedKalshiOrder(
-        whale=whale, action=action, ticker=body["ticker"], outcome=outcome,
+        whale=whale, whale_wallet=whale_wallet, action=action, ticker=body["ticker"], outcome=outcome,
         v2_side=body["side"], count=count, yes_price=yes_price, stake_usd=stake_usd,
         tif=body["time_in_force"], idempotency_key=coid,
         reduce_only=bool(body.get("reduce_only", False)), base_price=base_price,
