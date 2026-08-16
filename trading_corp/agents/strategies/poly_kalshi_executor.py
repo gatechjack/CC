@@ -188,37 +188,82 @@ class PolyKalshiExecutor:
     Guardrail insertion points are marked [G-*] in submit(); only [G-idem] (this CP)
     and the [G-conf] threshold are active here. The rest are wired in CP3."""
 
-    def __init__(self, *, broker=None, dry_run: bool = True):
+    def __init__(self, *, broker=None, dry_run: bool = True,
+                 strategy: str = DIVISION,
+                 db_url: str = "sqlite:///data/trading_corp.db",
+                 per_trade_cap_usd: float = 5.00,
+                 daily_deployment_cap_usd: float = 20.00,
+                 max_slippage_cents: int = 2):
         self._broker = broker            # own KalshiLiveBroker instance (live path only)
         self._dry_run = bool(dry_run)
-        self._placed: dict[str, ProposedKalshiOrder] = {}   # coid -> order (in-memory idempotency)
+        self._strategy = strategy        # [G-halt] key into the shared StrategyState halt row
+        self._db_url = db_url
+        # ── guardrail config (PLACEHOLDERS; the real $ are CP5 operator gates) ──
+        self._per_trade_cap_usd = float(per_trade_cap_usd)                 # [G-size]
+        self._daily_deployment_cap_usd = float(daily_deployment_cap_usd)   # [G-daily]
+        self._max_slippage_cents = int(max_slippage_cents)                 # [G-slip]
+        # ── state: IN-PROCESS ONLY. No audit_event / DB aggregate query. ──
+        self._placed: dict[str, ProposedKalshiOrder] = {}   # [G-idem] coid -> order
+        self._deployed_usd: float = 0.0                     # [G-daily] running in-memory counter
         self.log: list[dict] = []
 
-    async def submit(self, order: ProposedKalshiOrder) -> dict:
-        # [G-halt]  CP3: daily-loss auto-halt (RiskAgent / StrategyState.persist_halt) gates here.
-        # [G-size]  CP3: per-trade size cap validates order.stake_usd here (stake is fixed).
-        # [G-conf]  auto-execute threshold (ACTIVE, this CP's decision):
+    def _is_halted(self) -> bool:
+        """[G-halt] Reuse the SAME cross-process halt every other division uses:
+        StrategyState.from_persistence reads the `agent_state` row that RiskAgent's
+        daily-loss branch writes via StrategyState.persist_halt. Read failure degrades
+        to not-halted (the primitive's documented contract)."""
+        from trading_corp.persistence.models import StrategyState
+        return StrategyState.from_persistence(self._strategy, db_url=self._db_url).halted
+
+    def _exceeds_slippage(self, order: ProposedKalshiOrder, quote: dict) -> bool:
+        """[G-slip] Thin-book protection. True when the marketable fill price is more
+        than max_slippage_cents from the whale's base price. `quote` = YES-side best
+        prices {yes_ask, yes_bid} in (0,1)."""
+        cap = self._max_slippage_cents / _CENTS_PER_DOLLAR
+        if order.action == "entry":                      # buy YES crosses the ask
+            return (float(quote.get("yes_ask", 1.0)) - order.base_price) > cap
+        return (order.base_price - float(quote.get("yes_bid", 0.0))) > cap  # sell YES crosses the bid
+
+    async def submit(self, order: ProposedKalshiOrder, *, market_quote: dict | None = None) -> dict:
+        """Route one order through all five guardrails, in this fixed order:
+        [G-halt] -> [G-size] -> [G-conf] -> [G-idem] -> [G-daily] -> [G-slip].
+        State (daily counter + idempotency key) is mutated ONLY after every gate
+        passes, so a reject at ANY gate consumes no budget and burns no key."""
+        # [G-halt] FIRST — short-circuit before any counter/idempotency mutation.
+        if self._is_halted():
+            return self._record("blocked_halt", order)
+        # [G-size] per-trade size cap.
+        if order.stake_usd > self._per_trade_cap_usd:
+            return self._record("blocked_size_cap", order)
+        # [G-conf] auto-execute threshold (>= 0.97).
         if order.confidence < AUTO_EXEC_MIN_CONFIDENCE:
             return self._record("skip_below_threshold", order)
-        # [G-idem]  idempotency (ACTIVE, THIS CP): one whale action -> at most one order.
+        # [G-idem] idempotency READ (the key is burned only at commit, below).
         if order.idempotency_key in self._placed:
             return self._record("suppressed_duplicate", order)
-        # [G-daily] CP3: in-memory daily deployment cap (running USD counter, NOT an
-        #           audit_event aggregate query) gates here.
-        # [G-slip]  CP3: max-slippage guard. The cap is already applied in build
-        #           (max_slippage_cents -> yes_price); CP3 adds the live-book check.
+        # [G-daily] in-memory daily deployment cap. Reads self._deployed_usd — a plain
+        #           in-process float, NOT an audit_event aggregate query (that full-scan
+        #           froze the engine; removed 2026-06-16).
+        if self._deployed_usd + order.stake_usd > self._daily_deployment_cap_usd:
+            return self._record("blocked_daily_cap", order)
+        # [G-slip] max-slippage on the market order. Evaluated whenever a book quote is
+        #          present; live with NO quote fails CLOSED (cannot verify -> reject).
+        if market_quote is not None:
+            if self._exceeds_slippage(order, market_quote):
+                return self._record("blocked_slippage", order)
+        elif not self._dry_run:
+            return self._record("blocked_slippage_no_quote", order)
 
-        if self._dry_run:
-            self._placed[order.idempotency_key] = order
-            return self._record("DRY_RUN_would_place", order)
-
-        # ── LIVE path (default OFF in CP2; not exercised) ──
-        if self._broker is None:
-            raise RuntimeError("PolyKalshiExecutor: live submit requires a connected broker")
-        resp = await self._broker._client().post(_V2_ORDERS_PATH, order.body)  # duplicated V2 POST
-        self._placed[order.idempotency_key] = order
-        rec = self._record("placed", order)
-        rec["resp"] = resp
+        # ── ALL GATES PASSED — commit state exactly once ──
+        if not self._dry_run:
+            if self._broker is None:
+                raise RuntimeError("PolyKalshiExecutor: live submit requires a connected broker")
+            resp = await self._broker._client().post(_V2_ORDERS_PATH, order.body)  # duplicated V2 POST
+        self._deployed_usd += order.stake_usd            # [G-daily] counts only would-place
+        self._placed[order.idempotency_key] = order      # [G-idem] key burned only on placement
+        rec = self._record("DRY_RUN_would_place" if self._dry_run else "placed", order)
+        if not self._dry_run:
+            rec["resp"] = resp
         return rec
 
     def _record(self, status: str, order: ProposedKalshiOrder) -> dict:
@@ -229,6 +274,7 @@ class PolyKalshiExecutor:
             "order_type": _ORDER_TYPE, "tif": order.tif, "price": order.body.get("price"),
             "idempotency_key": order.idempotency_key, "reduce_only": order.reduce_only,
             "confidence": order.confidence, "dry_run": self._dry_run,
+            "deployed_usd_after": self._deployed_usd,
         }
         self.log.append(rec)
         return rec
