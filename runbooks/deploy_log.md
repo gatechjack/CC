@@ -12794,3 +12794,50 @@ contention -> index empty until the next refresh (~15 min); no orders can fire u
 `auto_execute:false` + restart -> shadow. KAREN Kalshi balance $507.24.
 
 **prod-live:** `570d6fc` -> this entry (FF, same session). Source branch `poly-kalshi-mlb-phase1-2026-08-15` @ `4cee340`.
+
+---
+
+## 2026-08-16 ~20:52 UTC - Poly->Kalshi TWO-DIVISION SPLIT Phase 1 (CP2-CP7): 5-file deploy + both dashboard epochs + RESTART; engine 753629 -> 756639; LIVE/ARMED
+
+**What.** Surfaces the two-division split on the Prediction Markets dashboard (paper PCT vs LIVE
+Poly->Kalshi copy). Registers `poly_kalshi_mlb` as a `broker:kalshi` division; persists the REAL fill
+(order_id/fill_count/fill_price) + `division` in the poly_kalshi_order journal (Flag 1); resolver
+adapter composes `kalshi_round_trips` from poly_kalshi fills on KXMLBGAME settlement (CP4); dashboard
+OPEN/badge/History/resolved-tiles surface the live division; agent_state per-division metrics-epoch for
+the kalshi divisions (mirrors the polymarket epoch), symmetric across all four surfaces (CP5).
+
+**Files (5), 25.7KB `patch -p1` deploy, LF-md5 (new == box-installed, drift-gated vs prod-live baseline):**
+- config/divisions.yaml                                   e91c3aac -> d3cfe1eb
+- config/strategies.yaml                                  60bb0947 -> ec8684da
+- trading_corp/agents/kalshi_resolver.py                  360adc81 -> 272454bb
+- trading_corp/agents/strategies/poly_kalshi_executor.py  be3ac001 -> 1397ef5a
+- trading_corp/web/data.py                                76448e33 -> 0e4bcd90
+
+(whale-recency scripts on the source branch were EXCLUDED - standalone, not runtime-imported.)
+
+**Deploy mechanics.** az RunShellScript: drift-gate (5 md5 == prod-live baseline) -> backup
+`.bak_cp7_20260816_205240` -> `patch --dry-run` -> patch -> per-file install md5-verify -> RESTART.
+Operator runners `cc\pk_cp7_{driftcheck_ro,deploy,finish_verify,rollback}.ps1` + sidecar `cp7_diff.b64`.
+
+**Both dashboard epochs -> split instant `2026-08-16T20:29:25+00:00`** (reversible, history retained):
+`agent_state[poly_kalshi_mlb/metrics_epoch]` (CP6) + `agent_state[polymarket_copy_trader/metrics_epoch]`
+(CP7 finish; was `2026-07-07T20:00:54`).
+
+**Boot verify (ALL GREEN).** Restart 20:52:41 UTC, PID 753629 -> 756639, LIVE (`dry_run:false`), 0
+tracebacks; `Registered kalshi broker for division=poly_kalshi_mlb`; `WIRED (auto_execute=True ->
+dry_run=False, stake=$5, halt=$100)` + `loop online (poll=7.0s, dry_run=False)`; `StrategyState.halted
+=False`. Both dashboards read 0 from the epoch (poly_kalshi 0/0/0/0, badge==list; PCT n_resolved=0);
+on-disk retained (PCT 9722 rows / $208.32; 3 poly_kalshi audit rows); NO equity double-count
+(kalshi_equity_history = kalshi_arbitrage only, no poly_kalshi_mlb - it wires no equity loop). No
+orders placed at boot.
+
+**Kill-switches:** `StrategyState.persist_halt('poly_kalshi_mlb')` (restart-free); `auto_execute:false`
++ restart -> shadow. **Rollback:** `cc\pk_cp7_rollback.ps1` (restore 5 `.bak_cp7_20260816_205240` +
+restart; reverts CODE only - epochs reverted by deleting the two metrics_epoch agent_state rows).
+
+**Follow-up (non-blocking):** gross-vs-net fee reconciliation at the first post-CP7 settled fill (net
+`fill_fee` in the resolver if Kalshi's `pnl_dollars` is net-of-fee; CP3 persists `fill_fee`).
+
+**prod-live:** `5fba5ee` -> this entry (FF). Source branch `poly-kalshi-mlb-phase1-2026-08-15` @ `709b689`
+(CP2-CP7); runtime = the 5 files above. Checkpoint reports at
+`reports/2026-08-16_poly_kalshi_two_divisions_plan/CP{3..7}_REPORT.md`.

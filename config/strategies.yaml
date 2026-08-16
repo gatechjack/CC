@@ -1785,7 +1785,7 @@ polymarket_copy_trader:
 poly_kalshi_mlb:
   enabled: true
   auto_execute: true               # ★ARM SWITCH (ON) — LIVE placement (halt via persist_halt to stop)
-  division: polymarket_copy_trading
+  division: poly_kalshi_mlb         # own division (was polymarket_copy_trading; field is INERT — main.py hardcodes strategy="poly_kalshi_mlb")
   poll_interval_sec: 7             # 5-10s fast-poll; 429 backoff in the loop
   activity_limit_per_poll: 50
   stake_usd: 5.0                   # operator gate: $5/trade fixed
