@@ -12760,3 +12760,37 @@ max-slippage 2c; wallet-keyed idempotency. NO per-trade cap, NO daily-deployment
 `fcb79bc9`/`4bc4627d`; roster revert by re-writing selected/pinned. No positions to unwind (0 placed).
 
 **prod-live:** `2528aaa` -> this entry (FF, same session). Source branch `poly-kalshi-mlb-phase1-2026-08-15`.
+
+---
+
+## 2026-08-16 - Poly->Kalshi MLB copy (Phase 1) RE-ARM: fixes deployed + main.py loop wired + LIVE
+
+**What:** deployed the loss-halt/count-halt/journal fixes + wired the loop into main.py + armed
+(`auto_execute:true`). The loop runs LIVE (dry_run=false) placing $5 market orders on Kalshi copying
+the 4 MLB whales, gated by: the persistent halt, a $100 realized-loss auto-halt (settlement sweep),
+a 25/day trade-count auto-halt, wallet idempotency, and the max-slippage guard.
+
+**Files deployed (4; LF/CRLF-raw md5 prod == this commit):**
+- `trading_corp/main.py`                                     `fcf99e32b7dec4021ad01a431881254f` (loop wiring + periodic settlement sweep + logger)
+- `trading_corp/agents/strategies/poly_kalshi_executor.py`   `be3ac00154fb1f96d8747e7200520b77` ([G-count] trade-count halt + journal log_event)
+- `trading_corp/agents/strategies/poly_kalshi_copy_trader.py` `b237b4af2032465c5a600aa22e2053cb` (run_settlement_sweep + rollover of the count)
+- `config/strategies.yaml`                                    `60bb09475f1f72e5809a13fe786f6f58` (auto_execute:true; max_orders_per_day:25; settlement_sweep_interval_sec:600)
+
+**Two halts (both UTC day-boundary):** (1) $100 realized-loss halt fed by the settlement sweep --
+fires only AFTER settlements post (hours post-trade); (2) 25/day trade-count halt -- real-time,
+count-only. Both bucket by UTC (loop `_utc_day`; Kalshi `settled_time` is UTC). Journal: every
+placement/reject/suppress -> `audit_event` kind `poly_kalshi_order`.
+
+**Drift-gate (PASS):** box main.py==f1a6340b, executor==f8968570, loop==4c94bedb (prior deploys);
+strategies.yaml had the arm flip. Deploy gated (all 4 md5-verified + py_compile before restart;
+main.py backup + restore-on-fail).
+
+**Boot verify:** engine active; `WIRED (auto_execute=True -> dry_run=False, stake=$5, halt=$100)`;
+`loop online (dry_run=False)`; settlement sweep ran ($0.00 today -> no halt); journal table present.
+KNOWN transient: the startup KXMLBGAME index refresh failed once ("Server disconnected") amid boot
+contention -> index empty until the next refresh (~15 min); no orders can fire until it repopulates.
+
+**Kill-switches:** `StrategyState.persist_halt('poly_kalshi_mlb')` (restart-free, blocks all submits);
+`auto_execute:false` + restart -> shadow. KAREN Kalshi balance $507.24.
+
+**prod-live:** `570d6fc` -> this entry (FF, same session). Source branch `poly-kalshi-mlb-phase1-2026-08-15` @ `4cee340`.
