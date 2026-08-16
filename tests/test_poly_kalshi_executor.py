@@ -308,3 +308,47 @@ def test_flag1_dry_run_row_has_division_but_no_fill(hdb):
     assert payload["status"] == "DRY_RUN_would_place"
     assert payload["division"] == "poly_kalshi_mlb_drydiv"
     assert "order_id" not in payload and "fill_price" not in payload   # no live fill
+
+
+# ── FLAG 2 (Phase 2b CP1): the triggering Poly bet is journaled WITH the row ──
+def test_flag2_trigger_journaled_on_the_row(hdb):
+    lg = _FakeLogger()
+    ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, logger=lg,
+                            strategy="poly_kalshi_mlb_trigtest")
+    trig = {"poly_slug": "mlb-mia-cin-2026-08-16", "poly_outcome": "Miami Marlins",
+            "poly_side": "BUY", "poly_market_type": "moneyline"}
+    r = _run(ex.submit(_order(ticker=NYY), trigger=trig))
+    assert r["status"] == "DRY_RUN_would_place"
+    payload = lg.events[-1][2]
+    assert payload["poly_slug"] == "mlb-mia-cin-2026-08-16"
+    assert payload["poly_outcome"] == "Miami Marlins"
+    assert payload["poly_side"] == "BUY"
+    assert payload["poly_market_type"] == "moneyline"
+
+
+def test_flag2_absent_trigger_is_backward_compatible(hdb):
+    lg = _FakeLogger()
+    ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, logger=lg,
+                            strategy="poly_kalshi_mlb_notrig")
+    _run(ex.submit(_order(ticker=NYY)))          # no trigger -> no poly_* keys
+    payload = lg.events[-1][2]
+    assert not any(k.startswith("poly_") for k in payload)
+
+
+def test_flag2_trigger_and_fill_coexist_on_live_row(hdb):
+    """A LIVE placement journals BOTH the trigger (poly_*) and the real fill
+    (order_id/fill_price) on the same poly_kalshi_order row."""
+    lg = _FakeLogger()
+    resp = {"order_id": "abc", "fill_count": 9, "remaining_count": 0,
+            "average_fill_price": "0.54", "average_fee_paid": "0.01"}
+    ex = PolyKalshiExecutor(dry_run=False, broker=_FakeBroker(resp), db_url=hdb, logger=lg,
+                            per_trade_cap_usd=None, daily_deployment_cap_usd=None,
+                            strategy="poly_kalshi_mlb_trigfill")
+    trig = {"poly_slug": "mlb-az-atl-2026-08-16", "poly_outcome": "Arizona Diamondbacks",
+            "poly_side": "BUY", "poly_market_type": "moneyline"}
+    r = _run(ex.submit(_order(base=0.54, stake=5.0, ticker=NYY),
+                       market_quote={"yes_ask": 0.55, "yes_bid": 0.53}, trigger=trig))
+    assert r["status"] == "placed"
+    p = lg.events[-1][2]
+    assert p["poly_slug"] == "mlb-az-atl-2026-08-16"          # the "why"
+    assert p["order_id"] == "abc" and p["fill_price"] == 0.54  # the fill (CP3), coexisting

@@ -158,6 +158,26 @@ def test_fetch_giveup_returns_empty_no_crash(hdb, monkeypatch):
     assert out == [] and any(b.get("gave_up") for b in lp.backoff_events)
 
 
+# ── FLAG 2 (Phase 2b CP1): the loop journals the triggering Poly bet ─────────
+def test_flag2_pipeline_journals_the_poly_trigger(hdb):
+    """The loop wires the triggering Poly bet (slug/outcome/side/market_type) into the
+    executor -> the journaled poly_kalshi_order row carries the 'why' persistently,
+    not just the in-memory shadow_log."""
+    lp, ex = _loop(hdb)
+    client = FakeClient([[_row(100)],          # cold-start seed
+                         [_row(150)]])          # new TRADE BUY on the NYYTOR game -> placed
+    _run(lp.poll_cycle(client))
+    out = _run(lp.poll_cycle(client))
+    assert out[0]["decision"] == "DRY_RUN_would_place"
+    rec = ex.log[-1]                            # the journaled poly_kalshi_order row
+    assert rec["status"] == "DRY_RUN_would_place"
+    assert rec["poly_slug"] == "mlb-nyy-tor-2026-08-16"
+    assert rec["poly_outcome"] == "New York Yankees"
+    assert rec["poly_side"] == "BUY"
+    assert rec["poly_market_type"] == "moneyline"
+    assert lp.shadow_log[-1]["slug"] == "mlb-nyy-tor-2026-08-16"   # shadow_log still populated too
+
+
 # ── [G-slip] LIVE fail-closed (fetch fails -> reject, POST not reached) ─────
 def test_gslip_fail_closed_live_no_quote(hdb):
     posted = []

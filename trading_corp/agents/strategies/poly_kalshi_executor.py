@@ -286,7 +286,8 @@ class PolyKalshiExecutor:
             return (float(quote.get("yes_ask", 1.0)) - order.base_price) > cap
         return (order.base_price - float(quote.get("yes_bid", 0.0))) > cap  # sell YES crosses the bid
 
-    async def submit(self, order: ProposedKalshiOrder, *, market_quote: dict | None = None) -> dict:
+    async def submit(self, order: ProposedKalshiOrder, *, market_quote: dict | None = None,
+                     trigger: dict | None = None) -> dict:
         """Route one order through all five guardrails, in this fixed order:
         [G-halt] -> [G-size] -> [G-conf] -> [G-idem] -> [G-daily] -> [G-slip].
         State (daily counter + idempotency key) is mutated ONLY after every gate
@@ -340,10 +341,10 @@ class PolyKalshiExecutor:
         self._orders_today += 1                          # [G-count] same-day placed/would-place count
         self._placed[order.idempotency_key] = order      # [G-idem] key burned only on placement
         return self._record(
-            "DRY_RUN_would_place" if self._dry_run else "placed", order, fill=fill)
+            "DRY_RUN_would_place" if self._dry_run else "placed", order, fill=fill, trigger=trigger)
 
     def _record(self, status: str, order: ProposedKalshiOrder, *,
-                fill: dict | None = None) -> dict:
+                fill: dict | None = None, trigger: dict | None = None) -> dict:
         rec = {
             # CP3: `division` scopes the dashboard OPEN query ($.division IN slugs);
             # it equals the audit actor (self._strategy) this row is logged under.
@@ -356,6 +357,11 @@ class PolyKalshiExecutor:
             "confidence": order.confidence, "dry_run": self._dry_run,
             "deployed_usd_after": self._deployed_usd, "orders_today_after": self._orders_today,
         }
+        if trigger:
+            # FLAG 2: the triggering Poly bet (poly_slug/poly_outcome/poly_side/
+            # poly_market_type) — the "why", persisted WITH the row (was in-memory
+            # shadow_log only, lost on restart) so the dashboard shows it per position.
+            rec.update(trigger)
         if fill:
             # FLAG 1: the REAL fill facts (order_id/fill_count/fill_price/fill_fee)
             # are journaled IN this row now, not lost to a post-_record mutation.
