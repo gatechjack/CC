@@ -33,7 +33,8 @@ read, all green. No signing friction. This de-risks CP2/CP5 (the new strategy us
 
 ## 2. CP1 output table (real numbers)
 
-**Data processed:** 10,939 whale activity rows → **1,932 distinct Poly markets**; **907 distinct
+**Data processed:** 14,939 whale activity rows → **1,932 distinct Poly markets** (deduped by
+`(whale, slug)`; the match rate is over distinct markets, never rows); **907 distinct
 real Kalshi games** across 68 dates (2026-06-09 → 2026-08-18).
 
 | Bucket | Count | Note |
