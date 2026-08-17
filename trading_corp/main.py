@@ -1501,6 +1501,7 @@ async def run(argv: list[str] | None = None) -> int:
                     max_slippage_cents=int(_pk_cfg.get("max_slippage_cents", 2)),
                     max_orders_per_day=_pk_cfg.get("max_orders_per_day", 25),
                     logger=logger_agent,   # [audit] journals every placement/reject/suppress
+                    notify_fn=channel.push,  # [Part 2] scannable Telegram on LIVE copy placement only
                 )
                 _pk_loop = PolyKalshiCopyTrader(
                     executor=_pk_executor, db_url=secrets.db_url,

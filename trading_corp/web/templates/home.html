@@ -92,6 +92,9 @@
                                                             else ('/sfp'
                                                                     if d.slug == 'bitunix_sfp'
                                                                     else ('/division/' + d.slug)))))) %}
+            {# hide the PCT (polymarket_copy_trading) paper-farm tile from the grid — it feeds
+               poly_kalshi_mlb and stays reachable via the live dashboard's PCT link, not its own tile #}
+            {% if not (grp.key == 'prediction_markets' and d.slug == 'polymarket_copy_trading') %}
             <a href="{{ _href }}"
                class="group bg-pane border border-edge rounded-lg p-4
                       hover:border-edge-2 hover:bg-pane-2 transition-colors block">
@@ -238,6 +241,7 @@
                 </span>
               </div>
             </a>
+            {% endif %}
           {% endfor %}
         </div>
       </section>

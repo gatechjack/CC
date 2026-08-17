@@ -244,12 +244,13 @@ class PolyKalshiExecutor:
                  daily_deployment_cap_usd: float = 20.00,
                  max_slippage_cents: int = 2,
                  max_orders_per_day: int | None = 25,
-                 logger=None):
+                 logger=None, notify_fn=None):
         self._broker = broker            # own KalshiLiveBroker instance (live path only)
         self._dry_run = bool(dry_run)
         self._strategy = strategy        # [G-halt] key into the shared StrategyState halt row
         self._db_url = db_url
         self._logger = logger            # [audit] logger_agent.log_event(strategy, kind, payload)
+        self._notify_fn = notify_fn      # [Part 2] async push(text, *, audit_path=...) — LIVE copies only
         # [G-count] real-time same-day trade-count ceiling (count-only; no P&L/settlement)
         self._max_orders_per_day = None if max_orders_per_day is None else int(max_orders_per_day)
         self._orders_today: int = 0
@@ -340,8 +341,34 @@ class PolyKalshiExecutor:
         self._deployed_usd += order.stake_usd            # [G-daily] counts only would-place
         self._orders_today += 1                          # [G-count] same-day placed/would-place count
         self._placed[order.idempotency_key] = order      # [G-idem] key burned only on placement
-        return self._record(
-            "DRY_RUN_would_place" if self._dry_run else "placed", order, fill=fill, trigger=trigger)
+        status = "DRY_RUN_would_place" if self._dry_run else "placed"
+        rec = self._record(status, order, fill=fill, trigger=trigger)
+        if status == "placed" and self._notify_fn is not None:
+            # LIVE copy only — best-effort scannable Telegram; never breaks the trade path.
+            await self._notify_live_copy(order, fill)
+        return rec
+
+    async def _notify_live_copy(self, order: ProposedKalshiOrder, fill: dict | None) -> None:
+        """[Part 2] Scannable Telegram alert on a LIVE copy placement. bet_team/other_team come
+        from the broker-free KXMLBGAME parser (falls back to the raw ticker for a non-two-club
+        market). Uses the REAL fill count/price when present. Best-effort: any failure is logged,
+        never raised (a notification must not break the placement path)."""
+        try:
+            from trading_corp.data.mlb_poly_kalshi_match import parse_kalshi_mlb_ticker
+            pk = parse_kalshi_mlb_ticker(order.ticker or "")
+            bet_team = pk.yes_name if pk else (order.ticker or "?")
+            other_team = pk.other_name if pk else "?"
+            f = fill or {}
+            cnt = float(f.get("fill_count") or order.count)
+            fp = f.get("fill_price")
+            cost = (float(fp) * cnt) if fp is not None else float(order.stake_usd)
+            fp_str = f"{float(fp):.2f}" if fp is not None else "?"
+            head = f"⚡ {order.whale} → BUY {bet_team}"
+            body = (f"vs {other_team} · {int(cnt)} @ ${fp_str} · "
+                    f"${cost:.2f} · conf {float(order.confidence):.2f}")
+            await self._notify_fn(f"{head}\n{body}", audit_path="poly_kalshi_copy")
+        except Exception as e:  # noqa: BLE001 — notification must never break a live placement
+            log.warning("poly_kalshi live-copy telegram notify failed: %s", e)
 
     def _record(self, status: str, order: ProposedKalshiOrder, *,
                 fill: dict | None = None, trigger: dict | None = None) -> dict:

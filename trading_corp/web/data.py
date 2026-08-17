@@ -4336,7 +4336,7 @@ def _query_pm_round_trips(
                 venue="kalshi",
                 division=str(r.get("division") or ""),
                 strategy=str(r.get("strategy") or ""),
-                market_title=str(r.get("event_title") or r.get("ticker") or ""),
+                market_title=str(r.get("event_title") or _pk_mlb_display(str(r.get("ticker") or ""))[0]),
                 market_id=str(r.get("ticker") or ""),
                 category=r.get("category"),
                 outcome_bet=str(r.get("outcome_bet") or ""),
@@ -4705,7 +4705,7 @@ def _query_pm_open_trades(
                 strategy=str(r["actor"] or "poly_kalshi_mlb"),
                 whale_handle=str(whale) if whale else None,
                 emit_ts=str(r["ts"] or ""),
-                market_title=str(p.get("ticker") or ""),
+                market_title=_pk_mlb_display(str(p.get("ticker") or ""))[0],
                 market_id=str(p.get("ticker") or ""),
                 category=None,
                 outcome_bet=str(p.get("outcome") or ""),
@@ -5989,11 +5989,27 @@ def _sparkline_text(series: list[float]) -> str:
     return "".join(_SPARK_BLOCKS[min(7, int((v - lo) / rng * 7))] for v in series)
 
 
+def _pk_mlb_display(ticker: str) -> tuple[str, str | None]:
+    """Broker-free readable label for a KXMLBGAME ticker via the shared parser:
+    ("{yes_team} vs {other_team}", bet_team=yes_team). The Kalshi YES side is the team the
+    always-YES copy leg is long, so it leads. Non-MLB / unparseable ticker (all-star,
+    TIE/DRAW, non-KXMLBGAME) -> (raw ticker, None) so nothing ever renders blank."""
+    try:
+        from trading_corp.data.mlb_poly_kalshi_match import parse_kalshi_mlb_ticker
+        pk = parse_kalshi_mlb_ticker(ticker or "")
+    except Exception:  # noqa: BLE001 — a display helper must never break a read view
+        pk = None
+    if pk is None:
+        return (ticker or ""), None
+    return f"{pk.yes_name} vs {pk.other_name}", pk.yes_name
+
+
 @dataclass
 class PolyKalshiLivePosition:
     order_id: str
     ticker: str
-    market_title: str
+    market_title: str      # readable "{yes} vs {other}" (parsed); raw ticker fallback
+    bet_team: str | None   # team the always-YES leg is long (parsed); None if unparseable
     outcome: str
     entry_ts: str
     fill_price: float
@@ -6020,6 +6036,8 @@ class PolyKalshiCopyMoment:
     order_id: str
     ts: str
     ticker: str
+    market_title: str      # readable "{yes} vs {other}" (parsed); raw ticker fallback
+    bet_team: str | None
     whale: str | None
     outcome: str
     count: float
@@ -6089,9 +6107,11 @@ def build_poly_kalshi_live_view(db_url: str) -> PolyKalshiLiveView:
             except (TypeError, ValueError):
                 stale = True
         series = hist.get(oid, [])
+        _tkr = str(p.get("ticker") or "")
+        _mt, _bt = _pk_mlb_display(_tkr)
         positions.append(PolyKalshiLivePosition(
-            order_id=oid, ticker=str(p.get("ticker") or ""),
-            market_title=str(p.get("ticker") or ""), outcome=str(p.get("outcome") or "yes"),
+            order_id=oid, ticker=_tkr,
+            market_title=_mt, bet_team=_bt, outcome=str(p.get("outcome") or "yes"),
             entry_ts=str(row["ts"] or ""), fill_price=fp, contracts=fc, cost_basis=fp * fc,
             whale=(str(p["whale"]) if p.get("whale") else None),
             poly_slug=p.get("poly_slug"), poly_outcome=p.get("poly_outcome"),
@@ -6119,9 +6139,11 @@ def build_poly_kalshi_live_view(db_url: str) -> PolyKalshiLiveView:
         except (json.JSONDecodeError, TypeError, ValueError):
             continue
         fpx = p.get("fill_price")
+        _mtkr = str(p.get("ticker") or "")
+        _mmt, _mbt = _pk_mlb_display(_mtkr)
         moments.append(PolyKalshiCopyMoment(
             order_id=str(p.get("order_id") or ""), ts=str(row["ts"] or ""),
-            ticker=str(p.get("ticker") or ""),
+            ticker=_mtkr, market_title=_mmt, bet_team=_mbt,
             whale=(str(p["whale"]) if p.get("whale") else None),
             outcome=str(p.get("outcome") or "yes"),
             count=float(p.get("fill_count") or p.get("count") or 0.0),

@@ -352,3 +352,56 @@ def test_flag2_trigger_and_fill_coexist_on_live_row(hdb):
     p = lg.events[-1][2]
     assert p["poly_slug"] == "mlb-az-atl-2026-08-16"          # the "why"
     assert p["order_id"] == "abc" and p["fill_price"] == 0.54  # the fill (CP3), coexisting
+
+
+# ── Part 2 (Phase 2b): scannable Telegram on LIVE copy placement only ─────────
+class _FakeNotify:
+    """Stands in for channel.push — an async callable push(text, *, audit_path=...)."""
+    def __init__(self, boom=False):
+        self.calls = []
+        self._boom = boom
+
+    async def __call__(self, text, *, audit_path="other", **kw):
+        self.calls.append((text, audit_path))
+        if self._boom:
+            raise RuntimeError("telegram down")
+
+
+def test_part2_live_placement_fires_scannable_telegram(hdb):
+    resp = {"order_id": "n1", "fill_count": 9, "remaining_count": 0,
+            "average_fill_price": "0.55", "average_fee_paid": "0.01"}   # filled 9 @0.55
+    notify = _FakeNotify()
+    ex = PolyKalshiExecutor(dry_run=False, broker=_FakeBroker(resp), db_url=hdb,
+                            per_trade_cap_usd=None, daily_deployment_cap_usd=None,
+                            notify_fn=notify, strategy="poly_kalshi_mlb_tgtest")
+    r = _run(ex.submit(_order(base=0.54, stake=5.0, ticker=NYY, whale="monkeymashingke"),
+                       market_quote={"yes_ask": 0.55, "yes_bid": 0.53}))
+    assert r["status"] == "placed"
+    assert len(notify.calls) == 1
+    text, audit_path = notify.calls[0]
+    assert audit_path == "poly_kalshi_copy"
+    assert text.startswith("⚡ monkeymashingke → BUY New York Yankees")   # whale -> BUY bet_team
+    assert "vs Toronto Blue Jays" in text          # opponent (YES-side ticker parse)
+    assert "9 @ $0.55" in text                     # REAL fill count/price (not the 0.56 limit)
+    assert "$4.95" in text                         # cost = 0.55 * 9
+    assert "conf 1.00" in text
+
+
+def test_part2_dry_run_does_not_fire_telegram(hdb):
+    notify = _FakeNotify()
+    ex = PolyKalshiExecutor(dry_run=True, db_url=hdb, notify_fn=notify,
+                            strategy="poly_kalshi_mlb_tgdry")
+    assert _run(ex.submit(_order(ticker=NYY)))["status"] == "DRY_RUN_would_place"
+    assert notify.calls == []                      # paper/shadow copies NEVER notify
+
+
+def test_part2_notify_failure_never_breaks_placement(hdb):
+    resp = {"order_id": "n2", "fill_count": 9, "average_fill_price": "0.55"}
+    notify = _FakeNotify(boom=True)
+    ex = PolyKalshiExecutor(dry_run=False, broker=_FakeBroker(resp), db_url=hdb,
+                            per_trade_cap_usd=None, daily_deployment_cap_usd=None,
+                            notify_fn=notify, strategy="poly_kalshi_mlb_tgboom")
+    r = _run(ex.submit(_order(base=0.54, stake=5.0, ticker=NYY),
+                       market_quote={"yes_ask": 0.55, "yes_bid": 0.53}))
+    assert r["status"] == "placed"                 # notify raised, placement still succeeded
+    assert len(notify.calls) == 1

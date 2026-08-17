@@ -75,6 +75,25 @@ def test_live_view_full_position(hdb):
     assert v.latest_order_id == "mia"
 
 
+def test_live_view_renders_readable_team_names(hdb):
+    # a real KXMLBGAME ticker -> readable matchup + bet team, broker-free (Part 1).
+    _order(hdb, order_id="bal", ticker="KXMLBGAME-26AUG171805BALTB-TB")
+    v = wd.build_poly_kalshi_live_view(hdb)
+    pos = v.open_positions[0]
+    assert pos.market_title == "Tampa Bay Rays vs Baltimore Orioles"   # readable, not raw ticker
+    assert pos.bet_team == "Tampa Bay Rays"                            # YES-side team (the copy leg)
+    assert pos.ticker == "KXMLBGAME-26AUG171805BALTB-TB"              # raw ticker kept (tooltip/identity)
+    assert v.copy_moments[0].market_title == "Tampa Bay Rays vs Baltimore Orioles"
+    assert v.copy_moments[0].bet_team == "Tampa Bay Rays"
+
+
+def test_live_view_unparseable_ticker_falls_back_to_raw(hdb):
+    _order(hdb, order_id="odd", ticker="KXNBA-WEIRD")                  # non-MLB -> parser returns None
+    v = wd.build_poly_kalshi_live_view(hdb)
+    assert v.open_positions[0].market_title == "KXNBA-WEIRD"          # raw fallback, never blank
+    assert v.open_positions[0].bet_team is None
+
+
 def test_live_view_graceful_when_trigger_and_mark_absent(hdb):
     _order(hdb, order_id="bare", trigger=False)          # pre-CP1 (no trigger) + unmarked
     v = wd.build_poly_kalshi_live_view(hdb)

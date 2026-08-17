@@ -5,7 +5,12 @@
 <section class="mt-4 bg-pane border border-edge rounded-lg overflow-hidden">
   <header class="px-4 py-2 border-b border-edge flex items-center justify-between">
     <span class="text-[11px] uppercase tracking-wider text-muted">Live positions &#8212; Poly&#8594;Kalshi copy</span>
-    <span class="text-[9px] text-muted">auto-refresh 60s</span>
+    <div class="flex items-center gap-3">
+      <a href="/prediction-markets/polymarket_copy_trading"
+         class="text-[9px] font-mono uppercase tracking-wider text-accent/70 hover:text-accent border border-edge px-1.5 py-0.5 rounded"
+         title="PCT paper farm &#8212; the watched/papered whale roster feeding this live division">PCT &#8599;</a>
+      <span class="text-[9px] text-muted">auto-refresh 60s</span>
+    </div>
   </header>
   <div id="poly-kalshi-live-inner"
        hx-get="/partials/prediction-markets/poly_kalshi_mlb/live"
