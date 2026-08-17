@@ -5043,7 +5043,8 @@ async def _handle_copy_order_placement(
     `is_live_armed` is E2·4's decision (the division's broker is placement-legal,
     i.e. a `Broker`/PolymarketLiveBroker — NOT `broker.paper`):
 
-      * PAPER (not armed): log `would_have_placed` — UNCHANGED behavior.
+      * PAPER (not armed): log `would_have_placed` (audit rail RETAINED). Phase 2a:
+        NO Telegram — the PCT paper farm is silenced (live-money alerts only).
       * LIVE-armed: route through `data_exec.place()` (which sets `execution_mode`
         and logs the fill + proposed_order, E2·5). A benign synthesized-FAK
         `NoFillInWindow` is SKIPPED — the optimistic position is discarded, a benign
@@ -5055,7 +5056,7 @@ async def _handle_copy_order_placement(
     """
     ext = order.extra or {}
     if not is_live_armed:
-        # ── PAPER branch — unchanged ──
+        # ── PAPER branch — audit only, NO Telegram (Phase 2a) ──
         logger_agent.log_event(
             agent.name, "would_have_placed",
             {
@@ -5065,7 +5066,11 @@ async def _handle_copy_order_placement(
                 "risk_reason": verdict.reason,
             },
         )
-        await _push_copy_card(channel, order, ext, tag="logged")
+        # Phase 2a: the PCT paper farm is SILENCED on Telegram (live-money alerts
+        # only). The would_have_placed audit above is RETAINED — paper trades still
+        # journal to the DB; only the paper "Polymarket copy ... logged" push is
+        # dropped. The live-armed cards below + poly_kalshi _notify_live_copy still
+        # alert on real money.
         return
 
     # ── LIVE-armed branch (mocked in tests; a real broker only when operator-armed) ──

@@ -218,6 +218,7 @@ async def test_live_armed_calls_place_and_records_fill():
     agent.record_entry_fill.assert_called_once_with(order, fill)
     agent.discard_entry.assert_not_called()
     assert "would_have_placed" not in _logged_kinds(logger_agent)  # live path, not paper
+    channel.push.assert_awaited()   # Phase 2a: a LIVE placement STILL pushes a Telegram card
 
 
 @pytest.mark.asyncio
@@ -269,7 +270,8 @@ async def test_paper_branch_logs_would_have_placed_and_never_places():
         base_payload={},
     )
     data_exec.place.assert_not_awaited()                 # paper NEVER calls place()
-    assert "would_have_placed" in _logged_kinds(logger_agent)
+    assert "would_have_placed" in _logged_kinds(logger_agent)   # Phase 2a: audit rail RETAINED
+    channel.push.assert_not_awaited()                    # Phase 2a: paper farm is SILENCED on Telegram
     agent.record_entry_fill.assert_not_called()
     agent.discard_entry.assert_not_called()
 
