@@ -102,7 +102,20 @@ Ordering is the thing that makes this deploy different (⚠️ install → cutov
 **Avoid the 15:40–15:58 ET restart window.** flag-3 (restart resets in-memory idempotency) is bounded
 by the settlement-sweep loss-halt + the 25/day count-halt + the executor order journal.
 
-## Stage-1 status
-Drift-gate runner authored + validated; fileset/migration/shared/config all analyzed read-only.
-**Awaiting: operator runs `pk_cp6_driftgate_ro.ps1` and pastes output → I confirm 11× MATCH → operator
-OK → build Stage 2.** Nothing deployed; live loop untouched.
+## Stage-1 RESULT — drift-gate PASS (operator-run, verified)
+`pk_cp6_driftgate_ro.ps1` run on the box (ENGINE_PID **760172**):
+- **11 / 11 MATCH** — every modified deploy file == 3706a3a baseline. **No drift.**
+- **`ABSENT_OK roster_split.py`** — new file not on box (clean install).
+- **`EXISTING_TABLES` = `['agent_state','poly_kalshi_mark_history','poly_kalshi_mark_live']`** — all 3
+  present → additive, no migration.
+- **`OPEN_POSITIONS 1`** (BALTB-TB pre-game; flag-3 context).
+- **Cutover precondition (confirmed):** `selected_whales` = the 4 wallets; `pinned_whales` = the **same
+  4** (the §1.5 pin hazard is real — the 3-key move must clear pins); `live_whales` = **None** (empty
+  until the cutover seeds it). The 4 wallets match the roster of record (`EXPECT_N=4` holds):
+  - `0x16bb9951a36fce71e2ef57890b786145e0ba8492` (SDTrading)
+  - `0x2dc13c6bda81b202281e796953a7323de675b33c` (xifutloong3)
+  - `0x684baa57c338c2549aec0aa3f034f695d72a8409` (monkeymashingkeyboard)
+  - `0x9c3ce009c9b039956665cecc4cd14de862b5e8c9` (0x0x23kj…)
+
+**Stage 1 PASSES.** Nothing deployed; live loop untouched. Awaiting operator OK to build Stage 2
+(deploy-no-restart + restart-verify runners + `cp_cp6_bundle.b64`).
