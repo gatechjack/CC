@@ -4336,7 +4336,7 @@ def _query_pm_round_trips(
                 venue="kalshi",
                 division=str(r.get("division") or ""),
                 strategy=str(r.get("strategy") or ""),
-                market_title=str(r.get("event_title") or r.get("ticker") or ""),
+                market_title=str(r.get("event_title") or _pk_mlb_display(str(r.get("ticker") or ""))[0]),
                 market_id=str(r.get("ticker") or ""),
                 category=r.get("category"),
                 outcome_bet=str(r.get("outcome_bet") or ""),
@@ -4705,7 +4705,7 @@ def _query_pm_open_trades(
                 strategy=str(r["actor"] or "poly_kalshi_mlb"),
                 whale_handle=str(whale) if whale else None,
                 emit_ts=str(r["ts"] or ""),
-                market_title=str(p.get("ticker") or ""),
+                market_title=_pk_mlb_display(str(p.get("ticker") or ""))[0],
                 market_id=str(p.get("ticker") or ""),
                 category=None,
                 outcome_bet=str(p.get("outcome") or ""),
@@ -5967,6 +5967,195 @@ def _pm_summary(
         n_voids=n_voids,
         win_rate_pct=win_rate,
         total_realized_pnl=total_pnl,
+    )
+
+
+# ── Poly->Kalshi live section (Phase 2b CP3): broker-free live view ──────────
+# Reads ONLY audit_event + poly_kalshi_mark_live/_history + kalshi_round_trips
+# (SELECTs). NEVER calls the Kalshi client — marks come from the volatile tables the
+# ~60s mark poller (CP2) writes; the "why" from the CP1 trigger fields on the row.
+_POLY_KALSHI_MARK_STALE_AFTER_SEC = 180.0     # marks tick ~60s -> stale after ~3 min
+_POLY_KALSHI_COPY_MOMENT_LIMIT = 25
+_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"   # unicode block sparkline
+
+
+def _sparkline_text(series: list[float]) -> str:
+    """A tiny unicode-block sparkline of a yes-mid series (a functional preview; the
+    fancy chart binds to the raw `sparkline` series later). '' for <2 points."""
+    if not series or len(series) < 2:
+        return ""
+    lo, hi = min(series), max(series)
+    rng = (hi - lo) or 1e-9
+    return "".join(_SPARK_BLOCKS[min(7, int((v - lo) / rng * 7))] for v in series)
+
+
+def _pk_mlb_display(ticker: str) -> tuple[str, str | None]:
+    """Broker-free readable label for a KXMLBGAME ticker via the shared parser:
+    ("{yes_team} vs {other_team}", bet_team=yes_team). The Kalshi YES side is the team the
+    always-YES copy leg is long, so it leads. Non-MLB / unparseable ticker (all-star,
+    TIE/DRAW, non-KXMLBGAME) -> (raw ticker, None) so nothing ever renders blank."""
+    try:
+        from trading_corp.data.mlb_poly_kalshi_match import parse_kalshi_mlb_ticker
+        pk = parse_kalshi_mlb_ticker(ticker or "")
+    except Exception:  # noqa: BLE001 — a display helper must never break a read view
+        pk = None
+    if pk is None:
+        return (ticker or ""), None
+    return f"{pk.yes_name} vs {pk.other_name}", pk.yes_name
+
+
+@dataclass
+class PolyKalshiLivePosition:
+    order_id: str
+    ticker: str
+    market_title: str      # readable "{yes} vs {other}" (parsed); raw ticker fallback
+    bet_team: str | None   # team the always-YES leg is long (parsed); None if unparseable
+    outcome: str
+    entry_ts: str
+    fill_price: float
+    contracts: float
+    cost_basis: float
+    whale: str | None
+    # CP1 trigger — None on pre-CP1 rows (render gracefully)
+    poly_slug: str | None
+    poly_outcome: str | None
+    poly_side: str | None
+    poly_market_type: str | None
+    # CP2 marks — None until the poller has marked (render "marking...", never fabricate)
+    yes_mid: float | None
+    unrealized: float | None
+    unrealized_pct: float | None
+    mark_ts: str | None
+    stale: bool
+    sparkline: list[float]
+    sparkline_text: str
+
+
+@dataclass
+class PolyKalshiCopyMoment:
+    order_id: str
+    ts: str
+    ticker: str
+    market_title: str      # readable "{yes} vs {other}" (parsed); raw ticker fallback
+    bet_team: str | None
+    whale: str | None
+    outcome: str
+    count: float
+    fill_price: float | None
+    poly_slug: str | None
+    poly_outcome: str | None
+
+
+@dataclass
+class PolyKalshiLiveView:
+    open_positions: list[PolyKalshiLivePosition]
+    copy_moments: list[PolyKalshiCopyMoment]
+    total_unrealized: float | None
+    n_open: int
+    latest_order_id: str | None       # for client-side new-row (sound/flash) detection
+    latest_ts: str | None
+
+
+def build_poly_kalshi_live_view(db_url: str) -> PolyKalshiLiveView:
+    """Broker-free live view for the poly_kalshi_mlb dashboard section. SELECT-only over
+    audit_event + poly_kalshi_mark_live + poly_kalshi_mark_history + kalshi_round_trips.
+    NEVER calls the Kalshi client (marks are pre-computed by the CP2 poller)."""
+    now = datetime.now(timezone.utc)
+    # OPEN positions — CP3(phase1) gate: placed ENTRY rows with an order_id, not resolved.
+    open_rows = _query(
+        db_url,
+        "SELECT a.ts AS ts, a.payload_json FROM audit_event a "
+        "LEFT JOIN kalshi_round_trips r "
+        "  ON r.order_id = json_extract(a.payload_json, '$.order_id') "
+        "WHERE a.actor = 'poly_kalshi_mlb' AND a.kind = 'poly_kalshi_order' "
+        "  AND json_extract(a.payload_json, '$.status') = 'placed' "
+        "  AND COALESCE(json_extract(a.payload_json, '$.action'), 'entry') = 'entry' "
+        "  AND COALESCE(json_extract(a.payload_json, '$.order_id'), '') != '' "
+        "  AND r.order_id IS NULL "
+        "ORDER BY a.ts DESC",
+    )
+    marks = {m["order_id"]: m for m in _query(
+        db_url, "SELECT order_id, yes_mid, unrealized, unrealized_pct, mark_ts "
+        "FROM poly_kalshi_mark_live")}
+    hist: dict[str, list[float]] = {}
+    for h in _query(db_url, "SELECT order_id, yes_mid FROM poly_kalshi_mark_history ORDER BY id ASC"):
+        hist.setdefault(str(h["order_id"]), []).append(float(h["yes_mid"]))
+
+    positions: list[PolyKalshiLivePosition] = []
+    total_unrealized: float | None = None
+    for row in open_rows:
+        try:
+            p = json.loads(row["payload_json"])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        oid = str(p.get("order_id") or "")
+        fp = float(p.get("fill_price") or 0.0)
+        fc = float(p.get("fill_count") or 0.0)
+        mk = marks.get(oid)
+        yes_mid = unrealized = unrealized_pct = mark_ts = None
+        stale = True
+        if mk and mk["yes_mid"] is not None:
+            yes_mid = float(mk["yes_mid"])
+            unrealized = None if mk["unrealized"] is None else float(mk["unrealized"])
+            unrealized_pct = None if mk["unrealized_pct"] is None else float(mk["unrealized_pct"])
+            mark_ts = mk["mark_ts"]
+            try:
+                ts_dt = datetime.fromisoformat(str(mark_ts))
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+                stale = (now - ts_dt).total_seconds() > _POLY_KALSHI_MARK_STALE_AFTER_SEC
+            except (TypeError, ValueError):
+                stale = True
+        series = hist.get(oid, [])
+        _tkr = str(p.get("ticker") or "")
+        _mt, _bt = _pk_mlb_display(_tkr)
+        positions.append(PolyKalshiLivePosition(
+            order_id=oid, ticker=_tkr,
+            market_title=_mt, bet_team=_bt, outcome=str(p.get("outcome") or "yes"),
+            entry_ts=str(row["ts"] or ""), fill_price=fp, contracts=fc, cost_basis=fp * fc,
+            whale=(str(p["whale"]) if p.get("whale") else None),
+            poly_slug=p.get("poly_slug"), poly_outcome=p.get("poly_outcome"),
+            poly_side=p.get("poly_side"), poly_market_type=p.get("poly_market_type"),
+            yes_mid=yes_mid, unrealized=unrealized, unrealized_pct=unrealized_pct,
+            mark_ts=mark_ts, stale=stale, sparkline=series,
+            sparkline_text=_sparkline_text(series),
+        ))
+        if unrealized is not None:
+            total_unrealized = (total_unrealized or 0.0) + unrealized
+
+    # COPY-MOMENT feed — recent placements, newest first, bounded.
+    moments: list[PolyKalshiCopyMoment] = []
+    for row in _query(
+        db_url,
+        "SELECT a.ts AS ts, a.payload_json FROM audit_event a "
+        "WHERE a.actor = 'poly_kalshi_mlb' AND a.kind = 'poly_kalshi_order' "
+        "  AND json_extract(a.payload_json, '$.status') = 'placed' "
+        "  AND COALESCE(json_extract(a.payload_json, '$.order_id'), '') != '' "
+        "ORDER BY a.ts DESC LIMIT ?",
+        (_POLY_KALSHI_COPY_MOMENT_LIMIT,),
+    ):
+        try:
+            p = json.loads(row["payload_json"])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        fpx = p.get("fill_price")
+        _mtkr = str(p.get("ticker") or "")
+        _mmt, _mbt = _pk_mlb_display(_mtkr)
+        moments.append(PolyKalshiCopyMoment(
+            order_id=str(p.get("order_id") or ""), ts=str(row["ts"] or ""),
+            ticker=_mtkr, market_title=_mmt, bet_team=_mbt,
+            whale=(str(p["whale"]) if p.get("whale") else None),
+            outcome=str(p.get("outcome") or "yes"),
+            count=float(p.get("fill_count") or p.get("count") or 0.0),
+            fill_price=(None if fpx is None else float(fpx)),
+            poly_slug=p.get("poly_slug"), poly_outcome=p.get("poly_outcome"),
+        ))
+    latest = moments[0] if moments else None
+    return PolyKalshiLiveView(
+        open_positions=positions, copy_moments=moments, total_unrealized=total_unrealized,
+        n_open=len(positions),
+        latest_order_id=(latest.order_id if latest else None),
+        latest_ts=(latest.ts if latest else None),
     )
 
 
