@@ -20,7 +20,10 @@ CP2 SCOPE: this helper is built + tested here but wired into NOTHING yet — CP3
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable
+
+_log = logging.getLogger(__name__)
 
 # agent_state actors/keys for the two rosters (defaults; overridable per call).
 LIVE_ACTOR = "poly_kalshi_mlb"
@@ -115,3 +118,47 @@ def check_rosters_disjoint(
     paper_wallets = extract_wallets(paper_rec[0]) if paper_rec else set()
     assert_disjoint(live_wallets, paper_wallets)
     return live_wallets, paper_wallets
+
+
+def assert_roster_invariant_boot(
+    db_url: str = "sqlite:///data/trading_corp.db",
+    *,
+    logger: "logging.Logger | None" = None,
+) -> bool:
+    """Boot-time roster-disjointness guard. LOG-LOUD-AND-CONTINUE: never raises.
+
+    Returns True if the rosters are disjoint (or the check could not run),
+    False if a ``live ∩ paper`` overlap was detected and logged as an error.
+
+    ── Failure mode (deliberate): log-loud-and-CONTINUE, not hard-fail. ──
+    The engine is ONE process hosting many divisions (MACE, PEAD, PMCC,
+    bitunix, kalshi, poly_kalshi). Hard-failing boot over a roster-bookkeeping
+    overlap would take down every unrelated division — a disproportionate blast
+    radius. Crucially, the overlap cannot itself cause a double-COPY: the live
+    loop reads only ``live_whales`` and the paper sim read-time-subtracts
+    ``live_whales`` (`polymarket_copy_trader._load_live_whale_wallets`), so a
+    live whale is never papered even when stored state is dirty. This boot check
+    is therefore DETECTION + alerting, not the primary guard — so it logs LOUD
+    (error) for the operator to reconcile and lets the engine come up healthy.
+    An unexpected read error is treated as non-blocking (True) so we don't cry
+    wolf and don't brick boot on an unrelated DB hiccup.
+    """
+    lg = logger or _log
+    try:
+        live, paper = check_rosters_disjoint(db_url=db_url)
+        lg.info(
+            "poly_kalshi roster invariant OK: %d live / %d paper wallet(s), disjoint",
+            len(live), len(paper),
+        )
+        return True
+    except RosterInvariantError as e:
+        lg.error(
+            "POLY_KALSHI ROSTER INVARIANT VIOLATED at boot: %s. A whale is on BOTH "
+            "the live and paper rosters. The paper sim read-time subtract still "
+            "prevents double-copy; operator must reconcile the rosters. Engine "
+            "continues.", e,
+        )
+        return False
+    except Exception as e:  # noqa: BLE001 — a read hiccup must not brick boot
+        lg.warning("poly_kalshi roster invariant boot-check skipped (%s)", e)
+        return True

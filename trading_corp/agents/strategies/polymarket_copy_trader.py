@@ -229,6 +229,34 @@ class PolymarketCopyTraderAgent:
             log.info("polymarket_copy_trader: all whales auto-paused; no-op")
             return []
 
+        # Phase 2a read-time subtract (defense-in-depth backstop). A whale that
+        # is currently LIVE-copied (poly_kalshi_mlb/live_whales) must NEVER also
+        # be paper-copied — the invariant `live ∩ paper == ∅`. This filters at
+        # the copy-consumption point ONLY (the stored selected_whales roster is
+        # left untouched, so _apply_autopause_filter keeps operating on the raw
+        # roster). It is a backstop: even if the atomic 3-key move missed a key,
+        # or the weekly pins-only refresh re-added a live whale to selected_whales,
+        # the paper sim still won't act on a live whale. Wallet = identity.
+        live_wallets = self._load_live_whale_wallets()
+        if live_wallets:
+            kept = [
+                w for w in selected_whales
+                if str(
+                    (w.get("wallet") or w.get("proxy_wallet") or "")
+                    if isinstance(w, dict) else w
+                ).strip().lower() not in live_wallets
+            ]
+            n_excluded = len(selected_whales) - len(kept)
+            if n_excluded:
+                log.info(
+                    "polymarket_copy_trader: excluded %d live-copied whale(s) from "
+                    "paper (read-time subtract of live_whales)", n_excluded,
+                )
+            selected_whales = kept
+            if not selected_whales:
+                log.info("polymarket_copy_trader: all selected whales are live-copied; no-op")
+                return []
+
         activity_limit = int(self._strat_cfg.get("activity_limit_per_poll",
                                                  _DEFAULT_ACTIVITY_LIMIT))
 
@@ -783,6 +811,30 @@ class PolymarketCopyTraderAgent:
                     out.append({"wallet": v, "user_name": ""})
             return out
         return []
+
+    def _load_live_whale_wallets(self) -> set[str]:
+        """Phase 2a backstop: wallets currently on the LIVE roster
+        (poly_kalshi_mlb/live_whales), lowercased for case-insensitive identity.
+
+        The paper sim excludes these at read time so a live-copied whale is
+        never also papered (invariant `live ∩ paper == ∅`). Uses the shared
+        wallet-normalizer in `roster_split`. A read error returns an empty set
+        (no subtract) rather than crash the scan — the atomic move + boot
+        invariant are the primary guards; this is defense in depth.
+        """
+        if not self._db_url:
+            return set()
+        try:
+            from trading_corp.agents.strategies.roster_split import (
+                extract_wallets, LIVE_ACTOR, LIVE_KEY,
+            )
+            rec = load_agent_state(LIVE_ACTOR, LIVE_KEY, db_url=self._db_url)
+            return extract_wallets(rec[0]) if rec else set()
+        except Exception as e:  # noqa: BLE001 — never break the scan on a roster read
+            log.warning(
+                "polymarket_copy_trader: live-roster read failed (%s); no subtract", e,
+            )
+            return set()
 
     def _load_whale_state(self, wallet: str) -> dict[str, Any] | None:
         if not self._db_url:

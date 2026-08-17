@@ -1529,6 +1529,18 @@ async def run(argv: list[str] | None = None) -> int:
         except Exception as _pk_exc:  # noqa: BLE001 — never break engine boot
             log.exception("Poly->Kalshi MLB copy wiring FAILED (engine continues): %s", _pk_exc)
 
+        # --- Phase 2a boot invariant: live ∩ paper rosters must be disjoint ---
+        # Log-loud-and-continue (see assert_roster_invariant_boot): detection +
+        # alerting only — the live loop + paper read-time subtract are what
+        # actually prevent a double-copy, so an overlap must never brick boot.
+        try:
+            from trading_corp.agents.strategies.roster_split import (
+                assert_roster_invariant_boot,
+            )
+            assert_roster_invariant_boot(secrets.db_url, logger=log)
+        except Exception as _rinv_exc:  # noqa: BLE001 — belt-and-suspenders; helper never raises
+            log.warning("poly_kalshi roster invariant boot-check skipped: %s", _rinv_exc)
+
         # --- Kalshi Tail-Price Arb scanner (Phase K2.1; default off) ---
         # Detects same-market YES+NO arb at price tails (≤5¢ or ≥95¢)
         # where Kalshi's 1¢ rounding floor compresses round-trip cost
