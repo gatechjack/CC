@@ -17,7 +17,7 @@ echo "POLY_KALSHI_ONLINE_SECONDS $UP"
 echo "PID $(systemctl show trading-corp -p MainPID --value)"
 echo "=== boot journal (armed / retarget / invariant / poller / errors) ==="
 journalctl -u trading-corp --since "$RS" --no-pager 2>/dev/null | grep -iE "MLB copy loop online|MLB copy WIRED|roster invariant|mark poller|Traceback|CRITICAL" | head -40
-PT=$(journalctl -u trading-corp --since "$RS" --no-pager 2>/dev/null | grep -c "Polymarket copy")
+PT=$(journalctl -u trading-corp --since "$RS" --no-pager 2>/dev/null | grep -cE "Polymarket copy (ENTRY|EXIT)")
 echo "PAPER_TELEGRAM_CARDS_SINCE_RESTART(expect 0) $PT"
 if [ "$UP" -gt 0 ]; then
 sleep 75
