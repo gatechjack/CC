@@ -13,7 +13,7 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 log = logging.getLogger(__name__)
 
@@ -688,6 +688,63 @@ def set_agent_state(
             "  value_json=excluded.value_json, updated_ts=excluded.updated_ts",
             (agent, key, payload, ts),
         )
+
+
+def _upsert_agent_state_row(
+    conn: "sqlite3.Connection", agent: str, key: str, value: Any, ts: str,
+) -> None:
+    """Upsert ONE (agent, key) row on an already-open connection/transaction.
+
+    Extracted so `set_agent_state_multi` can apply several upserts inside a
+    single explicit transaction. Same SQL/semantics as `set_agent_state`'s
+    inline upsert (JSON-serialize with `default=str`; `updated_ts` always
+    refreshed). Does NOT open/commit — the caller owns the transaction.
+    """
+    payload = json.dumps(value, separators=(",", ":"), default=str)
+    conn.execute(
+        "INSERT INTO agent_state (agent, key, value_json, updated_ts) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(agent, key) DO UPDATE SET "
+        "  value_json=excluded.value_json, updated_ts=excluded.updated_ts",
+        (agent, key, payload, ts),
+    )
+
+
+def set_agent_state_multi(
+    updates: "Iterable[tuple[str, str, Any]]",
+    db_url: str = "sqlite:///data/trading_corp.db",
+) -> None:
+    """Apply several agent_state upserts in ONE atomic transaction.
+
+    `updates` is an iterable of `(agent, key, value)` triples. All are written
+    under a single `BEGIN IMMEDIATE … COMMIT`; if ANY upsert raises, the whole
+    batch is `ROLLBACK`ed and the exception re-raised, so a partially-applied
+    multi-key move can NEVER persist.
+
+    This is the atomic primitive behind the Phase-2a roster split: a promote
+    (paper→live) or demote (live→paper) is one call moving a whale across THREE
+    keys — write `poly_kalshi_mlb/live_whales` AND remove from
+    `polymarket_copy_trader/{selected_whales,pinned_whales}` — so a crash
+    mid-move can never leave a whale papering AND live (or in neither roster).
+
+    `connect()` opens with `isolation_level=None` (Python-level autocommit), so
+    the explicit `BEGIN IMMEDIATE` starts a real transaction that holds until we
+    COMMIT/ROLLBACK. All rows share one `updated_ts`. Empty `updates` is a no-op.
+    """
+    rows = list(updates)
+    if not rows:
+        return
+    ts = datetime.now(timezone.utc).isoformat()
+    with connect(db_url) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for agent, key, value in rows:
+                _upsert_agent_state_row(conn, agent, key, value, ts)
+            conn.execute("COMMIT")
+        except Exception:
+            # Undo every partial write from this batch, then surface the error.
+            conn.execute("ROLLBACK")
+            raise
 
 
 def load_agent_state(
