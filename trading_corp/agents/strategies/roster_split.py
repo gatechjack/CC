@@ -21,6 +21,7 @@ CP2 SCOPE: this helper is built + tested here but wired into NOTHING yet — CP3
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 _log = logging.getLogger(__name__)
@@ -30,11 +31,29 @@ LIVE_ACTOR = "poly_kalshi_mlb"
 LIVE_KEY = "live_whales"
 PAPER_ACTOR = "polymarket_copy_trader"
 PAPER_KEY = "selected_whales"
+PIN_KEY = "pinned_whales"          # paper eviction-exempt pins; the §1.5 3rd move key
 
 # Keys under which a whale's wallet may be stored across the roster shapes.
 # selected/pinned entries carry ``wallet``; watch_only entries carry
 # ``proxy_wallet``. Bare-string entries are the wallet itself.
 _WALLET_FIELDS = ("wallet", "proxy_wallet")
+
+
+def wallet_of(entry: Any) -> str:
+    """Lowercased wallet for a SINGLE roster entry (dict or bare string); '' if none.
+
+    The single-entry counterpart of `extract_wallets` — same identity rules, so
+    filtering (`wallet_of(x) != w`) and the disjointness set use one source of truth.
+    """
+    if isinstance(entry, dict):
+        for field in _WALLET_FIELDS:
+            w = entry.get(field)
+            if w:
+                return str(w).strip().lower()
+        return ""
+    if isinstance(entry, str):
+        return entry.strip().lower()
+    return ""
 
 
 class RosterInvariantError(AssertionError):
@@ -63,18 +82,9 @@ def extract_wallets(value: Any) -> set[str]:
     if not isinstance(value, list):
         return out
     for v in value:
-        wallet = ""
-        if isinstance(v, dict):
-            for field in _WALLET_FIELDS:
-                w = v.get(field)
-                if w:
-                    wallet = str(w)
-                    break
-        elif isinstance(v, str):
-            wallet = v
-        wallet = wallet.strip().lower()
-        if wallet:
-            out.add(wallet)
+        w = wallet_of(v)
+        if w:
+            out.add(w)
     return out
 
 
@@ -162,3 +172,138 @@ def assert_roster_invariant_boot(
     except Exception as e:  # noqa: BLE001 — a read hiccup must not brick boot
         lg.warning("poly_kalshi roster invariant boot-check skipped (%s)", e)
         return True
+
+
+# ── Atomic cross-roster moves (CP4) ─────────────────────────────────────
+# Promote (paper->live) and Demote (live->paper) are each ONE atomic 3-key
+# transaction via db.set_agent_state_multi. MANUAL operator actions only — never
+# auto-called. Endpoints in web/routes.py are thin wrappers over these.
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _load_roster_list(actor: str, key: str, db_url: str) -> list:
+    from trading_corp.persistence.db import load_agent_state
+    rec = load_agent_state(actor, key, db_url=db_url)
+    return list(rec[0]) if rec and isinstance(rec[0], list) else []
+
+
+def _find_entry(entries: list, wallet_lower: str) -> dict:
+    """Return the dict entry matching `wallet_lower`, or {} if not found / bare-str."""
+    for x in entries:
+        if wallet_of(x) == wallet_lower:
+            return x if isinstance(x, dict) else {"wallet": wallet_lower}
+    return {}
+
+
+def promote_whale_to_live(
+    wallet: str,
+    db_url: str = "sqlite:///data/trading_corp.db",
+    *,
+    logger_agent: Any = None,
+    source: str = "dashboard_button",
+) -> dict:
+    """PAPER -> LIVE promote: flatten the paper book, then ONE atomic 3-key move.
+
+    Steps:
+      1. FLATTEN-ON-PROMOTE — close the whale's open PAPER positions by REUSING
+         `polymarket_copy_trader.force_close_whale_positions` (synthetic sells at
+         mark; also resets the whale_state slot so a future move won't replay
+         history). No new flatten logic.
+      2. ONE `set_agent_state_multi` transaction: +live_whales, -selected_whales,
+         -pinned_whales. Removing from pins is the §1.5 fix — a still-pinned whale
+         would be silently re-added to paper by the weekly refresh.
+      3. Assert `live ∩ paper == ∅`.
+
+    Manual operator action — never auto-called. Returns a summary dict.
+    """
+    from trading_corp.persistence.db import set_agent_state_multi
+    from trading_corp.agents.strategies.polymarket_copy_trader import (
+        force_close_whale_positions,
+    )
+
+    w = str(wallet).strip().lower()
+    sel = _load_roster_list(PAPER_ACTOR, PAPER_KEY, db_url)
+    pin = _load_roster_list(PAPER_ACTOR, PIN_KEY, db_url)
+    live = _load_roster_list(LIVE_ACTOR, LIVE_KEY, db_url)
+    meta = _find_entry(sel, w) or _find_entry(pin, w) or _find_entry(live, w)
+    user_name = str(meta.get("user_name") or "")
+    category = str(meta.get("category") or meta.get("best_category") or "")
+
+    # 1) Flatten the whale's open paper book (reuse the existing path).
+    close_summary = force_close_whale_positions(
+        w, db_url=db_url, logger_agent=logger_agent, reason="promoted_to_live",
+    )
+
+    # 2) Build the 3-key after-states.
+    sel_after = [x for x in sel if wallet_of(x) != w]
+    pin_after = [x for x in pin if wallet_of(x) != w]
+    live_after = live if any(wallet_of(x) == w for x in live) else live + [{
+        "wallet": w, "user_name": user_name, "category": category,
+        "promoted_iso": _now_iso(), "source": source,
+    }]
+
+    # 3) ONE atomic transaction across all three keys.
+    set_agent_state_multi([
+        (PAPER_ACTOR, PAPER_KEY, sel_after),
+        (PAPER_ACTOR, PIN_KEY, pin_after),
+        (LIVE_ACTOR, LIVE_KEY, live_after),
+    ], db_url=db_url)
+
+    # 4) Invariant holds after the move.
+    assert_disjoint(extract_wallets(live_after), extract_wallets(sel_after))
+    return {
+        "wallet": w, "user_name": user_name,
+        "n_paper_closed": int(close_summary.get("n_closed", 0) or 0),
+    }
+
+
+def demote_whale_to_paper(
+    wallet: str,
+    db_url: str = "sqlite:///data/trading_corp.db",
+    *,
+    logger_agent: Any = None,
+    source: str = "dashboard_button",
+) -> dict:
+    """LIVE -> PAPER demote: ONE atomic 3-key move. RIDE-TO-SETTLEMENT.
+
+    Move: -live_whales, +selected_whales, +pinned_whales (re-pin so the whale is
+    eviction-safe in paper again). Then assert `live ∩ paper == ∅`.
+
+    RIDE-TO-SETTLEMENT — deliberately does **NO** live-broker action and **NO**
+    force-flatten. Any open live position rides to natural settlement: the mark
+    poller (`poly_kalshi_marks._fetch_open_positions`) and the settlement sweep
+    (`poly_kalshi_copy_trader.run_settlement_sweep`) are POSITION/SETTLEMENT-driven,
+    not roster-driven, so an off-roster position is still marked, still settles,
+    and still books to the live division. Demote only stops NEW-entry detection.
+
+    Manual operator action — never auto-called. Returns a summary dict.
+    """
+    from trading_corp.persistence.db import set_agent_state_multi
+
+    w = str(wallet).strip().lower()
+    live = _load_roster_list(LIVE_ACTOR, LIVE_KEY, db_url)
+    sel = _load_roster_list(PAPER_ACTOR, PAPER_KEY, db_url)
+    pin = _load_roster_list(PAPER_ACTOR, PIN_KEY, db_url)
+    meta = _find_entry(live, w) or _find_entry(sel, w)
+    user_name = str(meta.get("user_name") or "")
+    category = str(meta.get("category") or "")
+
+    live_after = [x for x in live if wallet_of(x) != w]
+    entry = {
+        "wallet": w, "user_name": user_name, "category": category,
+        "demoted_iso": _now_iso(), "source": source,
+    }
+    sel_after = sel if any(wallet_of(x) == w for x in sel) else sel + [entry]
+    pin_after = pin if any(wallet_of(x) == w for x in pin) else pin + [entry]
+
+    set_agent_state_multi([
+        (LIVE_ACTOR, LIVE_KEY, live_after),
+        (PAPER_ACTOR, PAPER_KEY, sel_after),
+        (PAPER_ACTOR, PIN_KEY, pin_after),
+    ], db_url=db_url)
+
+    assert_disjoint(extract_wallets(live_after), extract_wallets(sel_after))
+    return {"wallet": w, "user_name": user_name}
