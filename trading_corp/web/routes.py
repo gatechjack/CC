@@ -513,6 +513,15 @@ def register(app: FastAPI) -> None:
             {"view": view},
         )
 
+    @app.get("/partials/prediction-markets/poly_kalshi_mlb/live", response_class=HTMLResponse)
+    async def poly_kalshi_live_partial(request: Request):
+        # Phase 2b CP3: broker-free live section (marks + trigger + copy-moments) for the
+        # poly_kalshi_mlb dashboard. SELECT-only; the section's hx-trigger re-fetches it.
+        live = await asyncio.to_thread(data.build_poly_kalshi_live_view, deps.db_url)
+        return templates.TemplateResponse(
+            request, "partials/poly_kalshi_live_inner.html", {"live": live},
+        )
+
     # ── Division drill-down (Phase 2) ────────────────────────────────────
 
     @app.get("/division/{slug}", response_class=HTMLResponse)
@@ -3084,6 +3093,62 @@ def register(app: FastAPI) -> None:
         suffix = f" · closed {n} position{'s' if n != 1 else ''}" if n else ""
         label = user_name or wallet_lower[:10]
         return _render_action_pill(f"@{label} demoted{suffix}")
+
+    # ── Phase 2a paper<->live roster moves (atomic 3-key; manual only) ──
+    # These move a whale between the PAPER farm (polymarket_copy_trader/
+    # selected_whales) and the LIVE division (poly_kalshi_mlb/live_whales).
+    # Each is ONE atomic set_agent_state_multi (CP2 primitive) via the
+    # roster_split core; the invariant live ∩ paper == ∅ is asserted after.
+    # NO auto-promotion — operator-triggered dashboard buttons only.
+
+    @app.post("/api/polymarket/whales/promote-live/{proxy_wallet}", response_class=HTMLResponse)
+    async def polymarket_whales_promote_live(proxy_wallet: str):
+        """Promote a whale PAPER -> LIVE (poly_kalshi_mlb/live_whales).
+
+        Atomic 3-key move (+live_whales / -selected_whales / -pinned_whales) plus
+        FLATTEN-ON-PROMOTE (reuses force_close_whale_positions). The whale stops
+        papering and arrives live with a clean, complete paper history.
+        """
+        from trading_corp.agents.strategies.roster_split import promote_whale_to_live
+        db_url = deps.db_url
+        summary = promote_whale_to_live(
+            proxy_wallet, db_url=db_url, logger_agent=deps.logger_agent,
+        )
+        if deps.logger_agent is not None:
+            deps.logger_agent.log_event(
+                "poly_kalshi_mlb", "poly_kalshi_whale_promoted_live",
+                {"wallet": summary["wallet"], "user_name": summary.get("user_name", ""),
+                 "n_paper_closed": summary.get("n_paper_closed", 0),
+                 "promoted_iso": _now_iso(), "source": "dashboard_button"},
+            )
+        log.info("poly_kalshi_whale_promoted_live: %s", summary["wallet"][:10])
+        label = summary.get("user_name") or summary["wallet"][:10]
+        n = summary.get("n_paper_closed", 0)
+        suffix = f" · flattened {n} paper position{'s' if n != 1 else ''}" if n else ""
+        return _render_action_pill(f"@{label} promoted to LIVE{suffix}")
+
+    @app.post("/api/polymarket/whales/demote-live/{proxy_wallet}", response_class=HTMLResponse)
+    async def polymarket_whales_demote_live(proxy_wallet: str):
+        """Demote a whale LIVE -> PAPER (resume papering).
+
+        Atomic 3-key move (-live_whales / +selected_whales / +pinned_whales). NO
+        live-broker action: any OPEN live position RIDES TO SETTLEMENT (the mark
+        poller + settlement sweep are position/settlement-driven, not roster-driven).
+        """
+        from trading_corp.agents.strategies.roster_split import demote_whale_to_paper
+        db_url = deps.db_url
+        summary = demote_whale_to_paper(
+            proxy_wallet, db_url=db_url, logger_agent=deps.logger_agent,
+        )
+        if deps.logger_agent is not None:
+            deps.logger_agent.log_event(
+                "poly_kalshi_mlb", "poly_kalshi_whale_demoted_live",
+                {"wallet": summary["wallet"], "user_name": summary.get("user_name", ""),
+                 "demoted_iso": _now_iso(), "source": "dashboard_button"},
+            )
+        log.info("poly_kalshi_whale_demoted_live: %s", summary["wallet"][:10])
+        label = summary.get("user_name") or summary["wallet"][:10]
+        return _render_action_pill(f"@{label} demoted to PAPER (open positions ride to settlement)")
 
     # ── Polymarket whale on-demand audit (Phase B, read-only review) ────
 

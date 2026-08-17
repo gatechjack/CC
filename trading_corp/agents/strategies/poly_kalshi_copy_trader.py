@@ -193,7 +193,11 @@ class PolyKalshiCopyTrader:
             except Exception as ex:  # noqa: BLE001 — fetch failure -> None -> [G-slip] fail-closed (live)
                 log.warning("quote fetch failed for %s: %s", order.ticker, ex)
                 quote = None
-        res = await self._executor.submit(order, market_quote=quote)
+        # FLAG 2: journal the triggering Poly bet (the "why") WITH the placement row so
+        # it survives restart + the dashboard can show it per position (was shadow_log only).
+        trigger = {"poly_slug": r.slug, "poly_outcome": r.outcome, "poly_side": r.side,
+                   "poly_market_type": p.market_type}
+        res = await self._executor.submit(order, market_quote=quote, trigger=trigger)
         e.update(stage="submitted", quote=quote, gate=res["status"], decision=res["status"],
                  order={"ticker": order.ticker, "v2_side": order.v2_side, "action": order.action,
                         "count": order.count, "limit_price": order.body["price"],

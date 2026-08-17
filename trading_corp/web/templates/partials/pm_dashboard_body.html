@@ -421,6 +421,11 @@
   </div>
 </section>
 
+{# ── Poly->Kalshi live section (Phase 2b CP3) — only for this division ── #}
+{% if view.selected == 'poly_kalshi_mlb' %}
+  {% include 'partials/poly_kalshi_live.html' %}
+{% endif %}
+
 {# ── History tab ────────────────────────────────────────────────────── #}
 <section id="pm-tab-history" class="pm-tab-panel hidden">
   <div class="bg-pane border border-edge rounded-lg overflow-hidden">

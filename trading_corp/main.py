@@ -1501,6 +1501,7 @@ async def run(argv: list[str] | None = None) -> int:
                     max_slippage_cents=int(_pk_cfg.get("max_slippage_cents", 2)),
                     max_orders_per_day=_pk_cfg.get("max_orders_per_day", 25),
                     logger=logger_agent,   # [audit] journals every placement/reject/suppress
+                    notify_fn=channel.push,  # [Part 2] scannable Telegram on LIVE copy placement only
                 )
                 _pk_loop = PolyKalshiCopyTrader(
                     executor=_pk_executor, db_url=secrets.db_url,
@@ -1527,6 +1528,18 @@ async def run(argv: list[str] | None = None) -> int:
                 log.info("Poly->Kalshi MLB copy: poly_kalshi_mlb.enabled=false — not wired")
         except Exception as _pk_exc:  # noqa: BLE001 — never break engine boot
             log.exception("Poly->Kalshi MLB copy wiring FAILED (engine continues): %s", _pk_exc)
+
+        # --- Phase 2a boot invariant: live ∩ paper rosters must be disjoint ---
+        # Log-loud-and-continue (see assert_roster_invariant_boot): detection +
+        # alerting only — the live loop + paper read-time subtract are what
+        # actually prevent a double-copy, so an overlap must never brick boot.
+        try:
+            from trading_corp.agents.strategies.roster_split import (
+                assert_roster_invariant_boot,
+            )
+            assert_roster_invariant_boot(secrets.db_url, logger=log)
+        except Exception as _rinv_exc:  # noqa: BLE001 — belt-and-suspenders; helper never raises
+            log.warning("poly_kalshi roster invariant boot-check skipped: %s", _rinv_exc)
 
         # --- Kalshi Tail-Price Arb scanner (Phase K2.1; default off) ---
         # Detects same-market YES+NO arb at price tails (≤5¢ or ≥95¢)
@@ -2139,6 +2152,7 @@ async def run(argv: list[str] | None = None) -> int:
             start_equity_snapshot_loop as start_kalshi_equity_snapshot_loop,
             start_resolver_loop as start_kalshi_resolver_loop,
         )
+        from trading_corp.agents.poly_kalshi_marks import start_poly_kalshi_mark_loop
         kalshi_broker_for_resolver = data_exec.brokers.get(
             kalshi_arb_agent.division
         )
@@ -2154,6 +2168,12 @@ async def run(argv: list[str] | None = None) -> int:
                 kalshi_broker_for_resolver,
                 interval_sec=300,
             )
+            # Phase 2b CP2: live mark-to-market poller for poly_kalshi_mlb open
+            # positions -> volatile poly_kalshi_mark_live/_history (dashboard reads
+            # broker-free). Reuses the funded kalshi read-broker (quotes are public).
+            poly_kalshi_mark_task = start_poly_kalshi_mark_loop(
+                secrets.db_url, kalshi_broker_for_resolver, interval_sec=60,
+            )
         else:
             log.warning(
                 "Kalshi resolver/equity-snapshot (kalshi_arbitrage) not started: "
@@ -2162,6 +2182,7 @@ async def run(argv: list[str] | None = None) -> int:
             )
             kalshi_resolver_task = None
             kalshi_equity_task_arb = None
+            poly_kalshi_mark_task = None
 
         kalshi_broker_for_llm = data_exec.brokers.get(
             kalshi_llm_agent.division
@@ -2671,6 +2692,7 @@ async def run(argv: list[str] | None = None) -> int:
                 kalshi_resolver_task,
                 kalshi_equity_task_arb,
                 kalshi_equity_task_llm,
+                poly_kalshi_mark_task,
             ):
                 if _kalshi_task is not None:
                     _kalshi_task.cancel()
@@ -5021,7 +5043,8 @@ async def _handle_copy_order_placement(
     `is_live_armed` is E2·4's decision (the division's broker is placement-legal,
     i.e. a `Broker`/PolymarketLiveBroker — NOT `broker.paper`):
 
-      * PAPER (not armed): log `would_have_placed` — UNCHANGED behavior.
+      * PAPER (not armed): log `would_have_placed` (audit rail RETAINED). Phase 2a:
+        NO Telegram — the PCT paper farm is silenced (live-money alerts only).
       * LIVE-armed: route through `data_exec.place()` (which sets `execution_mode`
         and logs the fill + proposed_order, E2·5). A benign synthesized-FAK
         `NoFillInWindow` is SKIPPED — the optimistic position is discarded, a benign
@@ -5033,7 +5056,7 @@ async def _handle_copy_order_placement(
     """
     ext = order.extra or {}
     if not is_live_armed:
-        # ── PAPER branch — unchanged ──
+        # ── PAPER branch — audit only, NO Telegram (Phase 2a) ──
         logger_agent.log_event(
             agent.name, "would_have_placed",
             {
@@ -5043,7 +5066,11 @@ async def _handle_copy_order_placement(
                 "risk_reason": verdict.reason,
             },
         )
-        await _push_copy_card(channel, order, ext, tag="logged")
+        # Phase 2a: the PCT paper farm is SILENCED on Telegram (live-money alerts
+        # only). The would_have_placed audit above is RETAINED — paper trades still
+        # journal to the DB; only the paper "Polymarket copy ... logged" push is
+        # dropped. The live-armed cards below + poly_kalshi _notify_live_copy still
+        # alert on real money.
         return
 
     # ── LIVE-armed branch (mocked in tests; a real broker only when operator-armed) ──

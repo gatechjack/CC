@@ -1,0 +1,21 @@
+{# Phase 2b CP3 — Poly->Kalshi live section SHELL. Included by pm_dashboard_body ONLY
+   for the poly_kalshi_mlb division. The inner div self-populates on load and refreshes
+   every 60s via the broker-free /partials/prediction-markets/poly_kalshi_mlb/live route
+   (mirrors MACE's mace_live_sections hx-trigger precedent). #}
+<section class="mt-4 bg-pane border border-edge rounded-lg overflow-hidden">
+  <header class="px-4 py-2 border-b border-edge flex items-center justify-between">
+    <span class="text-[11px] uppercase tracking-wider text-muted">Live positions &#8212; Poly&#8594;Kalshi copy</span>
+    <div class="flex items-center gap-3">
+      <a href="/prediction-markets/polymarket_copy_trading"
+         class="text-[9px] font-mono uppercase tracking-wider text-accent/70 hover:text-accent border border-edge px-1.5 py-0.5 rounded"
+         title="PCT paper farm &#8212; the watched/papered whale roster feeding this live division">PCT &#8599;</a>
+      <span class="text-[9px] text-muted">auto-refresh 60s</span>
+    </div>
+  </header>
+  <div id="poly-kalshi-live-inner"
+       hx-get="/partials/prediction-markets/poly_kalshi_mlb/live"
+       hx-trigger="load, every 60s"
+       hx-swap="innerHTML">
+    <div class="p-6 text-muted text-[12px]">Loading live marks&#8230;</div>
+  </div>
+</section>

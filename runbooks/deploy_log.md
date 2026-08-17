@@ -12841,3 +12841,54 @@ restart; reverts CODE only - epochs reverted by deleting the two metrics_epoch a
 **prod-live:** `5fba5ee` -> this entry (FF). Source branch `poly-kalshi-mlb-phase1-2026-08-15` @ `709b689`
 (CP2-CP7); runtime = the 5 files above. Checkpoint reports at
 `reports/2026-08-16_poly_kalshi_two_divisions_plan/CP{3..7}_REPORT.md`.
+
+---
+
+## 2026-08-17 ~04:39 UTC - Poly->Kalshi Phase 2a ROSTER SPLIT (LIVE) + Phase 2b catch-up
+
+**What.** Ends the paper/live double-state. The live loop now reads its OWN roster key
+`agent_state[poly_kalshi_mlb/live_whales]` (was the SHARED `polymarket_copy_trader/selected_whales`, which
+both the PCT paper farm AND the live loop read). Cutover moved the 4 whales -> `live_whales`;
+`selected_whales` + `pinned_whales` are now EMPTY (paper farm idle). This ONE batched deploy also carries
+the Phase 2b display layer (`dcebfcc`) + poller log fix (`8dc4d97`) that were file-overwritten to the box
+but never advanced in prod-live git.
+
+**Runtime (14 files, LF-md5-verified == box).** `config/strategies.yaml` (roster retarget
+roster_actor=poly_kalshi_mlb/roster_key=live_whales), `trading_corp/persistence/db.py`
+(`set_agent_state_multi` atomic 3-key upsert), `trading_corp/agents/strategies/roster_split.py` (NEW:
+extract_wallets/assert_disjoint/check_rosters_disjoint + promote_whale_to_live/demote_whale_to_paper),
+`trading_corp/agents/strategies/polymarket_copy_trader.py` (read-time subtract of live_whales),
+`trading_corp/main.py` (boot invariant + paper-Telegram kill + dcebfcc notify_fn),
+`trading_corp/web/routes.py` (promote-live/demote-live endpoints), `poly_kalshi_marks.py`,
+`poly_kalshi_executor.py`, `web/data.py`, `web/templates/{home.html,partials/pm_dashboard_body.html,
+partials/poly_kalshi_live.html,partials/poly_kalshi_live_inner.html}`. Additive-only, NO migration
+(reuses `agent_state`; Phase-2b mark tables already on box). Shared byte-locked files
+(`kalshi_copy_trader.py`, `sports_team_mapping.py`, `kalshi_live.py`) UNCHANGED. The two whale-recency
+scripts on the branch were NOT deployed (excluded here).
+
+**Deploy sequence (3 operator-run runners, strict order).** `pk_cp6_deploy.ps1` (bundle-md5
+`e6e7feaf...` -> drift-gate 11x LF-md5==3706a3a -> backup `.bak_cp6_20260817_043609` -> extract ->
+install-verify 12 -> NO RESTART) -> `pk_cutover_seed.ps1` DRY then `-Apply` (atomic 3-key: live_whales:=4,
+selected:=[], pinned:=[]; CUTOVER_OK) -> `pk_cp6_restart_verify.ps1` (restart onto new code + seeded
+roster). ORDER is load-bearing: files installed first so `set_agent_state_multi` exists for the cutover;
+restart LAST so the retargeted loop boots onto a seeded (non-empty) live_whales.
+
+**Boot verify (ALL GREEN).** Restart 04:38:48 UTC, PID 760172 -> 765455, online 25s. Re-ARMED:
+`WIRED (auto_execute=True -> dry_run=False, stake=$5.0, halt=$100.0)` + `loop online (poll=7.0s,
+dry_run=False)` + `StrategyState.halted=False`. Retarget live: `roster_actor=poly_kalshi_mlb
+roster_key=live_whales`; `live_whales n=4`, `selected_whales n=0`, `pinned_whales n=0`. Boot invariant
+`roster invariant OK: 4 live / 0 paper, disjoint`. Open BALTB-TB rode the restart (flag-3
+OPEN_POSITIONS=1, no re-order; pre-game, not yet quotable). NO paper Telegram (the paper-branch
+`_push_copy_card` kill is live; the lone "Polymarket copy" journal hit was the benign boot
+`scanner online` log, confirmed). 0 tracebacks.
+
+**Kill-switches:** `StrategyState.persist_halt('poly_kalshi_mlb')`; `auto_execute:false` + restart ->
+shadow. **Rollback:** `cc\pk_cp6_rollback.ps1 -BackupSuffix .bak_cp6_20260817_043609 -CutoverWasApplied`
+(reverses the cutover FIRST via a self-contained txn - the old code reads selected_whales - then restores
+the 11 `.bak_cp6_...` + removes roster_split.py + restart).
+
+**prod-live:** `18db30e` -> this entry (deploy-commit; prod-live DIVERGED from the source branch, so this
+is a runtime-file overlay + deploy_log hand-union, NOT a fast-forward). Source branch
+`poly-kalshi-phase2a-2026-08-16` @ `ebd394e`. Full suite: base-vs-branch FAILED+ERROR diff EMPTY at every
+checkpoint (zero new failures). Checkpoint reports at
+`reports/2026-08-16_poly_kalshi_two_divisions_plan/PHASE2A_{SCOPING,CP3,CP4,CP5,CP6_STAGE1,CP6_STAGE2,CP6_RESULT}*.md`.
