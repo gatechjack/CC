@@ -127,13 +127,25 @@ async def run_mark_cycle(db_url: str, broker) -> dict:
     return counts
 
 
+def _log_tick(counts: dict) -> None:
+    """Emit the per-cycle tick line with pre-formatted scalar %-args (NOT the raw dict).
+    A lone Mapping arg is collapsed by `logging` into `record.args`, which the shared
+    `RedactingFilter` (secrets.py) iterates into a keys-tuple -> `getMessage()` then raises
+    `TypeError: not all arguments converted` every cycle. Scalar args sidestep it (mirrors
+    the polymarket_resolver tick log that renders cleanly on the same handler)."""
+    log.info(
+        "poly_kalshi mark tick: open=%s marked=%s quote_miss=%s",
+        counts["open"], counts["marked"], counts["quote_miss"],
+    )
+
+
 async def _mark_loop(db_url: str, broker, interval_sec: int) -> None:
     log.info("poly_kalshi mark poller online (interval=%ss)", interval_sec)
     while True:
         try:
             counts = await run_mark_cycle(db_url, broker)
             if counts["open"]:
-                log.info("poly_kalshi mark tick: %s", counts)
+                _log_tick(counts)
         except asyncio.CancelledError:
             log.info("poly_kalshi mark poller cancelled.")
             return

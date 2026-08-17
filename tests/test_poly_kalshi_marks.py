@@ -137,3 +137,34 @@ def test_never_writes_audit_event(hdb):
     with _db.connect(hdb) as c:
         after = c.execute("SELECT COUNT(*) FROM audit_event").fetchone()[0]
     assert after == before                    # marks are ephemeral -> NEVER in the journal
+
+
+def test_tick_log_survives_redacting_filter():
+    """Regression: the per-cycle tick log must render through the shared RedactingFilter
+    without raising. The prior `log.info("...%s", counts)` (lone dict arg) tripped the filter
+    (dict -> keys-tuple -> getMessage TypeError) every cycle; the scalar-arg `_log_tick` fixes
+    it. A handler whose handleError re-raises turns any emit-time format failure into a test
+    failure (the old code fails this; the fix passes)."""
+    import io
+    import logging
+    from trading_corp.utils.secrets import RedactingFilter
+
+    class _StrictHandler(logging.StreamHandler):
+        def handleError(self, record):          # surface emit failures instead of swallowing
+            raise
+
+    buf = io.StringIO()
+    h = _StrictHandler(buf)
+    h.setFormatter(logging.Formatter("%(message)s"))
+    h.addFilter(RedactingFilter())
+    pkm.log.addHandler(h)
+    prev_propagate, prev_level = pkm.log.propagate, pkm.log.level
+    pkm.log.propagate = False
+    pkm.log.setLevel(logging.INFO)
+    try:
+        pkm._log_tick({"open": 1, "marked": 0, "quote_miss": 2})   # would raise pre-fix
+    finally:
+        pkm.log.removeHandler(h)
+        pkm.log.propagate, pkm.log.level = prev_propagate, prev_level
+    out = buf.getvalue()
+    assert "open=1" in out and "marked=0" in out and "quote_miss=2" in out   # counts rendered
