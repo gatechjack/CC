@@ -12892,3 +12892,46 @@ is a runtime-file overlay + deploy_log hand-union, NOT a fast-forward). Source b
 `poly-kalshi-phase2a-2026-08-16` @ `ebd394e`. Full suite: base-vs-branch FAILED+ERROR diff EMPTY at every
 checkpoint (zero new failures). Checkpoint reports at
 `reports/2026-08-16_poly_kalshi_two_divisions_plan/PHASE2A_{SCOPING,CP3,CP4,CP5,CP6_STAGE1,CP6_STAGE2,CP6_RESULT}*.md`.
+
+## 2026-08-18 ~12:40 UTC - MACE weekly_new_rungs_per_symbol 1 -> 5 (velocity change; RESTART; engine 765455 -> 775659)
+
+**Change (config/mace.yaml ONLY, one line).** `entry.weekly_new_rungs_per_symbol: 1 -> 5`. Nothing else
+touched: `max_rungs_per_symbol=5`, `sizing.rung_risk_pct=0.10`, `sizing.deployment_target_pct=0.95`,
+`max_contracts=1`, credit floor 0.30, IVR floor 25, widths, blackouts, universe [IBIT,XLE,GDX,FXI,IWM,SPY]
+all UNCHANGED. `config_hash 5e1647f96692 -> bf91b1a12077` (sha256 of raw LF bytes).
+
+**Rationale.** VELOCITY, not risk-ceiling. The per-symbol book still tops out at max_rungs=5 concurrent;
+per-day pacing stays <=1 new rung/symbol/day (STRUCTURAL: daily-slots entry slot deduped per (date,"entry")
+in mace/loops.py + one evaluate_entry per symbol per round in mace/manager.py - not driven by this value).
+Only the entry weekly-budget filter (mace/strategy.py:371-375) is relaxed, so a symbol fills toward its
+5-rung ceiling in as few as 5 trading days (1/day) instead of ~5 ISO-weeks. The portfolio BP cap
+(deployment_target_pct=0.95, mace/strategy.py:424) is the unchanged binding backstop.
+
+**Drift-gate (clean).** Live box config == prod-live blob `5e1647f96692` (no box drift), weekly line=1, LF.
+Unified diff live -> staged = EXACTLY the one weekly line (changed-line count 2). git: deploy commit
+`17ad957` is a direct child of prod-live tip `e7af3bc` (clean FF, no overlay).
+
+**Backup + rollback.** `/home/azureuser/mace_weekly5_bak_20260818_123837/` (mace.yaml @ 5e1647f96692 +
+ET-guarded rollback.sh: refuses 15:40-15:58 ET, restores the file; restart-as-root then required). Box venv
+YAML parse OK (weekly=5, max=5).
+
+**Swap + restart (root via az vm run-command, NO sudo).** ET guard 08:40 ET (outside 15:40-15:58). Guarded
+cp staged -> config/mace.yaml (pre-swap hashes asserted), chown azureuser, post-swap live=bf91b1a12077.
+`systemctl restart trading-corp`: MainPID 765455 -> 775659, active since 12:40:22 UTC.
+
+**Boot verify (ALL GREEN).** Journal boot line `Robinhood MACE wired (execution_mode=live,
+config_hash=bf91b1a12077...)`. /mace: "weekly new / max rungs = 5 / 5", config_hash bf91b1a12077, 6-active
+universe intact. 4 MACE loops online, 0 tracebacks, engine active. Halt latch ARM->HALT->ARM round-trip
+PASS (ended ARMED). mace_rung UNDISTURBED: 2 W33 SPY rungs (entered 8/12, 8/13) intact + 1 legit W34 SPY
+rung (entered 8/17 15:47 ET under the old weekly=1 rule); all 3 predate the 12:40 UTC restart, zero rungs
+entered/exited at/after restart.
+
+**Kill-switches:** /mace HALT (entry_halt latch) or strategies.yaml auto_execute:false + restart.
+**Rollback:** run `/home/azureuser/mace_weekly5_bak_20260818_123837/rollback.sh` (restores 5e1647f96692)
+then restart-as-root -> boot verifies config_hash back to 5e1647f96692.
+
+**prod-live:** `e7af3bc` -> this entry (clean FF; deploy commit `17ad957` config-only + this deploy_log
+append). Worktree branch `mace-weekly-rungs-5-2026-08-18`. Staged validation reproduced the live
+5e1647f96692 hash from the unchanged file (toolchain byte-faithful). NOTE: the inline comment on the weekly
+line still reads "back to 1/week at 3 actives" (stale) - left byte-untouched to keep the diff to exactly
+one line; refresh deferred.
