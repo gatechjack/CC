@@ -36,7 +36,7 @@ entry:
   ivr_floor: 25                         # 0-100 scale. Tasty rank fields are 0-1 —
                                         # ivr_provider normalizes x100 BEFORE this compare
                                         # (SPY 0.272 == IVR 27.2; stage-A probe-proven)
-  weekly_new_rungs_per_symbol: 1        # 2026-08-13 Board: back to 1/week at 3 actives
+  weekly_new_rungs_per_symbol: 5        # 2026-08-13 Board: back to 1/week at 3 actives
                                         # (3 symbols x 1 rung replaces 1-2 symbols x 2)
   max_rungs_per_symbol: 5
   stop_cooldown_sessions: 2
