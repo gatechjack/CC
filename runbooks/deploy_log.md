@@ -12720,3 +12720,30 @@ loads enabled+guard with dates + blackout=() NO fail-closed; MACE ERRORS(1H) 0; 
 (this commit adds only runbooks/deploy_log.md), so the POST-GATE md5s (strategy `fbbf6d14`, mace.yaml
 `1753a9c8`, ex_dividend `12877dc4`) are the LF-md5 proof prod == prod-live tip. Kill-switches:
 auto_execute:false (hot), standby:true (hot), --live-divisions removal + restart, UI halt button.
+
+## 2026-08-18 ~12:40 UTC - MACE weekly_new_rungs_per_symbol 1 -> 5 (velocity change; RESTART; engine 765455 -> 775659)
+
+**Change (config/mace.yaml ONLY, one line).** `entry.weekly_new_rungs_per_symbol: 1 -> 5`. Nothing else
+touched: `max_rungs_per_symbol=5`, `sizing.rung_risk_pct=0.10`, `sizing.deployment_target_pct=0.95`,
+`max_contracts=1`, credit floor 0.30, IVR floor 25, widths, blackouts, universe [IBIT,XLE,GDX,FXI,IWM,SPY]
+all UNCHANGED. `config_hash 5e1647f96692 -> bf91b1a12077` (sha256 of raw LF bytes).
+
+**Rationale.** VELOCITY, not risk-ceiling. The per-symbol book still tops out at max_rungs=5 concurrent;
+per-day pacing stays <=1 new rung/symbol/day (STRUCTURAL: daily-slots entry slot deduped per (date,"entry")
+in mace/loops.py + one evaluate_entry per symbol per round in mace/manager.py - not driven by this value).
+Only the entry weekly-budget filter (mace/strategy.py:371-375) is relaxed, so a symbol fills toward its
+5-rung ceiling in as few as 5 trading days (1/day) instead of ~5 ISO-weeks. The portfolio BP cap
+(deployment_target_pct=0.95, mace/strategy.py:424) is the unchanged binding backstop.
+
+**Boot verify (ALL GREEN).** Journal boot line `Robinhood MACE wired (execution_mode=live,
+config_hash=bf91b1a12077...)`. /mace: "weekly new / max rungs = 5 / 5", config_hash bf91b1a12077, 6-active
+universe intact. 4 MACE loops online, 0 tracebacks, engine active. Halt latch ARM->HALT->ARM round-trip
+PASS (ended ARMED). mace_rung UNDISTURBED: 2 W33 SPY rungs (8/12, 8/13) intact + 1 legit W34 SPY rung
+(8/17 15:47 ET, old weekly=1 rule); all 3 predate the 12:40 UTC restart.
+
+**Swap+restart** root via az vm run-command (NO sudo); MainPID 765455 -> 775659. **Backup/rollback:**
+`/home/azureuser/mace_weekly5_bak_20260818_123837/` (rollback.sh ET-guarded, restores 5e1647f96692).
+
+**prod-live:** `e7af3bc` -> `653a649` (clean FF; config commit `17ad957` + deploy_log commit `653a649`).
+**main (this branch):** additive minimal-sync of the weekly=5 delta only (config + this deploy_log entry);
+the 5 poly-kalshi prod-live deploys (570d6fc..e7af3bc) remain UN-reconciled to main by design (own session).
