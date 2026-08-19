@@ -482,3 +482,23 @@ def test_gconflict_journal_row_has_conflict_detail_and_trigger(hdb):
     p = _json.loads(rows[0]["payload_json"])
     assert p["conflict_held_ticker"] == NYY and p["conflict_held_side"] == "NYY"
     assert p["poly_slug"] == "mlb-nyy-tor-2026-08-16"     # the triggering bet persisted with the skip
+
+
+def test_gconflict_db_error_fails_closed(hdb, monkeypatch):
+    # Jack's ruling: a DB/lookup ERROR must FAIL CLOSED (skip), not allow -- else the
+    # guaranteed-loss both-sides leg reopens exactly when the check breaks.
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr("trading_corp.data.mlb_poly_kalshi_match.game_key_and_side", _boom)
+    ex = _live_ex(hdb, "pk_conflict_dberr")
+    r = _run(ex.submit(_order(ticker=NYY, whale="a", wallet="0xA")))
+    assert r["status"] == "skip_gate_error"                       # fail CLOSED: placement SKIPPED
+    assert ex._orders_today == 0 and ex._deployed_usd == 0.0      # skip consumed nothing
+    assert not ex._placed                                         # no idempotency key burned
+
+
+def test_gconflict_unparseable_still_fails_open_after_flip(hdb, monkeypatch):
+    # the fail-CLOSED flip is ONLY for the DB-error path; an unparseable ticker (which
+    # game_key_and_side returns None for, NOT an exception) must still be ALLOWED.
+    ex = _live_ex(hdb, "pk_conflict_unparse2")
+    assert _run(ex.submit(_order(ticker=BTC, whale="a", wallet="0xA")))["status"] == "DRY_RUN_would_place"

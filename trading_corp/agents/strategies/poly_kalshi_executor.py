@@ -288,18 +288,24 @@ class PolyKalshiExecutor:
         return (order.base_price - float(quote.get("yes_bid", 0.0))) > cap  # sell YES crosses the bid
 
     def _opposite_side_on_game(self, order: ProposedKalshiOrder) -> dict | None:
-        """[G-conflict] Durable first-side-wins lookup. Returns {'ticker','side'} of a
-        side we ALREADY committed on this game today whose team is the OPPOSITE of this
-        order's side, else None. Reads the audit journal (actor=self._strategy,
-        kind=poly_kalshi_order, status placed/would-place) so the block survives an
-        engine restart. Same-side (stacking) and an unparseable ticker return None
-        (allow). Never raises — any lookup failure fails OPEN."""
+        """[G-conflict] Durable first-side-wins lookup. Returns:
+          - None                                     -> no conflict (ALLOW).
+          - {'status':'skip_conflict', ticker, side} -> the OPPOSITE side of this game is
+            already held today (BLOCK).
+          - {'status':'skip_gate_error'}             -> the durable lookup FAILED -> fail
+            CLOSED (SKIP). This gate is loss-prevention; failing OPEN on a lookup error
+            would reopen the guaranteed -100% both-sides leg exactly when the check breaks.
+
+        Reads the audit journal (actor=self._strategy, kind=poly_kalshi_order, status
+        placed/would-place) so the block survives an engine restart. An UNPARSEABLE
+        ticker returns None (fail OPEN — can't be evaluated; idempotency + slippage are
+        the backstop). Never raises."""
         try:
             from trading_corp.data.mlb_poly_kalshi_match import game_key_and_side
             from trading_corp.persistence import db as _db
             mine = game_key_and_side(order.ticker)
             if mine is None:
-                return None                              # unparseable -> can't conflict -> allow
+                return None                              # unparseable -> can't conflict -> ALLOW (fail open)
             my_key, my_side, date_str = mine
             like = "KXMLBGAME-" + date_str + "%"         # cheap same-date prefix scan
             with _db.connect(self._db_url) as conn:
@@ -317,11 +323,13 @@ class PolyKalshiExecutor:
                     continue
                 held_key, held_side, _ = got
                 if held_key == my_key and held_side != my_side:
-                    return {"ticker": r["tkr"], "side": held_side}
+                    return {"status": "skip_conflict", "ticker": r["tkr"], "side": held_side}
             return None
         except Exception:  # noqa: BLE001 — conflict lookup must never break the execute path
-            log.warning("poly_kalshi [G-conflict] lookup failed; failing OPEN", exc_info=True)
-            return None
+            # fail CLOSED: a lookup failure SKIPS the placement (Jack's ruling). Better to
+            # miss a copy than to reopen the guaranteed-loss both-sides leg on a broken check.
+            log.warning("poly_kalshi [G-conflict] lookup failed; failing CLOSED (skip)", exc_info=True)
+            return {"status": "skip_gate_error"}
 
     async def submit(self, order: ProposedKalshiOrder, *, market_quote: dict | None = None,
                      trigger: dict | None = None) -> dict:
@@ -347,15 +355,17 @@ class PolyKalshiExecutor:
         # any whale) — the wrong-side leg of a binary market is a guaranteed -100% loss.
         # SAME-side stacking (a 2nd whale on the same team) is still allowed. Reads the
         # audit journal so the block survives an engine restart (a same-cycle placement
-        # is already committed by _record's log_event). An unparseable ticker or any
-        # lookup error fails OPEN (allow) — additive protection, never worse than the
-        # pre-gate behavior; idempotency + slippage still apply.
+        # is already committed by _record's log_event). An unparseable ticker fails OPEN
+        # (allow — can't be evaluated; idempotency + slippage backstop); a lookup ERROR
+        # fails CLOSED (skip_gate_error) — loss-prevention must not fail open on a broken
+        # check. Either way the skip mutates no budget/count/key.
         conflict = self._opposite_side_on_game(order)
         if conflict is not None:
-            return self._record("skip_conflict", order, trigger=trigger, extra={
-                "conflict_held_side": conflict.get("side"),
-                "conflict_held_ticker": conflict.get("ticker"),
-            })
+            extra = ({"conflict_held_side": conflict.get("side"),
+                      "conflict_held_ticker": conflict.get("ticker")}
+                     if conflict.get("status") == "skip_conflict" else None)
+            return self._record(conflict.get("status", "skip_conflict"), order,
+                                trigger=trigger, extra=extra)
         # [G-daily] in-memory daily deployment cap. Reads self._deployed_usd — a plain
         #           in-process float, NOT an audit_event aggregate query (that full-scan
         #           froze the engine; removed 2026-06-16).
