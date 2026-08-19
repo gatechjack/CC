@@ -12935,3 +12935,49 @@ append). Worktree branch `mace-weekly-rungs-5-2026-08-18`. Staged validation rep
 5e1647f96692 hash from the unchanged file (toolchain byte-faithful). NOTE: the inline comment on the weekly
 line still reads "back to 1/week at 3 actives" (stale) - left byte-untouched to keep the diff to exactly
 one line; refresh deferred.
+
+## 2026-08-19 ~05:13 UTC - MACE strike_band_pct 0.15->0.25 config-exposed (unblock high-IV GDX/XLE) + skip observability (RESTART; engine 775659 -> 782881)
+
+**Change (5 runtime files).** chain() fetch was clipped to +/-15% of spot
+(rh_broker.py strike_band_pct=0.15, hardcoded, never passed from main.py). High-IV
+names put the 20-delta short's wings past +/-15% -> dropped from the ChainView ->
+GDX no_wing EVERY eval (8/14-8/18), XLE feeds no_delta_strike. FIX: config surface
+`entry.strike_band_pct: 0.25` (config/mace.yaml + config.py EntryConfig/loader),
+passed from main.py:1985 into the RH options port (overrides the 0.15 default);
+rh_broker docstring-only. PLUS build_condor populates the previously-empty `detail`
+on no_expiry/no_delta_strike/risk_band/no_wing skips (spot, expiry, nearest-delta
+candidate/side, wing strikes + reject reason) -> audit_event self-diagnosable.
+Condor math / delta band / floor / widths / DTE UNCHANGED. config_hash
+bf91b1a12077 -> 65d85cc4b4cc.
+
+**Bundled test-drift correction.** ALSO corrects 2 PRE-EXISTING weekly=5 test
+failures the 653a649 config-only weekly5 deploy left red (test_shipped_config_loads
+weekly 1->5, test_weekly_budget_skip budget 1->5) -- unrelated to the band change,
+folded in so the MACE suite is green. MACE suite 302/302 (base 653a649 was 300/2).
+
+**Drift-gate (clean).** Authoritative on-box content diff: all 5 live runtime files
+content-identical to the 653a649 blobs (0 drift; a local git-bash md5 false-positive
+on main.py was resolved via the on-box diff). Staged-vs-live = exactly the intended
+per-file changes (config +8 = only the strike_band_pct block).
+
+**Backup + rollback.** /home/azureuser/mace_bandwiden_bak_20260819_051113/ (5 live
+files @ bf91b1a12077 + ET-guarded rollback.sh). Staged LF, py_compile OK (box venv).
+
+**Swap + restart (root via az vm run-command, NO sudo).** ET guard 01:12 ET (outside
+15:40-15:58). Guarded cp of 5 staged files (pre/post config hash asserted), chown
+azureuser. MainPID 775659 -> 782881, active since 05:12:52 UTC.
+
+**Boot verify (ALL GREEN).** MACE wired config_hash=65d85cc4b4cc; /mace 5/5 + 6-active
+universe intact + ARMED; box-venv load strike_band_pct=0.25 + main.py:1985 wire
+deployed (port gets 0.25 not 0.15); 4 SPY rungs (W33 8/12,8/13 + W34 8/17,8/18)
+intact, 0 rungs entered/exited at/after restart; halt latch ARM->HALT->ARM (ends
+ARMED); 4 loops online; 0 tracebacks.
+
+**Kill-switches:** /mace HALT or strategies.yaml auto_execute:false + restart.
+**Rollback:** /home/azureuser/mace_bandwiden_bak_20260819_051113/rollback.sh (restores
+bf91b1a12077) then restart-as-root via az.
+
+**prod-live:** `653a649` -> this entry (clean FF; code commit `bfc81f4` + this deploy_log
+append). Branch `mace-band-widen-2026-08-18`. main minimal-synced additively (7 mace
+files + main.py:1985 wire edit + deploy_log); the 5 poly-kalshi prod-live deploys
+(570d6fc..e7af3bc) remain UN-reconciled to main by design.
