@@ -13009,3 +13009,29 @@ separate -> untouched.
 **prod-live:** `4cf6eab` -> this entry (clean FF; deployed blob brokers/kalshi.py + deploy_log).
 Build branch `poly-kalshi-item12-build-2026-08-18` (code `332151e`). Item 1 (conflict gate) is a
 SEPARATE deploy, staged, pending review.
+
+## 2026-08-19 ~10:50 UTC - Poly->Kalshi Item 1: [G-conflict] first-side-wins gate (ATOMIC 2-file; RESTART; engine 785523 -> 786261)
+
+**What.** [G-conflict] gate in poly_kalshi_executor.submit (after [G-idem]): once a side is
+taken on a game today, an OPPOSITE-side signal on that same game (either side, any whale) is
+SKIPPED (skip_conflict) -- the wrong-side leg of a binary market is a guaranteed -100% loss
+(e.g. 08-17 BAL@TB). Same-side stacking still allowed; exact re-fire still suppressed_duplicate.
+Option B DURABLE: reads the audit journal (status placed/would-place, ticker LIKE
+KXMLBGAME-<date>%) so the block survives a restart. FAIL-CLOSED on a DB/lookup error
+(skip_gate_error); unparseable ticker still fail-OPEN. New pure helper
+mlb_poly_kalshi_match.game_key_and_side (the executor calls it -> ATOMIC two-file: the box must
+never run a mismatched pair).
+
+**Deploy (atomic, both-or-neither).** poly_kalshi_executor.py d1f871f9->257f6433,
+mlb_poly_kalshi_match.py 4b2a5c49->7c191e83. Drift-gate BOTH PASS. Backup pair
+.bak_item1_20260819_104959. RESTART 10:49:59 UTC; WIRED 20s; engine 785523 -> 786261. Boot
+verify: WIRED (auto_execute=True/dry_run=False/$5/halt $100), roster 2 live/4 paper disjoint,
+0 tracebacks. Both post-md5 == new (pair landed). 3 byte-locked files (kalshi_copy_trader/
+sports_team_mapping/kalshi_live) unchanged. [G-conflict] code path present on box.
+skip_conflict/skip_gate_error audit rows = 0 (gate live, awaiting first real whale disagreement).
+
+**Kill/rollback:** restore BOTH from .bak_item1_20260819_104959 + restart (pk_item1_rollback.ps1,
+both-or-neither). No cutover/roster change.
+
+**prod-live:** `fc78fc7` -> this entry (clean FF; both deployed blobs + deploy_log). Build branch
+`poly-kalshi-item12-build-2026-08-18` (code `7c17edf`). Completes the Item 1 + Item 2 pair; both LIVE.

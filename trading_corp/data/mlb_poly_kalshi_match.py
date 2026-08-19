@@ -219,6 +219,28 @@ def parse_kalshi_mlb_ticker(ticker: str) -> ParsedKalshiTicker | None:
                              yes_name, other_name, game_no)
 
 
+def game_key_and_side(ticker: str):
+    """(game_key, side_code, date_str) for a KXMLBGAME ticker, or None if it isn't a
+    two-team MLB game ticker.
+
+    The `game_key` is IDENTICAL for BOTH side tickers of one game — it keys on
+    (date_iso, HHMM, doubleheader-number, the UNORDERED team-name pair), so
+    `...BALTB-BAL` and `...BALTB-TB` collapse to the same key while the two games of
+    a doubleheader (distinct G-number / HHMM) stay distinct. `side_code` is the YES
+    team code, which distinguishes the two sides of the SAME game. `date_str` is the
+    ticker's YYMMMDD prefix, handy for a cheap same-date SQL prefix scan.
+
+    Pure; reuses `parse_kalshi_mlb_ticker`. This is what the executor's first-side-wins
+    conflict gate uses to tell 'opposite side of a game I already took' from
+    'same-side stacking'."""
+    p = parse_kalshi_mlb_ticker(ticker)
+    if p is None:
+        return None
+    date_iso = kalshi_to_iso_date(p.date_str) or p.date_str
+    game_key = (date_iso, p.time_str, p.game_no, frozenset({p.yes_name, p.other_name}))
+    return game_key, p.yes_code, p.date_str
+
+
 # ── Kalshi game index ──────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class KalshiGame:

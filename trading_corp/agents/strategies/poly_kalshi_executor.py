@@ -287,12 +287,57 @@ class PolyKalshiExecutor:
             return (float(quote.get("yes_ask", 1.0)) - order.base_price) > cap
         return (order.base_price - float(quote.get("yes_bid", 0.0))) > cap  # sell YES crosses the bid
 
+    def _opposite_side_on_game(self, order: ProposedKalshiOrder) -> dict | None:
+        """[G-conflict] Durable first-side-wins lookup. Returns:
+          - None                                     -> no conflict (ALLOW).
+          - {'status':'skip_conflict', ticker, side} -> the OPPOSITE side of this game is
+            already held today (BLOCK).
+          - {'status':'skip_gate_error'}             -> the durable lookup FAILED -> fail
+            CLOSED (SKIP). This gate is loss-prevention; failing OPEN on a lookup error
+            would reopen the guaranteed -100% both-sides leg exactly when the check breaks.
+
+        Reads the audit journal (actor=self._strategy, kind=poly_kalshi_order, status
+        placed/would-place) so the block survives an engine restart. An UNPARSEABLE
+        ticker returns None (fail OPEN — can't be evaluated; idempotency + slippage are
+        the backstop). Never raises."""
+        try:
+            from trading_corp.data.mlb_poly_kalshi_match import game_key_and_side
+            from trading_corp.persistence import db as _db
+            mine = game_key_and_side(order.ticker)
+            if mine is None:
+                return None                              # unparseable -> can't conflict -> ALLOW (fail open)
+            my_key, my_side, date_str = mine
+            like = "KXMLBGAME-" + date_str + "%"         # cheap same-date prefix scan
+            with _db.connect(self._db_url) as conn:
+                rows = conn.execute(
+                    "SELECT json_extract(payload_json,'$.ticker') AS tkr "
+                    "FROM audit_event "
+                    "WHERE actor = ? AND kind = 'poly_kalshi_order' "
+                    "  AND json_extract(payload_json,'$.status') IN ('placed','DRY_RUN_would_place') "
+                    "  AND json_extract(payload_json,'$.ticker') LIKE ?",
+                    (self._strategy, like),
+                ).fetchall()
+            for r in rows:
+                got = game_key_and_side(r["tkr"] or "")
+                if got is None:
+                    continue
+                held_key, held_side, _ = got
+                if held_key == my_key and held_side != my_side:
+                    return {"status": "skip_conflict", "ticker": r["tkr"], "side": held_side}
+            return None
+        except Exception:  # noqa: BLE001 — conflict lookup must never break the execute path
+            # fail CLOSED: a lookup failure SKIPS the placement (Jack's ruling). Better to
+            # miss a copy than to reopen the guaranteed-loss both-sides leg on a broken check.
+            log.warning("poly_kalshi [G-conflict] lookup failed; failing CLOSED (skip)", exc_info=True)
+            return {"status": "skip_gate_error"}
+
     async def submit(self, order: ProposedKalshiOrder, *, market_quote: dict | None = None,
                      trigger: dict | None = None) -> dict:
-        """Route one order through all five guardrails, in this fixed order:
-        [G-halt] -> [G-size] -> [G-conf] -> [G-idem] -> [G-daily] -> [G-slip].
-        State (daily counter + idempotency key) is mutated ONLY after every gate
-        passes, so a reject at ANY gate consumes no budget and burns no key."""
+        """Route one order through the guardrails, in this fixed order:
+        [G-halt] -> [G-size] -> [G-conf] -> [G-idem] -> [G-conflict] -> [G-daily] ->
+        [G-slip] -> [G-count]. State (daily counter + idempotency key) is mutated ONLY
+        after every gate passes, so a reject at ANY gate consumes no budget and burns
+        no key."""
         # [G-halt] FIRST — short-circuit before any counter/idempotency mutation.
         if self._is_halted():
             return self._record("blocked_halt", order)
@@ -305,6 +350,22 @@ class PolyKalshiExecutor:
         # [G-idem] idempotency READ (the key is burned only at commit, below).
         if order.idempotency_key in self._placed:
             return self._record("suppressed_duplicate", order)
+        # [G-conflict] first-side-wins (Option B, DURABLE): once we've taken a side on a
+        # game today, block a later OPPOSITE-side signal on that SAME game (either side,
+        # any whale) — the wrong-side leg of a binary market is a guaranteed -100% loss.
+        # SAME-side stacking (a 2nd whale on the same team) is still allowed. Reads the
+        # audit journal so the block survives an engine restart (a same-cycle placement
+        # is already committed by _record's log_event). An unparseable ticker fails OPEN
+        # (allow — can't be evaluated; idempotency + slippage backstop); a lookup ERROR
+        # fails CLOSED (skip_gate_error) — loss-prevention must not fail open on a broken
+        # check. Either way the skip mutates no budget/count/key.
+        conflict = self._opposite_side_on_game(order)
+        if conflict is not None:
+            extra = ({"conflict_held_side": conflict.get("side"),
+                      "conflict_held_ticker": conflict.get("ticker")}
+                     if conflict.get("status") == "skip_conflict" else None)
+            return self._record(conflict.get("status", "skip_conflict"), order,
+                                trigger=trigger, extra=extra)
         # [G-daily] in-memory daily deployment cap. Reads self._deployed_usd — a plain
         #           in-process float, NOT an audit_event aggregate query (that full-scan
         #           froze the engine; removed 2026-06-16).
@@ -371,7 +432,8 @@ class PolyKalshiExecutor:
             log.warning("poly_kalshi live-copy telegram notify failed: %s", e)
 
     def _record(self, status: str, order: ProposedKalshiOrder, *,
-                fill: dict | None = None, trigger: dict | None = None) -> dict:
+                fill: dict | None = None, trigger: dict | None = None,
+                extra: dict | None = None) -> dict:
         rec = {
             # CP3: `division` scopes the dashboard OPEN query ($.division IN slugs);
             # it equals the audit actor (self._strategy) this row is logged under.
@@ -393,6 +455,10 @@ class PolyKalshiExecutor:
             # FLAG 1: the REAL fill facts (order_id/fill_count/fill_price/fill_fee)
             # are journaled IN this row now, not lost to a post-_record mutation.
             rec.update(fill)
+        if extra:
+            # [G-conflict] the held side/ticker that caused a skip_conflict, persisted
+            # WITH the row so a future dashboard can render the conflict-skip state.
+            rec.update(extra)
         self.log.append(rec)
         # [audit] durable journal row for EVERY outcome (placed / would-place / blocked_* /
         # suppressed / skip) so deployed_usd + placed-count are queryable without polling Kalshi.
