@@ -168,3 +168,30 @@ def test_tick_log_survives_redacting_filter():
         pkm.log.propagate, pkm.log.level = prev_propagate, prev_level
     out = buf.getvalue()
     assert "open=1" in out and "marked=0" in out and "quote_miss=2" in out   # counts rendered
+
+
+def test_run_mark_cycle_with_real_kalshibroker_marks(hdb):
+    """END-TO-END: the FIXED KalshiBroker.quote() (pykalshi 1.0.6 MarketModel
+    top-of-book) makes the poller actually MARK a live position -- the whole point
+    of the Item 2 fix (historically every cycle was quote_miss). Fake pykalshi
+    client, no network."""
+    from trading_corp.brokers.kalshi import KalshiBroker
+
+    class _M:
+        yes_bid_dollars = "0.2600"
+        yes_ask_dollars = "0.3600"
+
+    class _C:
+        async def get_market(self, symbol):
+            return _M()
+
+    b = KalshiBroker(api_key_id="k", private_key_pem="p")     # non-stub
+    b._client = _C()
+    _open_row(hdb, order_id="o1", ticker="KXMLBGAME-26AUG212210PITLAD-PIT",
+              fill_price=0.20, fill_count=5)
+    counts = _run(pkm.run_mark_cycle(hdb, b))
+    assert counts == {"open": 1, "marked": 1, "quote_miss": 0}    # marked>0 (was always 0)
+    with _db.connect(hdb) as c:
+        yes_mid = c.execute("SELECT yes_mid FROM poly_kalshi_mark_live "
+                            "WHERE order_id='o1'").fetchone()[0]
+    assert yes_mid == pytest.approx(0.31)                        # (0.26 + 0.36) / 2
