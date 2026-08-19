@@ -79,7 +79,13 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
     expiry + near-money strikes (the entry-eval needs the delta ladder; the
     management ladders use `leg_quote` per strike). `division` is the strategy
     tag stamped on the ProposedOrder legs (never trips the PMCC LEAP guard —
-    that is scoped to `robinhood_pmcc`)."""
+    that is scoped to `robinhood_pmcc`).
+
+    strike_band_pct is CONFIG-DRIVEN as of 2026-08-18: main.py passes
+    `mace_cfg.entry.strike_band_pct` (mace.yaml, default 0.25). The 0.15 __init__
+    default below is only the fallback for callers that don't pass it (tests);
+    prod always overrides it. Too tight a band drops high-IV names' wings from
+    the fetched ChainView -> no_wing/no_delta_strike (see mace.yaml comment)."""
 
     def __init__(self, broker: RobinhoodBroker, *, dte_min: int = 30, dte_max: int = 45,
                  strike_band_pct: float = 0.15, division: str = "robinhood_mace",

@@ -374,3 +374,89 @@ async def test_cancel_noop_when_already_terminal(monkeypatch):
     await port.cancel("OID")
     assert sim.posts == [] and sim.constructed_calls == 0
     assert port._last_cancel_rung == "already_terminal"
+
+
+# ── strike_band_pct config surface + high-IV band widen (2026-08-18) ──────
+# chain() clips to +/- strike_band_pct of spot. The hardcoded 0.15 dropped
+# high-IV names' wings (GDX/XLE) -> no_wing / no_delta_strike; it is now config-
+# driven (mace.yaml entry.strike_band_pct=0.25, passed by main.py). Pins:
+# (a) the config value overrides the 0.15 default; (b) widening un-clips the wings
+# so a high-IV condor builds; (c) genuinely-far strikes still clip; (e) SPY
+# (already well inside any band) is unchanged.
+from datetime import datetime as _dt
+from pathlib import Path as _Path
+
+from trading_corp.mace import strategy as _st
+from trading_corp.mace.config import load_mace_config as _load_cfg
+
+_ROOT = _Path(__file__).resolve().parents[1]
+_CFG = _load_cfg(_ROOT / "config" / "mace.yaml",
+                 exdiv_calendar_path=_ROOT / "config" / "ex_dividend_calendar.yaml")
+_EXP = date(2026, 9, 18)          # 39 DTE from the mock's 2026-08-10 clock (in [30,45])
+
+
+class _HighIvMock:
+    """GDX-like chain (spot 88.95): the 20-delta short call 102 is ~14.7% OTM; its
+    wings 103/104 are ~15.8/16.9% OTM (past +/-15%, inside +/-25%); 120 is ~35% OTM
+    (past both). Put side symmetric (short 80, wings 78/79; 60 is ~33% OTM)."""
+    async def quote(self, symbol): return 88.95
+    async def get_expiration_dates(self, symbol): return ["2026-09-18"]
+    async def get_calls_for_expiry(self, symbol, expiry):
+        return [{"strike_price": 102.0, "bid": 1.50, "ask": 1.60, "delta": 0.20, "option_id": "C102"},
+                {"strike_price": 103.0, "bid": 1.35, "ask": 1.45, "delta": 0.17, "option_id": "C103"},
+                {"strike_price": 104.0, "bid": 1.20, "ask": 1.30, "delta": 0.15, "option_id": "C104"},
+                {"strike_price": 120.0, "bid": 0.05, "ask": 0.15, "delta": 0.03, "option_id": "C120"}]
+    async def get_puts_for_expiry(self, symbol, expiry):
+        return [{"strike_price": 80.0, "bid": 1.65, "ask": 1.75, "delta": -0.20, "option_id": "P80"},
+                {"strike_price": 79.0, "bid": 1.43, "ask": 1.53, "delta": -0.17, "option_id": "P79"},
+                {"strike_price": 78.0, "bid": 1.19, "ask": 1.29, "delta": -0.15, "option_id": "P78"},
+                {"strike_price": 60.0, "bid": 0.05, "ask": 0.15, "delta": -0.02, "option_id": "P60"}]
+
+
+def _band_port(broker, band):
+    return RobinhoodOptionsBroker(broker, strike_band_pct=band,
+                                  now_et_fn=lambda: _dt(2026, 8, 10, 15, 45))
+
+
+@pytest.mark.asyncio
+async def test_strike_band_config_overrides_default():
+    # (a) call 104 (~16.9% OTM) is excluded at the 0.15 default, INCLUDED at 0.25.
+    m = _HighIvMock()
+    ch15 = await _band_port(m, 0.15).chain("GDX")
+    ch25 = await _band_port(m, 0.25).chain("GDX")
+    assert not ch15.listed(_EXP, "call", 104.0)
+    assert ch25.listed(_EXP, "call", 104.0)
+
+
+@pytest.mark.asyncio
+async def test_band_widen_unclips_wings_and_builds():
+    # (b) at 0.15 the 103/104 call wings are clipped -> build_condor no_wing; at
+    # 0.25 they're present -> a width-2 GDX condor builds (credit 0.76 >= 0.60 floor).
+    m = _HighIvMock(); gdx = _CFG.symbols["GDX"]
+    ch15 = await _band_port(m, 0.15).chain("GDX")
+    ch25 = await _band_port(m, 0.25).chain("GDX")
+    b15 = _st.build_condor("GDX", gdx, ch15, _CFG, date(2026, 8, 10))
+    b25 = _st.build_condor("GDX", gdx, ch25, _CFG, date(2026, 8, 10))
+    assert b15.skip_reason == _st.SKIP_NO_WING
+    assert b25.skip_reason is None and b25.width == 2.0
+    assert b25.spec.short_call == 102.0 and b25.spec.long_call == 104.0
+    assert abs(b25.credit_mid - 0.76) < 1e-9
+
+
+@pytest.mark.asyncio
+async def test_band_still_clips_far_strikes():
+    # (c) 120 call (~35% OTM) and 60 put stay excluded even at 0.25 (hi = 111.2).
+    ch25 = await _band_port(_HighIvMock(), 0.25).chain("GDX")
+    assert not ch25.listed(_EXP, "call", 120.0)
+    assert not ch25.listed(_EXP, "put", 60.0)
+
+
+@pytest.mark.asyncio
+async def test_band_does_not_affect_spy():
+    # (e) SPY strikes (585-618 vs spot 610, all <5% OTM) are inside any band ->
+    # 0.15 and 0.25 produce the identical ChainView (behavior unchanged).
+    m = MockRHBroker()
+    ch15 = await _band_port(m, 0.15).chain("SPY")
+    ch25 = await _band_port(m, 0.25).chain("SPY")
+    assert set(ch15.quotes.keys()) == set(ch25.quotes.keys())
+    assert ch15.listed(_EXP, "call", 615.0) and ch15.listed(_EXP, "put", 585.0)

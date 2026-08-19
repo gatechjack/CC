@@ -242,6 +242,56 @@ class BuildResult:
     detail: str = ""
 
 
+# ── skip observability (diagnostic only — NEVER feeds selection/decisions) ──
+# These annotate the detail string on a build skip so audit_event alone tells
+# why (spot, expiry, nearest-delta candidate, wing strikes + reject reason).
+# They read the chain; they do not change what build_condor decides.
+
+def _fmt_spot(spot) -> str:
+    return f"{spot:.2f}" if spot is not None else "none"
+
+
+def _nearest_delta_strike(chain: "ChainView", expiry, opt_type: str, target: float):
+    """(strike, delta) whose |delta| is closest to `target` among listed strikes
+    carrying a delta; None if the side is empty. Diagnostic ONLY."""
+    best = None
+    best_dist = None
+    for k in chain.strikes(expiry, opt_type):
+        q = chain.get(expiry, opt_type, k)
+        if q is None or q.delta is None:
+            continue
+        dist = abs(abs(float(q.delta)) - target)
+        if best_dist is None or dist < best_dist:
+            best, best_dist = (k, float(q.delta)), dist
+    return best
+
+
+def _cand(c) -> str:
+    return f"{c[0]:g}@{c[1]:.2f}" if c else "none"
+
+
+def _wing_leg_diag(chain: "ChainView", expiry, opt_type: str, strike: float,
+                   band: float, spot) -> str:
+    """Why one wing leg is unusable: unpriceable (listed, no mid), out-of-band
+    (absent AND beyond +/-band of spot -> the chain() fetch clipped it), or
+    unlisted (absent, inside band)."""
+    tag = ("P" if opt_type == "put" else "C") + f"{strike:g}"
+    q = chain.get(expiry, opt_type, strike)
+    if q is not None:
+        return f"{tag}=unpriceable" if q.mid is None else f"{tag}=ok"
+    if spot and band and abs(float(strike) / float(spot) - 1.0) > band:
+        return f"{tag}=out-of-band"
+    return f"{tag}=unlisted"
+
+
+def _wing_diag(chain: "ChainView", expiry, short_put: float, short_call: float,
+               widths, band: float, spot) -> str:
+    return " ".join(
+        f"w{w:g}:" + _wing_leg_diag(chain, expiry, "put", short_put - w, band, spot)
+        + "," + _wing_leg_diag(chain, expiry, "call", short_call + w, band, spot)
+        for w in widths)
+
+
 def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
                  cfg: MaceConfig, session_date: date) -> BuildResult:
     """Build a priced iron condor per the entry filter-6 spec. Returns a
@@ -250,15 +300,27 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
     e = cfg.entry
     expiry = choose_expiry(chain, e.dte_min, e.dte_max, session_date)
     if expiry is None:
-        return BuildResult(skip_reason=SKIP_NO_EXPIRY)
+        return BuildResult(skip_reason=SKIP_NO_EXPIRY,
+                           detail=f"spot={_fmt_spot(chain.spot)} "
+                                  f"no-expiry-in-DTE[{e.dte_min},{e.dte_max}] "
+                                  f"listed={len(chain.expiries)}")
 
     sp = select_short_strike(chain, expiry, "put", e.short_delta_target, e.short_delta_band)
     sc = select_short_strike(chain, expiry, "call", e.short_delta_target, e.short_delta_band)
     if sp is None or sc is None:
-        return BuildResult(skip_reason=SKIP_NO_DELTA_STRIKE)
+        lo, hi = e.short_delta_band
+        return BuildResult(
+            skip_reason=SKIP_NO_DELTA_STRIKE,
+            detail=f"spot={_fmt_spot(chain.spot)} exp={expiry} "
+                   f"delta_band=[{lo:g},{hi:g}] "
+                   f"put_near={_cand(_nearest_delta_strike(chain, expiry, 'put', e.short_delta_target))} "
+                   f"call_near={_cand(_nearest_delta_strike(chain, expiry, 'call', e.short_delta_target))}")
     (short_put, sp_q), (short_call, sc_q) = sp, sc
     if sp_q.mid is None or sc_q.mid is None:      # short selected but unpriceable
-        return BuildResult(skip_reason=SKIP_NO_DELTA_STRIKE)
+        return BuildResult(
+            skip_reason=SKIP_NO_DELTA_STRIKE,
+            detail=f"spot={_fmt_spot(chain.spot)} exp={expiry} short-unpriceable "
+                   f"P{short_put:g}(mid={sp_q.mid}) C{short_call:g}(mid={sc_q.mid})")
 
     # UNIVERSAL wing-listing check (Board 2026-08-09 off the $5-grid finding).
     # Fallback-configured symbols (XLE/GDX w2->w1, IWM w3->w2) retry at the
@@ -320,9 +382,13 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
     # No width produced an enterable condor — report the furthest-progress reason.
     if saw_in_band:
         return BuildResult(skip_reason=SKIP_CREDIT_FLOOR, detail=best_cf_detail)
+    _diag = (f"spot={_fmt_spot(chain.spot)} exp={expiry} "
+             f"SP={short_put:g} SC={short_call:g} | "
+             + _wing_diag(chain, expiry, short_put, short_call, widths,
+                          e.strike_band_pct, chain.spot))
     if saw_wing:
-        return BuildResult(skip_reason=SKIP_RISK_BAND)
-    return BuildResult(skip_reason=SKIP_NO_WING)
+        return BuildResult(skip_reason=SKIP_RISK_BAND, detail=_diag + " (all widths out of risk band)")
+    return BuildResult(skip_reason=SKIP_NO_WING, detail=_diag)
 
 
 # ── sizing + reserve ─────────────────────────────────────────────────────

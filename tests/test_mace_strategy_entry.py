@@ -123,7 +123,10 @@ def test_capacity_ignores_closed():
 
 
 def test_weekly_budget_skip():
-    rungs = [rung(entry_wk=WK)]                              # 1 entry this week, budget 1
+    # weekly budget is 5 (2026-08-18): 5 entries this week (closed today -> no
+    # capacity slot, no refill) exhausts it -> SKIP_WEEKLY_BUDGET.
+    rungs = [rung(status="closed", entry_wk=WK, exit_ts="2026-08-12T20:00:00+00:00",
+                  exit_reason="pt") for _ in range(5)]
     assert _eval(iv=ivr(30.0), rungs=rungs).skip_reason == SKIP_WEEKLY_BUDGET
 
 
@@ -389,6 +392,30 @@ def test_evaluate_entry_credit_floor_detail_passthrough():
     r = st.evaluate_entry("SPY", CFG, ctx(iv=ivr(30.0), ch=chain(legs)))
     assert r.skip_reason == SKIP_CREDIT_FLOOR
     assert "credit" in r.detail and "floor" in r.detail
+
+
+# ── skip observability (2026-08-18): detail must be diagnosable from audit ──
+
+def test_skip_detail_no_delta_strike_populated():
+    # deltas out of the [0.15,0.25] band -> no_delta_strike; detail carries spot,
+    # expiry, and the nearest-delta candidate per side (so the audit shows how far
+    # off the band the chain was, e.g. XLE's degenerate put greeks).
+    legs = [("put", 585, -0.05, 2.0, 2.1), ("call", 615, 0.05, 2.0, 2.1)]
+    b = st.build_condor("SPY", CFG.symbols["SPY"], chain(legs), CFG, SESSION)
+    assert b.skip_reason == SKIP_NO_DELTA_STRIKE
+    assert b.detail != ""
+    assert "spot=600.00" in b.detail
+    assert "put_near=585@-0.05" in b.detail and "call_near=615@0.05" in b.detail
+
+
+def test_skip_detail_no_wing_populated():
+    # drop the long-call wing -> no_wing; detail carries spot, the shorts, and the
+    # per-width wing attempts with reject reason (the GDX-style clip signature).
+    legs = [l for l in _DEFAULT_LEGS if l[1] != 618]     # no 618 call wing
+    b = st.build_condor("SPY", CFG.symbols["SPY"], chain(legs), CFG, SESSION)
+    assert b.skip_reason == SKIP_NO_WING
+    assert "spot=600.00" in b.detail and "SP=585" in b.detail and "SC=615" in b.detail
+    assert "C618=unlisted" in b.detail                   # 618 inside band -> unlisted (not clipped)
 
 
 # ── overflow routing (T6) — mechanics tested with risk_band off ───────────

@@ -46,7 +46,8 @@ def test_shipped_config_loads():
     assert cfg.entry.overflow_max_per_symbol_session == 1
     assert cfg.entry.risk_band_min_per_width_usd == 50       # width-scaled band
     assert cfg.entry.risk_band_max_usd == 260                # 250 -> 260 (Board 2026-08-13)
-    assert cfg.entry.weekly_new_rungs_per_symbol == 1        # back to 1/week at 3 actives
+    assert cfg.entry.weekly_new_rungs_per_symbol == 5        # 1 -> 5 velocity change 2026-08-18
+    assert cfg.entry.strike_band_pct == 0.25                 # chain fetch +/-25% (was 0.15) 2026-08-18
     assert cfg.sizing.rung_risk_pct == 0.10
     assert cfg.sizing.deployment_target_pct == 0.95
     assert cfg.execution.entry_fill_wait_sec == 30           # 3-symbol window math

@@ -23,6 +23,14 @@ entry:
   entry_cutoff_et: "15:58"
   dte_min: 30
   dte_max: 45                           # prefer highest DTE in the window
+  strike_band_pct: 0.25                  # 2026-08-18: chain() fetch bounded to +/-25% of
+                                        # spot (was 0.15 hardcoded in rh_broker + never passed).
+                                        # High-IV names (GDX ~44%, XLE ~27%) put the 20-delta
+                                        # short + its wings past +/-15% -> strikes dropped from
+                                        # the ChainView -> no_wing / no_delta_strike. 0.25 covers
+                                        # them (GDX short-call 102 + wings 103/104 vs spot 88.95
+                                        # are inside +/-25% [66.7,111.2]). Widening only enlarges
+                                        # the FETCH window; condor math/delta band/floor unchanged.
   short_delta_target: 0.20
   short_delta_band: [0.15, 0.25]
   credit_floor_pct_of_width: 0.30
