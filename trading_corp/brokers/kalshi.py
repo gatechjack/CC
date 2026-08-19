@@ -274,35 +274,44 @@ class KalshiBroker(ReadOnlyBroker):
         return out
 
     async def quote(self, symbol: str) -> float:
-        """Return the current mid price for `symbol` (a Kalshi market ticker).
+        """Return the current YES mid price (in dollars) for `symbol` (a Kalshi
+        market ticker).
 
         Kalshi tickers look like `KXBTC-26MAY1218-T100000` (event ticker +
-        market suffix). The orderbook gives us bid/ask; we return the mid.
-        Returns 0.0 in stub mode or on error — callers must guard against
-        zero quotes if they're sizing on price.
+        market suffix). Returns 0.0 in stub mode, on error, or when neither side
+        is priceable — callers must guard against zero quotes if they're sizing
+        on price.
+
+        pykalshi 1.0.6 (verified live 2026-08-18): the MarketModel exposes
+        top-of-book as dollar strings `yes_bid_dollars` / `yes_ask_dollars` (the
+        YES ask is derived from the NO-bid side). The prior parse read
+        `get_orderbook().yes_bids/yes_asks`, which returned 0.0 for EVERY market:
+        `get_orderbook()` yields an `OrderbookResponse` wrapping
+        `Orderbook(yes_dollars=..., no_dollars=...)` and exposes NO
+        `yes_bids`/`yes_asks` attrs, so `getattr(...)` -> None -> 0.0. This reads
+        the SAME top-of-book source proven live by `main._pk_quote_fn` (the
+        poly_kalshi slippage guard), and needs no orderbook call.
         """
         if self._stub or self._client is None:
             return 0.0
 
         try:
             market = await self._client.get_market(symbol)
-            ob = await market.get_orderbook(depth=1)
         except Exception as e:
             log.warning("Kalshi quote failed for %s: %s", symbol, e)
             return 0.0
 
-        # Orderbook structure (pykalshi): yes_bids / yes_asks / no_bids / no_asks
-        # arrays of (price_cents, count) tuples, sorted best-first. Mid = mean
-        # of best yes-bid and best yes-ask, in dollars. Falls back to whichever
-        # side exists if the book is one-sided.
-        yes_bid = _best_price(getattr(ob, "yes_bids", None))
-        yes_ask = _best_price(getattr(ob, "yes_asks", None))
+        # Best YES bid / ask as dollar prices in (0,1). Mid when two-sided; the
+        # present side when one-sided; 0.0 when neither is priceable (settled /
+        # closed market quoting 0/1, or missing fields).
+        yes_bid = _dollar_price(getattr(market, "yes_bid_dollars", None))
+        yes_ask = _dollar_price(getattr(market, "yes_ask_dollars", None))
         if yes_bid is not None and yes_ask is not None:
-            return (yes_bid + yes_ask) / 2 / _CENTS_PER_DOLLAR
+            return (yes_bid + yes_ask) / 2
         if yes_bid is not None:
-            return yes_bid / _CENTS_PER_DOLLAR
+            return yes_bid
         if yes_ask is not None:
-            return yes_ask / _CENTS_PER_DOLLAR
+            return yes_ask
         return 0.0
 
 
@@ -476,20 +485,17 @@ class KalshiBroker(ReadOnlyBroker):
         return out
 
 
-def _best_price(side) -> int | None:
-    """Pull best price (cents) from one side of an orderbook level array."""
-    if not side:
+def _dollar_price(value) -> float | None:
+    """Parse a pykalshi top-of-book dollar price (a string like '0.2600', or a
+    float) to a float in the postable band (0,1); None if absent / empty /
+    unparseable / out of range (a settled or one-sided market quoting 0 or 1)."""
+    if value in (None, ""):
         return None
     try:
-        first = side[0]
-        # Could be a tuple/list (price, count) or a model with `.price`.
-        if isinstance(first, (list, tuple)) and first:
-            return int(first[0])
-        if hasattr(first, "price"):
-            return int(first.price)
-    except (IndexError, TypeError, ValueError):
-        pass
-    return None
+        p = float(value)
+    except (TypeError, ValueError):
+        return None
+    return p if 0.0 < p < 1.0 else None
 
 
 __all__ = ["KalshiBroker", "KalshiPublicTrade"]
