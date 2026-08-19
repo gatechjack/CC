@@ -44,6 +44,7 @@ class EntryConfig:
     stop_cooldown_sessions: int
     ibit_overflow_cap: int
     overflow_max_per_symbol_session: int
+    strike_band_pct: float               # chain() fetch bound: +/- this * spot (rh_broker)
 
 
 @dataclass(frozen=True)
@@ -268,6 +269,7 @@ def load_mace_config(
     cooldown = num(e, "stop_cooldown_sessions", "entry", typ=int, lo=0)
     ibit_cap = num(e, "ibit_overflow_cap", "entry", typ=int, lo=0)
     overflow_max = num(e, "overflow_max_per_symbol_session", "entry", typ=int, lo=0)
+    strike_band = num(e, "strike_band_pct", "entry", lo=0.0, hi=1.0, lo_excl=True)
 
     s = sect("sizing")
     rung_risk = num(s, "rung_risk_pct", "sizing", lo=0.0, hi=1.0, lo_excl=True)
@@ -440,6 +442,7 @@ def load_mace_config(
             stop_cooldown_sessions=int(cooldown),
             ibit_overflow_cap=int(ibit_cap),
             overflow_max_per_symbol_session=int(overflow_max),
+            strike_band_pct=float(strike_band),
         ),
         sizing=SizingConfig(
             rung_risk_pct=float(rung_risk),

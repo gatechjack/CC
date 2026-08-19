@@ -1899,7 +1899,9 @@ async def run(argv: list[str] | None = None) -> int:
             mace_broker = data_exec.brokers.get("robinhood_mace") or paper_broker
             mace_port = RobinhoodOptionsBroker(
                 mace_broker, dte_min=mace_cfg.entry.dte_min,
-                dte_max=mace_cfg.entry.dte_max, division="robinhood_mace")
+                dte_max=mace_cfg.entry.dte_max,
+                strike_band_pct=mace_cfg.entry.strike_band_pct,
+                division="robinhood_mace")
 
             # MACE notifier wants a SYNC `.push`; bridge onto the async process
             # channel by scheduling on the running loop (T3 notifications only —

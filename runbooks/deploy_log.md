@@ -12747,3 +12747,26 @@ PASS (ended ARMED). mace_rung UNDISTURBED: 2 W33 SPY rungs (8/12, 8/13) intact +
 **prod-live:** `e7af3bc` -> `653a649` (clean FF; config commit `17ad957` + deploy_log commit `653a649`).
 **main (this branch):** additive minimal-sync of the weekly=5 delta only (config + this deploy_log entry);
 the 5 poly-kalshi prod-live deploys (570d6fc..e7af3bc) remain UN-reconciled to main by design (own session).
+
+## 2026-08-19 ~05:13 UTC - MACE strike_band_pct 0.15->0.25 config-exposed (unblock high-IV GDX/XLE) + skip observability (RESTART; engine 775659 -> 782881)
+
+**Change (5 runtime files).** chain() fetch was clipped to +/-15% of spot (rh_broker.py
+strike_band_pct=0.15, hardcoded, never passed from main.py) -> high-IV names' 20-delta
+wings dropped from the ChainView -> GDX no_wing EVERY eval, XLE feeds no_delta_strike.
+FIX: config surface `entry.strike_band_pct: 0.25` (config/mace.yaml + config.py), passed
+from main.py into the RH options port (overrides the 0.15 default); rh_broker docstring.
+PLUS build_condor populates the previously-empty `detail` on no_expiry/no_delta_strike/
+risk_band/no_wing skips (spot, expiry, nearest-delta candidate/side, wing strikes + reject
+reason). Condor math/delta band/floor/widths/DTE UNCHANGED. config_hash bf91b1a12077 ->
+65d85cc4b4cc. ALSO corrects 2 pre-existing weekly=5 test-drift fails (test_shipped_config_loads,
+test_weekly_budget_skip). MACE suite 302/302.
+
+**Deploy:** prod-live `653a649` -> `4cf6eab` (code `bfc81f4` + deploy_log). Backup
+/home/azureuser/mace_bandwiden_bak_20260819_051113/ + rollback.sh. Swap+restart root via az
+(NO sudo), MainPID 775659 -> 782881. Boot verify ALL GREEN (config_hash 65d85cc4b4cc, /mace
+5/5 + 6-active + ARMED, strike_band_pct=0.25 wired, 4 SPY rungs intact, halt ARM->HALT->ARM,
+0 tb).
+
+**main (this branch):** minimal additive sync of the band-widen delta (7 mace files verbatim +
+main.py:1900 wire edit only + this deploy_log entry); the 5 poly-kalshi prod-live deploys
+(570d6fc..e7af3bc) remain UN-reconciled to main by design (own session).
