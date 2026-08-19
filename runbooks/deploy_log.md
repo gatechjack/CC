@@ -12981,3 +12981,31 @@ bf91b1a12077) then restart-as-root via az.
 append). Branch `mace-band-widen-2026-08-18`. main minimal-synced additively (7 mace
 files + main.py:1985 wire edit + deploy_log); the 5 poly-kalshi prod-live deploys
 (570d6fc..e7af3bc) remain UN-reconciled to main by design.
+
+## 2026-08-19 ~10:34 UTC - Poly->Kalshi Item 2: brokers/kalshi.py mark quote() fix (RESTART; engine 782881 -> 785523)
+
+**What.** `KalshiBroker.quote()` returned 0.0 for every KXMLBGAME market (mark poller's
+2029/2029 quote_miss; sparkline never worked). pykalshi 1.0.6 `get_orderbook()` yields
+`OrderbookResponse(orderbook=Orderbook(yes_dollars,no_dollars))` with NO `yes_bids`/`yes_asks`
+attrs, so the old getattr parse -> None -> 0.0. Fix: read MarketModel `yes_bid_dollars`/
+`yes_ask_dollars` mid (source proven live by main._pk_quote_fn); dropped the orderbook parse;
+removed dead `_best_price`. Cosmetic (marks/sparkline/unrealized only; placement/settlement/P&L
+unaffected; slippage guard uses a separate `_pk_quote_fn` path, untouched).
+
+**Deploy.** brokers/kalshi.py LF-md5 18626cf0 -> 7fb2688f. Drift-gate PASS. Backup
+.bak_item2_20260819_103406. RESTART 10:34:06 UTC; WIRED 20s; engine 782881 -> 785523. Boot
+verify: poly_kalshi WIRED (auto_execute=True/dry_run=False/$5/halt $100), roster invariant
+2 live / 4 paper disjoint, 0 tracebacks. 3 byte-locked files (kalshi_copy_trader/
+sports_team_mapping/kalshi_live) byte-unchanged. PROOF: quote(KXMLBGAME-26AUG212210PITLAD-PIT)
+=0.345 (real mid, was 0.0).
+
+**Callers (shared file, NOT byte-locked):** kalshi_copy_trader.py:619 exit fallback (guarded
+if yes_mid>0) + portfolio.py:49 marks -> helped (0.0->real); slippage guard _pk_quote_fn
+separate -> untouched.
+
+**Kill/rollback:** restore brokers/kalshi.py from .bak_item2_20260819_103406 + restart
+(pk_item2_rollback.ps1). Single file, no cutover/roster change.
+
+**prod-live:** `4cf6eab` -> this entry (clean FF; deployed blob brokers/kalshi.py + deploy_log).
+Build branch `poly-kalshi-item12-build-2026-08-18` (code `332151e`). Item 1 (conflict gate) is a
+SEPARATE deploy, staged, pending review.
