@@ -2,12 +2,22 @@
 # KXMLBGAME ticker to disambiguate empty-book vs attribute-mismatch as the cause of the mark
 # poller's 2029/2029 quote_miss. Reproduces the live KalshiBroker.quote()==0.0 bug and prints the
 # WORKING MarketModel top-of-book path (the slippage guard's source). NO order, NO mutation, does
-# not touch the live loop. Best run during an MLB game window (live book).
+# not touch the live loop. Hydrates KEY_VAULT_URI from the running engine env so KAREN reads from
+# KeyVault via managed identity (read-only). Best run during an MLB game window (live book).
 # Run:
 #   powershell -ep bypass -f .\pk_markprobe_ro.ps1
 $ErrorActionPreference = 'Stop'
 $bash = @'
 cd /home/azureuser/trading_corp
+EPID=$(systemctl show -p MainPID --value trading-corp 2>/dev/null)
+echo "engine MainPID = $EPID"
+if [ -n "$EPID" ] && [ "$EPID" != "0" ] && [ -r /proc/$EPID/environ ]; then
+  KVLINE=$(tr '\0' '\n' < /proc/$EPID/environ | grep '^KEY_VAULT_URI=' | head -1)
+  if [ -n "$KVLINE" ]; then export "$KVLINE"; echo "KEY_VAULT_URI hydrated from engine env"; else echo "KEY_VAULT_URI NOT in engine env"; fi
+else
+  echo "cannot read engine environ (pid=$EPID)"
+fi
+echo "KEY_VAULT_URI present = ${KEY_VAULT_URI:+yes}"
 venv/bin/python3 - <<'PY'
 import asyncio, os
 try:
@@ -22,6 +32,7 @@ async def main():
     from trading_corp.brokers.kalshi_live import KalshiLiveBroker
     print("pykalshi.__version__ =", getattr(pykalshi, "__version__", "?"))
     s = load_secrets()
+    print("KAREN id set =", bool(s.kalshi_karen_api_key_id), " pem set =", bool(s.kalshi_karen_private_key_pem))
     b = KalshiLiveBroker(api_key_id=s.kalshi_karen_api_key_id,
                          private_key_pem=s.kalshi_karen_private_key_pem,
                          demo=False, order_type="ioc", max_slippage_cents=2)
