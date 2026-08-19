@@ -405,3 +405,80 @@ def test_part2_notify_failure_never_breaks_placement(hdb):
                        market_quote={"yes_ask": 0.55, "yes_bid": 0.53}))
     assert r["status"] == "placed"                 # notify raised, placement still succeeded
     assert len(notify.calls) == 1
+
+
+# ── [G-conflict] first-side-wins (Option B: durable audit-journal read) ───────
+import json as _json
+from trading_corp.agents.logger import LoggerAgent
+
+TOR = "KXMLBGAME-26AUG161337NYYTOR-TOR"          # opposite side of NYY (SAME game)
+STL_G1 = "KXMLBGAME-26AUG161337STLCING1-STL"     # doubleheader game 1
+CIN_G2 = "KXMLBGAME-26AUG162007STLCING2-CIN"     # doubleheader game 2, opposite team
+BTC = "KXBTC-26MAY1218-T100000"                  # not a KXMLBGAME ticker
+
+
+def _live_ex(hdb, strat):
+    # a REAL LoggerAgent so [G-conflict]'s durable journal read sees prior placements
+    return PolyKalshiExecutor(dry_run=True, db_url=hdb, logger=LoggerAgent(hdb),
+                              per_trade_cap_usd=None, daily_deployment_cap_usd=None,
+                              strategy=strat)
+
+
+def test_gconflict_opposite_side_same_game_blocked(hdb):
+    ex = _live_ex(hdb, "pk_conflict_opp")
+    assert _run(ex.submit(_order(ticker=NYY, whale="a", wallet="0xA")))["status"] == "DRY_RUN_would_place"
+    opp = _order(ticker=TOR, whale="b", wallet="0xB")     # opposite side, same game, other whale
+    r = _run(ex.submit(opp))
+    assert r["status"] == "skip_conflict"
+    assert r["conflict_held_ticker"] == NYY and r["conflict_held_side"] == "NYY"
+    # a conflict skip consumes NOTHING: no budget, no count, no key burned
+    assert ex._orders_today == 1 and ex._deployed_usd == 2.0
+    assert opp.idempotency_key not in ex._placed
+
+
+def test_gconflict_same_side_stacking_allowed(hdb):
+    ex = _live_ex(hdb, "pk_conflict_stack")
+    assert _run(ex.submit(_order(ticker=NYY, whale="a", wallet="0xA")))["status"] == "DRY_RUN_would_place"
+    # a DIFFERENT whale on the SAME team/ticker -> allowed (stacking), NOT a conflict
+    assert _run(ex.submit(_order(ticker=NYY, whale="b", wallet="0xB")))["status"] == "DRY_RUN_would_place"
+    assert ex._orders_today == 2
+
+
+def test_gconflict_survives_restart_durable(hdb):
+    # Option B: a FRESH executor (simulating an engine restart -> empty in-process
+    # state) still blocks the opposite side, because the gate reads the audit journal.
+    ex1 = _live_ex(hdb, "pk_conflict_restart")
+    assert _run(ex1.submit(_order(ticker=NYY, whale="a", wallet="0xA")))["status"] == "DRY_RUN_would_place"
+    ex2 = _live_ex(hdb, "pk_conflict_restart")            # new instance, same DB
+    assert ex2._placed == {}                              # no in-process memory of ex1's placement
+    assert _run(ex2.submit(_order(ticker=TOR, whale="b", wallet="0xB")))["status"] == "skip_conflict"
+
+
+def test_gconflict_doubleheader_games_not_cross_blocked(hdb):
+    # taking STL in game 1 must NOT block taking CIN in game 2 (different game_no/HHMM)
+    ex = _live_ex(hdb, "pk_conflict_dh")
+    assert _run(ex.submit(_order(ticker=STL_G1, whale="a", wallet="0xA")))["status"] == "DRY_RUN_would_place"
+    assert _run(ex.submit(_order(ticker=CIN_G2, whale="b", wallet="0xB")))["status"] == "DRY_RUN_would_place"
+
+
+def test_gconflict_unparseable_ticker_fails_open(hdb):
+    ex = _live_ex(hdb, "pk_conflict_unparse")
+    # a non-KXMLBGAME ticker can't have a conflicting sibling -> gate no-ops (allow)
+    assert _run(ex.submit(_order(ticker=BTC, whale="a", wallet="0xA")))["status"] == "DRY_RUN_would_place"
+
+
+def test_gconflict_journal_row_has_conflict_detail_and_trigger(hdb):
+    ex = _live_ex(hdb, "pk_conflict_journal")
+    _run(ex.submit(_order(ticker=NYY, whale="a", wallet="0xA")))
+    trig = {"poly_slug": "mlb-nyy-tor-2026-08-16", "poly_outcome": "Toronto Blue Jays",
+            "poly_side": "BUY", "poly_market_type": "moneyline"}
+    r = _run(ex.submit(_order(ticker=TOR, whale="b", wallet="0xB"), trigger=trig))
+    assert r["status"] == "skip_conflict"
+    with _db.connect(hdb) as conn:
+        rows = conn.execute(
+            "SELECT payload_json FROM audit_event WHERE actor='pk_conflict_journal' "
+            "AND json_extract(payload_json,'$.status')='skip_conflict'").fetchall()
+    assert len(rows) == 1
+    p = _json.loads(rows[0]["payload_json"])
+    assert p["conflict_held_ticker"] == NYY and p["conflict_held_side"] == "NYY"
+    assert p["poly_slug"] == "mlb-nyy-tor-2026-08-16"     # the triggering bet persisted with the skip

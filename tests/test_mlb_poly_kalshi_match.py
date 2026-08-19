@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from trading_corp.data.sports_team_mapping import MLB_TEAMS
 from trading_corp.data.mlb_poly_kalshi_match import (
-    ParsedPolyBet, build_kalshi_game_index, iso_to_kalshi_date, kalshi_to_iso_date,
-    match_poly_to_kalshi, parse_kalshi_mlb_ticker, parse_poly_mlb_bet, resolve_side,
+    ParsedPolyBet, build_kalshi_game_index, game_key_and_side, iso_to_kalshi_date,
+    kalshi_to_iso_date, match_poly_to_kalshi, parse_kalshi_mlb_ticker, parse_poly_mlb_bet,
+    resolve_side,
 )
 
 
@@ -151,3 +152,26 @@ def test_skip_buckets_route_correctly():
     assert match_poly_to_kalshi(total, idx, dates).status == "skip_non_ml"
     nonmlb = parse_poly_mlb_bet("nba-bos-nyk-2026-08-16", "Boston Celtics")
     assert match_poly_to_kalshi(nonmlb, idx, dates).status == "skip_non_game"
+
+
+# ── game_key_and_side: the executor's first-side-wins conflict primitive ──────
+def test_game_key_and_side_both_sides_share_one_key():
+    # both side tickers of ONE game -> identical game_key; side_code distinguishes them
+    a = game_key_and_side("KXMLBGAME-26AUG161337NYYTOR-NYY")
+    b = game_key_and_side("KXMLBGAME-26AUG161337NYYTOR-TOR")
+    assert a is not None and b is not None
+    assert a[0] == b[0]                       # same game_key
+    assert a[1] == "NYY" and b[1] == "TOR"    # opposite sides
+    assert a[2] == "26AUG16"                  # date_str prefix for the SQL scan
+
+
+def test_game_key_and_side_doubleheader_games_are_distinct_keys():
+    g1 = game_key_and_side("KXMLBGAME-26AUG161337STLCING1-STL")
+    g2 = game_key_and_side("KXMLBGAME-26AUG162007STLCING2-CIN")
+    assert g1 is not None and g2 is not None
+    assert g1[0] != g2[0]                      # different game_no/time -> different key
+
+
+def test_game_key_and_side_non_mlb_ticker_is_none():
+    assert game_key_and_side("KXBTC-26MAY1218-T100000") is None
+    assert game_key_and_side("") is None
