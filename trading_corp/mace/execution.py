@@ -558,10 +558,13 @@ class MaceExecutor:
 
         last_price: Optional[float] = None
         for k in range(1, x.entry_max_attempts + 1):
-            # 15:58 cutoff — every prior attempt was confirmed dead, so a clean
-            # stand-down can delete the anchor (nothing filled, nothing working).
-            now_t = self._now_et().time()
-            if now_t >= cutoff:
+            # 15:58 cutoff — SESSION-DATE-AWARE (P1.5). Compare the full ET
+            # (date, time) against THIS session's cutoff, not wall-clock time-of-day
+            # alone: an off-hours restart can run this after midnight, where a
+            # time-only check (00:06 < 15:58) would wrongly PASS and place a
+            # STALE-session entry. A clean stand-down deletes the anchor.
+            now_dt = self._now_et()
+            if (now_dt.date(), now_dt.time()) >= (session_date, cutoff):
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "cutoff", clean=True)
             # Operator halt latch (/mace HALT button) — before window_budget so a
@@ -571,7 +574,7 @@ class MaceExecutor:
                                              "operator_halt", clean=True)
             # OQ-2 window budget (checked AFTER cutoff so the global cutoff always
             # wins the reason) — the manager's per-symbol share of the window ran out.
-            if deadline is not None and now_t >= deadline.time():
+            if deadline is not None and now_dt.time() >= deadline.time():
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "window_budget", clean=True)
 
