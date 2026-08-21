@@ -38,8 +38,13 @@ entry:
                                         # w3=>150, w2=>100, w1=>50). Board ruling
                                         # risk-band-width-scaling 2026-08-09 (was fixed
                                         # [150,250], which made ALL width-2 names unenterable)
-  risk_band_max_usd: 260               # absolute max-risk ceiling ((width-credit)*100)
-                                        # 250 -> 260 Board-ruled 2026-08-13 (3-active memo)
+  risk_band_max_usd: 550               # absolute max-risk ceiling ((width-credit)*100)
+                                        # 2026-08-20: 260 -> 550 to admit GDX/XLE real
+                                        # $5-wide grid condors (short 115 / long 120, OTM
+                                        # call grid is $5-spaced). A $5-wide max-risk is
+                                        # (5-credit)*100 = ~$400-500; 550 gives headroom.
+                                        # NOT a per-rung risk increase beyond the width the
+                                        # grid forces; max_contracts:1 caps it at ONE contract.
   enforce_risk_band: true               # "where strike listings allow"
   ivr_floor: 25                         # 0-100 scale. Tasty rank fields are 0-1 —
                                         # ivr_provider normalizes x100 BEFORE this compare
@@ -52,11 +57,19 @@ entry:
                                         # overflow_only receiver exists) — key retained
                                         # because the validator requires it
   overflow_max_per_symbol_session: 1    # T6 Board ruling 2026-08-09 — vestigial, see above
+  min_strike_separation_usd: 0          # 2026-08-20: same-expiry short-separation guard.
+                                        # 0 = OFF (default): the collision guard only SHIFTS
+                                        # to avoid EXACT leg overlaps, preserving dense
+                                        # weekly=5 stacking. Set >0 to also skip a new rung
+                                        # whose short lands within $ of an existing
+                                        # same-expiry short (diversify; throttles fills).
 
 sizing:
-  rung_risk_pct: 0.10                   # 2026-08-13 Board (3-active memo): 0.055 -> 0.10.
-                                        # ~$400/rung at $4k equity; per-trade risk still
-                                        # bounded by max_contracts:1 + risk_band_max 260
+  rung_risk_pct: 0.14                   # 2026-08-20 Jack: 0.10 -> 0.14 so a $5-wide GDX/XLE
+                                        # condor (per-contract risk ~$400-450) sizes to 1
+                                        # contract at ~$3.2k equity (floor(0.14*3218/450)=1);
+                                        # max_contracts:1 caps it at ONE. The 0.95 deployment
+                                        # cap is the binding total-book control (see below).
   deployment_target_pct: 0.95           # 2026-08-13 Board: 0.80 -> 0.95 (reserve gate;
                                         # worst-case book ~5 rungs x $260 = $1.3k << 0.95*E)
   equity_snapshot_time_et: "15:40"      # settled snapshot-E; never intraday buying power

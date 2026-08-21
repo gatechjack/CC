@@ -30,7 +30,7 @@ from trading_corp.mace.domain import (
     SKIP_BLACKOUT, SKIP_BUDGET, SKIP_CAPACITY, SKIP_COOLDOWN, SKIP_CREDIT_FLOOR,
     SKIP_IVR, SKIP_NO_DELTA_STRIKE, SKIP_NO_EQUITY_SNAPSHOT, SKIP_NO_EXPIRY,
     SKIP_NO_WING, SKIP_RESERVE, SKIP_RISK_BAND, SKIP_RISK_REJECT,
-    SKIP_WEEKLY_BUDGET,
+    SKIP_STRIKE_COLLISION, SKIP_WEEKLY_BUDGET,
     BreakerState, CondorSpec, EvalResult, OptionQuote, RungState, iso_week,
 )
 
@@ -118,6 +118,27 @@ def _exit_date(rung: RungState):
 
 def open_rung_count(rungs: Sequence[RungState], symbol: str) -> int:
     return sum(1 for r in rungs if r.symbol == symbol and r.status in _LIVE_STATUSES)
+
+
+def net_option_positions(rungs: Sequence[RungState], symbol: str) -> dict:
+    """(expiry, opt_type, rounded_strike) -> NET signed contracts (long +, short -)
+    across this symbol's LIVE rungs. The collision guard reads this: opening a leg
+    OPPOSITE an existing net (buy where net<0, sell where net>0) is what Robinhood
+    atomically rejects (buy-to-open you already hold short / sell-to-open you already
+    hold long). Same-direction or flat strikes are fine (they just add contracts)."""
+    net: dict = {}
+    for r in rungs:
+        if r.symbol != symbol or r.status not in _LIVE_STATUSES or r.spec is None:
+            continue
+        c = r.contracts or 0
+        s = r.spec
+        for opt_type, strike, sign in (
+            ("put", s.short_put, -1), ("put", s.long_put, +1),
+            ("call", s.short_call, -1), ("call", s.long_call, +1),
+        ):
+            key = (s.expiry, opt_type, _k(strike))
+            net[key] = net.get(key, 0) + sign * c
+    return net
 
 
 def entries_this_week(rungs: Sequence[RungState], symbol: str, session_date: date) -> int:
@@ -292,11 +313,107 @@ def _wing_diag(chain: "ChainView", expiry, short_put: float, short_call: float,
         for w in widths)
 
 
+def _short_candidates(chain: ChainView, expiry: date, opt_type: str,
+                      target: float, band: tuple[float, float]):
+    """Listed, PRICEABLE shorts with |delta| in `band`, ordered nearest-to-target
+    first. The head == what select_short_strike returns. The tail is the SHIFT
+    reservoir the collision guard walks when the nearest short's condor collides."""
+    lo, hi = band
+    out = []
+    for k in chain.strikes(expiry, opt_type):
+        q = chain.get(expiry, opt_type, k)
+        if q is None or q.delta is None or q.mid is None:
+            continue
+        ad = abs(float(q.delta))
+        if ad < lo or ad > hi:
+            continue
+        out.append((abs(ad - target), k, q))
+    out.sort(key=lambda t: (t[0], t[1]))
+    return [(k, q) for _, k, q in out]
+
+
+def _snap_wing(chain: ChainView, expiry: date, opt_type: str,
+               short: float, min_width: float):
+    """Nearest LISTED wing at least `min_width` out from `short` (down for puts,
+    up for calls). Fine grids return short-/+min_width exactly; a coarse grid (GDX
+    OTM calls are $5-spaced) snaps OUT to the next listed strike, so the ACTUAL
+    width can exceed min_width. None if no listed strike is far enough out (or the
+    fetch window clipped it). Returns the wing strike."""
+    if opt_type == "put":
+        tgt = short - min_width
+        cands = [k for k in chain.strikes(expiry, "put") if k <= tgt]
+        return max(cands) if cands else None       # closest listed at/below target
+    tgt = short + min_width
+    cands = [k for k in chain.strikes(expiry, "call") if k >= tgt]
+    return min(cands) if cands else None            # closest listed at/above target
+
+
+def _snap_condor_wings(chain: ChainView, expiry: date, short_put: float,
+                       short_call: float, min_width: float):
+    """Snap BOTH wings >= min_width out, then WIDEN the narrower side to the
+    max-loss (eff) width so the condor is ~symmetric. Rationale: the credit floor
+    and risk band scale with the max-side width, but iron-condor credit is driven
+    by the (fixed ~20-delta) SHORT, not the width — so a $5 grid-forced call side
+    with a $2 put side collects too little to clear 0.30x5. Widening the put side
+    to $5 too (its cheaper, further-OTM long) restores the credit/width ratio.
+    Returns (long_put, long_call, eff_width) or None if either side has no listed
+    wing far enough out (fine grids are unchanged: short-/+min_width exactly)."""
+    lp = _snap_wing(chain, expiry, "put", short_put, min_width)
+    lc = _snap_wing(chain, expiry, "call", short_call, min_width)
+    if lp is None or lc is None:
+        return None
+    eff = max(short_put - lp, lc - short_call)
+    if short_put - lp < eff:
+        lp2 = _snap_wing(chain, expiry, "put", short_put, eff)
+        if lp2 is not None:
+            lp = lp2
+    if lc - short_call < eff:
+        lc2 = _snap_wing(chain, expiry, "call", short_call, eff)
+        if lc2 is not None:
+            lc = lc2
+    return (lp, lc, max(short_put - lp, lc - short_call))
+
+
+def _leg_conflicts(net: dict | None, expiry: date, opt_type: str,
+                   strike: float, side: str) -> bool:
+    """A candidate leg conflicts if OPENING it opposes an existing net position at
+    the same contract — RH rejects buy-to-open where net<0 (held short) or
+    sell-to-open where net>0 (held long)."""
+    if not net:
+        return False
+    n = net.get((expiry, opt_type, _k(strike)), 0)
+    return (side == "buy" and n < 0) or (side == "sell" and n > 0)
+
+
+def _separation_conflict(net: dict | None, expiry: date, short_put: float,
+                         short_call: float, min_sep: float) -> bool:
+    """Optional (min_sep>0) diversification guard: True if the candidate's short
+    put/call lands within `min_sep` dollars of ANY existing same-expiry SHORT
+    (net<0) on the same side. Default OFF (min_sep=0) -> never fires."""
+    if not net or min_sep <= 0:
+        return False
+    for (e_exp, e_type, e_strike), n in net.items():
+        if e_exp != expiry or n >= 0:
+            continue
+        cand = short_put if e_type == "put" else short_call
+        if abs(float(cand) - float(e_strike)) < min_sep:
+            return True
+    return False
+
+
 def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
-                 cfg: MaceConfig, session_date: date) -> BuildResult:
+                 cfg: MaceConfig, session_date: date,
+                 net_positions: dict | None = None) -> BuildResult:
     """Build a priced iron condor per the entry filter-6 spec. Returns a
     BuildResult with a spec+credit_mid+width or a skip_reason
-    (no_expiry|no_delta_strike|no_wing|risk_band)."""
+    (no_expiry|no_delta_strike|no_wing|risk_band|credit_floor|strike_collision).
+
+    `net_positions` (from evaluate_entry via net_option_positions) drives the
+    COLLISION guard (P1.1): the short is SHIFTED within the delta band so no leg
+    opens opposite an existing same-expiry position; strike_collision only when no
+    in-band shift clears. Wings SNAP to the nearest listed strike >= width out
+    (P1.3), so GDX/XLE build on their real $5-spaced OTM-call grid; the actual
+    (max-side) width drives the risk band, credit floor, and sizing."""
     e = cfg.entry
     expiry = choose_expiry(chain, e.dte_min, e.dte_max, session_date)
     if expiry is None:
@@ -305,9 +422,9 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
                                   f"no-expiry-in-DTE[{e.dte_min},{e.dte_max}] "
                                   f"listed={len(chain.expiries)}")
 
-    sp = select_short_strike(chain, expiry, "put", e.short_delta_target, e.short_delta_band)
-    sc = select_short_strike(chain, expiry, "call", e.short_delta_target, e.short_delta_band)
-    if sp is None or sc is None:
+    put_cands = _short_candidates(chain, expiry, "put", e.short_delta_target, e.short_delta_band)
+    call_cands = _short_candidates(chain, expiry, "call", e.short_delta_target, e.short_delta_band)
+    if not put_cands or not call_cands:
         lo, hi = e.short_delta_band
         return BuildResult(
             skip_reason=SKIP_NO_DELTA_STRIKE,
@@ -315,80 +432,91 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
                    f"delta_band=[{lo:g},{hi:g}] "
                    f"put_near={_cand(_nearest_delta_strike(chain, expiry, 'put', e.short_delta_target))} "
                    f"call_near={_cand(_nearest_delta_strike(chain, expiry, 'call', e.short_delta_target))}")
-    (short_put, sp_q), (short_call, sc_q) = sp, sc
-    if sp_q.mid is None or sc_q.mid is None:      # short selected but unpriceable
-        return BuildResult(
-            skip_reason=SKIP_NO_DELTA_STRIKE,
-            detail=f"spot={_fmt_spot(chain.spot)} exp={expiry} short-unpriceable "
-                   f"P{short_put:g}(mid={sp_q.mid}) C{short_call:g}(mid={sc_q.mid})")
 
-    # UNIVERSAL wing-listing check (Board 2026-08-09 off the $5-grid finding).
-    # Fallback-configured symbols (XLE/GDX w2->w1, IWM w3->w2) retry at the
-    # narrower width. A width is ACCEPTED only if its wing lists + prices AND
-    # clears the risk band AND clears the credit floor; otherwise the loop
-    # CONTINUES to the next width.
-    #
-    # 2026-08-14 fix: previously a risk-band failure RETURNED SKIP_RISK_BAND and
-    # a valid-wing width RETURNED its spec with NO credit-floor check (the floor
-    # was tested afterward in evaluate_entry filter 7) — so a primary width that
-    # listed but was out-of-band or below-floor short-circuited without ever
-    # trying the fallback, which has an easier absolute floor (0.30*w1 < 0.30*w2)
-    # and can clear where the primary didn't. Both checks now live INSIDE the
-    # loop and `continue`. If NO width is acceptable, report the reason of the
-    # width that got FURTHEST: credit_floor (a wing listed + in-band but under
-    # floor) > risk_band (a wing listed but every width out of band) > no_wing
-    # (no listed priceable wing at all). Single-width symbols run the loop once
-    # -> outcome identical to the pre-fix behavior.
     widths = [symbol_cfg.width_dollars]
     if symbol_cfg.fallback_width_dollars:
         widths.append(symbol_cfg.fallback_width_dollars)
+    min_sep = getattr(e, "min_strike_separation_usd", 0.0)
 
-    saw_wing = False        # >=1 width listed a priceable wing
-    saw_in_band = False     # >=1 width listed + priceable + in the risk band
-    best_cf_detail = ""     # closest-to-clearing credit-floor miss (skip detail)
-    best_cf_gap = None      # credit_mid - floor for that closest miss (<= 0)
-    for width in widths:
-        long_put = short_put - width
-        long_call = short_call + width
-        lp_q = chain.get(expiry, "put", long_put)
-        lc_q = chain.get(expiry, "call", long_call)
-        if lp_q is None or lc_q is None:
-            continue                              # wing unlisted — try next width
-        if lp_q.mid is None or lc_q.mid is None:
-            continue                              # wing unpriceable — try next width
-        saw_wing = True
-        credit_mid = (sp_q.mid - lp_q.mid) + (sc_q.mid - lc_q.mid)
-        if e.enforce_risk_band:
-            max_risk = (width - credit_mid) * 100.0
-            # Width-scaled band (Board ruling risk-band-width-scaling 2026-08-09):
-            # min = 50 * width (w3->150, w2->100, w1->50), max = 250 absolute.
-            lo = e.risk_band_min_per_width_usd * width
-            hi = e.risk_band_max_usd
-            if not (lo <= max_risk <= hi):
-                continue                          # out of risk band — try next width
-        saw_in_band = True
-        floor = e.credit_floor_pct_of_width * width
-        if credit_mid < floor:
-            gap = credit_mid - floor              # negative
-            if best_cf_gap is None or gap > best_cf_gap:
-                best_cf_gap = gap
-                best_cf_detail = f"credit {credit_mid:.2f} < floor {floor:.2f}"
-            continue                              # below credit floor — try next width
-        spec = CondorSpec(symbol=symbol, expiry=expiry, short_put=short_put,
-                          long_put=long_put, short_call=short_call,
-                          long_call=long_call, width_dollars=width)
-        return BuildResult(spec=spec, credit_mid=credit_mid, width=width)
+    def _price_pair(short_put, sp_q, short_call, sc_q):
+        """Price ONE short pair across the width list with snap-to-grid wings.
+        Returns ('ok', spec, credit, width) for a clean condor; ('collide', ...)
+        for a valid condor that would be atomically rejected (opposite an existing
+        same-expiry leg, or within min_sep); else ('skip', reason, detail) with the
+        furthest-progress reason for THIS pair. No cross-short shifting here — that
+        is the caller's job, and ONLY when a pair collides."""
+        p_wing = p_band = False
+        p_cf_detail = ""
+        p_cf_gap = None
+        for width in widths:
+            snapped = _snap_condor_wings(chain, expiry, short_put, short_call, width)
+            if snapped is None:
+                continue                              # no listed wing far enough out
+            long_put, long_call, eff_width = snapped
+            lp_q = chain.get(expiry, "put", long_put)
+            lc_q = chain.get(expiry, "call", long_call)
+            if lp_q is None or lc_q is None or lp_q.mid is None or lc_q.mid is None:
+                continue                              # wing unpriceable
+            p_wing = True
+            credit_mid = (sp_q.mid - lp_q.mid) + (sc_q.mid - lc_q.mid)
+            if e.enforce_risk_band:
+                max_risk = (eff_width - credit_mid) * 100.0
+                if not (e.risk_band_min_per_width_usd * eff_width <= max_risk <= e.risk_band_max_usd):
+                    continue                          # out of risk band
+            p_band = True
+            floor = e.credit_floor_pct_of_width * eff_width
+            if credit_mid < floor:
+                gap = credit_mid - floor
+                if p_cf_gap is None or gap > p_cf_gap:
+                    p_cf_gap, p_cf_detail = gap, f"credit {credit_mid:.2f} < floor {floor:.2f}"
+                continue                              # below credit floor
+            spec = CondorSpec(symbol=symbol, expiry=expiry, short_put=short_put,
+                              long_put=long_put, short_call=short_call,
+                              long_call=long_call, width_dollars=eff_width)
+            legs = (("put", short_put, "sell"), ("put", long_put, "buy"),
+                    ("call", short_call, "sell"), ("call", long_call, "buy"))
+            if any(_leg_conflicts(net_positions, expiry, t, k, s) for t, k, s in legs) \
+                    or _separation_conflict(net_positions, expiry, short_put, short_call, min_sep):
+                return ("collide", spec, credit_mid, eff_width)  # valid but would reject
+            return ("ok", spec, credit_mid, eff_width)
+        # no valid condor at any width for this pair
+        _diag = (f"spot={_fmt_spot(chain.spot)} exp={expiry} SP={short_put:g} "
+                 f"SC={short_call:g} | "
+                 + _wing_diag(chain, expiry, short_put, short_call, widths,
+                              e.strike_band_pct, chain.spot))
+        if p_band:
+            return ("skip", SKIP_CREDIT_FLOOR, p_cf_detail, None)
+        if p_wing:
+            return ("skip", SKIP_RISK_BAND, _diag + " (all widths out of risk band)", None)
+        return ("skip", SKIP_NO_WING, _diag, None)
 
-    # No width produced an enterable condor — report the furthest-progress reason.
-    if saw_in_band:
-        return BuildResult(skip_reason=SKIP_CREDIT_FLOOR, detail=best_cf_detail)
-    _diag = (f"spot={_fmt_spot(chain.spot)} exp={expiry} "
-             f"SP={short_put:g} SC={short_call:g} | "
-             + _wing_diag(chain, expiry, short_put, short_call, widths,
-                          e.strike_band_pct, chain.spot))
-    if saw_wing:
-        return BuildResult(skip_reason=SKIP_RISK_BAND, detail=_diag + " (all widths out of risk band)")
-    return BuildResult(skip_reason=SKIP_NO_WING, detail=_diag)
+    # Try short pairs nearest-to-target first. The nearest pair decides the outcome
+    # UNLESS it collides — only then do we SHIFT to alternative shorts (P1.1). This
+    # keeps a plain no_wing/risk_band/credit_floor identical to the old single-short
+    # behavior (snap-to-grid, not the short-shift, is what unblocks GDX/XLE wings).
+    saw_collision = False
+    for pi, (short_put, sp_q) in enumerate(put_cands):
+        for ci, (short_call, sc_q) in enumerate(call_cands):
+            kind, a, b_, c = _price_pair(short_put, sp_q, short_call, sc_q)
+            if kind == "ok":
+                return BuildResult(spec=a, credit_mid=b_, width=c)
+            if kind == "collide":
+                saw_collision = True
+                continue                              # shift to the next short pair
+            # kind == "skip": if NO collision has forced a shift, the nearest pair's
+            # skip IS the answer (do not explore other shorts for a plain skip).
+            if not saw_collision and pi == 0 and ci == 0:
+                return BuildResult(skip_reason=a, detail=b_)
+            # else we are shifting (a collision was seen) — keep scanning for an 'ok'.
+
+    # Exhausted all shifts with no clean condor: a valid condor existed but every
+    # one collided / violated separation.
+    return BuildResult(
+        skip_reason=SKIP_STRIKE_COLLISION,
+        detail=f"spot={_fmt_spot(chain.spot)} exp={expiry} "
+               f"every in-band condor overlaps an existing same-expiry leg "
+               f"(shift exhausted across {len(put_cands)}x{len(call_cands)} shorts; "
+               f"min_sep={min_sep:g})")
 
 
 # ── sizing + reserve ─────────────────────────────────────────────────────
@@ -460,16 +588,18 @@ def evaluate_entry(symbol: str, cfg: MaceConfig, ctx: EntryContext,
                          ivr_value=ivr_value, overflow=is_overflow)
     # IVR_STALE / IVR_UNAVAILABLE: continue (credit floor + blackout still gate)
 
-    # 6. build (expiry / delta strikes / universal wing / width fallback /
-    #    risk band / credit floor — build_condor tries the primary then the
-    #    fallback width and returns a spec only when a width clears ALL of them;
-    #    b.detail carries the credit-floor miss when every width is under floor)
+    # 6. build (expiry / delta strikes / universal wing + snap-to-grid / width
+    #    fallback / risk band / credit floor / strike-collision shift — build_condor
+    #    returns a spec only when a short pair clears ALL of them; b.detail carries
+    #    the furthest-progress miss). net_positions drives the collision guard so a
+    #    new long leg never opens opposite an existing same-expiry short (RH reject).
     chain = ctx.chains.get(symbol)
     if chain is None:
         return _skip(symbol, SKIP_NO_EXPIRY, ivr_status=ivr_status,
                      ivr_value=ivr_value, overflow=is_overflow,
                      detail="no chain")
-    b = build_condor(symbol, sc, chain, cfg, ctx.session_date)
+    b = build_condor(symbol, sc, chain, cfg, ctx.session_date,
+                     net_positions=net_option_positions(ctx.rungs, symbol))
     if b.skip_reason is not None:
         return _skip(symbol, b.skip_reason, ivr_status=ivr_status,
                      ivr_value=ivr_value, overflow=is_overflow, detail=b.detail)

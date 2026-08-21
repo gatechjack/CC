@@ -45,10 +45,11 @@ def test_shipped_config_loads():
     assert cfg.entry.dte_min == 30 and cfg.entry.dte_max == 45
     assert cfg.entry.overflow_max_per_symbol_session == 1
     assert cfg.entry.risk_band_min_per_width_usd == 50       # width-scaled band
-    assert cfg.entry.risk_band_max_usd == 260                # 250 -> 260 (Board 2026-08-13)
+    assert cfg.entry.risk_band_max_usd == 550                # 260 -> 550 (GDX/XLE $5-wide, 2026-08-20)
+    assert cfg.entry.min_strike_separation_usd == 0          # collision guard shift-only (OFF)
     assert cfg.entry.weekly_new_rungs_per_symbol == 5        # 1 -> 5 velocity change 2026-08-18
     assert cfg.entry.strike_band_pct == 0.25                 # chain fetch +/-25% (was 0.15) 2026-08-18
-    assert cfg.sizing.rung_risk_pct == 0.10
+    assert cfg.sizing.rung_risk_pct == 0.14                  # 0.10 -> 0.14 ($5-wide sizes to 1, 2026-08-20)
     assert cfg.sizing.deployment_target_pct == 0.95
     assert cfg.execution.entry_fill_wait_sec == 30           # 3-symbol window math
     assert cfg.execution.entry_max_attempts == 2
