@@ -604,10 +604,22 @@ class MaceExecutor:
                 self.notifier.reject(symbol=spec.symbol, detail=f"entry risk-rejected: {rej}")
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "risk_reject", clean=True)
+            except bp.MaceOrderRejected as rej:
+                # DEFINITIVE broker reject (no order id -> nothing placed at the
+                # broker; e.g. the position_effect collision reject). Unlike an
+                # ambiguous error, there is NO order to reconcile -> clean stand-down
+                # DELETES the anchor now, freeing the capacity slot THIS session
+                # (was: stranded as `submitting` until the 2-session abandon horizon).
+                self._audit("mace_entry_rejected", rung_id=rung_id, attempt=k, detail=str(rej))
+                self.notifier.reject(symbol=spec.symbol, detail=f"entry rejected: {rej}")
+                return self._entry_standdown(spec, rung_id, k - 1, last_price,
+                                             "rejected", clean=True)
             except Exception as exc:  # noqa: BLE001
-                # FAKE-FILL GUARD: an exception NEVER books. The order MIGHT exist
-                # at the broker (lost response) -> leave the anchor for reconcile
-                # to drain by combo_id; do NOT delete, do NOT place another.
+                # FAKE-FILL GUARD: an AMBIGUOUS exception (network/timeout/lost
+                # response) NEVER books. The order MIGHT exist at the broker
+                # -> leave the anchor for reconcile to drain by combo_id; do NOT
+                # delete, do NOT place another. (Definitive rejects are handled
+                # above via MaceOrderRejected -> anchor deleted.)
                 self._audit("mace_entry_error", rung_id=rung_id, attempt=k, error=str(exc))
                 self.notifier.reject(symbol=spec.symbol,
                                      detail=f"entry attempt {k} error: {exc}")

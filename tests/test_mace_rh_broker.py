@@ -143,10 +143,24 @@ async def test_place_condor_pending_is_non_terminal():
 
 
 @pytest.mark.asyncio
-async def test_place_condor_reject_propagates_never_books():
+async def test_place_condor_reject_translates_to_mace_order_rejected():
+    # 2026-08-20 P1.2: a HARD RobinhoodOrderError (no id -> nothing placed) is
+    # translated to the NEUTRAL MaceOrderRejected so execution can clean the
+    # anchor without importing trading_corp.brokers.*. Still never books.
     b = MockRHBroker(); port = _port(b)
     b.pml_raises = RobinhoodOrderError("compliance reject — no id")
-    with pytest.raises(RobinhoodOrderError):
+    with pytest.raises(bp.MaceOrderRejected):
+        await port.place_condor(SPEC, 1, 1.18, "mace-x-a1", direction=bp.DIR_CREDIT,
+                                time_in_force="gfd", fill_timeout_s=60)
+
+
+@pytest.mark.asyncio
+async def test_place_condor_ambiguous_error_propagates_raw():
+    # A NON-RobinhoodOrderError (network/timeout) is NOT a definitive reject —
+    # it must propagate raw so execution's fake-fill guard RETAINS the anchor.
+    b = MockRHBroker(); port = _port(b)
+    b.pml_raises = TimeoutError("socket read timeout")
+    with pytest.raises(TimeoutError):
         await port.place_condor(SPEC, 1, 1.18, "mace-x-a1", direction=bp.DIR_CREDIT,
                                 time_in_force="gfd", fill_timeout_s=60)
 
