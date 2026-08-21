@@ -34,6 +34,10 @@ from trading_corp.utils.time import ET
 from tests.test_mace_execution import (
     FakePort, RecChannel, SESSION, RUNG_ID, _conn, _entry_quotes, _ev, _executor, _res,
 )
+# Reuse the OQ-2 window harness (config builder + capture executor + clock).
+from tests.test_mace_manager_window import (
+    SESSION as MGR_SESSION, UTC, _CaptureExecutor, _Clock, _cfg, _mgr, _t,
+)
 
 _CUTOFF = "15:58"
 
@@ -155,3 +159,37 @@ async def test_p15_run_entry_in_window_same_day_still_places():
     out = await exr.run_entry(_ev(), SESSION)            # same-day 15:46 < 15:58
     assert out.filled and out.standdown_reason is None
     assert len(port.place_calls) == 1
+
+
+# ── site-2: manager OQ-2 window budget, session-date-aware ────────────────────
+
+@pytest.mark.asyncio
+async def test_p15_manager_window_prior_session_post_midnight_no_stale_entry(tmp_path):
+    # The OQ-2 window budget must anchor its cutoff to the SESSION date. A prior-
+    # session catch-up whose placement loop runs after midnight (00:06 next day)
+    # must treat the window as CLOSED (remaining <= 0) and window_skip EVERY
+    # symbol -- never ladder a stale entry. OLD code built now's (next) day cutoff
+    # and saw ~16h "remaining", admitting the entry.
+    cfg = _cfg(tmp_path, ["SPY", "GLD", "USO"], ["SPY", "GLD", "USO"])
+    execu = _CaptureExecutor()
+    audits = []
+    post_midnight = datetime(2026, 8, 13, 0, 6, tzinfo=UTC)   # next day after MGR_SESSION
+    mgr = _mgr(cfg, execu, audits=audits, now_et_fn=lambda: post_midnight)
+    res = await mgr.evaluate_and_enter(MGR_SESSION)          # session = 2026-08-12
+    assert execu.calls == []                                  # NO run_entry: all window-skipped
+    skips = sorted(p["symbol"] for k, p in audits if k == "mace_entry_window_skip")
+    assert skips == ["GLD", "SPY", "USO"]                     # every symbol, stale
+    assert all(p["reason"] == "window_exhausted"
+               for k, p in audits if k == "mace_entry_window_skip")
+    assert len(res.outcomes) == 0
+
+
+@pytest.mark.asyncio
+async def test_p15_manager_window_same_day_in_window_unchanged(tmp_path):
+    # Control: same-day in-window placement is byte-unchanged by the site-2 fix
+    # (all three ladder, highest-IVR first) — proves the anchor doesn't regress.
+    cfg = _cfg(tmp_path, ["SPY", "GLD", "USO"], ["SPY", "GLD", "USO"])
+    execu = _CaptureExecutor()
+    mgr = _mgr(cfg, execu, now_et_fn=_Clock(_t(15, 46), _t(15, 47), _t(15, 48)))
+    await mgr.evaluate_and_enter(MGR_SESSION)                # same-day 2026-08-12
+    assert [s for s, _ in execu.calls] == ["GLD", "USO", "SPY"]   # IVR 90 > 60 > 30, all ran

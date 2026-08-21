@@ -273,8 +273,15 @@ class MaceManager:
                                 reason="operator_halt_latch")
                     break
                 now = self._now_et()
-                cutoff_dt = now.replace(hour=cutoff_t.hour, minute=cutoff_t.minute,
-                                        second=0, microsecond=0)
+                # P1.5: anchor the cutoff to the SESSION date, not now's — an
+                # off-hours restart runs this after midnight, where now.replace()
+                # would build the NEXT day's cutoff and see a full stale window
+                # "remaining" (00:06 -> 15:58 same-day), admitting a STALE entry.
+                # Same-day (now.date() == session_date): byte-identical to before.
+                cutoff_dt = now.replace(
+                    year=session_date.year, month=session_date.month,
+                    day=session_date.day, hour=cutoff_t.hour,
+                    minute=cutoff_t.minute, second=0, microsecond=0)
                 remaining = (cutoff_dt - now).total_seconds()
                 if remaining <= 0:
                     self._audit("mace_entry_window_skip", symbol=res.symbol,
