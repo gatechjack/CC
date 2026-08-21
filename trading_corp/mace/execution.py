@@ -460,8 +460,19 @@ class MaceExecutor:
 
     async def mark(self, spec: CondorSpec) -> Optional[float]:
         """Per-contract cost-to-close at mid, for the management loop's stop
-        compare (strategy owns the precedence; execution owns the fresh quotes)."""
-        return self._credit_mid(await self._fresh_quotes(spec))
+        compare (strategy owns the precedence; execution owns the fresh quotes).
+
+        P1.4 None-tolerance: an RH session outage returns None broker responses
+        whose leg-quote parse `.get`s on None and RAISES (the 8/20 manage-loop
+        crashes). Catch it so the tick degrades to a None mark -- evaluate_management
+        then skips stop/PT (both guarded on `mark is not None`) but STILL evaluates
+        time/exdiv -- instead of crashing per rung. DECISION logic is untouched;
+        this only converts a broker-outage crash into a clean None + benign audit."""
+        try:
+            return self._credit_mid(await self._fresh_quotes(spec))
+        except Exception as exc:  # noqa: BLE001 — a broker outage must not sink the manage loop
+            self._audit("mace_mark_unavailable", symbol=spec.symbol, error=str(exc))
+            return None
 
     async def _poll_until_terminal(self, order_id: str) -> Optional[OrderResult]:
         """Poll `order_status` to a terminal state. Returns the terminal
