@@ -11,12 +11,15 @@ quarantine fires (`QUARANTINE_RECONCILE_2026-08-22.md`). Corrected below.
 - Category: **mlb** — BINARY single-game moneylines (two-outcome), the §12-required market type.
 - Measured (read-only reconciliation 2026-08-22): 505 closed positions, mlb=462, **7 suspect total (5 mlb)**.
 
-## ★ SDTrading is NOT exclusion-free — the net-verify must reckon with the clause-(a) defect
-The reconciliation proved the 5 MLB exclusions are **clause (a) FALSE POSITIVES on real losing bets**
-(e.g. `mlb-sd-bos-2026-04-03` tb=26158.69 rp=-27962.12) — `/closed-positions total_bought` understates
-cost on scale-ins, so real losses read as "loss exceeds cost." Therefore a "scoreable-rows-only net
-matches independent sum" check would PASS while the scoreboard is WRONG (real losses dropped). The method
-below reconciles the FULL sum too, so the net-verify EXPOSES the defect instead of passing over it.
+## ★ SDTrading is CLEAN again under the demoted invariant (Task 4 confirm) — but the ROI denominator is wrong
+With clause (a) DEMOTED to a flag (Task 2 ruling), SDTrading's 5 former "exclusions" are no longer
+excluded — they are `pnl_anomaly`-flagged but SCOREABLE. Its clause-(b) exclusions are **0**. So SDTrading
+is the clean-baseline binary whale §12 wants. **SDTrading REMAINS the primary net-verify target.**
+BUT the Task-1 finding (`ROI_DENOMINATOR_FINDING_2026-08-22.md`) means the net-verify must ALSO check the
+denominator: `/closed-positions total_bought` is the NOTIONAL (shares), not cost; real cost =
+`total_bought * avg_price` = `/activity` BUY (proven to the dollar). So `roi = realized/total_bought` is
+return-on-notional. The method below verifies the NET (realized) reconciles AND documents the notional-vs-cost
+ROI gap, so the net-verify does not bless an on-notional ROI as if it were on-cost.
 
 ## Method (from-scratch reimplementation — a real cross-check, not importing ingest.py)
 1. Read-only pull SDTrading's raw `/closed-positions` (all pages), independently.
@@ -27,8 +30,12 @@ below reconciles the FULL sum too, so the net-verify EXPOSES the defect instead 
      parse -> ingest -> store arithmetic with NO quarantine confounding. THIS is the true whale performance.
    - **(B) SCOREABLE net** — independent sum over pnl_suspect=0 mlb rows == DB `net_realized_pnl`; independent
      n_excluded/excluded_pnl == DB. Proves the §3A predicate + rollup wiring.
-   - **(C) THE GAP = (A) - (B)** — enumerate the excluded rows and CONFIRM they are real single-game losses
-     wrongly dropped by clause (a). This QUANTIFIES the §13A(f) scoreboard bias for a copy-relevant whale.
+   - **(C) THE GAP = (A) - (B)** — under the demoted invariant this should now be ~0 for SDTrading (clause-(b)
+     exclusions = 0; the former clause-(a) rows are flagged but scoreable). Confirm gap==0 and that the
+     `pnl_anomaly` rows are present-but-not-excluded.
+   - **(D) ROI DENOMINATOR** — independently compute `cost = SUM(total_bought * avg_price)` and confirm it
+     matches `SUM(/activity BUY)` (proving `total_bought` is notional); report BOTH `roi_on_notional =
+     net/total_bought` (current) and `roi_on_cost = net/cost` (proposed). Do NOT bless the on-notional ROI.
 4. **PASS criteria:** (A) and (B) both reconcile to the cent AND (C) is explained (each excluded row is a
    real loss, not a phantom). A net-loser must show negative ROI on the FULL net. This closes §13A(a)
    (UFC reconciliation) positively via a clean binary whale, per §12.

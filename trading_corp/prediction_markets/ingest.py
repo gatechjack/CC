@@ -4,10 +4,13 @@ Pure helpers (invariant, event-group quarantine, row mapping) + injectable async
 orchestration (HTTP client, DB connection, clock, tier-2 fetch all injected) so tests
 run offline with no network and no real DB.
 
-The §3A quarantine is applied HERE at ingest, in two stages:
-  1. row-level invariant  -> pnl_suspect / suspect_reason='row_invariant'
+The §3A quarantine is applied HERE at ingest, in two stages (clause (b) ONLY — see §13A(f)):
+  1. row-level clause (b) [zero-cost/nonzero-realized] -> pnl_suspect / suspect_reason='row_invariant'
   2. event-group propagate -> a suspect row taints its whole (wallet, event_slug) group;
      clean siblings get suspect_reason='event_group' (closes the winner-survives gap).
+Clause (a) [loss-exceeds-cost] is DEMOTED to a non-excluding, non-propagated anomaly flag
+(pnl_anomaly / anomaly_reason='loss_exceeds_cost') 2026-08-22: total_bought understates cost on
+scale-in rows, so it false-flags real losses; recorded for investigation, never excluded from stats.
 
 Spec: reports/prediction_markets/P1_PLAN.md §3A, §6, §8.
 """
@@ -28,19 +31,38 @@ EPS_FLOOR = 1.00             # §3A epsilon: max($1, 1% of cost) absorbs API rou
 EPS_PCT = 0.01
 
 
-def compute_row_suspect(total_bought: float | None, realized_pnl: float | None,
-                        *, eps_floor: float = EPS_FLOOR, eps_pct: float = EPS_PCT) -> tuple[int, str | None]:
-    """§3A ROW-LEVEL invariant (disjunction). Returns (pnl_suspect 0/1, suspect_reason).
-      (b) total_bought <= 0 AND realized_pnl != 0   -> zero-cost attribution (EITHER sign)
-      (a) realized_pnl < -(total_bought + EPS)       -> loss exceeds cost (impossible for a long)
+def compute_row_suspect(total_bought: float | None, realized_pnl: float | None) -> tuple[int, str | None]:
+    """§3A QUARANTINE trigger = clause (b) ONLY. Returns (pnl_suspect 0/1, suspect_reason).
+      (b) total_bought <= 0 AND realized_pnl != 0   -> zero-cost attribution (EITHER sign; negRisk phantom)
+
+    Clause (a) [loss-exceeds-cost] was DEMOTED from quarantine to a non-excluding anomaly flag
+    2026-08-22 (§13A(f), `QUARANTINE_RECONCILE_2026-08-22.md`): live data showed it false-positives on
+    real single-game losses because `/closed-positions total_bought` understates cost on scale-in rows,
+    so quarantining it dropped real losses and biased the scoreboard UP. Clause (a) now lives in
+    `compute_row_anomaly` (recorded via `pnl_anomaly`, NOT excluded, NOT event-group propagated).
+    Clause (b) is empirically sound (fires only on genuine negRisk; 0 on binary MLB / pako).
     """
     tb = total_bought or 0.0
     rp = realized_pnl or 0.0
     if tb <= 0 and rp != 0:
         return 1, "row_invariant"
-    eps = max(eps_floor, eps_pct * tb)
-    if rp < -(tb + eps):
-        return 1, "row_invariant"
+    return 0, None
+
+
+def compute_row_anomaly(total_bought: float | None, realized_pnl: float | None,
+                        *, eps_floor: float = EPS_FLOOR, eps_pct: float = EPS_PCT) -> tuple[int, str | None]:
+    """§3A clause (a) as a RECORDED anomaly, NOT a quarantine (demoted 2026-08-22, §13A(f)).
+    `realized_pnl < -(total_bought + EPS)` with a POSITIVE cost basis -> a realized loss exceeding cost.
+    This is a genuine anomaly worth surfacing (`pnl_anomaly`), but it is NOT excluded from stats and NOT
+    event-group propagated, because `total_bought` understates true cost on scale-in rows (so it flags real
+    losses). Returns (pnl_anomaly 0/1, anomaly_reason). Zero-cost rows are clause (b)'s domain, not here.
+    """
+    tb = total_bought or 0.0
+    rp = realized_pnl or 0.0
+    if tb > 0:
+        eps = max(eps_floor, eps_pct * tb)
+        if rp < -(tb + eps):
+            return 1, "loss_exceeds_cost"
     return 0, None
 
 
@@ -77,7 +99,8 @@ def cp_to_record(cp: Any, category: str, category_source: str, now_ts: int) -> d
     avg = _f(getattr(cp, "avg_price", 0.0))
     rp = _f(getattr(cp, "realized_pnl", 0.0))
     cur = _f(getattr(cp, "cur_price", 0.0))
-    suspect, reason = compute_row_suspect(tb, rp)
+    suspect, reason = compute_row_suspect(tb, rp)     # clause (b) -> quarantine (+ event-group propagation)
+    anomaly, areason = compute_row_anomaly(tb, rp)    # clause (a) -> RECORD only, no exclusion/propagation
     return {
         "wallet": str(getattr(cp, "proxy_wallet", "") or "").lower(),
         "condition_id": str(getattr(cp, "condition_id", "") or ""),
@@ -95,6 +118,8 @@ def cp_to_record(cp: Any, category: str, category_source: str, now_ts: int) -> d
         "won": 1 if cur >= WON_THRESHOLD else 0,
         "pnl_suspect": suspect,
         "suspect_reason": reason,
+        "pnl_anomaly": anomaly,
+        "anomaly_reason": areason,
         "shares_derived": (tb / avg) if avg > 0 else None,
         "end_date": getattr(cp, "end_date", "") or "",
         "resolved_ts": int(getattr(cp, "timestamp", 0) or 0),
@@ -106,8 +131,8 @@ def cp_to_record(cp: Any, category: str, category_source: str, now_ts: int) -> d
 _CP_COLS = [
     "wallet", "condition_id", "slug", "event_slug", "title", "category", "category_source",
     "outcome", "outcome_index", "avg_price", "total_bought", "realized_pnl", "cur_price",
-    "won", "pnl_suspect", "suspect_reason", "shares_derived", "end_date", "resolved_ts",
-    "ingested_ts", "updated_ts",
+    "won", "pnl_suspect", "suspect_reason", "pnl_anomaly", "anomaly_reason", "shares_derived",
+    "end_date", "resolved_ts", "ingested_ts", "updated_ts",
 ]
 
 
@@ -178,7 +203,8 @@ async def backfill_wallet(conn, wallet: str, *, client, now_ts: int, fetch_event
     _stamp_whale(conn, wallet, now_ts, backfill=backfill)
     conn.commit() if hasattr(conn, "commit") else None
     n_suspect = sum(r["pnl_suspect"] for r in records)
-    return {"wallet": wallet, "rows": n, "suspect": n_suspect}
+    n_anomaly = sum(r["pnl_anomaly"] for r in records)
+    return {"wallet": wallet, "rows": n, "suspect": n_suspect, "anomaly": n_anomaly}
 
 
 async def refresh_wallet(conn, wallet: str, *, client, now_ts: int, fetch_events=None,

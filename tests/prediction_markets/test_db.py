@@ -65,8 +65,9 @@ def test_amendment_columns_present(tmp_path):
         ss = {r[1] for r in conn.execute("PRAGMA table_info(pm_score_snapshot)")}
         idx = {r[1] for r in conn.execute("PRAGMA index_list(pm_closed_position)")}
     assert {"won", "category_source", "pnl_suspect", "suspect_reason",
-            "shares_derived", "realized_pnl"} <= cp
-    assert {"n_excluded", "excluded_pnl", "data_quality"} <= cs
+            "pnl_anomaly", "anomaly_reason", "shares_derived", "realized_pnl"} <= cp
+    assert {"n_excluded", "excluded_pnl", "n_anomaly", "dq_count_pct",
+            "dq_dollar_pct", "data_quality"} <= cs
     assert "params_json" in ss
     assert "ix_pm_cp_scoreable" in idx
 

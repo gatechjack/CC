@@ -29,7 +29,7 @@ DEFAULT_HALF_LIFE_DAYS = 30.0
 _STATS_COLS = [
     "wallet", "category", "n_resolved", "wins", "losses", "win_rate", "net_realized_pnl",
     "total_bought", "roi", "avg_bet", "avg_win_price", "last_resolved_ts", "n_excluded",
-    "excluded_pnl", "data_quality", "updated_ts",
+    "excluded_pnl", "n_anomaly", "dq_count_pct", "dq_dollar_pct", "data_quality", "updated_ts",
 ]
 
 
@@ -49,7 +49,10 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
         f" AVG(CASE WHEN {pred} AND won=1 THEN avg_price END) AS avg_win_price, "
         f" MAX(CASE WHEN {pred} THEN resolved_ts END) AS last_ts, "
         " SUM(CASE WHEN pnl_suspect=1 THEN 1 ELSE 0 END) AS n_excluded, "
-        " SUM(CASE WHEN pnl_suspect=1 THEN realized_pnl ELSE 0 END) AS excluded_pnl "
+        " SUM(CASE WHEN pnl_suspect=1 THEN realized_pnl ELSE 0 END) AS excluded_pnl, "
+        " SUM(CASE WHEN pnl_anomaly=1 THEN 1 ELSE 0 END) AS n_anomaly, "
+        " SUM(ABS(realized_pnl)) AS abs_all, "
+        " SUM(CASE WHEN pnl_suspect=1 THEN ABS(realized_pnl) ELSE 0 END) AS abs_excl "
         "FROM pm_closed_position GROUP BY wallet, category"
     )
     recs = []
@@ -60,15 +63,21 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
         tb = r["tb"] or 0.0
         net = r["net"] or 0.0
         n_excl = r["n_excluded"] or 0
+        n_anom = r["n_anomaly"] or 0
         decided = wins + losses
         total = n + n_excl
         win_rate = (wins / decided) if decided > 0 else None
         roi = (net / tb) if tb > 0 else None
         avg_bet = (tb / n) if n > 0 else None
-        dq = "contaminated" if (total > 0 and (n_excl / total) > dq_threshold) else None
+        # data_quality is flagged on EITHER a count OR a $-weighted fraction of quarantined rows -- count
+        # alone hides a few rows carrying large $ (Kickstand7 Fed: 3.6% count but 9% of $). Report both.
+        abs_all = r["abs_all"] or 0.0
+        dq_count = (n_excl / total) if total > 0 else 0.0
+        dq_dollar = ((r["abs_excl"] or 0.0) / abs_all) if abs_all > 0 else 0.0
+        dq = "contaminated" if (dq_count > dq_threshold or dq_dollar > dq_threshold) else None
         recs.append((r["wallet"], r["category"], n, wins, losses, win_rate, net, tb, roi,
                      avg_bet, r["avg_win_price"], r["last_ts"], n_excl, r["excluded_pnl"] or 0.0,
-                     dq, now_ts))
+                     n_anom, dq_count, dq_dollar, dq, now_ts))
     ph = ", ".join(["?"] * len(_STATS_COLS))
     conn.executemany(
         "INSERT OR REPLACE INTO pm_category_stats (%s) VALUES (%s)" % (", ".join(_STATS_COLS), ph),
@@ -187,7 +196,12 @@ def format_report(board: list[dict], *, fmt: str = "table") -> str:
         if r.get("contested"):
             flags.append("CONTESTED")
         if r.get("data_quality"):
-            flags.append(str(r["data_quality"]).upper())
+            flags.append("%s(cnt%s/$%s)" % (
+                str(r["data_quality"]).upper(),
+                _fmt((r.get("dq_count_pct") or 0) * 100, ".0f") + "%",
+                _fmt((r.get("dq_dollar_pct") or 0) * 100, ".0f") + "%"))
+        if r.get("n_anomaly"):
+            flags.append("ANOM:%d" % r["n_anomaly"])
         wr = r.get("win_rate")
         roi = r.get("roi")
         lines.append("%-14s %-8s %5s %6s %8s %11s %8s  %s" % (

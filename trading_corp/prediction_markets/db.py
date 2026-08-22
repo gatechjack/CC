@@ -118,8 +118,10 @@ MIGRATION_001: list[str] = [
         realized_pnl    REAL,                         -- CAN BE NEGATIVE
         cur_price       REAL,
         won             INTEGER,                      -- cur_price >= 0.9 (stored at ingest)
-        pnl_suspect     INTEGER NOT NULL DEFAULT 0,   -- §3A FINAL group-aware quarantine flag
+        pnl_suspect     INTEGER NOT NULL DEFAULT 0,   -- §3A FINAL group-aware quarantine flag (clause (b) only)
         suspect_reason  TEXT,                         -- NULL | row_invariant | event_group
+        pnl_anomaly     INTEGER NOT NULL DEFAULT 0,   -- §3A clause (a) DEMOTED 2026-08-22 (§13A(f)): RECORDED, NOT excluded/propagated
+        anomaly_reason  TEXT,                         -- NULL | loss_exceeds_cost
         shares_derived  REAL,                         -- total_bought / avg_price (NULL-safe)
         end_date        TEXT,
         resolved_ts     INTEGER,
@@ -152,9 +154,12 @@ MIGRATION_001: list[str] = [
         avg_bet           REAL,
         avg_win_price     REAL,
         last_resolved_ts  INTEGER,
-        n_excluded        INTEGER NOT NULL DEFAULT 0, -- §3A visibility: quarantined rows (full group)
+        n_excluded        INTEGER NOT NULL DEFAULT 0, -- §3A visibility: quarantined (clause (b)) rows (full group)
         excluded_pnl      REAL    NOT NULL DEFAULT 0, -- summed realized_pnl of quarantined rows
-        data_quality      TEXT,                       -- NULL | 'contaminated' (> threshold quarantined)
+        n_anomaly         INTEGER NOT NULL DEFAULT 0, -- §3A clause (a) flag count (NOT excluded; investigable)
+        dq_count_pct      REAL    NOT NULL DEFAULT 0, -- n_excluded / total rows (fraction)
+        dq_dollar_pct     REAL    NOT NULL DEFAULT 0, -- SUM|realized| excluded / SUM|realized| all ($-weighted)
+        data_quality      TEXT,                       -- NULL | 'contaminated' (count OR $ fraction > threshold)
         updated_ts        INTEGER,
         PRIMARY KEY (wallet, category)
     )

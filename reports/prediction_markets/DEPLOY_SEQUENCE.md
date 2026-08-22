@@ -3,12 +3,17 @@
 **Status: NOT executed. Every step below is a queued MUTATION** (box file copy, PM-DB writes,
 crontab edit, git advance). Read-only steps are marked `[RO]`. Nothing here has run.
 
-> **★★ BLOCKING (2026-08-22, `QUARANTINE_RECONCILE_2026-08-22.md` / §13A(f)):** live reconciliation showed
-> §3A **clause (a)** false-positives on real single-game MLB losses (excludes real losses -> biases the
-> scoreboard UP). **Steps 0-4 (deploy + INGEST) are safe** — data is captured, `pnl_suspect` is advisory —
-> but **Step 5's report/ranking is NOT trustworthy until Jack decides the clause-(a) rework.** Do not use the
-> scoreboard for whale selection until then. Step 3 is now a DIAGNOSTIC checkpoint (confirm the clause-(a)
-> over-exclusion on real data before ranking). Clause (b) is sound.
+> **★★ RANKING GATE (2026-08-22, updated):** two reconciliation findings.
+> **(1) Clause (a) — RESOLVED in code** (Task 2 ruling): demoted from quarantine to a non-excluding
+> `pnl_anomaly` flag; clause (b) + event-group propagation unchanged; data_quality now $-weighted. Tests updated.
+> **(2) ROI DENOMINATOR — STILL BLOCKING, needs Jack's ruling** (`ROI_DENOMINATOR_FINDING_2026-08-22.md`,
+> §13A(g)): `total_bought` is NOTIONAL not cost, so `roi=realized/total_bought` is return-on-notional
+> (rank-distorted). Proposed one-line fix (`roi=net/SUM(total_bought*avg_price)`) awaits ruling.
+> **Steps 0-4 (deploy + INGEST + rollup) are UNAFFECTED** — every raw field (`total_bought`, `avg_price`,
+> `realized_pnl`) is stored faithfully; only the derived `roi`/`avg_bet` are affected. **Do not use the
+> scoreboard ROI ranking for whale selection until the denominator is ruled.** Step 3's single-wallet
+> checkpoint is now MORE valuable — inspect `n_anomaly`, the $-weighted `dq_dollar_pct`, and roi-on-notional
+> vs roi-on-cost on one wallet before the full run.
 
 **Pre-flight facts verified read-only 2026-08-22 (this session):**
 - Box uses the **nested** package layout: `/home/azureuser/trading_corp/trading_corp/` (package)
