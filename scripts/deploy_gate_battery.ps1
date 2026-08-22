@@ -19,6 +19,12 @@
                         script (only with -Apply; dry-run prints the plan).
     5. boot-verify checklist - printed for the post-restart step (Phase 5).
 
+  KNOWN ISSUE (deferred, 2026-08-22): the -Apply path's Gate-4 backup writer pipes a here-doc + this
+    script down a single ssh stdin, which HANGS on the here-doc terminator. DRY-RUN (default) is
+    unaffected. Until fixed, create the -Apply backup out-of-band (printf-based writer, no
+    here-doc-over-stdin), or apply the 1-line fix: sanitize stdin with tr -d '\r\357\273\277' and
+    stop nesting the here-doc inside the piped script.
+
   Usage (dry-run against the P1.5 branch):
     powershell -ep bypass -f .\scripts\deploy_gate_battery.ps1 `
       -Branch mace-p15-offhours-fix-2026-08-21 -Base e298ea8 `
