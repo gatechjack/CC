@@ -61,18 +61,42 @@ total_bought=notional. The scout's -13,706.51 (activity method) is unreliable fo
 open §13A(a) evanng discrepancy is NOT a separate mystery — it is the same `/closed-positions` vs
 `/activity` accounting divergence + notional-total_bought. Treated as one investigation henceforth.
 
-## PROPOSAL (NOT implemented — this is P1's PRIMARY metric; Jack rules, per the load-bearing discipline)
-1. **Fix the ROI denominator to cost:** `roi = net_realized_pnl / SUM(total_bought * avg_price)`; likewise
-   `avg_bet = SUM(cost)/n`. Store a `cost_basis` (=Σ tb*avg) column for visibility + auditability. One-line
-   rollup change; `avg_price` is already on every row.
-2. **Cost-definition edge case for Jack to rule:** `tb*avg_price` = entry cost (shares*avg entry price),
-   which matches `/activity` BUY on clean buy-and-hold. For round-trip positions (buy/sell/rebuy) gross
-   `/activity` BUY can differ (control-LOSS slices showed cost-vs-buy +29%/-33% noise). Recommend
-   `tb*avg_price` (entry-cost basis, self-contained in the row, no `/activity` dependency) — but confirm.
-3. **Keep return-on-notional as a secondary column** only if there's a use for it; the ranking metric
-   should be return-on-cost.
-4. Until ruled, the ranking stays GATED (DEPLOY_SEQUENCE.md) — ingestion is unaffected (`total_bought`,
-   `avg_price`, `realized_pnl` are all stored faithfully; only the derived `roi`/`avg_bet` are affected).
+## RESOLUTION — RATIFIED + IMPLEMENTED 2026-08-22 (Jack's ruling; §13 dec 11)
+1. **DONE:** RANKED `roi = SUM(net_realized) / SUM(cost_basis)`, `avg_bet` cost-based; `cost_basis =
+   total_bought * avg_price` **persisted per row** on `pm_closed_position` (not recomputed at rollup).
+2. **Entry-cost basis (`tb*avg_price`) APPROVED over `/activity`-gross** — self-contained, deterministic,
+   idempotent, no second API call, and avg_price is already scale-in-weighted (why it reconciles to the
+   dollar). `/activity`-gross would import the under-captured-redemption defect. (Round-trip control-LOSS
+   slices showed cost-vs-buy +29%/-33% noise on the activity side — another reason not to base the metric
+   on it.)
+3. **`roi_notional = net/total_bought` retained, NOT ranked**, labeled in schema + `report` (so an analyst
+   comparing to an old scout number doesn't chase a phantom discrepancy).
+4. **Guard shipped:** `cost_basis<=0 -> roi None` (a scoreable row with avg_price<=0/NULL can't div-by-zero
+   the denominator); test added. **Ingestion unaffected.** Clip-saturation of the new (larger) cost-ROIs
+   was MEASURED (Item 2), not retuned.
 
-Reproduce: `cc\pk_total_bought_ro.ps1` -> `pm_total_bought_probe.py` (avg_price/cost columns + slice gaps).
-Cross-ref: P1_PLAN §7 + §13A(g), QUARANTINE_RECONCILE_2026-08-22.md, NET_VERIFY_TARGET.md.
+## ITEM 2 — _edge_factor clip saturation on the new cost-ROI (MEASUREMENT ONLY, 2026-08-22, read-only)
+Runner `cc\pk_clip_saturation_ro.ps1` -> `pm_clip_saturation_probe.py`: cost-ROI per (wallet, category)
+via the ACTUAL ingest path, across the seed roster. `_edge_factor = 1.0 + clip(roi, -0.5, +2.0)`.
+- **Scored pairs (n>=10): 28. cost_roi distribution: min +0.1% / median +5.9% / max +90.3%.**
+- **Pinned at CEILING (cost_roi >= +200%): 0. Pinned at FLOOR (<= -50%): 0. Categories with MULTIPLE ceiling pins: NONE.**
+- **VERDICT: NEGLIGIBLE.** The feared longshot-pinning did not occur; the max (+90.3%, SDTrading mlb) is
+  55% below the +200% cap, so `_edge_factor` still discriminates across all scored pairs. Do NOT retune the
+  clip bounds. If a future roster produces saturation, re-open with this measurement attached.
+- **COVERAGE GAP (honest):** 3 wallets hit HTTP 429 rate-limiting (ran right after the pytest + prior probes)
+  — **Kickstand7 + pako (both Fed) returned NO data; BetMechanic partial (to offset 5000).** So the 28 scored
+  pairs cover 9-10 of 12 whales. The 2 missing whales are FED: from the earlier fed probe their Fed realized
+  is ~2-5% of notional (e.g. tb=578,231 / realized +28,529 = 4.9%), so cost-ROI ~= 5-10% (single digits) —
+  nowhere near +200%; they will not pin. Data-backed, not assumed. A spaced re-run would fully close coverage.
+
+## OPEN ITEM (logged, NOT chased — per scope discipline) — cost_basis<=0 on scoreable rows
+The probe found **57 scoreable rows with cost_basis<=0** (avg_price<=0 or NULL, total_bought>0). The
+div-by-zero guard (`SUM(cost_basis)<=0 -> roi None`) is proven + tested, so the denominator never breaks.
+BUT such a row contributes its `net_realized` to the numerator while adding 0 to the cost denominator ->
+it can UP-bias a category's cost-ROI (a winning zero-cost-basis row inflates ROI). 57 rows across the roster
+is small but non-zero and the direction is UP (violates §13 dec 10). Handling (exclude/flag scoreable rows
+with cost_basis<=0 from the cost-ROI, or investigate the avg_price=0/NULL source) is DEFERRED to a later
+pass — logged here with the count so it is not rediscovered. Logged as P1_PLAN §13A(h).
+
+Reproduce: `cc\pk_total_bought_ro.ps1` -> `pm_total_bought_probe.py`; `cc\pk_clip_saturation_ro.ps1` ->
+`pm_clip_saturation_probe.py`. Cross-ref: P1_PLAN §7 + §13A(g)/(h), QUARANTINE_RECONCILE_2026-08-22.md, NET_VERIFY_TARGET.md.

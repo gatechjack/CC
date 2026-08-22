@@ -148,8 +148,10 @@ async def test_clause_b_excluded_clause_a_included_in_stats(tmp_path):
     assert cs["n_resolved"] == 4 and cs["n_excluded"] == 1 and cs["n_anomaly"] == 1
     # g4's -500 REAL loss is now INCLUDED (the whole point: do not silently drop real losses)
     assert abs(cs["net_realized_pnl"] - (80.0 - 100.0 + 90.0 - 500.0)) < 1e-6   # = -430.0
-    assert abs(cs["total_bought"] - 400.0) < 1e-6                                # g1..g4; g5 tb=0 excluded
-    assert abs(cs["roi"] - (-430.0 / 400.0)) < 1e-6                              # net-loser -> negative ROI
+    assert abs(cs["total_bought"] - 400.0) < 1e-6                                # NOTIONAL g1..g4; g5 tb=0 excluded
+    assert abs(cs["cost_basis"] - 200.0) < 1e-6                                  # 4 scoreable * (100 * 0.5 avg)
+    assert abs(cs["roi"] - (-430.0 / 200.0)) < 1e-6                              # RANKED cost-based; net-loser -> negative
+    assert abs(cs["roi_notional"] - (-430.0 / 400.0)) < 1e-6                     # notional (NOT ranked)
 
 
 async def test_data_quality_is_dollar_weighted(tmp_path):

@@ -28,8 +28,8 @@ DEFAULT_HALF_LIFE_DAYS = 30.0
 
 _STATS_COLS = [
     "wallet", "category", "n_resolved", "wins", "losses", "win_rate", "net_realized_pnl",
-    "total_bought", "roi", "avg_bet", "avg_win_price", "last_resolved_ts", "n_excluded",
-    "excluded_pnl", "n_anomaly", "dq_count_pct", "dq_dollar_pct", "data_quality", "updated_ts",
+    "total_bought", "cost_basis", "roi", "roi_notional", "avg_bet", "avg_win_price", "last_resolved_ts",
+    "n_excluded", "excluded_pnl", "n_anomaly", "dq_count_pct", "dq_dollar_pct", "data_quality", "updated_ts",
 ]
 
 
@@ -46,6 +46,7 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
         f" SUM(CASE WHEN {pred} AND won=0 THEN 1 ELSE 0 END) AS losses, "
         f" SUM(CASE WHEN {pred} THEN realized_pnl ELSE 0 END) AS net, "
         f" SUM(CASE WHEN {pred} THEN total_bought ELSE 0 END) AS tb, "
+        f" SUM(CASE WHEN {pred} THEN cost_basis ELSE 0 END) AS cost_basis, "
         f" AVG(CASE WHEN {pred} AND won=1 THEN avg_price END) AS avg_win_price, "
         f" MAX(CASE WHEN {pred} THEN resolved_ts END) AS last_ts, "
         " SUM(CASE WHEN pnl_suspect=1 THEN 1 ELSE 0 END) AS n_excluded, "
@@ -61,21 +62,27 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
         wins = r["wins"] or 0
         losses = r["losses"] or 0
         tb = r["tb"] or 0.0
+        cb = r["cost_basis"] or 0.0
         net = r["net"] or 0.0
         n_excl = r["n_excluded"] or 0
         n_anom = r["n_anomaly"] or 0
         decided = wins + losses
         total = n + n_excl
         win_rate = (wins / decided) if decided > 0 else None
-        roi = (net / tb) if tb > 0 else None
-        avg_bet = (tb / n) if n > 0 else None
+        # §13 dec 11: RANKED roi is COST-based (net / SUM(cost_basis)); guard cb<=0 -> None (never /0).
+        # A scoreable row can only reach here with cost_basis<=0 if total_bought>0 AND avg_price<=0/NULL
+        # (a degenerate cost) -> the whole-sum guard keeps roi well-defined; roi_notional retained for
+        # comparison to pre-fix / scout numbers (NOT ranked).
+        roi = (net / cb) if cb > 0 else None
+        roi_notional = (net / tb) if tb > 0 else None
+        avg_bet = (cb / n) if n > 0 else None
         # data_quality is flagged on EITHER a count OR a $-weighted fraction of quarantined rows -- count
         # alone hides a few rows carrying large $ (Kickstand7 Fed: 3.6% count but 9% of $). Report both.
         abs_all = r["abs_all"] or 0.0
         dq_count = (n_excl / total) if total > 0 else 0.0
         dq_dollar = ((r["abs_excl"] or 0.0) / abs_all) if abs_all > 0 else 0.0
         dq = "contaminated" if (dq_count > dq_threshold or dq_dollar > dq_threshold) else None
-        recs.append((r["wallet"], r["category"], n, wins, losses, win_rate, net, tb, roi,
+        recs.append((r["wallet"], r["category"], n, wins, losses, win_rate, net, tb, cb, roi, roi_notional,
                      avg_bet, r["avg_win_price"], r["last_ts"], n_excl, r["excluded_pnl"] or 0.0,
                      n_anom, dq_count, dq_dollar, dq, now_ts))
     ph = ", ".join(["?"] * len(_STATS_COLS))
@@ -186,9 +193,11 @@ def format_report(board: list[dict], *, fmt: str = "table") -> str:
     """Render a query_scoreboard result as a text table or JSON (for `pm_cli report`)."""
     if fmt == "json":
         return json.dumps(board, default=str, indent=2)
-    hdr = "%-14s %-8s %5s %6s %8s %11s %8s  flags" % (
-        "wallet", "cat", "n", "win%", "roi%", "net_pnl", "score")
-    lines = [hdr, "-" * len(hdr)]
+    hdr = "%-14s %-8s %5s %6s %8s %8s %11s %8s  flags" % (
+        "wallet", "cat", "n", "win%", "roiC%", "roiN%", "net_pnl", "score")
+    lines = ["# roiC = COST-based ROI (net/cost_basis) = the RANKED metric; roiN = notional ROI "
+             "(net/total_bought), NOT ranked, for legacy/scout comparison only (§13 dec 11)",
+             hdr, "-" * len(hdr)]
     for r in board:
         flags = []
         if r.get("chalk"):
@@ -203,11 +212,13 @@ def format_report(board: list[dict], *, fmt: str = "table") -> str:
         if r.get("n_anomaly"):
             flags.append("ANOM:%d" % r["n_anomaly"])
         wr = r.get("win_rate")
-        roi = r.get("roi")
-        lines.append("%-14s %-8s %5s %6s %8s %11s %8s  %s" % (
+        roi = r.get("roi")                    # cost-based (RANKED)
+        roin = r.get("roi_notional")          # notional (NOT ranked; legacy comparison)
+        lines.append("%-14s %-8s %5s %6s %8s %8s %11s %8s  %s" % (
             str(r.get("wallet", ""))[:14], str(r.get("category", ""))[:8], r.get("n_resolved", "-"),
             _fmt(wr * 100 if isinstance(wr, (int, float)) else None, ".0f"),
             _fmt(roi * 100 if isinstance(roi, (int, float)) else None, "+.1f"),
+            _fmt(roin * 100 if isinstance(roin, (int, float)) else None, "+.1f"),
             _fmt(r.get("net_realized_pnl"), "+.0f"),
             _fmt(r.get("score"), ".3f"),
             " ".join(flags)))

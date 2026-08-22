@@ -112,7 +112,8 @@ def cp_to_record(cp: Any, category: str, category_source: str, now_ts: int) -> d
         "outcome": getattr(cp, "outcome", "") or "",
         "outcome_index": int(getattr(cp, "outcome_index", 0) or 0),
         "avg_price": avg,
-        "total_bought": tb,
+        "total_bought": tb,                            # NOTIONAL (shares/payout@$1), NOT cost (§13A(g))
+        "cost_basis": tb * avg,                         # real USDC cost = shares * avg_price (ROI denominator, §13 dec 11)
         "realized_pnl": rp,
         "cur_price": cur,
         "won": 1 if cur >= WON_THRESHOLD else 0,
@@ -130,7 +131,7 @@ def cp_to_record(cp: Any, category: str, category_source: str, now_ts: int) -> d
 
 _CP_COLS = [
     "wallet", "condition_id", "slug", "event_slug", "title", "category", "category_source",
-    "outcome", "outcome_index", "avg_price", "total_bought", "realized_pnl", "cur_price",
+    "outcome", "outcome_index", "avg_price", "total_bought", "cost_basis", "realized_pnl", "cur_price",
     "won", "pnl_suspect", "suspect_reason", "pnl_anomaly", "anomaly_reason", "shares_derived",
     "end_date", "resolved_ts", "ingested_ts", "updated_ts",
 ]

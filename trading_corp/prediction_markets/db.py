@@ -114,7 +114,8 @@ MIGRATION_001: list[str] = [
         outcome         TEXT,
         outcome_index   INTEGER,
         avg_price       REAL,
-        total_bought    REAL,
+        total_bought    REAL,                         -- NOTIONAL (share count = payout at $1), NOT USDC cost (§13A(g))
+        cost_basis      REAL,                         -- = total_bought * avg_price = real USDC cost (the ROI denominator, §13 dec 11)
         realized_pnl    REAL,                         -- CAN BE NEGATIVE
         cur_price       REAL,
         won             INTEGER,                      -- cur_price >= 0.9 (stored at ingest)
@@ -149,9 +150,11 @@ MIGRATION_001: list[str] = [
         losses            INTEGER,
         win_rate          REAL,
         net_realized_pnl  REAL,
-        total_bought      REAL,
-        roi               REAL,
-        avg_bet           REAL,
+        total_bought      REAL,                       -- NOTIONAL sum (payout@$1), NOT cost
+        cost_basis        REAL,                       -- SUM(total_bought*avg_price) scoreable = real cost denominator (§13 dec 11)
+        roi               REAL,                       -- RANKED metric: net_realized_pnl / cost_basis (COST-based, §13 dec 11)
+        roi_notional      REAL,                       -- NOT ranked: net_realized_pnl / total_bought (legacy/scout comparison ONLY)
+        avg_bet           REAL,                       -- cost-based: cost_basis / n_resolved
         avg_win_price     REAL,
         last_resolved_ts  INTEGER,
         n_excluded        INTEGER NOT NULL DEFAULT 0, -- §3A visibility: quarantined (clause (b)) rows (full group)
