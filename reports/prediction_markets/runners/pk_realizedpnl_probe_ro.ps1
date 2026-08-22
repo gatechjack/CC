@@ -27,7 +27,8 @@ Write-Host "== PREDICTION MARKETS realizedPnl SEMANTICS PROBE (READ-ONLY) =="
 $runMsg = az vm run-command invoke -g RG-SHARED-PROD -n tc-prod-vm --command-id RunShellScript --scripts "@$tf" --query "value[0].message" -o tsv
 Write-Host $runMsg
 $lines = 500
-if ($runMsg -match 'lines=(\d+)') { $lines = [int]$Matches[1] }
+$runStr = ($runMsg | Out-String)
+if ($runStr -match 'lines=(\d+)') { $lines = [int]$Matches[1] }
 $per = 30
 $nchunks = [math]::Ceiling(($lines + 2) / $per)
 for ($n = 0; $n -lt $nchunks; $n++) {
