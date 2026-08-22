@@ -9,11 +9,11 @@ Status legend: `[ ]` not yet run · `[R]` ready (runner written + validated) · 
 ## 1. Prove `trading_corp/__init__.py` is INERT (deliberately, not by accident)
 - **Why:** in the 2026-08-22 B+C run, runner bug #1 silently failed the `cp` of `trading_corp/__init__.py`, and Python fell back to namespace-package resolution — so "no engine coupling" was shown *accidentally*. Fixed in the runner (`0eeb3a6`).
 - **Needs:** a run that (a) copies `trading_corp/__init__.py` into scratch **successfully** (assert the file is present), AND (b) confirms `pytest tests/prediction_markets/` still passes **with it present**. Deliberate proof.
-- `[R]` fixed runner `pk_pm_bc_run.ps1` (or its successor) — but this is a re-run, so it can ride the next box touch I do read-only. Marked here because the *deliberate proof* wants Jack's eyes on it too.
+- `[done read-only 2026-08-22]` `pk_pm_pytest_ro.ps1` run: `trading_corp/__init__.py` was extracted into scratch (present in the file listing) AND `pytest tests/prediction_markets/` passed **with it present** -> init-inert shown deliberately (bug #1 fixed). Optional Jack-run re-confirm at deploy.
 
 ## 2. Chain-of-custody: tested bytes == committed bytes
 - `git hash-object` per shipped file, **locally and in scratch**, pasted side-by-side, proving the box tested the exact committed bytes (not a drifted copy).
-- `[ ]` add to the next box run's output.
+- `[done read-only 2026-08-22]` `pk_pm_pytest_ro.ps1` printed local sha256 and the box `sha256sum` — MATCH for db.py (`f6c900..`) + category.py (`82320a..`): tested bytes == committed bytes. Re-confirm on the final deploy run.
 
 ## 3. Legacy-DB integrity (CONTEXT, expected-to-differ) + the DISCRIMINATING proofs
 - `md5 + mtime` of `trading_corp.db` (add `-wal`/`-shm`) before/after — **labeled expected-to-differ**: a 3 GB live-written WAL DB cannot be checksummed atomically (2026-08-22 run: md5 differed, size+mtime identical → live-engine mmap, not us).
@@ -21,7 +21,7 @@ Status legend: `[ ]` not yet run · `[R]` ready (runner written + validated) · 
   - no `trading_corp.db` anywhere under scratch after the run (`find $S -name 'trading_corp.db'` empty);
   - the resolved `PM_DB_PATH` printed by the run points to a `/tmp` file;
   - the `db.py` legacy-path guard provably **FIRES** — a test assertion (`test_refuses_legacy_db_path`), not an observation. (Already in `test_db.py`, passed on box.)
-- `[ ]` fold the discriminating proofs into the next box run's output.
+- `[done read-only 2026-08-22]` `pk_pm_pytest_ro.ps1`: `*.db` scan under scratch EMPTY; `PM_DB_PATH=/tmp/pm_test_<pid>.db`; `test_refuses_legacy_db_path` PASSED; legacy DB md5 identical before/after this run. Re-confirm on the final deploy run.
 
 ## 4. Live-API smoke test (`@pytest.mark.live_api`, opt-in only)
 - `test_smoke_live.py` (§11): G0 probe + ordering probe, read-only, no DB writes. Runs only with the opt-in flag.
