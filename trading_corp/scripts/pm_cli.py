@@ -40,6 +40,8 @@ async def _cmd_g0_validate(args) -> int:
 
 
 def _seed_wallets(args) -> list[str]:
+    if getattr(args, "only_wallets", None):
+        return [w.lower() for w in args.only_wallets]   # subset backfill (bypass roster) - deploy checkpoint
     roster = rosters.load_seed_roster(
         legacy_db_path=args.legacy_db, seed_yaml_path=args.seed_yaml, extra_wallets=args.wallets or [])
     return [r["wallet"] for r in roster]
@@ -114,7 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
         b = sub.add_parser(name, help=help_)
         b.add_argument("--legacy-db", default=rosters.LEGACY_DB_DEFAULT)
         b.add_argument("--seed-yaml", default=None)
-        b.add_argument("--wallets", nargs="*", default=None)
+        b.add_argument("--wallets", nargs="*", default=None, help="extra wallets ADDED to the roster union")
+        b.add_argument("--only-wallets", nargs="*", default=None, dest="only_wallets",
+                       help="backfill ONLY these wallets, bypassing the roster (deploy single-wallet checkpoint)")
         b.add_argument("--dry-run", action="store_true")
         b.set_defaults(func=(lambda a: _cmd_backfill(a, backfill=(name == "backfill"))), is_async=True)
 

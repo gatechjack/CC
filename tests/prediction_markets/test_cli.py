@@ -4,6 +4,7 @@ Loads the CLI by file path (it lives outside the package). Spec: §5, §11.
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,3 +53,12 @@ async def test_cli_rollup_and_report_json(tmp_path, capsys):
     assert pm.main(["--db", p, "report", "--min-resolved", "1", "--format", "json"]) == 0
     board = json.loads(capsys.readouterr().out)
     assert {"ufc", "mlb", "nba"} <= {r["category"] for r in board}
+
+
+@pytest.mark.skipif(not _CLI_PATH.exists(), reason="pm_cli.py not present in this tree")
+def test_cli_only_wallets_restricts_to_subset():
+    pm = _pm_cli()
+    a = SimpleNamespace(only_wallets=["0xAAA", "0xBBB"], legacy_db="/no/such.db", seed_yaml=None, wallets=None)
+    assert pm._seed_wallets(a) == ["0xaaa", "0xbbb"]     # bypasses roster -> single-wallet deploy checkpoint
+    a2 = SimpleNamespace(only_wallets=None, legacy_db="/no/such.db", seed_yaml=None, wallets=["0xCLI"])
+    assert pm._seed_wallets(a2) == ["0xcli"]             # roster path (empty legacy + cli extra)
