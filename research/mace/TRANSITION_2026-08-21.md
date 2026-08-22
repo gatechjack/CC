@@ -1,5 +1,33 @@
 # MACE Phase-1 — Transition Document for the Next Code Agent
 
+> ## ★★ STATUS UPDATE 2026-08-22 — P1 COMPLETE, DEPLOYED, PROVEN, PUSHED (supersedes the pre-deploy body below)
+>
+> The §2 blocker (P1.5) is **resolved and live**. Everything from §1 down describes the *pre-deploy*
+> state of 2026-08-21, kept as history — where it conflicts with this banner, **this banner wins**.
+>
+> - **prod-live `7150404` -> `398881b`** (FF: P1 -> P1.5 -> P1.4 -> tooling); **main -> `9ee74d9`** (additive:
+>   17 mace files + deploy_log append; BACKLOG untouched); **both pushed.** Box == git-truth `398881b`
+>   (blob-verified, zero drift).
+> - **Box runs the P1.5+P1.4 UNION.** config_hash UNCHANGED `3256226747af` (code-only). Engine restarted
+>   PID 809127 -> **850993 wrapper / 851007 python** @ 02:17 UTC. 6 rungs intact.
+> - **P1.5 PROVEN LIVE on its real trigger:** the 22:17-ET restart ran the daily-slots catch-up; snapshot
+>   + summary fired but the **ENTRY slot was GATED** (no eval, no order) — the exact off-hours phantom
+>   scenario, now correctly skipped.
+> - **P1.4** (manage None-tolerance) + **deploy-gate tooling** (`scripts/deploy_gate_battery.ps1`) shipped.
+> - **★ SAFETY (weekend):** MACE is **HALTED** (halt latch `halted:true`). `auto_execute` runs **TRUE**
+>   (`strategies.yaml`; a runtime false-toggle does NOT survive a restart) -> the **HALT latch is the
+>   persistent entry-block**; "re-arm" = **UN-HALT Monday**, not set-auto_execute. Persisting
+>   `auto_execute:false` needs a strategies.yaml edit + restart.
+> - **Rollback:** `/home/azureuser/mace_gate_bak_20260822_003557/rollback.sh` (newer than the §7 backup,
+>   which is still valid).
+> - **3 deferred items:** (a) gate-battery Gate-4 `-Apply` here-doc-over-stdin hang — 1-line fix; dry-run
+>   unaffected. (b) prod-live->main reconcile of the **7 poly-kalshi commits** (`570d6fc..7150404`) — own
+>   session. (c) optional `strategies.yaml auto_execute:false` persist — needs a restart.
+> - **The "NO MACE restart after 15:45 ET" constraint (§2/§3/§7) is LIFTED** — P1.5 makes post-15:45
+>   restarts safe (proven).
+>
+> ---
+
 _Written 2026-08-21 ~00:55 ET. Facts verified against the live box DB / repo this session, not recited from memory. Where this contradicts a prior verbal framing, the verified state below wins._
 
 ---
