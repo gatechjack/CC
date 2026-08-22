@@ -4,6 +4,8 @@ Everything here needs an **operator-run runner** (a box MUTATION) or Jack's pres
 
 Status legend: `[ ]` not yet run · `[R]` ready (runner written + validated) · `[done]` completed.
 
+**P1 BUILD STATUS (2026-08-22): package COMPLETE + box-verified — 47 passed / 1 skipped** (db, category tier-1+2, ingest incl §3A invariant+event-group, rosters, stats + both routines + scoreboard, pm_cli). Chain-of-custody sha256 match; isolation clean; legacy DB untouched. All that remains is on this list (mutations / Jack-present).
+
 ---
 
 ## 1. Prove `trading_corp/__init__.py` is INERT (deliberately, not by accident)
@@ -25,12 +27,12 @@ Status legend: `[ ]` not yet run · `[R]` ready (runner written + validated) · 
 
 ## 4. Live-API smoke test (`@pytest.mark.live_api`, opt-in only)
 - `test_smoke_live.py` (§11): G0 probe + ordering probe, read-only, no DB writes. Runs only with the opt-in flag.
-- `[ ]` written? not yet — build in Task 3; then queue the live run here.
+- `[R]` `test_smoke_live.py` WRITTEN (skipif `PM_LIVE_API`!=1; offline suite skips it). **Queued live run:** on the box, `PM_LIVE_API=1 <venv> -m pytest tests/prediction_markets/test_smoke_live.py` (G0 + ordering probe, read-only, no DB writes).
 
 ## 5. §12 acceptance items requiring deploy/cron
-- **Cron-slot pre-check (§10):** prove **03:00 UTC is clear** against the live box's `crontab -l` (azureuser AND root) + `systemctl list-timers` (known windows: tc-audit-reality ~06:00Z; MACE 15:45-15:58 ET; manage loop 09:35-15:55 ET). Read-only enumeration — CAN be done autonomously; the *decision to install* is queued.
-- Nightly `refresh --from-rosters` cron install (03:00 UTC) — **mutation, queued.**
-- `[ ]`
+- **Cron-slot pre-check (§10): `[done read-only 2026-08-22]`.** Findings: azureuser crontab = hourly `replay_audit_event` at :00 (top of EVERY hour incl 03:00; light, writes the LEGACY db not ours) + 08:30 divergence; root crontab = none; systemd timers near 03:00 = `update-notifier-download` 03:02, `e2scrub_all` 03:10, `systemd-tmpfiles-clean` 03:12 (trivial OS); `tc-audit-reality` 06:01 (clear); no MACE/engine timer (in-process, ~19:45-20:58Z entry / ~13:35-19:55Z manage). **RECOMMENDATION: schedule PM refresh at 03:20 UTC** (avoids the top-of-hour cron + the 03:02-03:12 OS-timer cluster; nothing else until 06:00). Separate DB means no lock contention even at 03:00, but 03:20 is cleanest.
+- Nightly `refresh` cron install (proposed **03:20 UTC**) — **mutation, queued.**
+- `[ ]` install decision + line is Jack's.
 
 ## 6. Deploy + prod-live advance
 - Additive file copy of the package + `pm_cli.py` + `config/pm_seed_wallets.yaml` to `/home/azureuser/trading_corp` (NO restart, NO existing-file edits, NO sudo) — **mutation, queued.**
