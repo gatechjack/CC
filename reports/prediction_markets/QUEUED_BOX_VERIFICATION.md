@@ -25,6 +25,14 @@ the Step-3/Step-4 backfill (DEPLOY_SEQUENCE.md):
 (2 live + 10 PCT-selected; Kickstand7/pako present) and the deploy `-C` path is correct (nested package
 layout; all 3 targets absent = clean first deploy). See §6.
 
+**★★ BLOCKING FINDING (2026-08-22 live reconciliation — `QUARANTINE_RECONCILE_2026-08-22.md`, §13A(f)):**
+running the ACTUAL §3A ingest code on 4 whales showed **clause (a) [loss-exceeds-cost] FALSE-POSITIVES on
+real single-game MLB losses** (SDTrading 5/462, xifutloong3 17/201) — `/closed-positions total_bought`
+understates cost on scale-ins — so the quarantine EXCLUDES REAL LOSSES and biases the scoreboard UP.
+Clause (b) [zero-cost phantom] is sound. Fed is NOT clean (Kickstand7 3/83; pako 0). **Ingestion (Steps 0-4)
+is safe; the RANKING is not trustworthy until Jack decides the clause-(a) rework** (proposals in the reconcile
+doc). This corrects the prior "four live categories are binary/clean" record (REALIZEDPNL_PROBE_RESULT.md).
+
 ---
 
 ## 1. Prove `trading_corp/__init__.py` is INERT (deliberately, not by accident)

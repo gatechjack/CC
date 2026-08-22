@@ -1,57 +1,56 @@
-# Net-verify target (Job 3, committed 2026-08-22) — QUEUED (runs at/after Step 3-4 backfill)
+# Net-verify target (Job 3, CORRECTED 2026-08-22 per Jack's reconciliation Issue 2) — QUEUED
 
-**Status: NOT run.** The manual net-verify requires ingested data; it executes at the Step-3 checkpoint
-(and again after the full Step-4 run). This doc COMMITS the target + the exact method in advance so the
-verification is decisive, not improvised.
+**Status: NOT run** (needs ingested data; executes at Step-3/Step-4). This doc commits the target + method.
+**Superseded pick:** the earlier version made Kickstand7 (Fed) the primary net-verify — WRONG per §12
+(which requires a BINARY-market whale, non-suspect rows) and doubly wrong now that live data shows the Fed
+quarantine fires (`QUARANTINE_RECONCILE_2026-08-22.md`). Corrected below.
 
-## Primary target: Kickstand7 (Fed) — Jack's directed pick
-- Wallet: **`0xd1acd3925d895de9aec98ff95f3a30c5279d08d5`**, name **Kickstand7**, seed-roster source
-  `polymarket_copy_trader/selected_whales` (PCT-selected). One of the 12 roster wallets.
-- Category: **fed**.
-- **Why Fed (Jack's rationale):** the negRisk realizedPnl quarantine (§3A) is the load-bearing NEW
-  logic in P1, and Fed is where it fires — Polymarket Fed band markets are `negRisk=true`
-  (winner-take-all across rate bands), so the losing bands carry `total_bought≈0` with large negative
-  `realized_pnl` (the exact shape that produced d1k21's spurious -$17M). Verifying the SCOREABLE net on
-  a Fed whale tests the quarantine + rollup on the path that actually matters, not a path where nothing
-  new happens. So far the quarantine is proven only on fixtures; this is its first check on live data.
-- **Why Kickstand7 specifically:** largest Fed footprint in the roster (prior probe: Fed n ~= 79 —
-  EMPIRICAL, not re-verified this session; see validation gap), and empirically clean-net (no -$17M
-  blowup), which makes over-exclusion (false positives) easy to spot. **Not** an evanng UFC slice (per
-  Jack — that slice is the unresolved §13A(a) three-way disagreement).
+## PRIMARY §12 net-verify target = SDTrading (MLB) — Jack's ruling
+- Wallet: **`0x16bb9951a36fce71e2ef57890b786145e0ba8492`**, name **SDTrading**, live-loop MLB whale
+  (`poly_kalshi_mlb/live_whales`), a genuine 1-of-12 roster member.
+- Category: **mlb** — BINARY single-game moneylines (two-outcome), the §12-required market type.
+- Measured (read-only reconciliation 2026-08-22): 505 closed positions, mlb=462, **7 suspect total (5 mlb)**.
 
-## Independent-sum method (genuine cross-check, not a tautology)
-1. Read-only pull Kickstand7's raw `/closed-positions` (all pages) — the same source `ingest.py` uses,
-   but pulled independently.
-2. **Reimplement the §3A predicate from scratch in the verify script** (do NOT import `ingest.py` — a
-   from-scratch reimplementation is what makes this an independent check of the logic, not a re-run of
-   it). The predicate, per row:
-   - `EPS = max(1.00, 0.01 * total_bought)`
-   - `row_suspect = (realized_pnl < -(total_bought + EPS))  OR  (total_bought <= 0 AND realized_pnl != 0)`
-   - **Event-group propagation:** if ANY row in a `(wallet, event_slug)` group is `row_suspect`, ALL
-     rows in that group are suspect (the winner too — the survivorship guard). NULL `event_slug` =
-     row-level only.
-3. Sum `realized_pnl` over the SURVIVORS (non-suspect) restricted to `category == 'fed'`.
-4. Compare to the DB after backfill: `SELECT net_realized_pnl, n_resolved, n_excluded, excluded_pnl,
-   data_quality FROM pm_category_stats WHERE wallet='0xd1acd3...05' AND category='fed';`
-   - **PASS** = independent survivor-sum == `net_realized_pnl` (to the cent), and independent
-     suspect-count == `n_excluded`, and independent excluded-sum == `excluded_pnl`.
-5. **Row-by-row spot audit** of 3-5 Fed events: confirm each event's classification is correct (a
-   pure-win event keeps its scoreable rows; an event with a `total_bought≈0` losing band is quarantined
-   as a whole group), so the aggregate match isn't masking two offsetting errors.
+## ★ SDTrading is NOT exclusion-free — the net-verify must reckon with the clause-(a) defect
+The reconciliation proved the 5 MLB exclusions are **clause (a) FALSE POSITIVES on real losing bets**
+(e.g. `mlb-sd-bos-2026-04-03` tb=26158.69 rp=-27962.12) — `/closed-positions total_bought` understates
+cost on scale-ins, so real losses read as "loss exceeds cost." Therefore a "scoreable-rows-only net
+matches independent sum" check would PASS while the scoreboard is WRONG (real losses dropped). The method
+below reconciles the FULL sum too, so the net-verify EXPOSES the defect instead of passing over it.
 
-## Complementary check (satisfies P1_PLAN §12's literal "BINARY-market whale" item)
-- Target: an MLB whale — **SDTrading `0x16bb9951a36fce71e2ef57890b786145e0ba8492`** (live-loop MLB),
-  category **mlb**. MLB game markets are BINARY (two-outcome moneyline) -> `realized_pnl` is per-leg
-  real, so the quarantine should exclude ~0 rows and the independent sum of ALL mlb rows should match
-  `net_realized_pnl` EXACTLY. This proves the base parse->ingest->rollup arithmetic with no quarantine
-  confounding, and — with a net-loser showing negative ROI — closes the §13A(a) UFC-reconciliation item
-  positively (§12).
-- Both checks run off the same Step-4 backfill; no extra pulls beyond the independent raw fetch.
+## Method (from-scratch reimplementation — a real cross-check, not importing ingest.py)
+1. Read-only pull SDTrading's raw `/closed-positions` (all pages), independently.
+2. Reimplement the §3A predicate FROM SCRATCH (EPS = max($1, 1%*total_bought); clause (a) loss-exceeds-cost;
+   clause (b) zero-cost/nonzero; event-group propagation by `event_slug`). Do NOT import `ingest.py`.
+3. **Three reconciliations (all must be stated):**
+   - **(A) FULL net** — independent sum of `realized_pnl` over ALL mlb rows == DB naive-all sum. Proves the
+     parse -> ingest -> store arithmetic with NO quarantine confounding. THIS is the true whale performance.
+   - **(B) SCOREABLE net** — independent sum over pnl_suspect=0 mlb rows == DB `net_realized_pnl`; independent
+     n_excluded/excluded_pnl == DB. Proves the §3A predicate + rollup wiring.
+   - **(C) THE GAP = (A) - (B)** — enumerate the excluded rows and CONFIRM they are real single-game losses
+     wrongly dropped by clause (a). This QUANTIFIES the §13A(f) scoreboard bias for a copy-relevant whale.
+4. **PASS criteria:** (A) and (B) both reconcile to the cent AND (C) is explained (each excluded row is a
+   real loss, not a phantom). A net-loser must show negative ROI on the FULL net. This closes §13A(a)
+   (UFC reconciliation) positively via a clean binary whale, per §12.
+
+## Step-3 preview wallet stays Kickstand7 — rationale CORRECTED to match the data
+Kickstand7 `0xd1acd3925d895de9aec98ff95f3a30c5279d08d5` remains the Step-3 single-wallet checkpoint —
+now on EVIDENCE, not assumption:
+- genuine 1-of-12 roster member; largest Fed footprint (83 rows);
+- **exercises the quarantine on live data** — 104 suspect (72 clause-b negRisk phantoms + 3 Fed incl a dust
+  leg propagating to 2 winners; nba-mvp/ufc-281 futures). My earlier "quarantine fires on Kickstand7 Fed"
+  claim was UNEVIDENCED when written (I reasoned it from negRisk shape; it also CONTRADICTED the then-record
+  "Fed proven clean"). The probe confirms it fires — and in doing so exposes the clause-(a) defect. So Step 3
+  is now a DIAGNOSTIC checkpoint: inspect whether clause (a)/propagation OVER-exclude before trusting ranking.
+
+## Quarantine's first live exercise (Jack's question — answered)
+No longer fixture-only: the actual ingest code (row invariant + event-group propagation) ran on live rows in
+the read-only reconciliation (propagation fired 29x on Kickstand7, 1x on each MLB whale). No contrived wallet
+needed. But the first exercise REVEALS the clause-(a) defect (§13A(f)) — so the ranking must not be trusted
+until that is resolved; ingestion (data capture, advisory `pnl_suspect`) is safe.
 
 ## Validation gap (honest)
-- Nothing here has run. Fed `n≈79` and "clean-net" are from the earlier realizedPnl probe, not
-  re-measured this session. The actual Fed `n_resolved`, `n_excluded`, `excluded_pnl`, and
-  `data_quality` for Kickstand7 are unknown until the Step-3 backfill — which is exactly what the
-  Step-3 checkpoint surfaces for Jack's inspection.
+Nothing here has run against a deployed DB. The reconciliation numbers above are read-only-probe measured
+(not from a backfill). The net-verify itself is queued to Step-3/Step-4.
 
-Cross-ref: DEPLOY_SEQUENCE.md (Step 3 = Kickstand7 single-wallet), P1_PLAN.md §3A + §12 + §13A(a).
+Cross-ref: `QUARANTINE_RECONCILE_2026-08-22.md`, P1_PLAN §3A + §12 + §13A(a)/(f), DEPLOY_SEQUENCE.md.

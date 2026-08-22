@@ -3,6 +3,13 @@
 **Status: NOT executed. Every step below is a queued MUTATION** (box file copy, PM-DB writes,
 crontab edit, git advance). Read-only steps are marked `[RO]`. Nothing here has run.
 
+> **★★ BLOCKING (2026-08-22, `QUARANTINE_RECONCILE_2026-08-22.md` / §13A(f)):** live reconciliation showed
+> §3A **clause (a)** false-positives on real single-game MLB losses (excludes real losses -> biases the
+> scoreboard UP). **Steps 0-4 (deploy + INGEST) are safe** — data is captured, `pnl_suspect` is advisory —
+> but **Step 5's report/ranking is NOT trustworthy until Jack decides the clause-(a) rework.** Do not use the
+> scoreboard for whale selection until then. Step 3 is now a DIAGNOSTIC checkpoint (confirm the clause-(a)
+> over-exclusion on real data before ranking). Clause (b) is sound.
+
 **Pre-flight facts verified read-only 2026-08-22 (this session):**
 - Box uses the **nested** package layout: `/home/azureuser/trading_corp/trading_corp/` (package)
   inside repo root `/home/azureuser/trading_corp`. All three deploy targets land correctly and are
@@ -72,9 +79,11 @@ and below).
 `... pm_cli.py report --min-resolved 10 --routine net_roi`
 `... pm_cli.py report --min-resolved 10 --routine recency_weighted`
 `... pm_cli.py report --format json` (must parse)
-- Acceptance (P1_PLAN §12): category coverage >=85% non-unknown; a net-loser shows negative ROI; the
-  **Kickstand7 binary net-verify** matches an independent API sum (NET_VERIFY_TARGET.md) — closes the
-  §13A(a) UFC-reconciliation item positively.
+- Acceptance (P1_PLAN §12, CORRECTED): coverage bar is now scoped to the four LIVE categories (§13A(e)),
+  not ">=85% non-unknown over all rows"; a net-loser shows negative ROI; the **SDTrading (MLB, binary)
+  net-verify** matches an independent API sum on the FULL net (NET_VERIFY_TARGET.md) — closes §13A(a).
+- **★ GATED:** per the BLOCKING banner (§13A(f)), the ranking is NOT trustworthy until the clause-(a) rework
+  is decided — clause (a) drops real single-game losses. Report may be RUN for inspection; do not act on it.
 
 ## Step 6 — nightly cron install (MUTATION: crontab edit, append-only)
 Recommended slot **03:20 UTC** (clear of the top-of-hour `replay_audit_event` cron and the 03:02-03:12
@@ -105,15 +114,17 @@ Append preserving all existing lines:
   `data/prediction_markets.db*` in place (inert once the package is gone — a separate file no engine
   reads). NO restart, NO sudo, NO existing-file edits. Git: reset the prod-live advance if step 7 ran.
 
-## Why Kickstand7 for the Step-3 checkpoint
+## Why Kickstand7 for the Step-3 checkpoint (rationale CORRECTED 2026-08-22 to match live data)
 - **1-of-12 roster member** (PCT-selected) -> Step 3 is a true preview of the full run, not an
-  off-roster canary. (d1k21 — the -$17M/-168k negRisk case — is a G0 loser, NOT in the roster;
-  running it would test the quarantine but not the actual roster.)
-- **Fed whale** -> its negRisk band positions trip the §3A invariant, so `n_excluded` is non-zero and
-  inspectable: this is the single place the load-bearing new logic runs on LIVE box data (so far it is
-  proven only on fixtures). A clean-ish wallet also makes over-exclusion (false positives) easy to spot.
+  off-roster canary. (d1k21 — the -$17M/-168k negRisk case — is a G0 loser, NOT in the roster.)
+- **Exercises the quarantine on live data — EVIDENCED, not assumed** (`QUARANTINE_RECONCILE_2026-08-22.md`):
+  104 suspect rows (72 clause-b negRisk phantoms across politics/`nba-mvp`/`ufc-281`; **3 of 83 Fed** incl a
+  tb=0/rp=-0.50 dust leg on `fed-interest-rates-january-2025` propagating to 2 winner legs, $20,121 excluded).
+  My original "trips the invariant" wording was UNEVIDENCED when written AND contradicted the then-record
+  "Fed proven clean"; the probe confirms it fires. **NOTE — the exercise revealed the clause-(a) defect** (see
+  the BLOCKING banner): Step 3's inspection is DIAGNOSTIC — verify whether clause (a)/propagation OVER-exclude
+  (esp. compare vs an MLB whale, where clause (a) misfires on real losses) before trusting any ranking.
 - **Largest Fed footprint** in the roster -> most data to judge the quarantine's precision.
-- **Doubles as the net-verify target** (NET_VERIFY_TARGET.md) — one ingest serves both the deploy
-  checkpoint and the independent-sum reconciliation.
-- Explicitly **NOT an evanng UFC slice** (per Jack) — that slice is the unresolved §13A(a) three-way
-  disagreement; a poor first-inspection choice.
+- **Net-verify target MOVED to SDTrading (MLB, binary)** per §12 + Jack's Issue-2 ruling — Kickstand7 (Fed,
+  negRisk, quarantine-firing) is the wrong clean-baseline target. See NET_VERIFY_TARGET.md.
+- Explicitly **NOT an evanng UFC slice** (per Jack) — the unresolved §13A(a) three-way disagreement.
