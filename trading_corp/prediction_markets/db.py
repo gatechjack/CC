@@ -134,11 +134,15 @@ MIGRATION_001: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_cp_wallet_won_cat  ON pm_closed_position(wallet, won, category)",
     # serves the §3A scoreable predicate (WHERE pnl_suspect = 0, per wallet+category):
     "CREATE INDEX IF NOT EXISTS ix_pm_cp_scoreable       ON pm_closed_position(wallet, category, pnl_suspect)",
+    # event-group quarantine (§3A) groups on (wallet, event_slug); index it so the
+    # ingest group-propagation pass + any rollup grouping never full-scans the table:
+    "CREATE INDEX IF NOT EXISTS ix_pm_cp_wallet_event    ON pm_closed_position(wallet, event_slug)",
     """
     CREATE TABLE IF NOT EXISTS pm_category_stats (
         wallet            TEXT NOT NULL,
         category          TEXT NOT NULL,
-        n_resolved        INTEGER,                    -- scoreable rows only
+        n_resolved        INTEGER,                    -- COUNT of SCOREABLE rows (pnl_suspect=0) only;
+                                                       -- n_resolved + n_excluded == every row in the (wallet,category) slice
         wins              INTEGER,
         losses            INTEGER,
         win_rate          REAL,
@@ -197,7 +201,10 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
 
 
 def _current_version(conn: sqlite3.Connection) -> int:
-    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+    # version is PRIMARY KEY: prevents duplicate/accumulating rows so MAX(version) is
+    # never ambiguous, and re-inserting an already-applied version would fail loudly
+    # (init_db already skips applied versions, so this is a schema-level idempotency guard).
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)")
     row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
     return int(row["v"]) if row is not None and row["v"] is not None else 0
 
