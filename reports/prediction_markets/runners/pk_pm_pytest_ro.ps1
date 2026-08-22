@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $W = "C:\Users\AA Incorporado\cc-prediction-markets-wt"
 $tar = Join-Path $env:TEMP 'pm_tree.tgz'
 if (Test-Path $tar) { Remove-Item $tar -Force }
-tar.exe -czf $tar -C $W trading_corp/prediction_markets tests/prediction_markets tests/conftest.py pyproject.toml trading_corp/__init__.py
+tar.exe -czf $tar -C $W trading_corp/prediction_markets trading_corp/data tests/prediction_markets tests/conftest.py pyproject.toml trading_corp/__init__.py
 $localDb  = (Get-FileHash (Join-Path $W 'trading_corp\prediction_markets\db.py') -Algorithm SHA256).Hash.ToLower()
 $localCat = (Get-FileHash (Join-Path $W 'trading_corp\prediction_markets\category.py') -Algorithm SHA256).Hash.ToLower()
 Write-Host "LOCAL sha256 db.py       = $localDb"

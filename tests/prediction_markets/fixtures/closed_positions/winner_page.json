@@ -1,0 +1,5 @@
+[
+  {"proxyWallet": "0xwinnerwhale", "conditionId": "0xwp_ufc_1", "asset": "1", "slug": "ufc-echo-foxtrot-2026-06-01", "eventSlug": "ufc-echo-foxtrot-2026-06-01", "title": "UFC Echo vs Foxtrot", "outcome": "Echo", "outcomeIndex": 0, "avgPrice": 0.50, "totalBought": 500.0, "realizedPnl": 500.0, "curPrice": 1.0, "endDate": "2026-06-01", "timestamp": 1748700000},
+  {"proxyWallet": "0xwinnerwhale", "conditionId": "0xwp_mlb_1", "asset": "2", "slug": "mlb-golf-hotel-2026-06-02", "eventSlug": "mlb-golf-hotel-2026-06-02", "title": "MLB G vs H", "outcome": "H", "outcomeIndex": 1, "avgPrice": 0.45, "totalBought": 450.0, "realizedPnl": 550.0, "curPrice": 1.0, "endDate": "2026-06-02", "timestamp": 1748800000},
+  {"proxyWallet": "0xwinnerwhale", "conditionId": "0xwp_nba_1", "asset": "3", "slug": "nba-india-juliet-2026-06-03", "eventSlug": "nba-india-juliet-2026-06-03", "title": "NBA I vs J", "outcome": "I", "outcomeIndex": 0, "avgPrice": 0.62, "totalBought": 620.0, "realizedPnl": 380.0, "curPrice": 0.95, "endDate": "2026-06-03", "timestamp": 1748900000}
+]

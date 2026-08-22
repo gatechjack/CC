@@ -1,0 +1,4 @@
+[
+  {"proxyWallet": "0xcleanwhale", "conditionId": "0xcb_mlb_win", "asset": "1", "slug": "mlb-kilo-lima-2026-07-01", "eventSlug": "mlb-kilo-lima-2026-07-01", "title": "MLB K vs L", "outcome": "L", "outcomeIndex": 1, "avgPrice": 0.50, "totalBought": 500.0, "realizedPnl": 500.0, "curPrice": 1.0, "endDate": "2026-07-01", "timestamp": 1751328000},
+  {"proxyWallet": "0xcleanwhale", "conditionId": "0xcb_ufc_loss", "asset": "2", "slug": "ufc-mike-november-2026-07-02", "eventSlug": "ufc-mike-november-2026-07-02", "title": "UFC M vs N", "outcome": "M", "outcomeIndex": 0, "avgPrice": 0.65, "totalBought": 650.0, "realizedPnl": -650.0, "curPrice": 0.0, "endDate": "2026-07-02", "timestamp": 1751414400}
+]
