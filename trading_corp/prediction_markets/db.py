@@ -120,7 +120,7 @@ MIGRATION_001: list[str] = [
         cur_price       REAL,
         won             INTEGER,                      -- cur_price >= 0.9 (stored at ingest)
         pnl_suspect     INTEGER NOT NULL DEFAULT 0,   -- §3A FINAL group-aware quarantine flag (clause (b) only)
-        suspect_reason  TEXT,                         -- NULL | row_invariant | event_group
+        suspect_reason  TEXT,                         -- NULL | row_invariant | event_group | no_cost_basis
         pnl_anomaly     INTEGER NOT NULL DEFAULT 0,   -- §3A clause (a) DEMOTED 2026-08-22 (§13A(f)): RECORDED, NOT excluded/propagated
         anomaly_reason  TEXT,                         -- NULL | loss_exceeds_cost
         shares_derived  REAL,                         -- total_bought / avg_price (NULL-safe)

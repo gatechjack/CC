@@ -90,11 +90,10 @@ async def test_scoreboard_chalk_and_contested_flags(tmp_path):
     assert board[0]["score"] is not None
 
 
-async def test_zero_or_null_avg_price_no_div_by_zero(tmp_path):
-    # §13 dec 11 guard: a SCOREABLE row with avg_price=0 -> cost_basis=0. If it is the only scoreable
-    # row, SUM(cost_basis)=0 -> roi MUST be None (guarded), never a ZeroDivisionError. roi_notional
-    # still computes (uses total_bought). Proves no scoreable row reaches the denominator with a
-    # zero/null cost basis and breaks it.
+async def test_cost_basis_zero_is_quarantined_ruling_a(tmp_path):
+    # Ruling A (Jack, 2026-08-22): a row with avg_price=0 -> cost_basis=0 (no knowable cost) is
+    # QUARANTINED (suspect_reason='no_cost_basis'), excluded from stats. The rollup must not raise
+    # (div-by-zero guard remains as belt-and-braces: no scoreable rows -> cb=0 -> roi None).
     rows = [
         {"proxyWallet": "0xz", "conditionId": "0xz1", "slug": "ufc-z-y-2026-01-01", "eventSlug": "ufc-z-y-2026-01-01",
          "avgPrice": 0.0, "totalBought": 100.0, "realizedPnl": -50.0, "curPrice": 0.0, "timestamp": 1},
@@ -103,12 +102,11 @@ async def test_zero_or_null_avg_price_no_div_by_zero(tmp_path):
     with db.connect(p) as conn:
         stats.rollup(conn, now_ts=NOW)            # must not raise
         r = conn.execute("SELECT * FROM pm_category_stats WHERE category='ufc'").fetchone()
-        row = conn.execute("SELECT pnl_suspect, cost_basis FROM pm_closed_position").fetchone()
-    assert row["pnl_suspect"] == 0 and abs(row["cost_basis"]) < 1e-12   # scoreable, zero cost
-    assert r["n_resolved"] == 1
-    assert abs(r["cost_basis"]) < 1e-12
-    assert r["roi"] is None                                            # guarded -> no div-by-zero
-    assert abs(r["roi_notional"] - (-50.0 / 100.0)) < 1e-6            # notional still computable
+        row = conn.execute("SELECT pnl_suspect, suspect_reason, cost_basis FROM pm_closed_position").fetchone()
+    assert row["pnl_suspect"] == 1 and row["suspect_reason"] == "no_cost_basis"   # QUARANTINED (Ruling A)
+    assert r["n_resolved"] == 0 and r["n_excluded"] == 1                          # excluded from stats
+    assert abs(r["excluded_pnl"] - (-50.0)) < 1e-6
+    assert r["roi"] is None and r["roi_notional"] is None                         # no scoreable rows -> both None
 
 
 async def test_notional_vs_cost_roi_both_retrievable_and_distinct(tmp_path):

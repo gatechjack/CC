@@ -89,14 +89,16 @@ via the ACTUAL ingest path, across the seed roster. `_edge_factor = 1.0 + clip(r
   is ~2-5% of notional (e.g. tb=578,231 / realized +28,529 = 4.9%), so cost-ROI ~= 5-10% (single digits) —
   nowhere near +200%; they will not pin. Data-backed, not assumed. A spaced re-run would fully close coverage.
 
-## OPEN ITEM (logged, NOT chased — per scope discipline) — cost_basis<=0 on scoreable rows
-The probe found **57 scoreable rows with cost_basis<=0** (avg_price<=0 or NULL, total_bought>0). The
-div-by-zero guard (`SUM(cost_basis)<=0 -> roi None`) is proven + tested, so the denominator never breaks.
-BUT such a row contributes its `net_realized` to the numerator while adding 0 to the cost denominator ->
-it can UP-bias a category's cost-ROI (a winning zero-cost-basis row inflates ROI). 57 rows across the roster
-is small but non-zero and the direction is UP (violates §13 dec 10). Handling (exclude/flag scoreable rows
-with cost_basis<=0 from the cost-ROI, or investigate the avg_price=0/NULL source) is DEFERRED to a later
-pass — logged here with the count so it is not rediscovered. Logged as P1_PLAN §13A(h).
+## cost_basis<=0 on scoreable rows — RESOLVED (Jack's RULING A = QUARANTINE, 2026-08-22)
+The probe found **57 scoreable rows with cost_basis<=0** (avg_price<=0 or NULL, total_bought>0). Such a
+row contributes its `net_realized` to the numerator while adding 0 to the cost denominator -> UP-biases a
+category's cost-ROI (violates §13 dec 10). **Jack ruled QUARANTINE.** Implemented:
+`ingest.apply_no_cost_basis_quarantine` marks any `cost_basis<=0` row `pnl_suspect=1` /
+`suspect_reason='no_cost_basis'`, excluded from stats + scoring. Applied AFTER event-group propagation ->
+row-level ONLY (no propagation: a missing cost basis is a per-row artifact, not a negRisk-event
+phenomenon). The div-by-zero guard remains as belt-and-braces. Tests:
+`test_cost_basis_zero_is_quarantined_ruling_a`, `test_no_cost_basis_quarantine_does_not_propagate`.
+Logged as P1_PLAN §13A(h).
 
 Reproduce: `cc\pk_total_bought_ro.ps1` -> `pm_total_bought_probe.py`; `cc\pk_clip_saturation_ro.ps1` ->
 `pm_clip_saturation_probe.py`. Cross-ref: P1_PLAN §7 + §13A(g)/(h), QUARANTINE_RECONCILE_2026-08-22.md, NET_VERIFY_TARGET.md.

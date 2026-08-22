@@ -4,10 +4,13 @@ Pure helpers (invariant, event-group quarantine, row mapping) + injectable async
 orchestration (HTTP client, DB connection, clock, tier-2 fetch all injected) so tests
 run offline with no network and no real DB.
 
-The §3A quarantine is applied HERE at ingest, in two stages (clause (b) ONLY — see §13A(f)):
+The §3A quarantine is applied HERE at ingest, in three stages (clause (b) ONLY — see §13A(f)):
   1. row-level clause (b) [zero-cost/nonzero-realized] -> pnl_suspect / suspect_reason='row_invariant'
   2. event-group propagate -> a suspect row taints its whole (wallet, event_slug) group;
      clean siblings get suspect_reason='event_group' (closes the winner-survives gap).
+  3. no-cost-basis quarantine (Ruling A, §13A(h)) -> a row with cost_basis<=0 (avg_price<=0/NULL, no
+     knowable cost) -> pnl_suspect / suspect_reason='no_cost_basis'. Row-level, NO propagation; applied
+     AFTER stage 2 so it never triggers group propagation.
 Clause (a) [loss-exceeds-cost] is DEMOTED to a non-excluding, non-propagated anomaly flag
 (pnl_anomaly / anomaly_reason='loss_exceeds_cost') 2026-08-22: total_bought understates cost on
 scale-in rows, so it false-flags real losses; recorded for investigation, never excluded from stats.
@@ -82,6 +85,19 @@ def apply_event_group_quarantine(records: list[dict]) -> None:
                 if not r["pnl_suspect"]:
                     r["pnl_suspect"] = 1
                     r["suspect_reason"] = "event_group"
+
+
+def apply_no_cost_basis_quarantine(records: list[dict]) -> None:
+    """Ruling A (Jack, 2026-08-22): a scoreable row with `cost_basis <= 0` (avg_price<=0/NULL, so no
+    KNOWABLE USDC cost) cannot yield a meaningful return-on-cost -> quarantine it (`pnl_suspect=1`,
+    `suspect_reason='no_cost_basis'`). Row-level ONLY: a missing cost basis is a per-row data artifact,
+    not a negRisk-event phenomenon, so it does NOT propagate to event siblings (they may have valid cost).
+    Applied AFTER `apply_event_group_quarantine`, and only on rows not already suspect, so it never
+    triggers propagation and never overwrites a 'row_invariant'/'event_group' reason."""
+    for r in records:
+        if not r["pnl_suspect"] and (r.get("cost_basis") or 0.0) <= 0:
+            r["pnl_suspect"] = 1
+            r["suspect_reason"] = "no_cost_basis"
 
 
 def _f(v: Any) -> float:
@@ -200,6 +216,7 @@ async def backfill_wallet(conn, wallet: str, *, client, now_ts: int, fetch_event
         records.append(cp_to_record(cp, cat, src, now_ts))
     await _categorize(records, fetch_events=fetch_events)
     apply_event_group_quarantine(records)
+    apply_no_cost_basis_quarantine(records)   # Ruling A: exclude cost_basis<=0 rows (row-level, no propagation)
     n = upsert_closed_positions(conn, records)
     _stamp_whale(conn, wallet, now_ts, backfill=backfill)
     conn.commit() if hasattr(conn, "commit") else None

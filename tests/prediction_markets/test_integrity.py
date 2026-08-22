@@ -78,6 +78,22 @@ def test_clause_a_flags_but_not_excluded_or_propagated():
     assert all(r["pnl_suspect"] == 0 for r in recs)          # ...and does NOT propagate to its sibling
 
 
+def test_no_cost_basis_quarantine_does_not_propagate():
+    # Ruling A: avg_price=0 -> cost_basis=0 -> no_cost_basis quarantine, but it must NOT taint a valid
+    # sibling in the same event (missing cost is a per-row artifact, not a negRisk-event phenomenon).
+    valid = ingest.cp_to_record(_cp("0x1", "ufc-x-y-2026-01-01", 100.0, 50.0, cur=1.0), "ufc", "slug_prefix", NOW)
+    nocost = ingest.cp_to_record(
+        ClosedPositionRow.from_api({"proxyWallet": "0xw", "conditionId": "0x2", "slug": "ufc-x-y-2026-01-01",
+                                    "eventSlug": "ufc-x-y-2026-01-01", "avgPrice": 0.0, "totalBought": 100.0,
+                                    "realizedPnl": -20.0, "curPrice": 0.0, "timestamp": 1}), "ufc", "slug_prefix", NOW)
+    recs = [valid, nocost]
+    assert nocost["cost_basis"] == 0.0 and nocost["pnl_suspect"] == 0    # not yet quarantined at row level
+    ingest.apply_event_group_quarantine(recs)                            # no clause-(b) suspect -> no propagation
+    ingest.apply_no_cost_basis_quarantine(recs)                          # Ruling A pass
+    assert valid["pnl_suspect"] == 0                                     # valid sibling stays SCOREABLE
+    assert nocost["pnl_suspect"] == 1 and nocost["suspect_reason"] == "no_cost_basis"
+
+
 # ---- clause (b) event-group quarantine (unchanged: winner-survives guard) ----
 
 def _records_from(name):
