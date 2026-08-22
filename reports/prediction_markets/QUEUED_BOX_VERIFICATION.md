@@ -4,7 +4,26 @@ Everything here needs an **operator-run runner** (a box MUTATION) or Jack's pres
 
 Status legend: `[ ]` not yet run · `[R]` ready (runner written + validated) · `[done]` completed.
 
-**P1 BUILD STATUS (2026-08-22): package COMPLETE + box-verified — 47 passed / 1 skipped** (db, category tier-1+2, ingest incl §3A invariant+event-group, rosters, stats + both routines + scoreboard, pm_cli). Chain-of-custody sha256 match; isolation clean; legacy DB untouched. All that remains is on this list (mutations / Jack-present).
+**P1 BUILD STATUS (2026-08-22): package COMPLETE + box-verified — 48 passed / 1 skipped** (db, category tier-1+2, ingest incl §3A invariant+event-group, rosters, stats + both routines + scoreboard, pm_cli incl `--only-wallets`). Chain-of-custody sha256 match; isolation clean; legacy DB untouched. All that remains is on this list (mutations / Jack-present).
+
+## ★ VALIDATION GAP — READ FIRST (honest scope of what "green" proves)
+**48/48 green is ON FIXTURES + offline logic. No backfill has ingested a single live row.** The tests
+prove the parse/quarantine/rollup/ranking LOGIC is correct against hand-built fixtures; they do NOT
+prove anything about the real data. Everything DATA-dependent is still UNKNOWN and only resolves after
+the Step-3/Step-4 backfill (DEPLOY_SEQUENCE.md):
+- **Real category coverage vs the §12 ≥85%-non-unknown bar** — unmeasured (fixtures are hand-picked).
+  Live tier-2 tail-resolution was spot-checked read-only (8% of 504 tier-1-unknowns; EVENTS_TAG_SCHEMA.md
+  Task 1e), but coverage over the FULL row set per wallet is unknown until backfill.
+- **Real exclusion counts + the >10% `data_quality` contamination flag** — unmeasured. Whether the §3A
+  quarantine fires at the right rate on live Fed negRisk data is exactly what Step 3 (Kickstand7) surfaces.
+- **Manual net-verify (Kickstand7 Fed + the MLB clean exact-match)** — NOT run; QUEUED (NET_VERIFY_TARGET.md).
+- **Idempotency / ≥3,000-row landing / per-wallet isolation on real pulls** — asserted by tests on
+  fixtures + mocks, not observed on the live API.
+- **Live-API smoke (§4 below)** — never run (opt-in flag).
+
+**Closed read-only this session (no longer gaps):** the 12-wallet seed roster RESOLVES on the box
+(2 live + 10 PCT-selected; Kickstand7/pako present) and the deploy `-C` path is correct (nested package
+layout; all 3 targets absent = clean first deploy). See §6.
 
 ---
 
@@ -34,11 +53,26 @@ Status legend: `[ ]` not yet run · `[R]` ready (runner written + validated) · 
 - Nightly `refresh` cron install (proposed **03:20 UTC**) — **mutation, queued.**
 - `[ ]` install decision + line is Jack's.
 
-## 6. Deploy + prod-live advance
-- Additive file copy of the package + `pm_cli.py` + `config/pm_seed_wallets.yaml` to `/home/azureuser/trading_corp` (NO restart, NO existing-file edits, NO sudo) — **mutation, queued.**
-- On-box run order: `g0-validate` → `backfill --from-rosters --dry-run` → `backfill --from-rosters` → `report`.
-- prod-live advance (commit deployed artifacts) — **mutation, queued.**
-- `[ ]`
+## 6. Deploy + prod-live advance  (pre-staged 2026-08-22 — full runbook in DEPLOY_SEQUENCE.md)
+- `[R]` **Deploy runner** `cc\pk_pm_deploy.ps1` — additive file copy of the package + `pm_cli.py` +
+  `config/pm_seed_wallets.yaml` to `/home/azureuser/trading_corp` (NO restart, NO existing-file edits,
+  NO sudo; prints local+box sha256 for chain-of-custody). Parser-validated, 0 non-ASCII, no BOM.
+- `[R]` **Rollback runner** `cc\pk_pm_rollback.ps1` — deletes the 3 PM paths + ONLY the PM cron line
+  (preserves all others); leaves the separate PM DB inert. Parser-validated, 0 non-ASCII, no BOM.
+- **Deploy `-C` path CONFIRMED read-only 2026-08-22:** box is the NESTED layout
+  (`/home/azureuser/trading_corp/trading_corp/`); all 3 targets ABSENT = clean first deploy;
+  `trading_corp/__init__.py` already on box (not shipped).
+- **On-box run order (CORRECTED flags — the CLI has NO `--from-rosters` flag; roster is the default):**
+  `g0-validate` -> `backfill --dry-run` -> **`backfill --only-wallets <Kickstand7>` (STOP, inspect)** ->
+  (Jack authorizes) -> `backfill` (all 12) -> `report` -> cron `refresh` @03:20 UTC. Single-wallet
+  checkpoint = Kickstand7 `0xd1acd3925d895de9aec98ff95f3a30c5279d08d5` (rationale: NET_VERIFY_TARGET.md).
+- **Roster RESOLVED on box read-only 2026-08-22:** size 12 (2 live MLB SDTrading/xifutloong3 + 10
+  PCT-selected incl Kickstand7/pako). This is the authoritative membership; re-confirm at Step-2 dry-run.
+- prod-live advance (commit deployed artifacts) + merge `prediction-markets-p1` -> durable
+  `prediction-markets` (NO main merge until cutover) — **git, queued (DEPLOY_SEQUENCE.md Steps 7-8).**
+- `[ ]` execution (Jack-gated).
 
 ---
-*Appended as the autonomous block proceeds. Anything I cannot verify read-only lands here.*
+*Appended as the autonomous/interim blocks proceed. Anything I cannot verify read-only lands here.*
+*2026-08-22 interim: pre-staged deploy+rollback runners + DEPLOY_SEQUENCE.md + NET_VERIFY_TARGET.md;
+paid Task-1 reporting debt (EVENTS_TAG_SCHEMA.md a-g index); no mutations.*
