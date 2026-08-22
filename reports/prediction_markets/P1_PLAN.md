@@ -1,0 +1,229 @@
+# Prediction Markets Platform — Phase 1 Plan (Data Foundation)
+
+**STATUS: BOARD-APPROVED 2026-08-22 (Jack). FINAL.** Execution NOT started — awaiting next instructions. First build act per §4: pass the branch-creation gate, confirm the prod-live tip with Jack, cut `prediction-markets`, and commit this plan + the vision spec to it as `reports/prediction_markets/{P1_PLAN.md,PLATFORM_VISION.md}`.
+
+**Session:** 2026-08-21 · planning worktree `cc-session-2026-08-21c-wt` (planning-session base was prod-live @ `7150404` — **STALE for build purposes; do NOT branch from it**). **Build branches per §4:** durable integration branch `prediction-markets` cut from the **CURRENT prod-live tip at build time, only after the §4 branch-creation gate passes and Jack confirms the tip**, + phase branch `prediction-markets-p1-2026-08-21` merging into it.
+**Mode:** PLAN ONLY. Nothing built/deployed/mutated. Legacy divisions (`poly_kalshi_mlb` live+armed, PCT paper farm) keep running untouched.
+
+---
+
+## 1. Context
+
+Jack is consolidating the legacy prediction-market copy divisions (`poly_kalshi_mlb` live MLB copy + PCT paper farm) into one config-driven **"Prediction Markets"** platform. The 2026-08-21 whale-scout session proved the blocker and its solution: the `/activity`-based scout method truncates at 5,000 rows (NBA/Fed scouts broke; whales falsely n=0), while **`data-api.polymarket.com/closed-positions` returns COMPLETE cross-category per-whale resolved history with DIRECT `realizedPnl`** (≥3,050 depth verified, never hit ceiling; same-day fresh). Phase 1 builds the data foundation on that endpoint: a new datastore + ingestion + the per-whale-per-category stats scoreboard the ad-hoc scouts couldn't build. Everything later (farm reorg, search, live sub-divisions, shared execution engine) reads from this foundation.
+
+Grounding read this session: the authoritative vision spec (pasted by Jack, §2 below), `reports/2026-08-21_whale_scouts/CLOSED_POSITIONS_API_FINDINGS.md` (branch `whale-scouts-research-2026-08-21` @ `f140bca`), full code exploration of both legacy divisions, memory anchors (`poly-closed-positions-data-foundation-2026-08-22`, `poly-kalshi-mlb-live-2026-08-16`, `ufc-scout-and-paper-add-2026-08-21`).
+
+---
+
+## 2. THE AUTHORITATIVE VISION (documented in full so nothing is lost — Jack's explicit requirement)
+
+> Source: Jack's pasted spec (content of `/areas/prediction-markets-platform.md`), design locked 2026-08-21 via a full requirements interview. This section is the durable record for P2/P3 sessions.
+
+**What this is.** Consolidates legacy `poly_kalshi_mlb` + PCT paper farm into ONE platform called "Prediction Markets". Legacy = the current live MLB division being replaced.
+
+**Entity model (locked vocabulary):**
+- **PREDICTION MARKETS** = one main-page tile → dashboard of SUB-DIVISIONS viewed by sub-division (flat cards, e.g. Jack-MLB, Karen-MLB, Jack-UFC). Sub-division detail page: its whales + OPEN trades + CLOSED trades.
+- **SUB-DIVISION** = an **(ACCOUNT, CATEGORY)** pair. One Kalshi-API account can own MULTIPLE sub-divisions. "Jack/Karen" were naming only — there is **NO person entity**. Categories: MLB, UFC, NBA, Fed Rates (extensible).
+- **FARM LEAGUE** = SEPARATE from divisions, organized by CATEGORY tabs. Each tab has TWO lists: (1) **WATCHLIST** = search results/candidates, does NOT paper-trade, but Analyze-able; (2) **PINNED PAPER LIST** = forward paper-trading, **ONE paper record per whale-category pair** (category-level, shared across all sub-divisions in that category — not duplicated per sub-division).
+- **FARM ENTITY = WHALE-CATEGORY pair. SUB-DIVISION ENTITY = ACCOUNT-CATEGORY pair. PROMOTION** = attach a whale-category to sub-division(s), **JOINED ON CATEGORY** (can't promote a UFC whale-category to an MLB sub-division). Same whale-category can attach to multiple sub-divisions independently, chosen 1/some/all at promote time.
+- **LIFECYCLE (locked):** search → category WATCHLIST → board review (ANALYZE button) → PIN to paper list (forward paper starts) → observe → PROMOTE (asks which sub-division(s) in that category: 1/some/all) → live; whale STAYS pinned while live (paper record keeps running alongside). REMOVE from a live sub-division drops ONLY that attachment (not back to farm — already pinned or re-findable). **CANNOT go watchlist→live directly; pin is mandatory** (pin-then-immediately-promote allowed).
+- **COPY BEHAVIOR:** live whale-category on a sub-division copies **ONLY that category's trades** (category-FILTERED copy — NEW; legacy PCT sim was category-agnostic). Signal → sizing/risk → execution are three SEPARATE concerns.
+
+**Shared Kalshi execution engine (key architectural decision):** ONE central config-driven engine — sub-divisions do NOT each execute. Each sub-division PASSES its trade to the shared engine, which sizes+places per that sub-division's CONFIG (risk, fixed-amount vs KELLY sizing, routing needs). Each sub-division keeps its OWN log of the trade + Kalshi trade content. Detailed execution/risk config = its own future thread, deferred.
+
+**Analyze button:** already LIVE on legacy PCT (Anthropic-API LLM whale analysis). Improve by wiring to `/closed-positions` for UNTRUNCATED full history. Runs on watchlist AND pinned whales.
+
+**Search (productize the ad-hoc scout):** per category tab, a button + basic filters runs a Polymarket-category search → adds to that tab's WATCHLIST. MUST include the two ranking routines already built (recency-weighted etc.) + net-scoring (SELL+REDEEM−BUY; **win% is chalk / rank on NET ROI** — hard-won scout lessons). Detailed filter spec = Phase 2.
+
+**Data foundation:** `/closed-positions` is THE record-keeping backbone (public, no auth, `user`/`limit≤50`/`offset`). Complete cross-category history, direct `realizedPnl`, per-market grain, same-day fresh. Fields: proxyWallet, conditionId, slug/eventSlug/title, outcome/outcomeIndex/asset, avgPrice (scale-ins collapsed), totalBought, realizedPnl, curPrice (≥0.9=won), endDate + timestamp (RESOLUTION time). Gaps: no entry timestamp (**NOT needed** — the old "15m lag" was an Apify-API artifact); no fee field (Poly fees ~0); category not a field (derive from eventSlug prefix ~85-90% + gamma tag-join `/markets?condition_ids=…&closed=true` for ambiguous). Sibling `/positions` = current OPEN positions (live mark). Architecture = `/closed-positions` for records + `/activity` for live copy-signal detection. ("Reconstruct-from-/trades" evaluated and DROPPED.)
+
+**Build strategy (locked):** GREENFIELD fresh build, REUSE legacy learnings/code (don't reinvent, build clean). Stand up ALONGSIDE legacy while it runs → CUTOVER → retire all legacy prediction-market divisions. **Cutover = a data migration, not a shared-DB merger.** Jack LEANS separate DB for Prediction Markets, legacy SQLite stays for crypto/stocks divisions. Trades through the shared engine as part of the Trading Corp app. Geoblock = DISREGARD for planning.
+
+**Phasing (locked):** **P1** = DB + `/closed-positions` ingestion + per-whale-per-category stats scoreboard. **P2** = farm reorg (category tabs, watchlist, pinned paper, search-to-watchlist, Analyze). **P3** = Model-B live structure (sub-divisions, account/API mgmt, category-filtered copy, shared execution engine + per-sub-division config, promote/remove, dashboard) — the money layer, last, on proven foundation.
+
+**FUTURE-PROOFING (P3, added 2026-08-21 — do NOT build in P1, do not preclude):** platform will need **multi-user auth**: full-admin (all divisions) + a **Prediction-Markets-only VIEWER role** (Jack's wife: view the ENTIRE PM division — all sub-divisions/accounts — but NO other Trading Corp divisions). **"User/login" (person who can view) is DISTINCT from "account" (a Kalshi API, a sub-division attribute).** P1's datastore/schema must not bake in single-user assumptions that would block a users/roles layer + PM-division-scoped access later.
+
+---
+
+## 3. DATASTORE DECISION (explicit early recommendation)
+
+**Recommendation: a NEW, SEPARATE SQLite file — `data/prediction_markets.db` (WAL, `busy_timeout`, `synchronous=NORMAL`) — accessed only by the new `trading_corp/prediction_markets/` package. Not Postgres. Not the legacy `data/trading_corp.db`.**
+
+**Why separate (Jack's lean, confirmed):**
+- **Isolation is the whole point of P1's safety story.** The legacy DB has a documented lock-contention history (2026-07-10 lock storm; 2026-08-21 orphaned-backup WAL pin). A separate file means P1 ingestion writes can NEVER contend with the live engine's writes. Zero shared locks, zero shared schema, zero migration risk to running divisions.
+- **Cutover becomes what the vision says it is** — a data migration (scripted reads from legacy `polymarket_round_trips`, `kalshi_round_trips WHERE division='poly_kalshi_mlb'`, `audit_event` → new schema), not a shared-DB merger.
+- **The P3 viewer-role constraint reinforces it:** a PM-scoped datastore + PM route namespace (`/partials/prediction-markets/…` already exists in `web/routes.py:516`) gives a natural access-scoping boundary; a future `pm_user`/`pm_role` layer lives inside the PM store without touching other divisions' data.
+
+**Why SQLite, not Postgres, for a platform meant to grow:**
+- Scale math: even 100 whales × ~5k closed positions = ~500k rows + rollups — years inside SQLite's comfort zone. Writes are batch (nightly refresh + backfills), P3 adds low-rate trade logs. No concurrent-writer pressure that WAL can't absorb.
+- Postgres costs a new service on the box (install, systemd, backups, upgrades, creds) with no capability P1–P3 needs. The box's ops tooling (file backup, sqlite ro probes, the sanctioned runner patterns) is SQLite-shaped.
+- **Escape hatch kept honest:** all DB access goes through one thin module (`prediction_markets/db.py`) with a clean repository-style surface — if P3+ ever outgrows SQLite, the swap surface is one file, and the schema (below) is engine-portable (no SQLite-isms beyond pragmas).
+
+**What breaks / is accepted with a separate store:**
+- No cross-DB SQL joins (e.g., dashboard views spanning legacy + new during the alongside period) — handled at app layer in P2; acceptable and temporary (legacy retires at cutover).
+- No atomic cross-DB transactions (a P3 consideration if the shared engine must write both stores in one atomic step — it shouldn't: PM owns its own trade log; documented, not solved here).
+
+**What cutover from legacy SQLite will require (planned now, executed at retirement):**
+1. Migration scripts: legacy paper records (`polymarket_round_trips` PCT rows) + live MLB records (`kalshi_round_trips` division rows + `audit_event poly_kalshi_order` payloads) → `pm_copy_trade`/history tables, with `division→sub_division` mapping and category backfilled.
+2. Roster translation: `agent_state` keys (`live_whales`, `selected_whales`/`pinned_whales`) → `pm_farm` pins + `pm_promotion` rows.
+3. Identity is already compatible: both systems key whales on **wallet address** (proven immune to display-name edits).
+4. Verify-then-retire: side-by-side totals (legacy vs migrated) before removing legacy divisions from config.
+
+**Single-user assumptions audit (the P3 constraint):** the P1 schema has no owner/operator column anywhere it would need to be retrofitted painfully; roles arrive later as additive tables (`pm_user`, `pm_role`, `pm_grant`) via the migration mechanism, and access enforcement lands at the web layer (P2/P3 routes), not in P1 data. Naming discipline locked now: **`pm_account` = Kalshi API account (execution attribute, P3); `pm_user` = login persona (view access, future)** — never conflated.
+
+---
+
+## 4. GIT / BRANCH STRATEGY (first-class, locked — peer to the datastore decision; P2/P3 agents inherit this, do not re-litigate)
+
+This is a MAJOR long-lived build (P1/P2/P3 over weeks, running alongside legacy until cutover) — **NOT the usual quick-branch → prod-live → done pattern.** Established at P1's first commit:
+
+1. **Durable integration branch `prediction-markets`** — the long-lived line the entire multi-phase build lands on. Created off the **CURRENT prod-live tip at branch-creation time** (the live stack, per [[prod-live-deploy-base-rule]]) — **NOT the planning-session tip `7150404`, which is stale**. Phase work happens on phase branches (`prediction-markets-p1-2026-08-21`, later `…-p2-…`, `…-p3-…`) which **merge into `prediction-markets`** — that stable branch is "the new platform as it grows" across all three phases. **Do NOT create three disconnected phase branches.**
+   **BRANCH-CREATION GATE (all three before cutting the branch, then confirm the tip with Jack):**
+   (a) **All pending MACE deploys have landed** (the P5 staged queue: P1.5 off-hours fix → deploy-gate tooling → P1.4 → prod-live advance) — prod-live must reflect the box;
+   (b) **Housekeeping complete** — worktrees clean, no orphans, prod-live reconciled (box ↔ git zero gap);
+   (c) **Base verified clean** — zero-drift check (on-box content diff of runtime files vs the prod-live tip, LF-md5 discipline) passes.
+   **Then report the candidate prod-live tip SHA to Jack and get explicit confirmation before `git branch prediction-markets <tip>`.** Do not use `7150404`.
+2. **Push to origin EARLY and continuously.** `prediction-markets` is pushed to origin/GitHub from the first commit and kept pushed. (a) It's the backup for a substantial multi-week build — not just a local worktree. (b) It's the source future P2/P3 agents PULL from: **the branch carries the plan + vision + phase evidence as committed docs** (first commit includes the vision spec + this plan under `reports/prediction_markets/` — e.g. `PLATFORM_VISION.md`, `P1_PLAN.md`), so the spec is reachable on the box/origin and the "spec only lived in another agent's memory, had to paste it" problem never recurs.
+3. **DO NOT merge to `main` until CUTOVER.** Until the platform actually replaces the legacy PM divisions it is a PARALLEL system, not production truth — `main` stays clean of the half-built platform. The merge to `main` happens ONCE, deliberately, at cutover — the same event that retires the legacy PM divisions. Cutover is a reviewable merge, not a gradual blur.
+4. **prod-live advances for DEPLOYED artifacts only.** P1's package + cron run on the box, so advance prod-live for those running artifacts per the standing rule — safe because P1 is purely additive (no restart, no touched files). The FULL development history lives on `origin/prediction-markets`, not only on prod-live.
+
+**Drift/conflict note:** P1 (and most of the platform) is greenfield — new files, not edits to shared code — so the long-lived branch carries near-zero merge-conflict risk in P1. **The watch point is P2/P3, when the new dashboard wires into the EXISTING web app (routes/nav/shared templates): from that point, reconcile `prediction-markets` against `main` actively to catch overlapping edits early.** Flagged as a standing P2/P3 coordination item.
+
+---
+
+## 5. Phase-1 architecture
+
+**New package `trading_corp/prediction_markets/`** — greenfield, standalone-process only. The engine never imports it in P1; it never imports the engine.
+
+| File | Responsibility |
+|---|---|
+| `__init__.py` | package marker + docstring |
+| `db.py` | DB path (`data/prediction_markets.db`, `PM_DB_PATH` env override), `connect()` (WAL/busy_timeout/synchronous=NORMAL, mirrors legacy `persistence/db.py:636` pragmas), `init_db()`, **numbered idempotent migrations + `schema_version` table** (clean versioned migrations — deliberately NOT legacy's `_maybe_add_column` pattern) |
+| `category.py` | two-tier category derivation: `derive_category_from_slug(event_slug)` via `SLUG_PREFIX_MAP` (mlb-, nba-, nfl-, ufc-, fed-, nhl-, atp-, wta-, cbb-, cs2-, fifwc-, …) → `derive_categories_batch()` gamma tag-join for unknowns (reuses `fetch_market_resolutions` incl. the `&closed=true` quirk + per-chunk error tolerance); stores `category_source ∈ {slug_prefix, gamma_tags, unknown}` |
+| `ingest.py` | `backfill_wallet` (paginate offset 0.. until short/empty page → categorize → upsert), `refresh_wallet` (v1 = full re-pull, idempotent upsert), `refresh_open_positions` (`/positions` → delete+insert per wallet), batch drivers with **per-wallet try/except isolation** (one wallet failing never aborts the batch) |
+| `stats.py` | SQL rollup → `pm_category_stats` (n, wins, losses, win_rate, net_pnl, total_bought, ROI, avg_bet, **avg_win_price** chalk detector, last_resolved_ts); the two ranking routines (§6); `query_scoreboard()` |
+| `rosters.py` | READ-ONLY loads from legacy `agent_state` (`poly_kalshi_mlb/live_whales`, `polymarket_copy_trader/selected_whales`+`pinned_whales` — normalize `wallet` vs `proxy_wallet` field variants like `roster_split.wallet_of()` does) + `config/pm_seed_wallets.yaml`; G0 known-loser list (addresses pulled from `SCOUT_RESULTS.md` on `whale-scouts-research-2026-08-21`: evanng, csgod, d1k21) |
+| `trading_corp/scripts/pm_cli.py` | argparse CLI: `g0-validate`, `backfill`, `refresh`, `rollup`, `repair-categories`, `report` — delegates only; no engine imports |
+
+**Reused legacy code (import, don't copy — all verified pure/engine-free):**
+- `trading_corp/data/polymarket_data_api_client.py` — `PolymarketDataAPIClient.fetch_closed_positions` (:452; **`ClosedPositionRow` verified to carry all 17 API fields incl. eventSlug/timestamp/realizedPnl — no client change needed**), `fetch_positions` (:439), `fetch_market_resolutions` (:477), Cloudflare-403 backoff (30/60/120/240/300s), 5xx retry, `Semaphore(5)`.
+- `trading_corp/data/kalshi_whale_stats.py` — `wilson_lcb_95`, `wilson_lcb_95_weighted`, `time_weighted_outcomes` (exp half-life + Kish n_eff), `_edge_factor` (1.0 + clip(roi, −0.5, +2.0)).
+- Legacy scorer entry points (`score_polymarket_whale`, `score_whale_from_audit`) are NOT called directly — verified impedance mismatch (they require `/activity`-derived `WhaleStats`/25-field `WhaleAuditReport`). P1 uses a thin adapter over the primitives instead (§6).
+
+**Touched existing files: ZERO.** (Only additions: new package, new CLI, new `config/pm_seed_wallets.yaml`, new tests.)
+
+---
+
+## 6. Schema (migration 001 — full DDL agreed; summary here)
+
+Core tables (all keys chosen to serve P2/P3 — see §8):
+
+- **`schema_version`** (version int) — migration bookkeeping.
+- **`pm_whale`** (wallet PK lowercase, user_name, first_seen_ts, last_backfill_ts, last_refresh_ts).
+- **`pm_closed_position`** — **PK (wallet, condition_id)**; slug, event_slug, title, **category, category_source**, outcome, outcome_index, avg_price, total_bought, realized_pnl *(CAN BE NEGATIVE)*, cur_price, **won = cur_price≥0.9** (stored at ingest), shares_derived (=total_bought/avg_price, NULL-safe), end_date, resolved_ts (unix), ingested_ts, updated_ts. Indices: (wallet), (category), (wallet, resolved_ts DESC), (wallet, won, category).
+- **`pm_category_stats`** — **PK (wallet, category)** ← *this row IS the future FARM-entity's record*; n_resolved, wins, losses, win_rate, net_realized_pnl, total_bought, roi, avg_bet, **avg_win_price**, last_resolved_ts, updated_ts. Index (category, roi DESC).
+- **`pm_open_position`** — PK (wallet, condition_id); from `/positions`; volatile (delete-then-insert per wallet per refresh, because the open set shrinks).
+- **`pm_score_snapshot`** — **PK (wallet, category, routine)**; score, wilson_lcb, edge_factor, params_json, computed_ts. Index (category, routine, score DESC). Routines: `net_roi`, `recency_weighted` (§6).
+
+**Documented-only (NOT created in P1; named now so P1 keys serve them):** `pm_farm` (wallet, category, pinned, watchlist — P2), `pm_paper_trade` (P2: forward paper record per whale-category, **with REAL entry/trade timestamps** — see non-preclusion below), `pm_account` (Kalshi API account — P3), `pm_sub_division` (account_id, category — P3), `pm_promotion` (wallet, category, sub_division_id — P3), `pm_copy_trade` (per-sub-division trade log, with real fill timestamps — P3), `pm_user`/`pm_role`/`pm_grant` (auth layer — future; additive migration).
+
+**Schema NON-PRECLUSION (Jack's ruling 2026-08-21):** for paper/live whales WE track, the platform must ALWAYS retain actual-trade history with REAL entry/trade timestamps, so entry-based recency is a first-class sortable option. P1's tables must not foreclose this — and they don't: tracked-trade history lives in its own additive tables (`pm_paper_trade`/`pm_copy_trade`, own migrations) keyed on the same (wallet, category); `pm_closed_position` (external resolution-grain history) and tracked-trade rows (entry-grain) coexist as distinct layers, and `pm_score_snapshot.params_json` already records which recency basis produced each score.
+
+---
+
+## 7. Ranking logic (the scoreboard's brain — legacy lessons carried)
+
+**NET scoring:** `realizedPnl` is direct per position (SELL+REDEEM−BUY equivalent, per the API). `roi = Σ realized_pnl / Σ total_bought` per (wallet, category). **Win% is displayed but never ranked on — chalk lesson.** Chalk detector: `avg_win_price ≥ 0.85` → chalk flag; `< 0.70` → contested-calls flag (Fed-scout `win_px` metric, now a first-class stats column).
+
+**The two ranking routines (both carried, both persisted to `pm_score_snapshot`):**
+1. **`net_roi`** (REDEEM-grounded lineage, Routine B): `wilson_lcb_95(wins, n) × _edge_factor(roi)`. Decision-unit == row grain (scale-ins pre-collapsed by the API — cleaner than legacy's clustering fix, same intent). Exclusion: `n < min_resolved` (default 10).
+2. **`recency_weighted`** (time-weighted lineage, Routine A): `time_weighted_outcomes` over `(won, ts)` with half-life (default 30d) → `wilson_lcb_95_weighted(weighted_rate, n_eff) × _edge_factor(roi)`. **RECENCY IS A SORTABLE, DATA-DEPENDENT OPTION, not one fixed definition (Jack's ruling 2026-08-21):** the routine takes an explicit `recency_basis` parameter, recorded in `params_json`. Basis `resolved_ts` is correct ONLY for externally-pulled unknown-whale history (all P1 data — resolution ts is all the API gives). Basis `entry_ts` becomes a first-class sortable option for paper/live whales WE track, as soon as tracked-trade tables with REAL entry/trade timestamps exist (P2/P3 — see §6/§9 non-preclusion). The scoreboard exposes recency basis as a sort/filter dimension, never hard-codes one.
+
+Implementation: thin `PMScoreAdapter` in `stats.py` calling the `kalshi_whale_stats` primitives directly (verified importable without engine deps) — reuse without dragging legacy report dataclasses.
+
+---
+
+## 8. Ingestion design
+
+**G0 VALIDATION GATE — runs FIRST, before any dependent build (HARD gate, ruled 2026-08-21):**
+The legacy comment (`seed_polymarket_watchlist_deep.py:57-62`) claims `/closed-positions` surfaces only positive-PnL positions (survivorship). **Plan-review grep (2026-08-21) of SCOUT_RESULTS.md + CLOSED_POSITIONS_API_FINDINGS.md + the scout session transcript found ZERO documented negative-`realizedPnl` (or `curPrice≈0`) observations — the concern is UNREMEDIATED in the record**, so G0 runs as the gate (not a quick confirmation). If positives-only were true, the whole scoreboard is chalk-biased garbage.
+`pm_cli g0-validate --from-known-losers`: pull pages for known net-losers (evanng −$13.7k / csgod −$9.5k UFC, d1k21 −$168k Fed; addresses from `SCOUT_RESULTS.md`), assert rows with `realized_pnl < 0` exist; also pull the same wallet twice to probe ordering stability. **Exit 1 = STOP-AND-REPORT to Jack — NO pre-authorized pivot; options (e.g. `/activity`+gamma reconstruction) are presented for decision at that point, not assumed.**
+
+**Backfill (per wallet, isolated):** upsert `pm_whale` → paginate `/closed-positions` limit=50 from offset 0 until short/empty page → slug-prefix categorize → gamma tag-join batch for unknowns (per-chunk failure ⇒ `unknown`, repairable) → upsert rows (INSERT OR REPLACE on PK) → stamp `last_backfill_ts` → rollup. ~60 calls/wallet; 12-wallet seed ≈ tens of seconds under `Semaphore(5)`.
+
+**Refresh v1 = full re-pull per wallet** (idempotent upserts make it correct regardless of API ordering) — nightly cron + on-demand CLI. Incremental (stop at first fully-known page) is a P2 optimization gated on the G0 ordering probe.
+
+**Open positions:** `/positions` per wallet on each refresh → delete+insert.
+
+**Rollup:** single SQL `INSERT OR REPLACE … SELECT … GROUP BY wallet, category` into `pm_category_stats`, then score computation → `pm_score_snapshot`.
+
+**Repair:** `pm_cli repair-categories` re-derives `category_source='unknown'` rows via gamma in batches of 50.
+
+**Seed roster:** union of `live_whales` (2: SDTrading, xifutloong3) + PCT pinned (10: 5 UFC + FordBronco + AIisTheNewWD + BetMechanic + Kickstand7 + pako) + `config/pm_seed_wallets.yaml` + `--wallets` CLI args. Dedup by lowercase wallet.
+
+---
+
+## 9. Where P1 decisions serve P2/P3 (so later phases inherit cleanly)
+
+- **(wallet, category) is the universal key** — `pm_category_stats` rows ARE the farm entities P2 pins/watches (`pm_farm` FKs onto it); promotion (P3) joins whale-category→sub-division ON CATEGORY because category is first-class from day 1.
+- **Category-filtered copy (P3's new capability)** falls out of `pm_closed_position.category` + the live-signal filter reading the same `SLUG_PREFIX_MAP`/gamma-join module.
+- **Analyze (P2)** gets untruncated history by querying `pm_closed_position` instead of hitting `/activity` — the wiring point is the DB, already shaped.
+- **Search (P2)** = parameterized scout: discovery (per-market `/trades` etc.) feeds wallets into the SAME backfill+rollup+ranking pipeline; the two routines are already productized in `stats.py`; `pm_score_snapshot` gives it slice/dice history.
+- **Scoreboard read surface** (`query_scoreboard` + `report --format json`) is the exact data contract the P2 farm UI renders.
+- **Separate DB + PM route namespace + `pm_user`≠`pm_account` naming** keep the future PM-only viewer role a purely additive layer.
+- **`/activity` live-signal table deliberately NOT built in P1** (P3 concern; legacy high-water-mark poll pattern in `poly_kalshi_copy_trader.py:150-226` is the proven design to reuse then).
+
+---
+
+## 10. Runbook (prod box, own process — Jack's call)
+
+- **Build+test locally** in the worktree; full test suite green before any box contact.
+- **Deploy = additive file copy only** (new package dir, `pm_cli.py`, seed yaml) to `/home/azureuser/trading_corp` via the **sanctioned `.ps1` runner pattern** (command-paste-rule compliant: one-line runner, STDIN-piped remote bash, ASCII, no-BOM, parser-validated). **NO engine restart, NO existing-file edits, NO sudo.** Existing venv suffices (httpx + stdlib sqlite3 already present).
+- **Run order on box:** `g0-validate` → `backfill --from-rosters --dry-run` → `backfill --from-rosters` → `report` → install nightly cron (03:00 UTC `refresh --from-rosters`, logs to a file under `~/`) via runner.
+- **Cron-slot pre-check (required before install):** enumerate the box's `crontab -l` (azureuser + root via runner) + `systemctl list-timers` and PROVE 03:00 UTC is clear of MACE/engine/audit windows (known: tc-audit-reality ~06:00Z; MACE entry window 15:45-15:58 ET; manage loop 09:35-15:55 ET — none near 03:00 UTC, but prove it against the live box, don't assume).
+- **prod-live advance same session** (standing rule): commit the deployed artifacts to prod-live after deploy. Coordination: additive-only + no restart ⇒ cannot collide with the MACE no-restart-after-15:45-ET constraint or the pending P4/P5 MACE queue; still sequence prod-live advances, never race them. **Full dev history lives on `origin/prediction-markets` (§4)** — prod-live carries only the running artifacts.
+- **Rollback** = delete the new files + cron line (runner provided); DB file is inert data.
+
+---
+
+## 11. Test plan (`tests/prediction_markets/` — runs with NO engine, NO live DB)
+
+- `test_db.py` — init creates all tables; migrations idempotent; schema_version increments; WAL/pragma asserts; **path ≠ legacy DB path**.
+- `test_category.py` — prefix map coverage; unknown→('unknown',…) not error; case-insensitivity; empty gamma batch short-circuits.
+- `test_ingest.py` — upsert new/idempotent/update; `won` threshold edges (0.89/0.9/0.95); **negative-pnl row stores correctly (G0 regression guard)**; shares_derived avg_price=0 safe; 3-wallet batch with wallet-2 raising → wallets 1+3 complete (isolation).
+- `test_stats.py` — rollup win_rate/ROI/avg_win_price/multi-category on known fixtures; **negative net_pnl flows through**; scoreboard min_resolved filter + sort; chalk/contested flag edges.
+- `test_ranking.py` — adapter vs known-good primitive values (`wilson_lcb_95(7,10)`, `_edge_factor` clip bounds); `recency_weighted` half-life behavior on synthetic resolved_ts series; snapshot upsert per routine.
+- `test_fixtures.py` — recorded JSON fixtures (winner page, **loser-mix page**, empty page) through parse→ingest→rollup end-to-end on tmp DB.
+- `test_smoke_live.py` — `@pytest.mark.live_api` (opt-in flag only): G0 probe + ordering probe, read-only, no DB writes.
+
+---
+
+## 12. Acceptance checklist
+
+- [ ] **G0 passes** (negative `realized_pnl` rows confirmed for a known loser) — or STOPPED and reported.
+- [ ] `data/prediction_markets.db` created, separate from legacy; WAL confirmed; `init_db()` idempotent.
+- [ ] Seed-roster backfill completes with per-wallet isolation (errors logged, batch continues); ≥3,000 rows landed; re-run produces identical counts (idempotent).
+- [ ] Category coverage ≥85% non-unknown; `repair-categories` reduces unknowns.
+- [ ] `pm_category_stats` populated for every (wallet, category); one manually-verified whale's net_pnl matches an independent API sum; a net-loser shows negative ROI.
+- [ ] Both routines populate `pm_score_snapshot`; `report` renders ranked table with chalk flags; `--format json` parses.
+- [ ] Engine untouched: no legacy file modified, no restart, engine boots/runs normally with the package present; legacy DB byte-untouched by P1 processes.
+- [ ] Full test suite green locally; live smoke run once on the box.
+- [ ] **Branch-creation gate passed (§4):** MACE deploy queue landed + housekeeping clean + zero-drift base verified + **Jack confirmed the current prod-live tip** (NOT `7150404`) before the branch was cut.
+- [ ] **Branch model established (§4):** `prediction-markets` created off the confirmed tip + pushed to origin with vision+plan docs in the first commit; P1 phase branch merged into it; `main` NOT touched; prod-live advanced with the deployed artifacts only; runners + rollback archived.
+
+---
+
+## 13. Decisions locked at plan review (Jack, 2026-08-21) — no open questions remain
+
+1. **G0:** record grep performed at plan review — negative-PnL observation is NOT documented anywhere in the scout record (SCOUT_RESULTS.md / findings doc / session transcript) → **G0 runs as the hard gate. On failure: STOP-AND-REPORT. The `/activity` pivot is NOT pre-authorized** — options presented for decision only if the gate fails.
+2. **Category derivation:** two-tier as planned (Jack's 4 active categories — MLB/UFC/NBA/Fed — are clean-prefix; gamma repair covers the tail).
+3. **Roster:** no cap for P1. Revisit at P2 search.
+4. **Nightly refresh:** 03:00 UTC — **conditional on the runbook's cron-slot pre-check proving it clear of MACE/other cron+timer windows on the live box first** (§10).
+5. **Recency:** sortable, data-dependent option — `recency_basis` parameter, never one fixed definition. `resolved_ts` basis for externally-pulled unknown-whale history (all of P1); REAL entry-timestamp basis becomes first-class for tracked paper/live whales via the P2/P3 tracked-trade tables; **P1 schema non-preclusion documented in §6**.
+6. **Host:** prod box, own process (standalone CLI + cron in existing venv; deploy via sanctioned runner).
+7. **Future-proofing (P3 constraint):** multi-user auth later — full-admin + PM-only VIEWER role; `pm_user` (login persona) ≠ `pm_account` (Kalshi API); P1 bakes in no single-user assumptions (§3).
+8. **Branch strategy (§4, first-class):** durable `prediction-markets` integration branch off the CURRENT prod-live tip at build time — **gated on MACE deploys landed + housekeeping complete + zero-drift base verified + Jack's explicit tip confirmation (planning tip `7150404` is STALE, never use it)**; phase branches merge into it; pushed to origin from first commit with vision+plan committed as docs; NO merge to `main` until the single deliberate cutover merge; prod-live advances for deployed artifacts only; P2/P3 must actively reconcile against `main` once web-app wiring begins.
+
+---
+
+*P1 delivers: the untruncated per-whale cross-category record store + the (wallet, category) scoreboard with net-ROI ranking — the foundation every later phase reads. Nothing in it touches the running engine.*
