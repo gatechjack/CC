@@ -73,6 +73,30 @@ Grounding read this session: the authoritative vision spec (pasted by Jack, §2 
 
 ---
 
+## 3A. DATA INTEGRITY — negRisk realizedPnl quarantine (AMENDMENT 2026-08-22; evidence `reports/prediction_markets/REALIZEDPNL_PROBE_RESULT.md`, probe + runners @ commit d95eb5b)
+
+**Finding (accepted).** `/closed-positions` `realized_pnl` is **per-leg-real for BINARY markets** (all four live P1 categories; **Fed empirically proven** via Kickstand7 + pako — 0 mirror events, realized tracks total_bought) but **DECOUPLED from cost basis for negRisk winner-take-all markets** (Politics "who wins X"): legs with `total_bought=0` carry `realized_pnl=-574604.31` — event-level attribution, not a real per-leg P&L. Naive `Sum(realized_pnl)` is therefore invalid there (this produced d1k21's spurious -$17M). The gamma `negRisk` flag is **absent from `/closed-positions`**, so the pathology is detected structurally, from fields already in the row.
+
+**Decision (Jack, 2026-08-22): QUARANTINE-BY-INVARIANT. Ingest ALL categories; flag and exclude what fails the invariant.** Rejected alternatives: gamma `negRisk` enrichment (do not add a raw gamma dependency to buy a flag the invariant infers — P2-revisit trigger in §13A); category-scoped ingestion (the 4 categories are clean because they are BINARY, not because ingestion was narrowed — narrowing would forfeit the complete cross-category record that is the whole reason `/closed-positions` superseded truncating `/activity`).
+
+**INVARIANT — stored at ingest as `pm_closed_position.pnl_suspect` (a DISJUNCTION; TRUE if EITHER clause holds):**
+
+```
+EPS(total_bought) = max(1.00, 0.01 * total_bought)      # USDC: $1 floor OR 1% of cost, whichever is larger
+(a) realized_pnl < -(total_bought + EPS)                # a long cannot lose more than its cost
+(b) total_bought <= 0  AND  realized_pnl != 0           # zero-cost-basis attribution, EITHER SIGN
+```
+
+Clause **(b) is mandatory and NOT subsumed by (a)** — a `total_bought=0 / realized=+X` attribution passes (a) yet inflates net_pnl while adding nothing to the ROI denominator (the same pathology, sign-inverted; it FLATTERS a whale rather than tanking one). **Epsilon justification:** Poly fees ~= 0, so an honest total loss reports `realized_pnl ~= -total_bought` to the cent; `max($1, 1%*cost)` absorbs API rounding/dust at every scale (a $1 floor for tiny positions, 1% for large) while the pathology overshoots cost by >=100% (undefined at cost=0) — so it is always caught with wide margin and legitimate near-total losses are never false-flagged. EPS is a documented, config-surfaced constant.
+
+**SINGLE canonical scoreable-row predicate = `pnl_suspect = 0`.** The `pm_category_stats` rollup, BOTH ranking routines (§7 `net_roi` AND `recency_weighted`), and `query_scoreboard` ALL filter through this ONE predicate — implemented once (a shared `scoreable_rows()` selector / SQL `WHERE pnl_suspect = 0`), never re-derived per call site. This closes two defects a rollup-only filter would miss: **(i)** `won = cur_price>=0.9` is meaningless on a `total_bought=0` attribution leg (no real position was taken) -> suspect rows never enter the win/loss series; **(ii)** a negRisk winner-take-all event resolves N losing legs at ONE identical resolution timestamp -> fed into the half-life series that is N same-instant "losses" skewing `weighted_rate` and inflating `n_eff` (Kish) -> suspect rows never enter the recency series. `pm_score_snapshot.params_json` records `{"excludes_suspect": true, "n_excluded": <count>}` so every score is auditable after the fact.
+
+**VISIBILITY (never silent) — migration 001 adds to `pm_category_stats`:** `n_excluded` (count of suspect rows for that wallet+category) and `excluded_pnl` (their summed realized_pnl). **Data-quality display rule:** if `n_excluded / (n_resolved + n_excluded) > 0.10`, the scoreboard row carries `data_quality='contaminated'` and is NOT rendered as a confident stat; `report` must surface it. **Threshold justification:** the four binary live categories quarantine ~0 rows, so any material fraction is anomalous; 10% marks "materially incomplete — do not trust this number" while tolerating a stray row in a large sample. Config-tunable.
+
+**STATED LIMIT (honest scope).** The invariant catches IMPOSSIBLE values, not WRONG-BUT-POSSIBLE ones — a negRisk leg misattributed to, e.g., -40% of its cost basis passes silently. The claim is **"quarantines the detectable pathology," NOT "protects every rollup."** **Binary-category trust rests on the markets being binary, corroborated EMPIRICALLY for Fed (Kickstand7/pako) — not on the invariant.** The invariant is a backstop, not the proof. Open items in §13A.
+
+---
+
 ## 4. GIT / BRANCH STRATEGY (first-class, locked — peer to the datastore decision; P2/P3 agents inherit this, do not re-litigate)
 
 This is a MAJOR long-lived build (P1/P2/P3 over weeks, running alongside legacy until cutover) — **NOT the usual quick-branch → prod-live → done pattern.** Established at P1's first commit:
@@ -120,10 +144,10 @@ Core tables (all keys chosen to serve P2/P3 — see §8):
 
 - **`schema_version`** (version int) — migration bookkeeping.
 - **`pm_whale`** (wallet PK lowercase, user_name, first_seen_ts, last_backfill_ts, last_refresh_ts).
-- **`pm_closed_position`** — **PK (wallet, condition_id)**; slug, event_slug, title, **category, category_source**, outcome, outcome_index, avg_price, total_bought, realized_pnl *(CAN BE NEGATIVE)*, cur_price, **won = cur_price≥0.9** (stored at ingest), shares_derived (=total_bought/avg_price, NULL-safe), end_date, resolved_ts (unix), ingested_ts, updated_ts. Indices: (wallet), (category), (wallet, resolved_ts DESC), (wallet, won, category).
-- **`pm_category_stats`** — **PK (wallet, category)** ← *this row IS the future FARM-entity's record*; n_resolved, wins, losses, win_rate, net_realized_pnl, total_bought, roi, avg_bet, **avg_win_price**, last_resolved_ts, updated_ts. Index (category, roi DESC).
+- **`pm_closed_position`** — **PK (wallet, condition_id)**; slug, event_slug, title, **category, category_source**, outcome, outcome_index, avg_price, total_bought, realized_pnl *(CAN BE NEGATIVE)*, cur_price, **won = cur_price≥0.9** (stored at ingest), **`pnl_suspect` (0/1 — the §3A quarantine invariant, computed + stored at ingest)**, shares_derived (=total_bought/avg_price, NULL-safe), end_date, resolved_ts (unix), ingested_ts, updated_ts. Indices: (wallet), (category), (wallet, resolved_ts DESC), (wallet, won, category), **(wallet, category, pnl_suspect)** [serves the §3A scoreable predicate].
+- **`pm_category_stats`** — **PK (wallet, category)** ← *this row IS the future FARM-entity's record*; n_resolved, wins, losses, win_rate, net_realized_pnl, total_bought, roi, avg_bet, **avg_win_price**, last_resolved_ts, **n_excluded, excluded_pnl (§3A visibility), data_quality flag when n_excluded/(n_resolved+n_excluded) > 0.10**, updated_ts. Index (category, roi DESC). **Aggregated over §3A scoreable rows only (`pnl_suspect = 0`); n_excluded/excluded_pnl summarize the quarantined remainder.**
 - **`pm_open_position`** — PK (wallet, condition_id); from `/positions`; volatile (delete-then-insert per wallet per refresh, because the open set shrinks).
-- **`pm_score_snapshot`** — **PK (wallet, category, routine)**; score, wilson_lcb, edge_factor, params_json, computed_ts. Index (category, routine, score DESC). Routines: `net_roi`, `recency_weighted` (§6).
+- **`pm_score_snapshot`** — **PK (wallet, category, routine)**; score, wilson_lcb, edge_factor, params_json *(records `recency_basis` AND `{excludes_suspect:true, n_excluded:N}` per §3A)*, computed_ts. Index (category, routine, score DESC). Routines: `net_roi`, `recency_weighted` (§6).
 
 **Documented-only (NOT created in P1; named now so P1 keys serve them):** `pm_farm` (wallet, category, pinned, watchlist — P2), `pm_paper_trade` (P2: forward paper record per whale-category, **with REAL entry/trade timestamps** — see non-preclusion below), `pm_account` (Kalshi API account — P3), `pm_sub_division` (account_id, category — P3), `pm_promotion` (wallet, category, sub_division_id — P3), `pm_copy_trade` (per-sub-division trade log, with real fill timestamps — P3), `pm_user`/`pm_role`/`pm_grant` (auth layer — future; additive migration).
 
@@ -133,11 +157,11 @@ Core tables (all keys chosen to serve P2/P3 — see §8):
 
 ## 7. Ranking logic (the scoreboard's brain — legacy lessons carried)
 
-**NET scoring:** `realizedPnl` is direct per position (SELL+REDEEM−BUY equivalent, per the API). `roi = Σ realized_pnl / Σ total_bought` per (wallet, category). **Win% is displayed but never ranked on — chalk lesson.** Chalk detector: `avg_win_price ≥ 0.85` → chalk flag; `< 0.70` → contested-calls flag (Fed-scout `win_px` metric, now a first-class stats column).
+**NET scoring (CORRECTED 2026-08-22 — evidence §3A / `REALIZEDPNL_PROBE_RESULT.md`):** `realizedPnl` is **direct and per-leg-real for BINARY markets** (SELL+REDEEM−BUY equivalent, per the API — the four live P1 categories; Fed empirically proven) but is **event-level attribution DECOUPLED from cost basis for negRisk winner-take-all markets** (the flat claim "direct per position" is FALSE there — see §3A). All scoring runs over the §3A canonical scoreable rows (`pnl_suspect = 0`). `roi = Σ realized_pnl / Σ total_bought` per (wallet, category), scoreable rows only. **Win% is displayed but never ranked on — chalk lesson.** Chalk detector: `avg_win_price ≥ 0.85` → chalk flag; `< 0.70` → contested-calls flag (Fed-scout `win_px` metric, now a first-class stats column).
 
 **The two ranking routines (both carried, both persisted to `pm_score_snapshot`):**
-1. **`net_roi`** (REDEEM-grounded lineage, Routine B): `wilson_lcb_95(wins, n) × _edge_factor(roi)`. Decision-unit == row grain (scale-ins pre-collapsed by the API — cleaner than legacy's clustering fix, same intent). Exclusion: `n < min_resolved` (default 10).
-2. **`recency_weighted`** (time-weighted lineage, Routine A): `time_weighted_outcomes` over `(won, ts)` with half-life (default 30d) → `wilson_lcb_95_weighted(weighted_rate, n_eff) × _edge_factor(roi)`. **RECENCY IS A SORTABLE, DATA-DEPENDENT OPTION, not one fixed definition (Jack's ruling 2026-08-21):** the routine takes an explicit `recency_basis` parameter, recorded in `params_json`. Basis `resolved_ts` is correct ONLY for externally-pulled unknown-whale history (all P1 data — resolution ts is all the API gives). Basis `entry_ts` becomes a first-class sortable option for paper/live whales WE track, as soon as tracked-trade tables with REAL entry/trade timestamps exist (P2/P3 — see §6/§9 non-preclusion). The scoreboard exposes recency basis as a sort/filter dimension, never hard-codes one.
+1. **`net_roi`** (REDEEM-grounded lineage, Routine B): `wilson_lcb_95(wins, n) × _edge_factor(roi)`. Decision-unit == row grain (scale-ins pre-collapsed by the API — cleaner than legacy's clustering fix, same intent). Exclusion: `n < min_resolved` (default 10). Both n and roi are computed over §3A scoreable rows (pnl_suspect = 0) only.
+2. **`recency_weighted`** (time-weighted lineage, Routine A): `time_weighted_outcomes` over `(won, ts)` with half-life (default 30d) → `wilson_lcb_95_weighted(weighted_rate, n_eff) × _edge_factor(roi)`. **RECENCY IS A SORTABLE, DATA-DEPENDENT OPTION, not one fixed definition (Jack's ruling 2026-08-21):** the routine takes an explicit `recency_basis` parameter, recorded in `params_json`. Basis `resolved_ts` is correct ONLY for externally-pulled unknown-whale history (all P1 data — resolution ts is all the API gives). Basis `entry_ts` becomes a first-class sortable option for paper/live whales WE track, as soon as tracked-trade tables with REAL entry/trade timestamps exist (P2/P3 — see §6/§9 non-preclusion). The scoreboard exposes recency basis as a sort/filter dimension, never hard-codes one. Operates on §3A scoreable rows only — load-bearing here: a negRisk winner-take-all event resolves N losing legs at ONE identical timestamp, which would skew `weighted_rate` and inflate `n_eff` (Kish) if not excluded (§3A defect ii).
 
 Implementation: thin `PMScoreAdapter` in `stats.py` calling the `kalshi_whale_stats` primitives directly (verified importable without engine deps) — reuse without dragging legacy report dataclasses.
 
@@ -149,13 +173,13 @@ Implementation: thin `PMScoreAdapter` in `stats.py` calling the `kalshi_whale_st
 The legacy comment (`seed_polymarket_watchlist_deep.py:57-62`) claims `/closed-positions` surfaces only positive-PnL positions (survivorship). **Plan-review grep (2026-08-21) of SCOUT_RESULTS.md + CLOSED_POSITIONS_API_FINDINGS.md + the scout session transcript found ZERO documented negative-`realizedPnl` (or `curPrice≈0`) observations — the concern is UNREMEDIATED in the record**, so G0 runs as the gate (not a quick confirmation). If positives-only were true, the whole scoreboard is chalk-biased garbage.
 `pm_cli g0-validate --from-known-losers`: pull pages for known net-losers (evanng −$13.7k / csgod −$9.5k UFC, d1k21 −$168k Fed; addresses from `SCOUT_RESULTS.md`), assert rows with `realized_pnl < 0` exist; also pull the same wallet twice to probe ordering stability. **Exit 1 = STOP-AND-REPORT to Jack — NO pre-authorized pivot; options (e.g. `/activity`+gamma reconstruction) are presented for decision at that point, not assumed.**
 
-**Backfill (per wallet, isolated):** upsert `pm_whale` → paginate `/closed-positions` limit=50 from offset 0 until short/empty page → slug-prefix categorize → gamma tag-join batch for unknowns (per-chunk failure ⇒ `unknown`, repairable) → upsert rows (INSERT OR REPLACE on PK) → stamp `last_backfill_ts` → rollup. ~60 calls/wallet; 12-wallet seed ≈ tens of seconds under `Semaphore(5)`.
+**Backfill (per wallet, isolated):** upsert `pm_whale` → paginate `/closed-positions` limit=50 from offset 0 until short/empty page → slug-prefix categorize → gamma tag-join batch for unknowns (per-chunk failure ⇒ `unknown`, repairable) → **compute `pnl_suspect` (§3A invariant)** → upsert rows (INSERT OR REPLACE on PK) → stamp `last_backfill_ts` → rollup (scoreable rows only). ~60 calls/wallet; 12-wallet seed ≈ tens of seconds under `Semaphore(5)`.
 
 **Refresh v1 = full re-pull per wallet** (idempotent upserts make it correct regardless of API ordering) — nightly cron + on-demand CLI. Incremental (stop at first fully-known page) is a P2 optimization gated on the G0 ordering probe.
 
 **Open positions:** `/positions` per wallet on each refresh → delete+insert.
 
-**Rollup:** single SQL `INSERT OR REPLACE … SELECT … GROUP BY wallet, category` into `pm_category_stats`, then score computation → `pm_score_snapshot`.
+**Rollup:** single SQL `INSERT OR REPLACE … SELECT … WHERE pnl_suspect = 0 … GROUP BY wallet, category` into `pm_category_stats` (the §3A canonical scoreable predicate, shared with both ranking routines and `query_scoreboard`), separately aggregating `n_excluded`/`excluded_pnl` from the quarantined rows; then score computation → `pm_score_snapshot`.
 
 **Repair:** `pm_cli repair-categories` re-derives `category_source='unknown'` rows via gamma in batches of 50.
 
@@ -193,6 +217,7 @@ The legacy comment (`seed_polymarket_watchlist_deep.py:57-62`) claims `/closed-p
 - `test_ingest.py` — upsert new/idempotent/update; `won` threshold edges (0.89/0.9/0.95); **negative-pnl row stores correctly (G0 regression guard)**; shares_derived avg_price=0 safe; 3-wallet batch with wallet-2 raising → wallets 1+3 complete (isolation).
 - `test_stats.py` — rollup win_rate/ROI/avg_win_price/multi-category on known fixtures; **negative net_pnl flows through**; scoreboard min_resolved filter + sort; chalk/contested flag edges.
 - `test_ranking.py` — adapter vs known-good primitive values (`wilson_lcb_95(7,10)`, `_edge_factor` clip bounds); `recency_weighted` half-life behavior on synthetic resolved_ts series; snapshot upsert per routine.
+- `test_integrity.py` — **§3A quarantine invariant**: a fixture with BOTH clause-(a) rows (`realized_pnl < -(total_bought+EPS)`) and clause-(b) rows (`total_bought<=0 & realized_pnl!=0`, both signs) — asserts `pnl_suspect=1` set at ingest; asserts these rows are EXCLUDED from `pm_category_stats` (net_pnl/roi/win series) AND from BOTH ranking routines (`net_roi` and `recency_weighted`, incl. the same-instant-timestamp skew guard, §3A defect ii); asserts `n_excluded`/`excluded_pnl`/data_quality flag populate; asserts a clean binary fixture quarantines 0 rows.
 - `test_fixtures.py` — recorded JSON fixtures (winner page, **loser-mix page**, empty page) through parse→ingest→rollup end-to-end on tmp DB.
 - `test_smoke_live.py` — `@pytest.mark.live_api` (opt-in flag only): G0 probe + ordering probe, read-only, no DB writes.
 
@@ -204,16 +229,17 @@ The legacy comment (`seed_polymarket_watchlist_deep.py:57-62`) claims `/closed-p
 - [ ] `data/prediction_markets.db` created, separate from legacy; WAL confirmed; `init_db()` idempotent.
 - [ ] Seed-roster backfill completes with per-wallet isolation (errors logged, batch continues); ≥3,000 rows landed; re-run produces identical counts (idempotent).
 - [ ] Category coverage ≥85% non-unknown; `repair-categories` reduces unknowns.
-- [ ] `pm_category_stats` populated for every (wallet, category); one manually-verified whale's net_pnl matches an independent API sum; a net-loser shows negative ROI.
+- [ ] `pm_category_stats` populated for every (wallet, category); **one manually-verified BINARY-market whale (non-suspect rows only, in one of the four live categories) net_pnl matches an independent API sum** (also closes the §13A UFC-reconciliation open item positively); a net-loser shows negative ROI.
 - [ ] Both routines populate `pm_score_snapshot`; `report` renders ranked table with chalk flags; `--format json` parses.
 - [ ] Engine untouched: no legacy file modified, no restart, engine boots/runs normally with the package present; legacy DB byte-untouched by P1 processes.
+- [ ] **§3A quarantine invariant exercised by `test_integrity.py`** (clause-(a) AND clause-(b) fixtures) — proven excluded from `pm_category_stats` AND both ranking routines; `n_excluded`/`excluded_pnl`/data_quality flag verified.
 - [ ] Full test suite green locally; live smoke run once on the box.
 - [ ] **Branch-creation gate passed (§4):** MACE deploy queue landed + housekeeping clean + zero-drift base verified + **Jack confirmed the current prod-live tip** (NOT `7150404`) before the branch was cut.
 - [ ] **Branch model established (§4):** `prediction-markets` created off the confirmed tip + pushed to origin with vision+plan docs in the first commit; P1 phase branch merged into it; `main` NOT touched; prod-live advanced with the deployed artifacts only; runners + rollback archived.
 
 ---
 
-## 13. Decisions locked at plan review (Jack, 2026-08-21) — no open questions remain
+## 13. Decisions locked at plan review (Jack, 2026-08-21; amended 2026-08-22 — see §3A + open items §13A)
 
 1. **G0:** record grep performed at plan review — negative-PnL observation is NOT documented anywhere in the scout record (SCOUT_RESULTS.md / findings doc / session transcript) → **G0 runs as the hard gate. On failure: STOP-AND-REPORT. The `/activity` pivot is NOT pre-authorized** — options presented for decision only if the gate fails.
 2. **Category derivation:** two-tier as planned (Jack's 4 active categories — MLB/UFC/NBA/Fed — are clean-prefix; gamma repair covers the tail).
@@ -223,6 +249,17 @@ The legacy comment (`seed_polymarket_watchlist_deep.py:57-62`) claims `/closed-p
 6. **Host:** prod box, own process (standalone CLI + cron in existing venv; deploy via sanctioned runner).
 7. **Future-proofing (P3 constraint):** multi-user auth later — full-admin + PM-only VIEWER role; `pm_user` (login persona) ≠ `pm_account` (Kalshi API); P1 bakes in no single-user assumptions (§3).
 8. **Branch strategy (§4, first-class):** durable `prediction-markets` integration branch off the CURRENT prod-live tip at build time — **gated on MACE deploys landed + housekeeping complete + zero-drift base verified + Jack's explicit tip confirmation (planning tip `7150404` is STALE, never use it)**; phase branches merge into it; pushed to origin from first commit with vision+plan committed as docs; NO merge to `main` until the single deliberate cutover merge; prod-live advances for deployed artifacts only; P2/P3 must actively reconcile against `main` once web-app wiring begins.
+9. **realizedPnl integrity (Jack's ruling 2026-08-22 — §3A; supersedes the flat §7 "direct per position" claim):** QUARANTINE-BY-INVARIANT — ingest ALL categories, compute `pnl_suspect` at ingest via the disjunction (loss-exceeds-cost OR zero-cost-with-nonzero-realized, EITHER sign; EPS=max($1, 1%·cost)), and exclude suspect rows through ONE canonical scoreable predicate (`pnl_suspect = 0`) shared by the rollup + BOTH ranking routines + `query_scoreboard`; surface `n_excluded`/`excluded_pnl` + a data-quality flag (>10% quarantined). Gamma `negRisk` enrichment and category-scoped ingestion both REJECTED for P1. Stated limit: catches IMPOSSIBLE not wrong-but-possible values; Fed cleanliness is EMPIRICAL (Kickstand7/pako), not invariant-derived. Open items in §13A.
+
+---
+
+## 13A. Open items from the realizedPnl probe (2026-08-22, evidence d95eb5b) — LOGGED, not resolved in P1
+
+(a) **UFC reconciliation UNRESOLVED.** Three figures for evanng's UFC slice: `/closed-positions` Σ = **+$9,778.97**, this session's `/activity` rebuild = **+$1,141.72**, prior scout `/activity` method = **−$13,706.51**. "Activity under-counts redemptions" explains activity < closed but NOT the scout landing NEGATIVE — two activity-based reconstructions of the same wallet's same UFC slice disagree by ~$14.8k AND on SIGN. **Not closed as explained.** Downstream: the 5 UFC paper-farm whales (Kh4mz4t / STC14 / 000why000 / 4751346 / kutsumiakia) were rostered on scout net numbers → that shortlist's ranking is softer than the record implies; do not cite the scout figures as verified — the P1 scoreboard supersedes them. Positive closure = the §12 binary-whale manual net-verify.
+
+(b) **Politics is a known structural limitation.** Politics is on the copyable-category roadmap and negRisk winner-take-all appears dominant there → politics rollups are structurally unreliable under `/closed-positions` (the §3A quarantine FLAGS them; it does not correct them — coverage is degraded, not repaired). Documented now so P2 does not rediscover it.
+
+(c) **P2 trigger for gamma enrichment (rejected Option 2):** if P1 exclusion counts come back high enough to matter (material `n_excluded` fractions in categories we intend to copy), revisit adding the gamma `negRisk` flag as a market-enrichment step. Not needed while the invariant suffices.
 
 ---
 
