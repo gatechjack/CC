@@ -225,6 +225,26 @@ async def refresh_open_positions(conn, wallet: str, *, client, now_ts: int) -> i
     return len(recs)
 
 
+async def g0_validate(client, losers: Iterable[Any], *, limit: int = 50, cap: int = 8000) -> dict:
+    """G0 gate as a callable: pull /closed-positions for known net-losers and assert NEGATIVE
+    realized_pnl rows exist (disproves the positives-only survivorship claim). READ-ONLY (no DB
+    writes). Returns {passed, per_wallet:[{wallet, user_name, n, negative, positive, net, passed}]}.
+    """
+    per = []
+    overall = True
+    for entry in losers:
+        w = str((entry.get("wallet") if isinstance(entry, dict) else entry) or "").lower()
+        cps = await _pull_closed(client, w, limit=limit, cap=cap)
+        neg = sum(1 for r in cps if _f(getattr(r, "realized_pnl", 0.0)) < 0)
+        pos = sum(1 for r in cps if _f(getattr(r, "realized_pnl", 0.0)) > 0)
+        net = sum(_f(getattr(r, "realized_pnl", 0.0)) for r in cps)
+        ok = neg > 0
+        overall = overall and ok
+        per.append({"wallet": w, "user_name": (entry.get("user_name") if isinstance(entry, dict) else ""),
+                    "n": len(cps), "negative": neg, "positive": pos, "net": net, "passed": ok})
+    return {"passed": overall, "per_wallet": per}
+
+
 async def backfill_wallets(conn, wallets: Iterable[str], *, client, now_ts: int, fetch_events=None,
                            limit: int = 50, cap: int = 8000, backfill: bool = True) -> dict:
     """Batch driver with PER-WALLET isolation: one wallet raising never aborts the batch."""

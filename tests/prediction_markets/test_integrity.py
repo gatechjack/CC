@@ -6,7 +6,7 @@ Spec: reports/prediction_markets/P1_PLAN.md §3A, §11.
 import json
 from pathlib import Path
 
-from trading_corp.prediction_markets import db, ingest
+from trading_corp.prediction_markets import db, ingest, stats
 from trading_corp.data.polymarket_data_api_client import ClosedPositionRow
 
 _FIX = Path(__file__).parent / "fixtures" / "closed_positions"
@@ -95,6 +95,30 @@ async def test_backfill_negrisk_all_legs_quarantined(tmp_path):
     assert winner["realized_pnl"] > 0 and winner["suspect_reason"] == "event_group"
 
 
-# NOTE: the "excluded from pm_category_stats AND both ranking routines" half of the §3A
-# guard is asserted in test_stats.py / test_ranking.py (needs stats.py) -- those route
-# through the single scoreable predicate (db.scoreable_where / pnl_suspect = 0).
+async def test_suspect_rows_excluded_from_stats_and_both_routines(tmp_path):
+    # mixed ufc category: 3 clean + 2 suspect (clause a + clause b), DISTINCT event_slugs
+    # (so no group propagation) -> suspects must be excluded from stats AND both routines.
+    mixed = [
+        {"proxyWallet": "0xm", "conditionId": "0xg1", "slug": "ufc-g1-2026-01-01", "eventSlug": "ufc-g1-2026-01-01", "avgPrice": 0.5, "totalBought": 100.0, "realizedPnl": 80.0, "curPrice": 1.0, "timestamp": 1},
+        {"proxyWallet": "0xm", "conditionId": "0xg2", "slug": "ufc-g2-2026-01-02", "eventSlug": "ufc-g2-2026-01-02", "avgPrice": 0.5, "totalBought": 100.0, "realizedPnl": -100.0, "curPrice": 0.0, "timestamp": 2},
+        {"proxyWallet": "0xm", "conditionId": "0xg3", "slug": "ufc-g3-2026-01-03", "eventSlug": "ufc-g3-2026-01-03", "avgPrice": 0.5, "totalBought": 100.0, "realizedPnl": 90.0, "curPrice": 1.0, "timestamp": 3},
+        {"proxyWallet": "0xm", "conditionId": "0xg4", "slug": "ufc-g4-2026-01-04", "eventSlug": "ufc-g4-2026-01-04", "avgPrice": 0.5, "totalBought": 100.0, "realizedPnl": -500.0, "curPrice": 0.0, "timestamp": 4},
+        {"proxyWallet": "0xm", "conditionId": "0xg5", "slug": "ufc-g5-2026-01-05", "eventSlug": "ufc-g5-2026-01-05", "avgPrice": 0.5, "totalBought": 0.0, "realizedPnl": 300.0, "curPrice": 1.0, "timestamp": 5},
+    ]
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        await ingest.backfill_wallet(conn, "0xm", client=_Cli(mixed), now_ts=NOW, fetch_events=_noev)
+        stats.rollup(conn, now_ts=NOW)
+        stats.compute_scores(conn, now_ts=NOW, min_resolved=1)
+        cs = conn.execute("SELECT * FROM pm_category_stats WHERE category='ufc'").fetchone()
+        snap = conn.execute(
+            "SELECT params_json FROM pm_score_snapshot WHERE category='ufc' AND routine='recency_weighted'").fetchone()
+    assert cs["n_resolved"] == 3 and cs["n_excluded"] == 2          # suspects out of stats
+    assert abs(cs["net_realized_pnl"] - 70.0) < 1e-6               # 80-100+90; suspect -500/+300 excluded
+    assert abs(cs["roi"] - (70.0 / 300.0)) < 1e-6                  # tb=300 (clean only)
+    assert json.loads(snap["params_json"])["n_eff"] <= 3.0 + 1e-9  # recency built on 3 scoreable rows only
+
+
+# The §3A guard is now proven end-to-end: suspect rows quarantined at ingest (row + event-group),
+# excluded from pm_category_stats, and excluded from BOTH ranking routines (single scoreable predicate).
