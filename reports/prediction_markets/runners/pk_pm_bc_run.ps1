@@ -35,7 +35,7 @@ for ($k = 0; $k -lt $files.Length; $k++) {
 # ---- static bash: head (md5 before, conftest, scratch + copy real box config) ----
 $bashHead = @'
 set +e
-S="$HOME/pm_p1_scratch"
+S="${HOME:-/home/azureuser}/pm_p1_scratch"
 OUT=/tmp/pm_bc_out.txt
 LEGACY=/home/azureuser/trading_corp/data/trading_corp.db
 {
@@ -125,7 +125,7 @@ echo "RUN_DONE lines=$(wc -l < "$OUT") bytes=$(wc -c < "$OUT")"
 '@
 
 # ---- assemble, ship (base64 chunks), run to a file, chunk-retrieve, clean up ----
-$box = $bashHead + $inject + $bashMid
+$box = $bashHead + "`n" + $inject + $bashMid   # explicit newline: PS here-strings drop the pre-'@ newline, else cp+mkdir fuse
 $box = $box -replace "`r", ""
 $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($box))
 $enc = New-Object Text.UTF8Encoding($false)
