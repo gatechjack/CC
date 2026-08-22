@@ -3,8 +3,10 @@
 Tier 1 (`derive_category_from_slug`): eventSlug/slug prefix -> category. Covers all
 four live P1 categories (MLB/UFC/NBA/Fed), which are clean-prefix (P1_PLAN §13 dec 2).
 
-Tier 2 (`derive_categories_batch`): gamma tag-join for the tail tier-1 left 'unknown'.
-See the function docstring — this is a FLAGGED DEFERRED STUB in the first build slice.
+Tier 2 (`derive_categories_batch`): gamma **events**-tag-join for the tail tier-1 left
+'unknown'. Tags live on `/events` (list of {id,label,slug}), NOT on `/markets` (2026-08-22
+probe: `/markets` tags are null). Keyed on eventSlug; `fetch_events` is injectable so tests
+run offline against recorded fixtures (tests/prediction_markets/fixtures/gamma_events/).
 
 Spec: reports/prediction_markets/P1_PLAN.md §5.
 """
@@ -60,33 +62,78 @@ def derive_category_from_slug(event_slug: str | None, slug: str | None = None) -
     return CATEGORY_UNKNOWN, SOURCE_UNKNOWN
 
 
-async def derive_categories_batch(
-    condition_ids: Iterable[str], *, client=None, chunk_size: int = 50,
-) -> dict[str, tuple[str, str]]:
-    """Tier-2: gamma tag-join to reclassify rows tier-1 left 'unknown'.
+GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 
-    ** FLAGGED DEFERRED STUB (first build slice — awaiting Jack's ruling). **
-    Why it is not implemented here yet:
-      - `/closed-positions` rows carry NO tags (verified in the realizedPnl probe:
-        `EXTRA={}`), so the category must come from gamma.
-      - the reusable `fetch_market_resolutions` decodes RESOLUTION (status / outcomes /
-        winner / title), NOT market tags — so it cannot supply the tag-join as-is, and
-        editing that client is out of scope (ZERO existing-file edits).
-      - the gamma `/markets?condition_ids=...&closed=true` TAGS field schema is
-        unconfirmed (no gamma probe in this slice), so implementing extraction now would
-        be guessing the response shape.
-    The four live categories are clean slug-prefix (tier-1 covers them); this tier repairs
-    only the tail, so deferring it does not block P1's tracked categories. Once the gamma
-    approach is ruled and the tags schema confirmed, this fills in by mirroring
-    `fetch_market_resolutions`' batched `&closed=true` + per-chunk-error-tolerance pattern
-    and reading the market tags -> (category, SOURCE_GAMMA). Empty input short-circuits
-    with no network call.
+# Specific league/topic tag slugs -> canonical category. Broad tags ('sports', 'games',
+# 'basketball', 'baseball', 'economy', 'politics') are intentionally NOT mapped, so the
+# specific tag always wins. Extensible. Live P1 categories + scout-confirmed tag ids:
+# ufc=279, fed-rates=100196, nba=745, mlb=100381 (2026-08-22 /events probe).
+TAG_SLUG_TO_CATEGORY: dict[str, str] = {
+    "fed-rates": "fed",
+    "mlb": "mlb",
+    "nba": "nba",
+    "ufc": "ufc",
+    "nfl": "nfl",
+    "nhl": "nhl",
+    "soccer": "soccer",
+    "golf": "golf",
+    "tennis": "tennis",
+    "cs2": "cs2",
+    "csgo": "cs2",
+}
 
-    Returns {condition_id: (category, category_source)}.
+
+def category_from_event_tags(tags) -> str | None:
+    """Map an event's `tags` (list of {slug,...}) to a category. First tag whose slug is a
+    known league/topic wins; broad tags are skipped. None if no tag maps."""
+    if not isinstance(tags, list):
+        return None
+    for t in tags:
+        if isinstance(t, dict):
+            slug = (t.get("slug") or "").lower()
+            if slug in TAG_SLUG_TO_CATEGORY:
+                return TAG_SLUG_TO_CATEGORY[slug]
+    return None
+
+
+async def _default_fetch_events(slug: str, *, closed: bool = True, timeout: float = 30.0):
+    """Real gamma /events?slug=<slug>[&closed=true] fetch (the &closed=true quirk, matching
+    the scout's /events usage). Lazy-imports httpx so category.py imports without it (tier-2
+    tests inject fetch_events and never reach here). This is a NEW helper, not a client call:
+    PolymarketDataAPIClient exposes NO public /events method, its _get_json / AsyncClient are
+    private, and the client must not be edited (Jack ruling 2026-08-22). Returns the raw
+    /events response (list of event dicts)."""
+    import httpx
+    params = {"slug": slug}
+    if closed:
+        params["closed"] = "true"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as c:
+        resp = await c.get("%s/events" % GAMMA_API_BASE, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    return data if isinstance(data, list) else []
+
+
+async def derive_categories_batch(event_slugs: Iterable[str], *, fetch_events=None) -> dict[str, tuple[str, str]]:
+    """Tier-2 gamma **events**-tag-join for the tail tier-1 left 'unknown'.
+
+    Keyed on EVENT SLUG -- tags live on the event, not the market (2026-08-22 probe:
+    /markets tags are null; /events tags = list of {id,label,slug}). For each unique
+    event_slug: fetch the event, map its tags -> category via `category_from_event_tags`,
+    else 'unknown'. Per-slug try/except: one slug failing yields ('unknown','unknown')
+    (repairable via `repair-categories`), never aborts the batch. Empty input short-circuits
+    with no network. `fetch_events(slug) -> list[event]` is INJECTABLE (tests pass a
+    fixture-backed fake; default hits gamma /events). Returns {event_slug: (category, source)}.
     """
-    ids = list(dict.fromkeys(c for c in (condition_ids or []) if c))
-    if not ids:
-        return {}
-    # DEFERRED: leave as unknown (repairable via `repair-categories` later) rather than
-    # guess the gamma tags schema. No network call is made.
-    return {cid: (CATEGORY_UNKNOWN, SOURCE_UNKNOWN) for cid in ids}
+    fetch = fetch_events or _default_fetch_events
+    slugs = list(dict.fromkeys(s for s in (event_slugs or []) if s))
+    out: dict[str, tuple[str, str]] = {}
+    for s in slugs:
+        try:
+            events = await fetch(s)
+            ev = events[0] if (isinstance(events, list) and events) else {}
+            cat = category_from_event_tags(ev.get("tags")) if isinstance(ev, dict) else None
+        except Exception:
+            cat = None
+        out[s] = (cat, SOURCE_GAMMA) if cat else (CATEGORY_UNKNOWN, SOURCE_UNKNOWN)
+    return out

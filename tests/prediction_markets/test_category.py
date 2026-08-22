@@ -2,7 +2,34 @@
 
 Spec: reports/prediction_markets/P1_PLAN.md §11.
 """
+import json
+from pathlib import Path
+
 from trading_corp.prediction_markets import category as cat
+
+_FIX = Path(__file__).parent / "fixtures" / "gamma_events"
+
+
+def _load_events(name):
+    return json.loads((_FIX / name).read_text(encoding="utf-8"))
+
+
+# eventSlug -> recorded /events fixture file
+_SLUG_FIXTURE = {
+    "mlb-mia-nym-2026-05-29": "mlb.json",
+    "ufc-kin-ter1-2026-07-11": "ufc.json",
+    "2026-nba-champion": "nba_champion_futures.json",
+    "fed-interest-rates-may-2025": "fed.json",
+    "soccer-lec-rsl-atlante-2026-08-08": "soccer_lec.json",
+}
+
+
+def _fake_fetch(mapping):
+    async def _f(slug, **kw):
+        if slug not in mapping:
+            raise RuntimeError("no fixture for %s" % slug)
+        return _load_events(mapping[slug])
+    return _f
 
 
 def test_prefix_basic():
@@ -43,15 +70,60 @@ def test_no_false_prefix_match():
     assert cat.derive_category_from_slug("mlbpa-vote-2026")[0] == cat.CATEGORY_UNKNOWN
 
 
-async def test_empty_gamma_batch_short_circuits():
-    # asyncio_mode=auto (pyproject) runs async tests directly
-    assert await cat.derive_categories_batch([]) == {}
+async def test_tier2_empty_short_circuits_no_fetch():
+    # empty input returns {} WITHOUT invoking fetch (asyncio_mode=auto runs async tests)
+    calls = {"n": 0}
+    async def _f(slug, **kw):
+        calls["n"] += 1
+        return []
+    assert await cat.derive_categories_batch([], fetch_events=_f) == {}
+    assert calls["n"] == 0
 
 
-async def test_gamma_stub_returns_unknown_deferred():
-    # DEFERRED stub: returns unknown (repairable) without a network call
-    res = await cat.derive_categories_batch(["0xabc", "0xdef", "0xabc"])
-    assert res == {
-        "0xabc": (cat.CATEGORY_UNKNOWN, cat.SOURCE_UNKNOWN),
-        "0xdef": (cat.CATEGORY_UNKNOWN, cat.SOURCE_UNKNOWN),
-    }
+def test_category_from_event_tags_specific_over_broad():
+    # broad tags (sports/games/baseball/basketball) skipped; the specific league tag wins
+    assert cat.category_from_event_tags(_load_events("mlb.json")[0]["tags"]) == "mlb"
+    assert cat.category_from_event_tags(_load_events("ufc.json")[0]["tags"]) == "ufc"
+    assert cat.category_from_event_tags(_load_events("nba_champion_futures.json")[0]["tags"]) == "nba"
+    # fed: 'fed-rates' wins, NOT the forceHide 'politics' tag on the same event
+    assert cat.category_from_event_tags(_load_events("fed.json")[0]["tags"]) == "fed"
+    assert cat.category_from_event_tags([{"slug": "sports"}, {"slug": "games"}]) is None
+    assert cat.category_from_event_tags(None) is None
+
+
+async def test_tier2_maps_live_categories_from_fixtures():
+    res = await cat.derive_categories_batch(list(_SLUG_FIXTURE), fetch_events=_fake_fetch(_SLUG_FIXTURE))
+    assert res["mlb-mia-nym-2026-05-29"] == ("mlb", cat.SOURCE_GAMMA)
+    assert res["ufc-kin-ter1-2026-07-11"] == ("ufc", cat.SOURCE_GAMMA)
+    assert res["2026-nba-champion"] == ("nba", cat.SOURCE_GAMMA)   # futures still -> nba (category only)
+    assert res["fed-interest-rates-may-2025"] == ("fed", cat.SOURCE_GAMMA)
+    assert res["soccer-lec-rsl-atlante-2026-08-08"] == ("soccer", cat.SOURCE_GAMMA)
+
+
+async def test_tier2_no_matching_tag_is_unknown():
+    async def _f(slug, **kw):
+        return [{"slug": slug, "tags": [{"slug": "sports"}, {"slug": "games"}]}]
+    res = await cat.derive_categories_batch(["weird-event"], fetch_events=_f)
+    assert res["weird-event"] == (cat.CATEGORY_UNKNOWN, cat.SOURCE_UNKNOWN)
+
+
+async def test_tier2_per_slug_error_tolerance():
+    # one slug raises -> ('unknown','unknown'); the other resolves; batch not aborted
+    async def _f(slug, **kw):
+        if slug == "boom":
+            raise RuntimeError("gamma 500")
+        return _load_events("mlb.json")
+    res = await cat.derive_categories_batch(["boom", "mlb-mia-nym-2026-05-29"], fetch_events=_f)
+    assert res["boom"] == (cat.CATEGORY_UNKNOWN, cat.SOURCE_UNKNOWN)
+    assert res["mlb-mia-nym-2026-05-29"] == ("mlb", cat.SOURCE_GAMMA)
+
+
+async def test_tier2_dedups_event_slugs():
+    calls = []
+    async def _f(slug, **kw):
+        calls.append(slug)
+        return _load_events("fed.json")
+    res = await cat.derive_categories_batch(
+        ["fed-interest-rates-may-2025", "fed-interest-rates-may-2025"], fetch_events=_f)
+    assert calls == ["fed-interest-rates-may-2025"]   # deduped -> single fetch
+    assert res["fed-interest-rates-may-2025"] == ("fed", cat.SOURCE_GAMMA)
