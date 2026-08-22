@@ -60,12 +60,18 @@ SKIP_RESERVE = "reserve"
 SKIP_RISK_REJECT = "risk_reject"
 SKIP_NO_EQUITY_SNAPSHOT = "no_equity_snapshot"
 SKIP_CREDIT_FLOOR_DRIFT = "credit_floor_drift"  # entry-ladder stand-down
+# strike_collision: every buildable in-band condor has a leg that would open
+# OPPOSITE an existing same-expiry position (RH atomic reject: buy-to-open where
+# short / sell-to-open where long). build_condor shifts the short within the
+# delta band to avoid it; this is recorded only when no in-band shift clears.
+SKIP_STRIKE_COLLISION = "strike_collision"
 SKIP_REASONS = frozenset(
     {
         SKIP_CAPACITY, SKIP_WEEKLY_BUDGET, SKIP_COOLDOWN, SKIP_BLACKOUT,
         SKIP_IVR, SKIP_NO_EXPIRY, SKIP_NO_DELTA_STRIKE, SKIP_NO_WING,
         SKIP_RISK_BAND, SKIP_CREDIT_FLOOR, SKIP_BUDGET, SKIP_RESERVE,
         SKIP_RISK_REJECT, SKIP_NO_EQUITY_SNAPSHOT, SKIP_CREDIT_FLOOR_DRIFT,
+        SKIP_STRIKE_COLLISION,
     }
 )
 

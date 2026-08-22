@@ -56,6 +56,23 @@ async def _fire_slot(division, name: str, session_date, logger_agent) -> None:
         _log_event(logger_agent, "mace_daily_summary", {"date": session_date.isoformat()})
 
 
+def _entry_window_closed(division, now: datetime) -> bool:
+    """True iff `now` (ET) is at/after the configured entry cutoff — i.e. the entry
+    window for `now`'s session has already closed, so an entry catch-up would be
+    STALE (P1.5). The daily-slots `fired` set resets on every restart, so without
+    this an off-hours restart re-runs the entry slot for a session whose 15:58
+    window closed hours ago. Fail-OPEN (return False) if the cutoff is unreadable;
+    run_entry's session-date-aware cutoff is the hard backstop either way."""
+    entry = getattr(getattr(getattr(division, "manager", None), "cfg", None), "entry", None)
+    raw = getattr(entry, "entry_cutoff_et", None)
+    if not raw:
+        return False
+    try:
+        return now.time() >= dtime.fromisoformat(raw)
+    except Exception:  # noqa: BLE001 — a config hiccup must never break the loop
+        return False
+
+
 async def mace_daily_slots_loop(division, logger_agent, *, now_et_fn=now_et,
                                 slots=_DEFAULT_SLOTS, poll_interval_sec: int = 5) -> None:
     """15:40 snapshot -> 15:45 entry -> 15:50 summary, ET weekdays, deduped per
@@ -70,6 +87,12 @@ async def mace_daily_slots_loop(division, logger_agent, *, now_et_fn=now_et,
                     for (h, m), name in slots:
                         key = (now.date().isoformat(), name)
                         if now.time() >= dtime(h, m) and key not in fired:
+                            # P1.5: never re-fire a STALE entry catch-up after the
+                            # cutoff (an off-hours restart resets `fired`). The entry
+                            # slot places real capital; snapshot/summary catch-up is safe.
+                            if name == "entry" and _entry_window_closed(division, now):
+                                fired.add(key)          # mark so we don't re-check
+                                continue
                             fired.add(key)
                             await _fire_slot(division, name, now.date(), logger_agent)
             await asyncio.sleep(poll_interval_sec)

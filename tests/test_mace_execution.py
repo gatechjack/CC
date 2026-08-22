@@ -273,6 +273,22 @@ async def test_entry_exception_never_books_and_keeps_anchor_for_reconcile():
 
 
 @pytest.mark.asyncio
+async def test_entry_definitive_reject_deletes_anchor_same_session():
+    # 2026-08-20 P1.2: a DEFINITIVE broker reject (MaceOrderRejected -> nothing
+    # placed) is distinct from an ambiguous error. It does a CLEAN stand-down that
+    # DELETES the submitting anchor immediately, freeing the capacity slot THIS
+    # session (the 8/19 position_effect collision reject stranded a slot before).
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [bp.MaceOrderRejected(
+        "Robinhood did not accept the credit combo on SPY x1: "
+        "{'position_effect': \"can't buy to open ... already short\"}")]
+    out = await _executor(port, store, chan).run_entry(_ev(), SESSION)
+    assert not out.filled and out.standdown_reason == "rejected"
+    assert store.get(RUNG_ID) is None                       # anchor DELETED, slot freed
+
+
+@pytest.mark.asyncio
 async def test_entry_partial_fill_is_urgent_never_booked():
     conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
     _entry_quotes(port)

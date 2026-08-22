@@ -43,6 +43,17 @@ DIR_CREDIT = "credit"
 DIR_DEBIT = "debit"
 
 
+class MaceOrderRejected(Exception):
+    """NEUTRAL 'the broker DEFINITIVELY rejected this order; nothing was placed'
+    signal. A concrete port (rh_broker) translates its broker-specific hard-reject
+    exception (e.g. RobinhoodOrderError — no order id in the response) into THIS,
+    so execution can distinguish a confirmed reject (safe to delete the submitting
+    anchor immediately, slot freed same session) from an AMBIGUOUS network/timeout
+    error (order MIGHT exist at the broker -> retain the anchor for reconcile).
+    Keeping it here preserves the mace<->brokers import boundary: execution imports
+    this neutral type, never trading_corp.brokers.*."""
+
+
 @dataclass(frozen=True)
 class PortSnapshot:
     """Account snapshot on the MACE-bound account (acct-scoped). equity is the

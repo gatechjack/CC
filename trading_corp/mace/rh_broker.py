@@ -25,11 +25,13 @@ import logging
 import re
 from datetime import date, datetime
 
-from trading_corp.brokers.robinhood import RobinhoodBroker, RobinhoodComboPending
+from trading_corp.brokers.robinhood import (
+    RobinhoodBroker, RobinhoodComboPending, RobinhoodOrderError)
 from trading_corp.persistence.models import ProposedOrder
 
 from trading_corp.mace.broker_port import (
-    AccountInfo, OpenOrder, OpenOptionPosition, OptionsBrokerPort, OrderResult,
+    AccountInfo, MaceOrderRejected, OpenOrder, OpenOptionPosition,
+    OptionsBrokerPort, OrderResult,
     PortSnapshot, DIR_CREDIT, DIR_DEBIT,
     STATE_FILLED, STATE_QUEUED, STATE_UNCONFIRMED,
 )
@@ -202,8 +204,15 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
             # -> NON-terminal; execution cancels + polls (cancel race). Never booked here.
             return OrderResult(order_id=pend.order_id, state=STATE_QUEUED,
                                processed_quantity=0.0, time_in_force=time_in_force)
-        # A hard reject / no-id raises RobinhoodOrderError inside place_multi_leg and
-        # PROPAGATES (port contract) -> execution's fake-fill guard books nothing.
+        except RobinhoodOrderError as rej:
+            # A HARD reject (no order id in the response) — DEFINITIVELY not placed
+            # (e.g. the position_effect "can't buy to open ... already short" reject).
+            # Translate to the NEUTRAL MaceOrderRejected so execution can clean up
+            # the anchor immediately WITHOUT importing trading_corp.brokers.* (the
+            # mace import boundary). Ambiguous network/timeout errors are NOT
+            # RobinhoodOrderError -> they propagate raw -> execution retains the
+            # anchor for reconcile (fake-fill guard, unchanged).
+            raise MaceOrderRejected(str(rej)) from rej
         oid = acct = None
         if fills:
             oid = fills[0].broker_order_id or fills[0].order_id

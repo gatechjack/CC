@@ -12770,3 +12770,52 @@ test_weekly_budget_skip). MACE suite 302/302.
 **main (this branch):** minimal additive sync of the band-widen delta (7 mace files verbatim +
 main.py:1900 wire edit only + this deploy_log entry); the 5 poly-kalshi prod-live deploys
 (570d6fc..e7af3bc) remain UN-reconciled to main by design (own session).
+
+## 2026-08-22 ~02:17 UTC - MACE P1.5 (off-hours catch-up guard) + P1.4 (manage None-tolerance) + deploy-gate tooling (code-only FILE-OVERWRITE; RESTART; MainPID 809127 -> 850993 wrapper / 851007 python)
+
+**Context.** Builds on phase-1 (P1.0-P1.3), box-deployed 2026-08-20 (config_hash 65d85cc4b4cc ->
+3256226747af: risk_band_max 260->550, rung_risk_pct 0.10->0.14, min_sep config default off;
+snap-to-grid symmetric $5-wide wing; strike-collision shift; neutral MaceOrderRejected stand-down).
+prod-live GIT had been HELD at 7150404 pending P1.5; this advance records phase-1's config + code in
+prod-live git (config/mace.yaml catch-up -> config_hash 3256226747af now matches the box).
+
+**P1.5 - session-date-aware entry cutoff (off-hours catch-up guard).** A MACE restart AFTER 15:45 ET
+ran a daily-slots catch-up whose 15:58 cutoff was compared time-of-day-only, so it passed after
+midnight (00:06 < 15:58) -> a STALE off-hours ENTRY attempt with auto_execute. FIX at 3 layers,
+ENTRY-path only (manage/exit byte-unchanged): loops.py `_entry_window_closed()` gate skips the ENTRY
+slot catch-up past the session cutoff (snapshot/summary unchanged, fail-open); execution.py run_entry
+`(now.date(), now.time()) >= (session_date, cutoff)` tuple-compare; manager.py evaluate_and_enter OQ-2
+`cutoff_dt` anchored to session_date. +8 tests (tests/test_mace_p15_offhours_cutoff.py).
+
+**P1.4 - manage_tick None-tolerance (broker-outage resilience).** The 8/20 RH outage returned None
+broker responses; leg_quote `.get`s on None and raised -> ~80x manage-loop crashes. FIX: executor.mark()
+try/except -> None + `mace_mark_unavailable` audit. Decision logic BYTE-UNCHANGED (evaluate_management
+already None-mark-safe: stop/PT guarded on mark, time date-based, exdiv spot-based -> a due time/exdiv
+exit STILL fires). +5 tests (tests/test_mace_p14_none_tolerance.py).
+
+**Deploy.** Box is not git -> FILE-OVERWRITE of 3 union runtime files, LF-md5-verified on box:
+execution.py 9449a1c082e8faadbfb48763cc71c03e / loops.py 461867a87304304536114a5fa52254a6 /
+manager.py 66737162252bddf3c825945abfda3922. auto_execute FALSE + HALT latch engaged during the swap.
+Swap ~01:53 UTC; RESTART ~02:17 UTC root via az run-command (NO sudo). config_hash UNCHANGED
+3256226747af (code-only). Backup /home/azureuser/mace_gate_bak_20260822_003557/rollback.sh.
+
+**Boot verify ALL GREEN + live proof-of-fix.** New PID started 02:17:04 UTC (post-swap); union .pyc
+header src_mtime/src_size match the on-disk union .py (loaded bytecode = union). /mace 200, 6 rungs
+intact (GDX 6a88ab14 + 5 SPY), 0 MACE tracebacks. ***P1.5 PROVEN LIVE on its real trigger:*** the
+22:17-ET restart triggered the daily-slots catch-up (22:20 ET >= all slots) -> snapshot + summary
+fired but the ENTRY slot was GATED (no mace_entry_round/eval, no order) - the exact 8/21 off-hours
+phantom scenario, now correctly skipped. MACE left HALTED (weekend safety; un-halt Monday).
+
+**Deploy-gate tooling.** scripts/deploy_gate_battery.ps1 - dry-run-able 5-gate battery (staged==changed
+| py_compile | drift-gate LF-both-sides | backup+rollback.sh | boot-verify checklist). Local dev tool;
+the box never executes it. (Known deferred: Gate 4 -Apply here-doc-over-stdin hang.)
+
+**prod-live:** `7150404` -> `398881b` (FF: P1 -> P1.5 -> P1.4 -> tooling; poly-kalshi never dragged).
+
+**main (this branch):** minimal additive sync - the 17 mace-advance files verbatim (config/mace.yaml,
+8 mace/*.py, 6 mace tests, research/mace/TRANSITION_2026-08-21.md, scripts/deploy_gate_battery.ps1) +
+this deploy_log entry (APPEND-ONLY). BACKLOG.md UNTOUCHED (main is the superset - it carries the
+Polymarket P1/P2 closure records + the Tastytrade cred/KeyVault security item that prod-live lacks).
+The 7 poly-kalshi prod-live commits + prod-live's phase-1/poly-kalshi deploy_log entries (the ~230
+prod-live-only lines) remain UN-reconciled to main by design (own session). strategies.yaml /
+divisions.yaml / main.py / persistence/db.py UNTOUCHED.

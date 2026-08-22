@@ -460,8 +460,19 @@ class MaceExecutor:
 
     async def mark(self, spec: CondorSpec) -> Optional[float]:
         """Per-contract cost-to-close at mid, for the management loop's stop
-        compare (strategy owns the precedence; execution owns the fresh quotes)."""
-        return self._credit_mid(await self._fresh_quotes(spec))
+        compare (strategy owns the precedence; execution owns the fresh quotes).
+
+        P1.4 None-tolerance: an RH session outage returns None broker responses
+        whose leg-quote parse `.get`s on None and RAISES (the 8/20 manage-loop
+        crashes). Catch it so the tick degrades to a None mark -- evaluate_management
+        then skips stop/PT (both guarded on `mark is not None`) but STILL evaluates
+        time/exdiv -- instead of crashing per rung. DECISION logic is untouched;
+        this only converts a broker-outage crash into a clean None + benign audit."""
+        try:
+            return self._credit_mid(await self._fresh_quotes(spec))
+        except Exception as exc:  # noqa: BLE001 — a broker outage must not sink the manage loop
+            self._audit("mace_mark_unavailable", symbol=spec.symbol, error=str(exc))
+            return None
 
     async def _poll_until_terminal(self, order_id: str) -> Optional[OrderResult]:
         """Poll `order_status` to a terminal state. Returns the terminal
@@ -558,10 +569,13 @@ class MaceExecutor:
 
         last_price: Optional[float] = None
         for k in range(1, x.entry_max_attempts + 1):
-            # 15:58 cutoff — every prior attempt was confirmed dead, so a clean
-            # stand-down can delete the anchor (nothing filled, nothing working).
-            now_t = self._now_et().time()
-            if now_t >= cutoff:
+            # 15:58 cutoff — SESSION-DATE-AWARE (P1.5). Compare the full ET
+            # (date, time) against THIS session's cutoff, not wall-clock time-of-day
+            # alone: an off-hours restart can run this after midnight, where a
+            # time-only check (00:06 < 15:58) would wrongly PASS and place a
+            # STALE-session entry. A clean stand-down deletes the anchor.
+            now_dt = self._now_et()
+            if (now_dt.date(), now_dt.time()) >= (session_date, cutoff):
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "cutoff", clean=True)
             # Operator halt latch (/mace HALT button) — before window_budget so a
@@ -571,7 +585,7 @@ class MaceExecutor:
                                              "operator_halt", clean=True)
             # OQ-2 window budget (checked AFTER cutoff so the global cutoff always
             # wins the reason) — the manager's per-symbol share of the window ran out.
-            if deadline is not None and now_t >= deadline.time():
+            if deadline is not None and now_dt.time() >= deadline.time():
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "window_budget", clean=True)
 
@@ -604,10 +618,22 @@ class MaceExecutor:
                 self.notifier.reject(symbol=spec.symbol, detail=f"entry risk-rejected: {rej}")
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "risk_reject", clean=True)
+            except bp.MaceOrderRejected as rej:
+                # DEFINITIVE broker reject (no order id -> nothing placed at the
+                # broker; e.g. the position_effect collision reject). Unlike an
+                # ambiguous error, there is NO order to reconcile -> clean stand-down
+                # DELETES the anchor now, freeing the capacity slot THIS session
+                # (was: stranded as `submitting` until the 2-session abandon horizon).
+                self._audit("mace_entry_rejected", rung_id=rung_id, attempt=k, detail=str(rej))
+                self.notifier.reject(symbol=spec.symbol, detail=f"entry rejected: {rej}")
+                return self._entry_standdown(spec, rung_id, k - 1, last_price,
+                                             "rejected", clean=True)
             except Exception as exc:  # noqa: BLE001
-                # FAKE-FILL GUARD: an exception NEVER books. The order MIGHT exist
-                # at the broker (lost response) -> leave the anchor for reconcile
-                # to drain by combo_id; do NOT delete, do NOT place another.
+                # FAKE-FILL GUARD: an AMBIGUOUS exception (network/timeout/lost
+                # response) NEVER books. The order MIGHT exist at the broker
+                # -> leave the anchor for reconcile to drain by combo_id; do NOT
+                # delete, do NOT place another. (Definitive rejects are handled
+                # above via MaceOrderRejected -> anchor deleted.)
                 self._audit("mace_entry_error", rung_id=rung_id, attempt=k, error=str(exc))
                 self.notifier.reject(symbol=spec.symbol,
                                      detail=f"entry attempt {k} error: {exc}")

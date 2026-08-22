@@ -22,7 +22,7 @@ from trading_corp.mace.domain import (
     SKIP_BLACKOUT, SKIP_BUDGET, SKIP_CAPACITY, SKIP_COOLDOWN, SKIP_CREDIT_FLOOR,
     SKIP_IVR, SKIP_NO_DELTA_STRIKE, SKIP_NO_EQUITY_SNAPSHOT, SKIP_NO_EXPIRY,
     SKIP_NO_WING, SKIP_RESERVE, SKIP_RISK_BAND, SKIP_RISK_REJECT,
-    SKIP_WEEKLY_BUDGET, iso_week,
+    SKIP_STRIKE_COLLISION, SKIP_WEEKLY_BUDGET, iso_week,
 )
 from trading_corp.mace.ivr_provider import IvrReading
 
@@ -546,3 +546,128 @@ def test_overflow_excludes_forfeiting_symbol(tmp_path):
             EvalResult(symbol="GLD", entered=False, skip_reason=SKIP_WEEKLY_BUDGET)]
     out = st.route_overflow(prim, cfg2, ctx_multi(chains, ivrs))
     assert all(r.symbol != "GLD" for r in out)      # GLD excluded; SPY may receive
+
+
+# ── P1.1 strike-collision guard (shift-only) + P1.3 snap-to-grid (2026-08-20) ──
+
+def _oq(sym, o, k, d, b, a):
+    return OptionQuote(sym, EXPIRY, float(k), o, b, a, delta=d)
+
+
+def _cv(sym, spot, legs):
+    return st.ChainView(sym, spot=spot, expiries=(EXPIRY,),
+                        quotes={(EXPIRY, o, float(k)): _oq(sym, o, k, d, b, a)
+                                for o, k, d, b, a in legs})
+
+
+# SPY-like fine-grid chain with a delta ladder (spot 600, width 3). 585 is nudged
+# to -0.16 (dist 0.04 < 591's 0.05) so the shift's next candidate after 588 is
+# deterministically 585 (both 585 and 591 are otherwise ~equidistant from 0.20).
+_SHIFT_LEGS = [
+    ("put", 582, -0.10, 1.50, 1.60), ("put", 585, -0.16, 2.00, 2.10),
+    ("put", 588, -0.20, 2.60, 2.70), ("put", 591, -0.25, 3.20, 3.30),
+    ("call", 612, 0.25, 2.60, 2.70), ("call", 615, 0.20, 2.00, 2.10),
+    ("call", 618, 0.15, 1.50, 1.60),
+]
+
+
+def test_collision_shifts_short_within_band():
+    # existing SHORT put at 585 -> the nearest short (588)'s long wing (588-3=585)
+    # would buy-to-open where we hold a short (RH reject). The guard SHIFTS the
+    # short off 588 to the next in-band candidate (585, long 582) with no overlap.
+    ch = _cv("SPY", 600.0, _SHIFT_LEGS)
+    net = {(EXPIRY, "put", 585.0): -1}
+    b = st.build_condor("SPY", CFG.symbols["SPY"], ch, CFG, SESSION, net_positions=net)
+    assert b.skip_reason is None
+    assert b.spec.short_put == 585 and b.spec.long_put == 582     # shifted off 588
+    assert b.spec.short_call == 615 and b.spec.long_call == 618
+
+
+def test_collision_no_in_band_shift_skips_strike_collision():
+    # only ONE in-band short per side; its long wing (582) collides with an
+    # existing short at 582 and there is no alternative -> strike_collision.
+    legs = [("put", 582, -0.10, 1.50, 1.60), ("put", 585, -0.20, 2.00, 2.10),
+            ("call", 615, 0.20, 2.00, 2.10), ("call", 618, 0.15, 1.50, 1.60)]
+    ch = _cv("SPY", 600.0, legs)
+    net = {(EXPIRY, "put", 582.0): -1}
+    b = st.build_condor("SPY", CFG.symbols["SPY"], ch, CFG, SESSION, net_positions=net)
+    assert b.skip_reason == SKIP_STRIKE_COLLISION
+    assert "overlaps an existing same-expiry leg" in b.detail
+
+
+def test_no_collision_builds_nearest_unchanged():
+    # net at an unrelated strike -> nearest short pair builds normally (no shift).
+    net = {(EXPIRY, "put", 700.0): -1}
+    b = st.build_condor("SPY", CFG.symbols["SPY"], chain(), CFG, SESSION, net_positions=net)
+    assert b.skip_reason is None and b.spec.short_put == 585 and b.spec.long_put == 582
+
+
+def test_different_expiry_same_strike_not_collision():
+    # an existing short at the SAME strike but a DIFFERENT expiry must NOT flag —
+    # RH only rejects same-contract (expiry+strike+type) opposite opens.
+    other = date(2026, 10, 2)
+    net = {(other, "put", 582.0): -1}
+    b = st.build_condor("SPY", CFG.symbols["SPY"], chain(), CFG, SESSION, net_positions=net)
+    assert b.skip_reason is None and b.spec.long_put == 582
+
+
+def test_min_separation_off_by_default_no_skip():
+    # existing SHORT 3 pts from the candidate short (585). With min_sep=0 (shipped
+    # default) this is NOT a collision (different strike, same direction) -> builds.
+    net = {(EXPIRY, "put", 588.0): -1}
+    b = st.build_condor("SPY", CFG.symbols["SPY"], chain(), CFG, SESSION, net_positions=net)
+    assert b.skip_reason is None and b.spec.short_put == 585
+
+
+def test_min_separation_on_blocks_too_close_rung():
+    # flip the knob ON (5.0): a candidate short within $5 of an existing same-expiry
+    # short is skipped. Every in-band SPY short is within 5 of 588 or has no wing
+    # -> strike_collision. Proves the config knob is wired (default stays 0/off).
+    cfg2 = dataclasses.replace(
+        CFG, entry=dataclasses.replace(CFG.entry, min_strike_separation_usd=5.0))
+    net = {(EXPIRY, "put", 588.0): -1}
+    b = st.build_condor("SPY", cfg2.symbols["SPY"], chain(), cfg2, SESSION, net_positions=net)
+    assert b.skip_reason == SKIP_STRIKE_COLLISION
+
+
+def test_snap_to_grid_gdx_5wide_builds_clears_band_sizes_one():
+    # GDX at spot 97: the 20-delta short call 115's +width wing is UNLISTED (OTM
+    # call grid is $5: 115,120,125). snap-to-grid takes 120; the symmetric re-snap
+    # widens the put side to $5 too (long 75) so the credit scales with the $5
+    # max-loss width and clears the 0.30x5=1.50 floor.
+    gdx = CFG.symbols["GDX"]                          # width 2, fallback 1
+    legs = [("put", 75, -0.10, 0.70, 0.80), ("put", 78, -0.15, 1.19, 1.29),
+            ("put", 80, -0.20, 1.65, 1.75),
+            ("call", 115, 0.23, 1.50, 1.60), ("call", 120, 0.12, 0.60, 0.70),
+            ("call", 125, 0.06, 0.20, 0.30)]
+    ch = _cv("GDX", 97.0, legs)
+    b = st.build_condor("GDX", gdx, ch, CFG, SESSION)
+    assert b.skip_reason is None
+    assert b.spec.short_call == 115 and b.spec.long_call == 120   # snapped to the $5 grid
+    assert b.spec.short_put == 80 and b.spec.long_put == 75       # symmetric $5 put side
+    assert b.width == 5
+    assert abs(b.credit_mid - 1.85) < 1e-9                        # 0.95 put + 0.90 call
+    # clears the raised risk band (max 550): risk (5-1.85)*100 = 315 in [250,550].
+    assert 250 <= (b.width - b.credit_mid) * 100.0 <= CFG.entry.risk_band_max_usd
+    # sizes to EXACTLY 1 at the live equity 3217.94 with rung_risk_pct 0.14:
+    n = st.size_contracts(3217.94, b.width, b.credit_mid,
+                          CFG.sizing.rung_risk_pct, CFG.max_contracts)
+    assert n == 1
+
+
+def test_snap_fine_grid_spy_unchanged():
+    # a fine ($1/…) grid where short-/+width is listed exactly -> width == config,
+    # no widening. SPY width 3, wings at 582/618.
+    b = st.build_condor("SPY", CFG.symbols["SPY"], chain(), CFG, SESSION)
+    assert b.skip_reason is None and b.width == 3
+    assert b.spec.long_put == 582 and b.spec.long_call == 618
+
+
+def test_too_wide_condor_still_rejects_on_new_max():
+    # a $6-wide condor (grid forces it) with tiny credit -> max_risk 600 > 550 ->
+    # risk_band. The raised ceiling admits $5-wide, not arbitrarily wide.
+    legs = [("put", 88, -0.10, 0.05, 0.15), ("put", 94, -0.20, 0.05, 0.15),
+            ("call", 106, 0.20, 0.05, 0.15), ("call", 112, 0.10, 0.05, 0.15)]
+    ch = _cv("GLD", 100.0, legs)                      # GLD width 3; grid forces 6
+    b = st.build_condor("GLD", CFG.symbols["GLD"], ch, CFG, SESSION)
+    assert b.skip_reason == SKIP_RISK_BAND

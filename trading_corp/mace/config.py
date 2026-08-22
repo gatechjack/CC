@@ -45,6 +45,8 @@ class EntryConfig:
     ibit_overflow_cap: int
     overflow_max_per_symbol_session: int
     strike_band_pct: float               # chain() fetch bound: +/- this * spot (rh_broker)
+    min_strike_separation_usd: float     # 0 = OFF; >0 blocks a new rung whose short
+                                         # lands within $ of an existing same-expiry short
 
 
 @dataclass(frozen=True)
@@ -270,6 +272,9 @@ def load_mace_config(
     ibit_cap = num(e, "ibit_overflow_cap", "entry", typ=int, lo=0)
     overflow_max = num(e, "overflow_max_per_symbol_session", "entry", typ=int, lo=0)
     strike_band = num(e, "strike_band_pct", "entry", lo=0.0, hi=1.0, lo_excl=True)
+    # Optional (default 0 = OFF). Present in the shipped config as a documented knob.
+    min_sep = (num(e, "min_strike_separation_usd", "entry", lo=0.0)
+               if "min_strike_separation_usd" in e else 0.0)
 
     s = sect("sizing")
     rung_risk = num(s, "rung_risk_pct", "sizing", lo=0.0, hi=1.0, lo_excl=True)
@@ -443,6 +448,7 @@ def load_mace_config(
             ibit_overflow_cap=int(ibit_cap),
             overflow_max_per_symbol_session=int(overflow_max),
             strike_band_pct=float(strike_band),
+            min_strike_separation_usd=float(min_sep),
         ),
         sizing=SizingConfig(
             rung_risk_pct=float(rung_risk),
