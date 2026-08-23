@@ -1,5 +1,24 @@
 # TRANSITION → P2 BUILD AGENT (Prediction Markets)
 
+## ⭑ PICK UP HERE (read this first)
+
+- **STATUS: P2 plan is BOARD-APPROVED FINAL (2026-08-23, Jack). Execution NOT started. Nothing built, nothing deployed, nothing mutated.** The spec is `reports/prediction_markets/P2_PLAN.md` on THIS branch (`prediction-markets`).
+- **YOUR FIRST ACT, IN ORDER:**
+  (a) Read this doc in full, then `P2_PLAN.md`, then `PLATFORM_VISION.md` and `P1_PLAN.md` **including all amendments** (§3A, §7, §12, §13 decisions, §13A open items).
+  (b) **Confirm the CURRENT `prod-live` tip WITH JACK before branching** — the P1 build was nearly cut off a stale SHA, and remembered numbers go stale the same way. **NEVER a remembered SHA.**
+  (c) Cut `prediction-markets-p2-2026-08-23` off the confirmed tip.
+  (d) Push to origin from the first commit; work phase-branch → durable `prediction-markets`; **no `main` merge** until the P3 cutover.
+- **ALREADY DONE — facts on the branch, do NOT re-derive:** P1 is deployed + live (**daily 03:20 cron TODAY; Ruling A replaces it with a WEEKLY schedule at build**; ~28.3k rows, 12 whales); the read-only **infra discovery** (Caddy proxy; Authelia `forward_auth` on :9091; PM port **`127.0.0.1:8081` verified free**; `predictions` DNS record absent; systemd house style — §4); the **four board rulings + OQ rulings** (§3). These are settled; build on them.
+- **EXPLICITLY OUT OF SCOPE:** the **Authelia edit** (Jack's — `AUTHELIA_TRADING_RULE_FINDING.md`); **Karen's login** (gated on that edit); anything **P3** (promote-to-live, sub-divisions, the shared execution engine, live marks); the **backlogged analytics** (BetMechanic `/activity` entry-timestamp study, the two-sided directional slice as a one-off probe — if they happen they become APP COLUMNS, not probes). Do NOT edit Caddy/Authelia. Do NOT touch `ingest.py`. Do NOT create auth tables.
+- **BUILD CHECKPOINTS YOU MUST HONOR (carry P1's hardest lesson — §9):** expect this plan to contain wrong premises too; verify against live data before building on any of them; build **halt-and-report checkpoints** into the P2 sequence at these four points, inspecting the real rows before fanning out:
+  1. **first migration (004) applied to the LIVE P1 DB** — confirm idempotent + existing rows intact before proceeding;
+  2. **first page rendering REAL data** — confirm the caveat columns + drill-throughs match the CLI (`format_report`) on real rows;
+  3. **first search run** — one category, inspect `pm_search_run` + the found candidates + the targeted backfill BEFORE allowing bulk;
+  4. **first paper trade captured** — one pinned whale, inspect the `pm_paper_trade` row (entry_ts, side, size) BEFORE the poll runs across the farm.
+- **HARD CONSTRAINTS + STANDING PRINCIPLES** are in §6 and §7 — read them; they are non-negotiable (additive only, no engine edits/restart, no legacy DB writes, no main merge, `.ps1` runner pattern, azureuser-never-root; bias-down-never-up, verify-don't-trust, caveats-travel-with-the-number, drill-to-rows, never-reword-a-blocked-command).
+
+---
+
 **Written 2026-08-23. Assume you (the build agent) have read nothing else.** This is your complete handoff.
 The detailed spec is `reports/prediction_markets/P2_PLAN.md` on this branch (`prediction-markets`), reachable from
 origin and the box — read it after this. Everything a decision rests on is here *with its reason*; a decision
@@ -139,16 +158,20 @@ Users DB = file backend (`/etc/authelia/users_database.yml`), **single user `jac
 satisfies the unrestricted `trading` rule → she could reach the LIVE TRADING dashboard.** So Ruling C ("Karen
 sees predictions, not trading") **cannot be delivered by only adding a `predictions` rule.**
 
-**This is JACK-AUTHORIZED LIVE-STACK WORK — you (the build agent) do NOT touch Caddy or Authelia. You build
-`pm_web` + its systemd unit + the migrations/UI only.** The auth changes (Jack's hands, before go-live):
-1. **Tighten `trading.jacksumner.com`** — add `subject: 'group:admins'` (or `'user:jack'`). *The linchpin.*
-2. **Add Karen** to `users_database.yml` in a `pm_viewers` group (backend `watch:false` → restart Authelia).
-3. **Add a `predictions.jacksumner.com` rule** (`default_policy: deny` means no rule = nobody, incl. Jack):
-   `policy: two_factor`, `subject: 'group:pm_viewers'`.
-4. Add the Caddy `predictions` site block + the DNS A record.
+**This is a TRADING CORP INFRA CHANGE (same category as the VM geo-migration) — NOT a P2 build task. Jack's
+hands, Jack's timing. You (the build agent) do NOT touch Caddy or Authelia — you build `pm_web` + its systemd
+unit + the migrations/UI only.** The full ordered procedure (and the safety steps — take a config rollback copy,
+work from a machine with a separate way back in, and **VERIFY JACK STILL REACHES TRADING after tightening the
+rule** before creating Karen, because a wrong `subject` on a `default_policy: deny` config locks Jack out of his
+own live dashboard) is in the standalone note **`AUTHELIA_TRADING_RULE_FINDING.md`**. Ordering in brief:
+(1) add `subject` to the trading rule → (2) verify Jack still reaches trading → (3) create Karen → (4) add the
+`predictions` rule → (5) DNS A-record + Caddy site block.
 
-If anything about the build surfaces that the auth ruling still can't be delivered cleanly, say so plainly —
-do not paper over it.
+**★ THIS DOES NOT BLOCK THE P2 BUILD.** Authelia's existing `two_factor` rule already covers a new `predictions`
+vhost — Jack reaches it, nobody unauthenticated does — so the site can be built, deployed, and used by Jack long
+before Karen's login exists. **What the finding blocks is the Karen viewer feature, NOT the build.** Do not treat
+auth as a build gate; do not attempt the config edit. If anything about the build surfaces that the auth ruling
+still can't be delivered cleanly, say so plainly — do not paper over it.
 
 ---
 
@@ -248,7 +271,7 @@ doc, including this one.
   origin from the first commit.
 - Phase branch → durable `prediction-markets`. **No `main` merge** until the single P3 cutover. `prod-live`
   advances for deployed artifacts only (P2_PLAN §12).
-- `P2_PLAN.md` (this branch) is **BOARD-REVIEW DRAFT** until Jack marks it FINAL — confirm before building.
+- `P2_PLAN.md` (this branch) is **BOARD-APPROVED FINAL (2026-08-23, Jack)** — build from it. Execution not started.
 - Migrations are **004–007** (auth tables removed per Ruling C). Follow `db.py`'s numbered/idempotent pattern
   exactly; never rebuild a P1 table.
 

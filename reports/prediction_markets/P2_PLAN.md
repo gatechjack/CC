@@ -1,6 +1,6 @@
 # Prediction Markets — Phase 2 Plan (Standalone Web App + Farm-League Lifecycle)
 
-**Status:** BOARD-REVIEW DRAFT 2026-08-23. PLAN ONLY — nothing built, deployed, or mutated.
+**Status:** ✅ BOARD-APPROVED FINAL 2026-08-23 (Jack). **Execution NOT started** — nothing built, deployed, or mutated. A fresh build agent executes from the branch copy `reports/prediction_markets/P2_PLAN.md`.
 **Shape:** mirrors `P1_PLAN.md` (context → architecture → page/data spec → DDL → jobs → deploy → tests → acceptance → locked decisions → open questions).
 **Branch discipline (inherited, §4/§13-9):** phase branch `prediction-markets-p2-2026-08-23` → durable `prediction-markets`; push early/continuously; **NO merge to `main` until the single P3 cutover**; `prod-live` advances for deployed artifacts only; **confirm the current prod-live tip with Jack before branching — never a remembered SHA.**
 
@@ -299,7 +299,7 @@ The P2 feature set is tables, tabs, cards, badges, buttons, drill-throughs, back
 10. market_type: slug-heuristic `single_game_pct` now; true gamma market_type deferred (seam reserved).
 11. Branch: `prediction-markets-p2-2026-08-23` → durable `prediction-markets`; no `main` merge; confirm prod-live tip before branching.
 12. Paper sizing = **fixed unit** (OQ-1); paper scores in a **separate `pm_paper_score_snapshot`** (OQ-5); ANALYZE daily cap **$2** (OQ-6). Accepted defaults (OQ-2/3/4/8/9) are tunable after first real data; OQ-4's weekly slot keeps the mandatory live re-verify.
-13. **Infra facts (§7.1/§11/§12) are UNVERIFIED** — the discovery read was classifier-blocked (§16 OQ-7); plan stays BOARD-REVIEW DRAFT until the read is authorized and folded.
+13. **Infra facts (§7.1/§11/§12) VERIFIED 2026-08-23** (authorized read-only discovery, §16 OQ-7) and folded. Plan is BOARD-APPROVED FINAL. The one remaining live-stack action (tighten the Authelia trading rule before Karen's login) is **Jack's, tracked separately in `AUTHELIA_TRADING_RULE_FINDING.md`, and does NOT block the P2 build.**
 
 ## 16. Open questions — board-ruling status (2026-08-23)
 
@@ -322,7 +322,7 @@ The P2 feature set is tables, tabs, cards, badges, buttons, drill-throughs, back
 2. **Add Karen** to `/etc/authelia/users_database.yml` (file backend; `watch:false` → restart Authelia after), in a `pm_viewers` group (add jack too, or use subject lists).
 3. **Add a `predictions.jacksumner.com` access_control rule** (`default_policy: deny` means no rule = nobody reaches it, including Jack): `policy: two_factor`, `subject: 'group:pm_viewers'`.
 4. **Add the Caddy `predictions` site block** + the **DNS A record** (§12).
-Items 1–3 touch the live trading stack's auth → **Jack's hands, Jack's call, before go-live.** The build agent builds `pm_web` + its systemd unit + the migrations/UI; it does NOT edit Caddy/Authelia. Flagged, not assumed.
+Items 1–3 touch the live trading stack's auth → **Jack's hands, Jack's call, before go-live.** The build agent builds `pm_web` + its systemd unit + the migrations/UI; it does NOT edit Caddy/Authelia. Flagged, not assumed. **This is a Trading-Corp infra change (same category as the VM geo-migration), NOT a P2 task — tracked standalone in `AUTHELIA_TRADING_RULE_FINDING.md`. It does NOT block the P2 build:** Authelia's existing `two_factor` rule already covers a new `predictions` vhost (Jack reaches it, nobody unauthenticated does), so the site can be built, deployed, and used by Jack long before Karen's login exists. What the finding blocks is the **Karen viewer feature**, not the build.
 
 ---
 
