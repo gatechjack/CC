@@ -127,10 +127,17 @@ def compute_scores(conn, *, now_ts: int, min_resolved: int = DEFAULT_MIN_RESOLVE
     ).fetchall():
         samples[(r["wallet"], r["category"])].append((bool(r["won"]), float(r["resolved_ts"] or 0)))
 
+    # §13A(k): only COMPLETE-backfill wallets may be ranked. A PARTIAL/FAILED wallet (429-truncated or
+    # cap-hit) has half a whale's history -> looks like a different whale -> gets NO score snapshot until
+    # re-run to completion. pm_whale.backfill_complete is the gate.
+    complete = {r[0] for r in conn.execute(
+        "SELECT wallet FROM pm_whale WHERE backfill_complete = 1").fetchall()}
     snaps = []
     for s in conn.execute(
         "SELECT wallet, category, wins, losses, roi, n_resolved, n_excluded FROM pm_category_stats"
     ).fetchall():
+        if s["wallet"] not in complete:      # PARTIAL/FAILED wallet -> not ranked
+            continue
         if (s["n_resolved"] or 0) < min_resolved:
             continue
         key = (s["wallet"], s["category"])
@@ -164,10 +171,12 @@ def query_scoreboard(conn, *, category: str | None = None, routine: str = "net_r
     contested / data_quality flags."""
     q = (
         "SELECT cs.*, ss.score AS score, ss.wilson_lcb AS wilson_lcb, "
-        "ss.edge_factor AS edge_factor, ss.params_json AS params_json "
+        "ss.edge_factor AS edge_factor, ss.params_json AS params_json, "
+        "COALESCE(w.backfill_complete, 0) AS backfill_complete "
         "FROM pm_category_stats cs "
         "LEFT JOIN pm_score_snapshot ss "
         "  ON cs.wallet=ss.wallet AND cs.category=ss.category AND ss.routine=? "
+        "LEFT JOIN pm_whale w ON cs.wallet = w.wallet "
         "WHERE cs.n_resolved >= ?"
     )
     params: list = [routine, min_resolved]
@@ -200,6 +209,8 @@ def format_report(board: list[dict], *, fmt: str = "table") -> str:
              hdr, "-" * len(hdr)]
     for r in board:
         flags = []
+        if not r.get("backfill_complete"):
+            flags.append("INCOMPLETE-NOT-RANKED")   # §13A(k): PARTIAL/FAILED backfill -> excluded from ranking
         if r.get("chalk"):
             flags.append("CHALK")
         if r.get("contested"):

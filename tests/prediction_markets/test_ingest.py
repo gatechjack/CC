@@ -133,3 +133,79 @@ async def test_pk_collision_guard_isolates_wallet(tmp_path):
     assert len(summary["failed"]) == 1 and summary["failed"][0]["wallet"] == "0xbad"
     assert "PK COLLISION" in summary["failed"][0]["error"]      # LOUD + names the defect
     assert {w["wallet"] for w in summary["ok"]} == {"0xgood"}   # batch continued for the clean wallet
+
+
+async def _noop_sleep(_secs):
+    return None
+
+
+class FlakyClient:
+    """Raises RuntimeError('HTTP 429') on offset 0 the first `fail_times` calls, then serves `pages`."""
+    def __init__(self, pages, *, fail_times=0):
+        self._pages = pages
+        self._fail = fail_times
+
+    async def fetch_closed_positions(self, wallet, *, limit=50, offset=0):
+        if offset == 0 and self._fail > 0:
+            self._fail -= 1
+            raise RuntimeError("HTTP 429")
+        idx = offset // limit
+        rows = self._pages[idx] if idx < len(self._pages) else []
+        return [ClosedPositionRow.from_api(r) for r in rows]
+
+
+class FullPageClient:
+    """Always returns a FULL page of `limit` distinct rows -> pagination never short-outs (cap-hit test)."""
+    async def fetch_closed_positions(self, wallet, *, limit=50, offset=0):
+        rows = [{"proxyWallet": "0xcap", "conditionId": "0xc%d" % (offset + j), "slug": "ufc-a-b-2026-01-01",
+                 "eventSlug": "ufc-cap-%d-2026-01-01" % (offset + j), "outcome": "Yes", "outcomeIndex": 0,
+                 "avgPrice": 0.5, "totalBought": 100.0, "realizedPnl": 5.0, "curPrice": 1.0, "timestamp": offset + j}
+                for j in range(limit)]
+        return [ClosedPositionRow.from_api(r) for r in rows]
+
+
+def _page(wallet, n):  # inline rows whose proxyWallet matches the queried wallet (prod invariant)
+    return [{"proxyWallet": wallet, "conditionId": "0x%s_%d" % (wallet, i), "slug": "ufc-a-b-2026-01-01",
+             "eventSlug": "ufc-%s-%d-2026-01-01" % (wallet, i), "outcome": "Yes", "outcomeIndex": 0,
+             "avgPrice": 0.5, "totalBought": 100.0, "realizedPnl": 10.0, "curPrice": 1.0, "timestamp": i}
+            for i in range(n)]
+
+
+async def test_pull_closed_backoff_retry_recovers(tmp_path):
+    # 429 twice on the first page, then success -> backoff+retry recovers -> verdict complete (Step-4 429 safety).
+    cli = FlakyClient([_page("0xflaky", 3)], fail_times=2)
+    p = _fresh_db(tmp_path)
+    with db.connect(p) as conn:
+        res = await ingest.backfill_wallet(conn, "0xflaky", client=cli, now_ts=NOW, fetch_events=_noev, sleep=_noop_sleep)
+        wc = conn.execute("SELECT backfill_complete FROM pm_whale WHERE wallet='0xflaky'").fetchone()[0]
+    assert res["verdict"] == "complete" and res["pulled"] == res["stored"] and wc == 1
+
+
+async def test_pull_closed_exhausted_retries_fails_wallet(tmp_path):
+    # 429 forever -> retries exhaust -> wallet FAILS (isolated into summary['failed']), never silently PARTIAL.
+    bad = FlakyClient([_page("0xdead", 3)], fail_times=99)
+    p = _fresh_db(tmp_path)
+    with db.connect(p) as conn:
+        summary = await ingest.backfill_wallets(conn, ["0xdead", "0xgood"],
+                                                client=FlakyPerWallet({"0xdead": bad, "0xgood": FlakyClient([_page("0xgood", 3)])}),
+                                                now_ts=NOW, fetch_events=_noev, sleep=_noop_sleep)
+    assert len(summary["failed"]) == 1 and summary["failed"][0]["wallet"] == "0xdead"
+    assert {w["wallet"] for w in summary["ok"]} == {"0xgood"} and summary["complete"] == 1
+
+
+async def test_backfill_verdict_partial_on_cap_hit(tmp_path):
+    # pages never short-out within cap -> complete=False -> verdict 'partial', backfill_complete=0 (not ranked).
+    p = _fresh_db(tmp_path)
+    with db.connect(p) as conn:
+        res = await ingest.backfill_wallet(conn, "0xcap", client=FullPageClient(), now_ts=NOW,
+                                           fetch_events=_noev, limit=2, cap=4, sleep=_noop_sleep)
+        wc = conn.execute("SELECT backfill_complete FROM pm_whale WHERE wallet='0xcap'").fetchone()[0]
+    assert res["verdict"] == "partial" and wc == 0
+
+
+class FlakyPerWallet:
+    def __init__(self, by_wallet):
+        self._by = by_wallet
+
+    async def fetch_closed_positions(self, wallet, *, limit=50, offset=0):
+        return await self._by[wallet].fetch_closed_positions(wallet, limit=limit, offset=offset)

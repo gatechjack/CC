@@ -19,6 +19,7 @@ Spec: reports/prediction_markets/P1_PLAN.md §3A, §6, §8.
 """
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from typing import Any, Iterable
 
@@ -194,29 +195,52 @@ def upsert_closed_positions(conn, records: Iterable[dict]) -> int:
     return len(recs)
 
 
-def _stamp_whale(conn, wallet: str, now_ts: int, *, backfill: bool) -> None:
+def _stamp_whale(conn, wallet: str, now_ts: int, *, backfill: bool,
+                 complete: bool, pulled: int, stored: int) -> None:
+    cflag = 1 if complete else 0
     row = conn.execute("SELECT wallet FROM pm_whale WHERE wallet = ?", (wallet,)).fetchone()
     if row is None:
         conn.execute(
-            "INSERT INTO pm_whale (wallet, first_seen_ts, last_backfill_ts, last_refresh_ts) VALUES (?, ?, ?, ?)",
-            (wallet, now_ts, now_ts if backfill else None, now_ts),
+            "INSERT INTO pm_whale (wallet, first_seen_ts, last_backfill_ts, last_refresh_ts, "
+            "backfill_complete, last_pulled, last_stored) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (wallet, now_ts, now_ts if backfill else None, now_ts, cflag, pulled, stored),
         )
     else:
         col = "last_backfill_ts" if backfill else "last_refresh_ts"
-        conn.execute("UPDATE pm_whale SET %s = ?, last_refresh_ts = ? WHERE wallet = ?" % col,
-                     (now_ts, now_ts, wallet))
+        conn.execute(
+            "UPDATE pm_whale SET %s = ?, last_refresh_ts = ?, backfill_complete = ?, "
+            "last_pulled = ?, last_stored = ? WHERE wallet = ?" % col,
+            (now_ts, now_ts, cflag, pulled, stored, wallet))
 
 
-async def _pull_closed(client, wallet: str, *, limit: int, cap: int) -> list:
+async def _pull_closed(client, wallet: str, *, limit: int, cap: int,
+                       retries: int = 4, base_backoff: float = 2.0, sleep=None) -> tuple[list, bool]:
+    """Paginate /closed-positions with 429/error BACKOFF+RETRY. Returns (rows, complete).
+    `complete` is True IFF pagination ended on a genuinely empty/short page -- NOT on hitting `cap`
+    and NOT via an exhausted-retry error. On repeated failure for a page the exception PROPAGATES, so
+    the wallet is isolated as FAILED by backfill_wallets (never silently PARTIAL). A cap-hit returns
+    complete=False (PARTIAL: more history exists). Step-4 429 safety, §13A(k)."""
+    _sleep = sleep or asyncio.sleep
     rows: list = []
+    complete = False
     for off in range(0, cap, limit):
-        page = await client.fetch_closed_positions(wallet, limit=limit, offset=off)
+        page = None
+        for attempt in range(retries + 1):
+            try:
+                page = await client.fetch_closed_positions(wallet, limit=limit, offset=off)
+                break
+            except Exception:
+                if attempt >= retries:
+                    raise                                   # exhausted -> wallet FAILS (isolated), not PARTIAL
+                await _sleep(base_backoff * (2 ** attempt))  # 2s,4s,8s,16s backoff on 429/error
         if not page:
+            complete = True
             break
         rows.extend(page)
         if len(page) < limit:
+            complete = True
             break
-    return rows
+    return rows, complete                                    # loop exhausting `cap` w/o a short page -> complete=False (PARTIAL)
 
 
 async def _categorize(records: list[dict], *, fetch_events) -> None:
@@ -234,12 +258,14 @@ async def _categorize(records: list[dict], *, fetch_events) -> None:
 
 
 async def backfill_wallet(conn, wallet: str, *, client, now_ts: int, fetch_events=None,
-                          limit: int = 50, cap: int = 8000, backfill: bool = True) -> dict:
-    """Backfill/refresh one wallet: pull /closed-positions -> tier-1 categorize -> tier-2 for
-    unknowns -> row-level invariant -> event-group quarantine -> upsert -> stamp pm_whale.
-    Idempotent (INSERT OR REPLACE). Returns a small summary dict."""
+                          limit: int = 50, cap: int = 8000, backfill: bool = True, sleep=None) -> dict:
+    """Backfill/refresh one wallet: pull /closed-positions (429 backoff+retry) -> tier-1 categorize ->
+    tier-2 for unknowns -> row invariant -> event-group quarantine -> no-cost-basis quarantine ->
+    PK-collision guard -> upsert -> stamp pm_whale with the COMPLETENESS verdict. Idempotent.
+    verdict='complete' IFF pagination ran to a short/empty page AND pulled==stored; else 'partial'
+    (Step-4 429 safety, §13A(k)) -> backfill_complete flag drives ranking exclusion downstream."""
     wallet = wallet.lower()
-    cps = await _pull_closed(client, wallet, limit=limit, cap=cap)
+    cps, complete = await _pull_closed(client, wallet, limit=limit, cap=cap, sleep=sleep)
     records = []
     for cp in cps:
         cat, src = derive_category_from_slug(getattr(cp, "event_slug", ""), getattr(cp, "slug", ""))
@@ -249,21 +275,23 @@ async def backfill_wallet(conn, wallet: str, *, client, now_ts: int, fetch_event
     apply_no_cost_basis_quarantine(records)   # Ruling A: exclude cost_basis<=0 rows (row-level, no propagation)
     _assert_no_pk_collision(wallet, records)  # §13A(i): LOUD hard-fail if any pulled row would collapse
     n = upsert_closed_positions(conn, records)
-    _stamp_whale(conn, wallet, now_ts, backfill=backfill)
+    db_rows = conn.execute("SELECT COUNT(1) FROM pm_closed_position WHERE wallet = ?", (wallet,)).fetchone()[0]
+    verdict = "complete" if (complete and len(records) == db_rows) else "partial"
+    _stamp_whale(conn, wallet, now_ts, backfill=backfill, complete=(verdict == "complete"),
+                 pulled=len(records), stored=db_rows)
     conn.commit() if hasattr(conn, "commit") else None
-    db_rows = conn.execute("SELECT COUNT(*) FROM pm_closed_position WHERE wallet = ?", (wallet,)).fetchone()[0]
     n_suspect = sum(r["pnl_suspect"] for r in records)
     n_anomaly = sum(r["pnl_anomaly"] for r in records)
-    # pulled == stored is the integrity headline (guard guarantees no in-batch collapse; db_rows confirms it)
-    return {"wallet": wallet, "rows": n, "pulled": len(records), "stored": db_rows,
+    # pulled == stored is the integrity headline; verdict gates whether this wallet may be RANKED.
+    return {"wallet": wallet, "rows": n, "pulled": len(records), "stored": db_rows, "verdict": verdict,
             "suspect": n_suspect, "anomaly": n_anomaly}
 
 
 async def refresh_wallet(conn, wallet: str, *, client, now_ts: int, fetch_events=None,
-                         limit: int = 50, cap: int = 8000) -> dict:
+                         limit: int = 50, cap: int = 8000, sleep=None) -> dict:
     """v1 refresh == full idempotent re-pull (upserts make ordering irrelevant)."""
     return await backfill_wallet(conn, wallet, client=client, now_ts=now_ts,
-                                 fetch_events=fetch_events, limit=limit, cap=cap, backfill=False)
+                                 fetch_events=fetch_events, limit=limit, cap=cap, backfill=False, sleep=sleep)
 
 
 _OP_COLS = ["wallet", "condition_id", "slug", "event_slug", "title", "category", "outcome", "outcome_index",
@@ -314,7 +342,7 @@ async def g0_validate(client, losers: Iterable[Any], *, limit: int = 50, cap: in
     overall = True
     for entry in losers:
         w = str((entry.get("wallet") if isinstance(entry, dict) else entry) or "").lower()
-        cps = await _pull_closed(client, w, limit=limit, cap=cap)
+        cps, _complete = await _pull_closed(client, w, limit=limit, cap=cap)
         neg = sum(1 for r in cps if _f(getattr(r, "realized_pnl", 0.0)) < 0)
         pos = sum(1 for r in cps if _f(getattr(r, "realized_pnl", 0.0)) > 0)
         net = sum(_f(getattr(r, "realized_pnl", 0.0)) for r in cps)
@@ -326,9 +354,12 @@ async def g0_validate(client, losers: Iterable[Any], *, limit: int = 50, cap: in
 
 
 async def backfill_wallets(conn, wallets: Iterable[str], *, client, now_ts: int, fetch_events=None,
-                           limit: int = 50, cap: int = 8000, backfill: bool = True) -> dict:
-    """Batch driver with PER-WALLET isolation: one wallet raising never aborts the batch."""
-    summary = {"ok": [], "failed": []}
+                           limit: int = 50, cap: int = 8000, backfill: bool = True, sleep=None) -> dict:
+    """Batch driver with PER-WALLET isolation: one wallet raising never aborts the batch. Each wallet's
+    pull uses 429 backoff+retry; a wallet that exhausts retries lands in `failed` (never silently PARTIAL),
+    and a wallet that completes-but-truncated (cap) lands in `ok` with verdict='partial'. `complete`/`partial`
+    counts summarize the batch so a throttled wallet is impossible to miss (§13A(k))."""
+    summary = {"ok": [], "failed": [], "complete": 0, "partial": 0}
     seen = set()
     for w in wallets:
         wl = (w or "").lower()
@@ -336,9 +367,10 @@ async def backfill_wallets(conn, wallets: Iterable[str], *, client, now_ts: int,
             continue
         seen.add(wl)
         try:
-            res = await backfill_wallet(conn, wl, client=client, now_ts=now_ts,
-                                        fetch_events=fetch_events, limit=limit, cap=cap, backfill=backfill)
+            res = await backfill_wallet(conn, wl, client=client, now_ts=now_ts, fetch_events=fetch_events,
+                                        limit=limit, cap=cap, backfill=backfill, sleep=sleep)
             summary["ok"].append(res)
+            summary["complete" if res.get("verdict") == "complete" else "partial"] += 1
         except Exception as e:  # isolation: log-and-continue
             summary["failed"].append({"wallet": wl, "error": repr(e)[:200]})
     return summary

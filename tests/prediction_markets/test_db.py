@@ -49,8 +49,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 2  # migrations 001 + 002 recorded exactly once each
-    assert maxv == 2
+    assert count == 3  # migrations 001 + 002 + 003 recorded exactly once each
+    assert maxv == 3
 
 
 def test_pk_includes_outcome_index(tmp_path):
@@ -75,7 +75,9 @@ def test_amendment_columns_present(tmp_path):
         cp = {r[1] for r in conn.execute("PRAGMA table_info(pm_closed_position)")}
         cs = {r[1] for r in conn.execute("PRAGMA table_info(pm_category_stats)")}
         ss = {r[1] for r in conn.execute("PRAGMA table_info(pm_score_snapshot)")}
+        pw = {r[1] for r in conn.execute("PRAGMA table_info(pm_whale)")}
         idx = {r[1] for r in conn.execute("PRAGMA index_list(pm_closed_position)")}
+    assert {"backfill_complete", "last_pulled", "last_stored"} <= pw   # migration 003 (Step-4 429 safety)
     assert {"won", "category_source", "pnl_suspect", "suspect_reason",
             "pnl_anomaly", "anomaly_reason", "cost_basis", "shares_derived", "realized_pnl"} <= cp
     assert {"n_excluded", "excluded_pnl", "n_anomaly", "dq_count_pct",

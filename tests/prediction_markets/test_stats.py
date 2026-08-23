@@ -119,3 +119,37 @@ async def test_notional_vs_cost_roi_both_retrievable_and_distinct(tmp_path):
     assert ufc["roi"] is not None and ufc["roi_notional"] is not None
     assert ufc["cost_basis"] < ufc["total_bought"]        # real cost < notional (avg_price < 1)
     assert abs(ufc["roi"]) > abs(ufc["roi_notional"])     # ranked (cost) ROI is the more extreme figure
+
+
+class _FullPage:
+    """Always returns a FULL page -> pagination never short-outs -> cap-hit -> PARTIAL verdict."""
+    async def fetch_closed_positions(self, wallet, *, limit=50, offset=0):
+        rows = [{"proxyWallet": "0xpart", "conditionId": "0xp%d" % (offset + j), "slug": "ufc-a-b-2026-01-01",
+                 "eventSlug": "ufc-part-%d-2026-01-01" % (offset + j), "outcome": "Yes", "outcomeIndex": 0,
+                 "avgPrice": 0.5, "totalBought": 100.0, "realizedPnl": 5.0, "curPrice": 1.0, "timestamp": offset + j}
+                for j in range(limit)]
+        return [ClosedPositionRow.from_api(r) for r in rows]
+
+
+async def _noop_sleep(_s):
+    return None
+
+
+async def test_partial_wallet_excluded_from_ranking(tmp_path):
+    # §13A(k): a PARTIAL backfill (cap-hit -> backfill_complete=0) is NOT scored and is flagged
+    # INCOMPLETE-NOT-RANKED in the report; a COMPLETE wallet alongside it IS scored.
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        # complete wallet: arg matches loser_mix's proxyWallet (prod invariant: queried wallet == rows' proxy)
+        await ingest.backfill_wallet(conn, "0xtestwhale", client=_Cli(_load("loser_mix_page.json")), now_ts=NOW, fetch_events=_noev)
+        await ingest.backfill_wallet(conn, "0xpart", client=_FullPage(), now_ts=NOW, fetch_events=_noev, limit=2, cap=4, sleep=_noop_sleep)
+        stats.rollup(conn, now_ts=NOW)
+        stats.compute_scores(conn, now_ts=NOW, min_resolved=1)
+        ok_snaps = conn.execute("SELECT COUNT(1) FROM pm_score_snapshot WHERE wallet='0xtestwhale'").fetchone()[0]
+        part_snaps = conn.execute("SELECT COUNT(1) FROM pm_score_snapshot WHERE wallet='0xpart'").fetchone()[0]
+        board = stats.query_scoreboard(conn, min_resolved=1)
+    assert ok_snaps > 0 and part_snaps == 0                          # PARTIAL wallet not scored
+    part = [r for r in board if r["wallet"] == "0xpart"]
+    assert part and all(r["backfill_complete"] == 0 for r in part)   # surfaced, flagged incomplete
+    assert "INCOMPLETE-NOT-RANKED" in stats.format_report(board)

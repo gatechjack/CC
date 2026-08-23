@@ -291,9 +291,20 @@ MIGRATION_002: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_op_wallet ON pm_open_position(wallet)",
 ]
 
+# migration 003 (2026-08-22): per-wallet backfill completeness (Step-4 429 safety). A 429-truncated or
+# cap-hit wallet lands with PARTIAL history -> looks like a DIFFERENT whale, not a broken one. Record
+# whether the last pull ran to a genuinely short/empty page (backfill_complete=1) + the pulled/stored
+# counts, so PARTIAL wallets are visibly marked and EXCLUDED from ranking (treated as FAILED) until re-run.
+MIGRATION_003: list[str] = [
+    "ALTER TABLE pm_whale ADD COLUMN backfill_complete INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pm_whale ADD COLUMN last_pulled INTEGER",
+    "ALTER TABLE pm_whale ADD COLUMN last_stored INTEGER",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
+    (3, MIGRATION_003),
 ]
 
 
