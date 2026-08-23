@@ -55,7 +55,8 @@ async def _cmd_backfill(args, *, backfill: bool = True) -> int:
     db.init_db(args.db)
     async with _client() as c:
         with db.connect(args.db) as conn:
-            summary = await ingest.backfill_wallets(conn, wallets, client=c, now_ts=_now(), backfill=backfill)
+            summary = await ingest.backfill_wallets(conn, wallets, client=c, now_ts=_now(),
+                                                    backfill=backfill, cap=args.cap)
             stats.rollup(conn, now_ts=_now())
             stats.compute_scores(conn, now_ts=_now())
     print(json.dumps(summary, indent=2, default=str))
@@ -120,6 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
         b.add_argument("--only-wallets", nargs="*", default=None, dest="only_wallets",
                        help="backfill ONLY these wallets, bypassing the roster (deploy single-wallet checkpoint)")
         b.add_argument("--dry-run", action="store_true")
+        b.add_argument("--cap", type=int, default=8000,
+                       help="max rows pulled per wallet (completeness backstop; raise for mega-whales, "
+                            "e.g. --cap 50000; a wallet that hits the cap is marked PARTIAL and NOT ranked)")
         b.set_defaults(func=(lambda a: _cmd_backfill(a, backfill=(name == "backfill"))), is_async=True)
 
     r = sub.add_parser("rollup", help="recompute pm_category_stats + scores")

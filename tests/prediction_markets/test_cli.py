@@ -62,3 +62,10 @@ def test_cli_only_wallets_restricts_to_subset():
     assert pm._seed_wallets(a) == ["0xaaa", "0xbbb"]     # bypasses roster -> single-wallet deploy checkpoint
     a2 = SimpleNamespace(only_wallets=None, legacy_db="/no/such.db", seed_yaml=None, wallets=["0xCLI"])
     assert pm._seed_wallets(a2) == ["0xcli"]             # roster path (empty legacy + cli extra)
+
+
+@pytest.mark.skipif(not _CLI_PATH.exists(), reason="pm_cli.py not present in this tree")
+def test_cli_cap_arg_parses():
+    pm = _pm_cli()
+    assert pm.build_parser().parse_args(["backfill", "--cap", "50000"]).cap == 50000   # tunable for mega-whales
+    assert pm.build_parser().parse_args(["backfill"]).cap == 8000                       # conservative default backstop
