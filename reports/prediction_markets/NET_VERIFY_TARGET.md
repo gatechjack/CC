@@ -1,6 +1,36 @@
-# Net-verify target (Job 3, CORRECTED 2026-08-22 per Jack's reconciliation Issue 2) — QUEUED
+# Net-verify target (Job 3, CORRECTED 2026-08-22 per Jack's reconciliation Issue 2) — ✅ PASSED
 
-**Status: NOT run** (needs ingested data; executes at Step-3/Step-4). This doc commits the target + method.
+**Status: RUN + PASSED 2026-08-22 (Step 5).** Executed against the deployed `data/prediction_markets.db`
+via a from-scratch predicate (NOT importing `ingest.py`), driver `runners/pm_net_verify_sdtrading.py`.
+
+## ✅ RESULT (2026-08-22, Step 5 + re-sync re-check)
+- **First pass (Step 5 snapshot):** DB n_resolved=468 vs INDEP=469; net delta −$10,080.74; cost delta
+  −$10,607.15; **roi matched to 4 dp (cost 0.9018 vs 0.9019, notional 0.4583 vs 0.4584)**; n_excluded both 0.
+  The delta was exactly ONE resolved row — diagnosed as live-whale timing (SDTrading is a LIVE MLB whale;
+  one position resolved between the Step-4 backfill snapshot [511 rows] and the Step-5 verify pull [512 rows]).
+- **Re-check (re-backfill SDTrading → re-verify same snapshot, `pk_pm_sdt_reverify.ps1`):** after syncing the
+  DB to the current snapshot (512 rows / 469 mlb, verdict complete, suspect 0):
+
+  ```
+  n_resolved   DB=469 INDEP=469
+  net_realized DB=4202330.6183 INDEP=4202330.6183 delta=-0.0000
+  cost_basis   DB=4659502.3177 INDEP=4659502.3177 delta=-0.0000
+  VERDICT net_match=True cost_match=True nres_match=True
+  ```
+
+  **The independent from-scratch sum equals the DB to the cent** on net_realized AND cost_basis AND row count.
+  This proves parse → ingest → store → rollup arithmetic and the §3A predicate wiring. The 1-row Step-5
+  delta was timing, not logic. **§12 net-verify PASS.**
+- **Net-loser check (§12 "a net-loser shows negative ROI"):** confirmed independently in the scoreboard —
+  `0x71edffd0d70a` unknown: roiC −5.3% / roiN −4.8% / net −$161,357 (negative ROI on a negative net). PASS.
+- **Clause-(b) exclusions on SDTrading = 0** (as predicted under the demoted invariant); the 6 `pnl_anomaly`
+  rows are FLAGGED, present, and scoreable (not excluded) — confirmed by suspect=0 / anomaly=6 on backfill.
+
+---
+
+**Original target + method (committed pre-run, retained for provenance):**
+
+**Status when written: NOT run** (needs ingested data; executes at Step-3/Step-4). This doc commits the target + method.
 **Superseded pick:** the earlier version made Kickstand7 (Fed) the primary net-verify — WRONG per §12
 (which requires a BINARY-market whale, non-suspect rows) and doubly wrong now that live data shows the Fed
 quarantine fires (`QUARANTINE_RECONCILE_2026-08-22.md`). Corrected below.
