@@ -74,4 +74,37 @@ correctly (sha256 matched the approved refs), but the deployed files were `root:
 
 **Open item:** the CP1-deployed code is currently `root:root 666` in `777`/`197609`-owned dirs (functional,
 deferred). Recorded in `P2_KICKOFF_2026-08-23.md` as **OPEN-A**; remediated by requirement (3) at the P2 web-app
-deploy — NOT silently absorbed.
+deploy — NOT silently absorbed. **UPDATE 2026-08-23: OPEN-A PARTIALLY RESOLVED at CP2 Phase-1** — the PM-only
+paths (`prediction_markets/` dir+files+`web/`) + the two PM scripts (`pm_cli.py`/`pm_web.py`) are now
+`azureuser` 755/644 (gate PASS). Remainder (shared `scripts/` dir `197609:755` + broader engine-tree mix) folds
+into the STANDING SECURITY ITEM below.
+
+---
+
+## STANDING SECURITY ITEM (CP2 Phase-1 threat scan, 2026-08-23) — WHOLE-PLATFORM, JACK'S HANDS, DO NOT FIX IN A CHECKPOINT
+
+Same class as the Authelia trading-rule tightening and the VM geo-migration: a deliberate, separately-planned
+whole-platform change with real blast radius (touches live code that scheduled timers execute + the live proxy).
+**NOT a P2 build task, NOT a tidiness note** — logged because "one local compromise reaches live money" is the
+severity on a box that trades real funds. All findings below are READ-ONLY observations; nothing was changed and
+no secret VALUES were ever printed.
+
+1. **World-readable engine config matching credential patterns.** `config/data_providers.yaml` (**644**),
+   `config/strategies.yaml` + ~25 `.bak/.pre-*` variants (**644/664**), `config/divisions.yaml.bak` (664) are
+   world-readable and their CONTENT matched `api_key|secret|token|password|PRIVATE KEY`. **UNVERIFIED whether
+   real secrets are inline vs env/KeyVault references** (values deliberately not read). ACTION (Jack): check
+   `config/data_providers.yaml` first — if a real key is inline + world-readable, that is a creds exposure any
+   local account can read today (fix: `chmod 640` + tighten owner, or move the secret to KeyVault).
+2. **Mixed / phantom ownership across the engine tree** (`root:root` + `197609:197121` Windows-UID +
+   world-writable). The nested `scripts/` dir (`197609:755`) holds timer-scheduled engine code
+   (pct-pruner / watchlist-stats / watchlist-deep). Mixed-owner-or-world-writable executable code + scheduled
+   execution = a local privilege-escalation path.
+3. **Engine dashboard listens on `0.0.0.0:8000`** (all interfaces), NOT loopback — if the Azure NSG permits
+   `:8000` inbound it is reachable directly, bypassing Caddy+Authelia. (`pm_web` deliberately binds
+   `127.0.0.1:8081`, loopback-only, reachable ONLY via the proxy — the correct pattern; the engine dashboard
+   predates it.)
+
+Read-only context (reassuring): login-shell accounts = only `root` + `azureuser`; azureuser has 1 SSH key (600);
+processes run as least-privilege users (authelia, caddy, azureuser, root, system) — no unexpected login user or
+process owner; `pm_web` confirmed loopback-only. Remediation is Jack's, deliberate, on the live stack — do NOT
+fix inside a P2 checkpoint (the same rule that kept the Caddy/Authelia edits out of CP2).
