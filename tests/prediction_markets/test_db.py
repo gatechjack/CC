@@ -49,8 +49,20 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 1  # migration 001 recorded exactly once
-    assert maxv == 1
+    assert count == 2  # migrations 001 + 002 recorded exactly once each
+    assert maxv == 2
+
+
+def test_pk_includes_outcome_index(tmp_path):
+    """Migration 002: two-sided holdings (same condition_id, distinct outcome_index) must both persist,
+    so outcome_index is part of the PK on BOTH position tables (PRAGMA table_info pk field > 0)."""
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        cp_pk = {r[1] for r in conn.execute("PRAGMA table_info(pm_closed_position)") if r[5] > 0}
+        op_pk = {r[1] for r in conn.execute("PRAGMA table_info(pm_open_position)") if r[5] > 0}
+    assert cp_pk == {"wallet", "condition_id", "outcome_index"}
+    assert op_pk == {"wallet", "condition_id", "outcome_index"}
 
 
 def test_amendment_columns_present(tmp_path):

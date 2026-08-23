@@ -203,8 +203,97 @@ MIGRATION_001: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_ss_cat_routine_score ON pm_score_snapshot(category, routine, score DESC)",
 ]
 
+# migration 002 (2026-08-22): widen the PK to preserve TWO-SIDED holdings. A whale can hold BOTH outcomes
+# of one binary market (same condition_id, distinct outcome_index) -- e.g. Kickstand7 held Yes AND No on
+# 489 markets. PK (wallet, condition_id) silently collapsed them via INSERT OR REPLACE (489/1803 rows lost).
+# Fix: add outcome_index to the PK on pm_closed_position AND pm_open_position (same latent bug: /positions
+# can hold both sides too). SQLite cannot ALTER a PK -> rebuild the table. NO in-place data recovery (the
+# old table already dropped the rows); the checkpoint DB is DROPPED + re-backfilled. Idempotent (runs once).
+MIGRATION_002: list[str] = [
+    """
+    CREATE TABLE pm_closed_position_v2 (
+        wallet          TEXT NOT NULL,
+        condition_id    TEXT NOT NULL,
+        slug            TEXT,
+        event_slug      TEXT,
+        title           TEXT,
+        category        TEXT,
+        category_source TEXT,
+        outcome         TEXT,
+        outcome_index   INTEGER NOT NULL DEFAULT 0,   -- now part of the PK (two-sided holdings, migration 002)
+        avg_price       REAL,
+        total_bought    REAL,
+        cost_basis      REAL,
+        realized_pnl    REAL,
+        cur_price       REAL,
+        won             INTEGER,
+        pnl_suspect     INTEGER NOT NULL DEFAULT 0,
+        suspect_reason  TEXT,
+        pnl_anomaly     INTEGER NOT NULL DEFAULT 0,
+        anomaly_reason  TEXT,
+        shares_derived  REAL,
+        end_date        TEXT,
+        resolved_ts     INTEGER,
+        ingested_ts     INTEGER,
+        updated_ts      INTEGER,
+        PRIMARY KEY (wallet, condition_id, outcome_index)
+    )
+    """,
+    """
+    INSERT OR IGNORE INTO pm_closed_position_v2
+        (wallet, condition_id, slug, event_slug, title, category, category_source, outcome, outcome_index,
+         avg_price, total_bought, cost_basis, realized_pnl, cur_price, won, pnl_suspect, suspect_reason,
+         pnl_anomaly, anomaly_reason, shares_derived, end_date, resolved_ts, ingested_ts, updated_ts)
+    SELECT
+         wallet, condition_id, slug, event_slug, title, category, category_source, outcome, outcome_index,
+         avg_price, total_bought, cost_basis, realized_pnl, cur_price, won, pnl_suspect, suspect_reason,
+         pnl_anomaly, anomaly_reason, shares_derived, end_date, resolved_ts, ingested_ts, updated_ts
+    FROM pm_closed_position
+    """,
+    "DROP TABLE pm_closed_position",
+    "ALTER TABLE pm_closed_position_v2 RENAME TO pm_closed_position",
+    "CREATE INDEX IF NOT EXISTS ix_pm_cp_wallet          ON pm_closed_position(wallet)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_cp_category        ON pm_closed_position(category)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_cp_wallet_resolved ON pm_closed_position(wallet, resolved_ts DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_cp_wallet_won_cat  ON pm_closed_position(wallet, won, category)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_cp_scoreable       ON pm_closed_position(wallet, category, pnl_suspect)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_cp_wallet_event    ON pm_closed_position(wallet, event_slug)",
+    """
+    CREATE TABLE pm_open_position_v2 (
+        wallet        TEXT NOT NULL,
+        condition_id  TEXT NOT NULL,
+        slug          TEXT,
+        event_slug    TEXT,
+        title         TEXT,
+        category      TEXT,
+        outcome       TEXT,
+        outcome_index INTEGER NOT NULL DEFAULT 0,     -- now part of the PK (two-sided holdings, migration 002)
+        size          REAL,
+        avg_price     REAL,
+        initial_value REAL,
+        current_value REAL,
+        cash_pnl      REAL,
+        refreshed_ts  INTEGER,
+        PRIMARY KEY (wallet, condition_id, outcome_index)
+    )
+    """,
+    """
+    INSERT OR IGNORE INTO pm_open_position_v2
+        (wallet, condition_id, slug, event_slug, title, category, outcome, size, avg_price,
+         initial_value, current_value, cash_pnl, refreshed_ts)
+    SELECT
+         wallet, condition_id, slug, event_slug, title, category, outcome, size, avg_price,
+         initial_value, current_value, cash_pnl, refreshed_ts
+    FROM pm_open_position
+    """,
+    "DROP TABLE pm_open_position",
+    "ALTER TABLE pm_open_position_v2 RENAME TO pm_open_position",
+    "CREATE INDEX IF NOT EXISTS ix_pm_op_wallet ON pm_open_position(wallet)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
+    (2, MIGRATION_002),
 ]
 
 

@@ -94,6 +94,26 @@ def test_no_cost_basis_quarantine_does_not_propagate():
     assert nocost["pnl_suspect"] == 1 and nocost["suspect_reason"] == "no_cost_basis"
 
 
+async def test_two_sided_binary_holding_both_legs_persist(tmp_path):
+    # Migration 002 + guard: a whale holding BOTH outcomes of one binary market (same condition_id,
+    # outcome_index 0 and 1) -> BOTH rows persist (the old PK collapsed them). Both clean -> both
+    # scoreable, and event-group propagation (shared event_slug) must NOT falsely taint either.
+    both = [
+        {"proxyWallet": "0xt", "conditionId": "0xM", "slug": "us-govt-shutdown", "eventSlug": "us-govt-shutdown",
+         "outcome": "Yes", "outcomeIndex": 0, "avgPrice": 0.6, "totalBought": 600.0, "realizedPnl": -97.0, "curPrice": 0.0, "timestamp": 1},
+        {"proxyWallet": "0xt", "conditionId": "0xM", "slug": "us-govt-shutdown", "eventSlug": "us-govt-shutdown",
+         "outcome": "No", "outcomeIndex": 1, "avgPrice": 0.4, "totalBought": 400.0, "realizedPnl": 126.0, "curPrice": 1.0, "timestamp": 2},
+    ]
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        res = await ingest.backfill_wallet(conn, "0xt", client=_Cli(both), now_ts=NOW, fetch_events=_noev)
+        rows = conn.execute("SELECT outcome_index, pnl_suspect FROM pm_closed_position WHERE condition_id='0xM' ORDER BY outcome_index").fetchall()
+    assert res["pulled"] == 2 and res["stored"] == 2                     # BOTH legs persist (no collapse)
+    assert [r["outcome_index"] for r in rows] == [0, 1]                  # both outcomes stored
+    assert all(r["pnl_suspect"] == 0 for r in rows)                      # both clean -> scoreable, no false propagation
+
+
 # ---- clause (b) event-group quarantine (unchanged: winner-survives guard) ----
 
 def _records_from(name):

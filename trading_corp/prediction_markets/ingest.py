@@ -153,6 +153,36 @@ _CP_COLS = [
 ]
 
 
+class IntegrityError(RuntimeError):
+    """Raised when pulled rows would COLLAPSE under the storage PK — the silent-data-loss guard
+    (§13A(i)). INSERT OR REPLACE fails silently, which is why the (wallet, condition_id) collapse of
+    489 two-sided Kickstand7 rows was invisible for a full backfill. This makes it LOUD."""
+
+
+def _pk_of(r: dict) -> tuple:
+    return (r.get("wallet"), r.get("condition_id"), int(r.get("outcome_index") or 0))
+
+
+def _assert_no_pk_collision(wallet: str, records: list[dict], *, pk=_pk_of) -> None:
+    """§13A(i) integrity guard: every pulled row must key UNIQUELY on the storage PK. An in-batch
+    collision means INSERT OR REPLACE would SILENTLY drop real rows. HARD-FAIL the wallet (per-wallet
+    isolation in backfill_wallets surfaces it loudly in the CLI summary) rather than store wrong stats —
+    bias toward NO entry over a WRONG one (§13 dec 10). Justification for hard error over warning:
+    silent collapse is the exact defect this exists to prevent; a collision means the stored net/roi/win
+    for that wallet would be wrong, so the wallet must not enter the scoreboard at all."""
+    counts: dict[tuple, int] = {}
+    for r in records:
+        k = pk(r)
+        counts[k] = counts.get(k, 0) + 1
+    collisions = {k: n for k, n in counts.items() if n > 1}
+    if collisions:
+        sample = [{"key": list(k), "rows": n} for k, n in list(collisions.items())[:5]]
+        raise IntegrityError(
+            "PK COLLISION for wallet %s: %d pulled rows -> %d distinct PKs; %d key(s) would be "
+            "SILENTLY collapsed by INSERT OR REPLACE. sample=%s"
+            % (wallet, len(records), len(counts), len(collisions), sample))
+
+
 def upsert_closed_positions(conn, records: Iterable[dict]) -> int:
     """INSERT OR REPLACE on PK (wallet, condition_id). Idempotent."""
     recs = list(records)
@@ -217,12 +247,16 @@ async def backfill_wallet(conn, wallet: str, *, client, now_ts: int, fetch_event
     await _categorize(records, fetch_events=fetch_events)
     apply_event_group_quarantine(records)
     apply_no_cost_basis_quarantine(records)   # Ruling A: exclude cost_basis<=0 rows (row-level, no propagation)
+    _assert_no_pk_collision(wallet, records)  # §13A(i): LOUD hard-fail if any pulled row would collapse
     n = upsert_closed_positions(conn, records)
     _stamp_whale(conn, wallet, now_ts, backfill=backfill)
     conn.commit() if hasattr(conn, "commit") else None
+    db_rows = conn.execute("SELECT COUNT(*) FROM pm_closed_position WHERE wallet = ?", (wallet,)).fetchone()[0]
     n_suspect = sum(r["pnl_suspect"] for r in records)
     n_anomaly = sum(r["pnl_anomaly"] for r in records)
-    return {"wallet": wallet, "rows": n, "suspect": n_suspect, "anomaly": n_anomaly}
+    # pulled == stored is the integrity headline (guard guarantees no in-batch collapse; db_rows confirms it)
+    return {"wallet": wallet, "rows": n, "pulled": len(records), "stored": db_rows,
+            "suspect": n_suspect, "anomaly": n_anomaly}
 
 
 async def refresh_wallet(conn, wallet: str, *, client, now_ts: int, fetch_events=None,
@@ -232,7 +266,7 @@ async def refresh_wallet(conn, wallet: str, *, client, now_ts: int, fetch_events
                                  fetch_events=fetch_events, limit=limit, cap=cap, backfill=False)
 
 
-_OP_COLS = ["wallet", "condition_id", "slug", "event_slug", "title", "category", "outcome",
+_OP_COLS = ["wallet", "condition_id", "slug", "event_slug", "title", "category", "outcome", "outcome_index",
             "size", "avg_price", "initial_value", "current_value", "cash_pnl", "refreshed_ts"]
 
 
@@ -252,6 +286,7 @@ async def refresh_open_positions(conn, wallet: str, *, client, now_ts: int) -> i
             "title": getattr(p, "title", "") or "",
             "category": cat,
             "outcome": getattr(p, "outcome", "") or "",
+            "outcome_index": int(getattr(p, "outcome_index", 0) or 0),   # part of the PK (two-sided holdings, migration 002)
             "size": _f(getattr(p, "size", 0.0)),
             "avg_price": _f(getattr(p, "avg_price", 0.0)),
             "initial_value": _f(getattr(p, "initial_value", 0.0)),
@@ -259,6 +294,7 @@ async def refresh_open_positions(conn, wallet: str, *, client, now_ts: int) -> i
             "cash_pnl": _f(getattr(p, "pnl", 0.0)),
             "refreshed_ts": now_ts,
         })
+    _assert_no_pk_collision(wallet, recs)   # §13A(i): open positions can also hold both sides -> same guard
     if recs:
         ph = ", ".join(["?"] * len(_OP_COLS))
         conn.executemany(

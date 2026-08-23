@@ -102,3 +102,34 @@ async def test_per_wallet_isolation(tmp_path):
     assert len(summary["ok"]) == 2
     assert len(summary["failed"]) == 1 and summary["failed"][0]["wallet"] == "0xbad"
     assert {w["wallet"] for w in summary["ok"]} == {"0xgood1", "0xgood2"}
+
+
+class PerWalletClient:
+    """fetch_closed_positions returns a different first page per wallet (offset 0)."""
+    def __init__(self, by_wallet):
+        self._by = by_wallet
+
+    async def fetch_closed_positions(self, wallet, *, limit=50, offset=0):
+        rows = self._by.get(wallet, []) if offset == 0 else []
+        return [ClosedPositionRow.from_api(r) for r in rows]
+
+
+async def test_pk_collision_guard_isolates_wallet(tmp_path):
+    # §13A(i): two pulled rows with the SAME (wallet, condition_id, outcome_index) would silently collapse
+    # under INSERT OR REPLACE -> the guard hard-fails that wallet LOUDLY into summary['failed'] (with the
+    # colliding keys), and per-wallet isolation lets the batch continue for the clean wallet.
+    collide = [
+        {"proxyWallet": "0xbad", "conditionId": "0xC", "slug": "ufc-a-b-2026-01-01", "eventSlug": "ufc-a-b-2026-01-01",
+         "outcome": "Yes", "outcomeIndex": 0, "avgPrice": 0.5, "totalBought": 100.0, "realizedPnl": 10.0, "curPrice": 1.0, "timestamp": 1},
+        {"proxyWallet": "0xbad", "conditionId": "0xC", "slug": "ufc-a-b-2026-01-01", "eventSlug": "ufc-a-b-2026-01-01",
+         "outcome": "Yes", "outcomeIndex": 0, "avgPrice": 0.5, "totalBought": 200.0, "realizedPnl": 20.0, "curPrice": 1.0, "timestamp": 2},
+    ]
+    p = _fresh_db(tmp_path)
+    with db.connect(p) as conn:
+        summary = await ingest.backfill_wallets(
+            conn, ["0xbad", "0xgood"],
+            client=PerWalletClient({"0xbad": collide, "0xgood": _load("clean_binary.json")}),
+            now_ts=NOW, fetch_events=_noev)
+    assert len(summary["failed"]) == 1 and summary["failed"][0]["wallet"] == "0xbad"
+    assert "PK COLLISION" in summary["failed"][0]["error"]      # LOUD + names the defect
+    assert {w["wallet"] for w in summary["ok"]} == {"0xgood"}   # batch continued for the clean wallet
