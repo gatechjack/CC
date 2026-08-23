@@ -81,28 +81,51 @@ into the STANDING SECURITY ITEM below.
 
 ---
 
-## STANDING SECURITY ITEM (CP2 Phase-1 threat scan, 2026-08-23) — WHOLE-PLATFORM, JACK'S HANDS, DO NOT FIX IN A CHECKPOINT
+## STANDING SECURITY ITEM (CP2 Phase-1 threat scan + follow-up, both 2026-08-23) — WHOLE-PLATFORM, JACK'S HANDS, DO NOT FIX IN A CHECKPOINT
 
 Same class as the Authelia trading-rule tightening and the VM geo-migration: a deliberate, separately-planned
 whole-platform change with real blast radius (touches live code that scheduled timers execute + the live proxy).
 **NOT a P2 build task, NOT a tidiness note** — logged because "one local compromise reaches live money" is the
-severity on a box that trades real funds. All findings below are READ-ONLY observations; nothing was changed and
-no secret VALUES were ever printed.
+severity on a box that trades real funds. All findings are READ-ONLY observations; nothing was changed and no
+secret VALUES were ever printed. **Ordered by what an attacker actually needs** (remote / no-foothold first).
 
-1. **World-readable engine config matching credential patterns.** `config/data_providers.yaml` (**644**),
-   `config/strategies.yaml` + ~25 `.bak/.pre-*` variants (**644/664**), `config/divisions.yaml.bak` (664) are
-   world-readable and their CONTENT matched `api_key|secret|token|password|PRIVATE KEY`. **UNVERIFIED whether
-   real secrets are inline vs env/KeyVault references** (values deliberately not read). ACTION (Jack): check
-   `config/data_providers.yaml` first — if a real key is inline + world-readable, that is a creds exposure any
-   local account can read today (fix: `chmod 640` + tighten owner, or move the secret to KeyVault).
-2. **Mixed / phantom ownership across the engine tree** (`root:root` + `197609:197121` Windows-UID +
-   world-writable). The nested `scripts/` dir (`197609:755`) holds timer-scheduled engine code
-   (pct-pruner / watchlist-stats / watchlist-deep). Mixed-owner-or-world-writable executable code + scheduled
-   execution = a local privilege-escalation path.
-3. **Engine dashboard listens on `0.0.0.0:8000`** (all interfaces), NOT loopback — if the Azure NSG permits
-   `:8000` inbound it is reachable directly, bypassing Caddy+Authelia. (`pm_web` deliberately binds
-   `127.0.0.1:8081`, loopback-only, reachable ONLY via the proxy — the correct pattern; the engine dashboard
-   predates it.)
+**#1 — Engine dashboard listens on `0.0.0.0:8000` (all interfaces), not loopback. [HIGHEST — remote, no local foothold needed.]**
+CONFIRMED it is the engine dashboard: `ss -tlnp` shows `LISTEN 0.0.0.0:8000` owned by `python pid=851007`, which
+is the child of `trading-corp.service` (`MainPID=850993`). If reachable from the internet it bypasses
+Caddy+Authelia entirely. Whether it IS reachable depends on THREE gates, and none was verifiable from the box:
+  - The NIC has **no direct public IP** (IMDS `privateIpAddress:"10.0.0.4"`, `publicIpAddress:""`) — the box is
+    fronted by a separate public-IP/LB resource (the inbound `172.171.189.116` from the DNS work), so an
+    internet→:8000 path first needs **that resource to forward :8000**.
+  - Then the **Azure NSG must allow :8000 inbound** — NSG rules are NOT in IMDS → UNVERIFIED from the box.
+  - Then on-box **`ufw` must permit :8000** — `ufw` is **active**, but listing its rules needs root → UNVERIFIED.
+  All three UNVERIFIED-from-box → **ACTION (Jack, Azure portal): the NIC's NSG inbound rules — is `:8000`
+  permitted? That single rule is the whole risk gate.** If the front resource doesn't forward :8000 and/or the
+  NSG denies it, this is latent; if any path forwards :8000, the engine dashboard is internet-exposed with no
+  auth in front. CONTRAST (the correct pattern): `pm_web` binds **`127.0.0.1:8081` loopback-only** and CANNOT
+  drift — the unit pins `PM_WEB_HOST=127.0.0.1` and the launcher default is also `127.0.0.1`; reachable ONLY via
+  the proxy.
+
+**#2 — Mixed / phantom ownership across the engine tree. [LOCAL, latent — needs a foothold first.]**
+`root:root` + `197609:197121` (a Windows UID/GID baked into a tar built on the Windows dev box) + world-writable
+entries. The nested `scripts/` dir (`197609:755`) holds timer-scheduled engine code (pct-pruner /
+watchlist-stats / watchlist-deep). Mixed-owner-or-world-writable executable code + scheduled execution = a local
+privilege-escalation path. (The PM-only subset was already cleaned at CP2 Phase-1 — GOTCHA-2 OPEN-A; this is the
+remaining engine-tree mix.) Fix folds into Jack's ownership pass: `chown -R` to the correct owner + strip
+world-write, per GOTCHA-2 requirement (3).
+
+**#3 — World-readable credential-pattern configs. [RESOLVED — false positive → ordinary hygiene.]**
+The CP2 follow-up ran a value-SHAPE classifier (READ-ONLY; it never printed a value, a prefix, or a length) over
+the three representative config files. Result: all three are `0o644` world-readable, and **8/8** credential-named
+scalar keys classified `INLINE-LOOKING` **by the classifier** — BUT every one of those keys ends in **`_env`**:
+`.../tastytrade/provider_secret_env`, `.../tastytrade/refresh_token_env`, `.../eodhd/provider_secret_env`,
+`.../finnhub/provider_secret_env` (data_providers.yaml) and `/lord_otter/webhook_secret_env` +
+`/market_cypher/webhook_secret_env` (strategies.yaml + its `.bak`). The `_env` naming convention means the value
+is the **NAME of an environment variable** (a pointer), not the secret itself — so these are REFERENCE in effect;
+the `INLINE-LOOKING` verdict is a classifier artifact (it keys off `${`/`$`/`!env` prefixes and does not know the
+`_env` convention). **No inline secret was found; the original pattern-match was on key NAMES → FALSE POSITIVE →
+drops to ordinary hygiene.** Residual hygiene only: the ~25 world-readable `.bak/.pre-*` strategies.yaml copies
+are historical duplicates left `644/664` — same `_env` shape, same conclusion, but worth a `chmod 640` sweep when
+Jack does the ownership pass (each un-sampled `.bak` was NOT individually parsed — the classifier ran on 3 files).
 
 Read-only context (reassuring): login-shell accounts = only `root` + `azureuser`; azureuser has 1 SSH key (600);
 processes run as least-privilege users (authelia, caddy, azureuser, root, system) — no unexpected login user or
