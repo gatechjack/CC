@@ -1,0 +1,11 @@
+[
+  {
+    "slug": "ufc-kin-ter1-2026-07-11",
+    "tags": [
+      {"id": "1", "label": "Sports", "slug": "sports", "forceShow": false, "forceHide": true},
+      {"id": "279", "label": "UFC", "slug": "ufc", "forceShow": false},
+      {"id": "100639", "label": "Games", "slug": "games", "forceShow": false},
+      {"id": "105608", "label": "UFC 329", "slug": "ufc-329", "forceShow": false}
+    ]
+  }
+]

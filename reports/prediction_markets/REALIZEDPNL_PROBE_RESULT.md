@@ -1,5 +1,19 @@
 # realizedPnl Semantics Probe — RESULT (pre-build, read-only)
 
+> **★ CORRECTED 2026-08-22 — see `QUARANTINE_RECONCILE_2026-08-22.md`. Two claims below were WRONG,
+> found by running the ACTUAL §3A ingest code on live rows:**
+> 1. **"Fed proven clean / Fed rollups are safe" (verdict, Probe D, blast radius) is OVERSTATED.** Probe D's
+>    `mirror_events` counter only detects >=2 cids sharing an identical realized (the -$574k echo) and rightly
+>    found none in Fed — but the §3A clause (b) is stricter and flags Kickstand7's `fed-interest-rates-january-2025`
+>    zero-cost dust leg (tb=0, rp=-0.50), propagating to 2 winner legs = **3/83 Fed rows quarantined**. pako Fed
+>    IS clean (0). Cleanliness is WHALE-DEPENDENT; the quarantine is load-bearing on Fed.
+> 2. **"The defect does NOT touch the four P1 categories" is WRONG.** The §3A **clause (a)** (loss-exceeds-cost)
+>    FALSE-POSITIVES on ordinary single-game **MLB** losses for BOTH live MLB whales (SDTrading 5/462,
+>    xifutloong3 **17/201**) because `/closed-positions total_bought` understates cost on scale-in rows. As
+>    written, the quarantine **excludes real losses -> biases the scoreboard UP.** This is a blocking §3A design
+>    finding (proposals in the reconcile doc; clause (b) is sound, clause (a) needs rework). NOT yet fixed.
+
+
 **Run:** 2026-08-22 via `pk_realizedpnl_probe_ro.ps1` (then `pk_rpp_fetch_ro.ps1` chunked retrieval). Reuses `PolymarketDataAPIClient`. Read-only, public API, zero DB/engine/writes. Full output = 315 lines / 22.6 KB (raw appended below).
 
 ## ONE-LINE VERDICT (scoped — the central question)

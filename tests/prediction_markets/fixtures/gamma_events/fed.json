@@ -1,0 +1,11 @@
+[
+  {
+    "slug": "fed-interest-rates-may-2025",
+    "tags": [
+      {"id": "100196", "label": "Fed Rates", "slug": "fed-rates", "forceShow": true},
+      {"id": "100328", "label": "Economy", "slug": "economy", "forceShow": false},
+      {"id": "2", "label": "Politics", "slug": "politics", "forceShow": false, "forceHide": true},
+      {"id": "101800", "label": "Economic Policy", "slug": "economic-policy", "forceShow": false}
+    ]
+  }
+]

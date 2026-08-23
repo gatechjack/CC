@@ -1,0 +1,6 @@
+# Extra whale wallets to seed the Prediction Markets scoreboard, BEYOND the live +
+# PCT-paper rosters that rosters.py reads from legacy agent_state (read-only).
+# Add entries for whales discovered outside the legacy divisions.
+# Format: a list under `wallets:`, each {wallet, user_name}.
+# NOTE: this is NOT the G0 known-losers list (those are probe targets, in rosters.py).
+wallets: []

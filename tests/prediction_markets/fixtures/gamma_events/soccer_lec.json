@@ -1,0 +1,11 @@
+[
+  {
+    "slug": "soccer-lec-rsl-atlante-2026-08-08",
+    "tags": [
+      {"id": "1", "label": "Sports", "slug": "sports", "forceShow": false, "forceHide": true},
+      {"id": "100639", "label": "Games", "slug": "games", "forceShow": false},
+      {"id": "100350", "label": "Soccer", "slug": "soccer", "forceShow": false},
+      {"id": "102449", "label": "Leagues Cup", "slug": "lcs"}
+    ]
+  }
+]
