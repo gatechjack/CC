@@ -37,3 +37,41 @@ advanced, ownership now azureuser:azureuser. The `data/` dir was already azureus
 rate-limited by the public data-api). It fires 03:20 UTC, finishes ~03:38, no overlap with other 03:xx jobs.
 429 backoff + the per-wallet completeness gate make a throttled run safe (it just takes longer, or marks a
 wallet PARTIAL and excludes it from ranking rather than corrupting).
+
+---
+
+## ★ GOTCHA 2: box PM-code ownership is a MIXED MESS from prior deploy channels (found at CP1 Stage-2, 2026-08-23)
+
+**Symptom:** the CP1 live-apply deployed the 3 P2 PM files by `cp` (as azureuser over SSH). The BYTES deployed
+correctly (sha256 matched the approved refs), but the deployed files were `root:root` mode **666**
+(world-writable), and the parent dirs were worse: `trading_corp/prediction_markets/` = `root:root` **777**;
+`trading_corp/scripts/` = owned by Windows-numeric **`197609:197121`** (no such user on the box).
+
+**Root causes (pre-existing P1 debt — NOT introduced at CP1):**
+- `az vm run-command` (root) created files/dirs `root:root` (chmod'd 666/777 somewhere along the P1 build).
+- `197609:197121` is a **Windows UID/GID baked into a tar built on the Windows dev box and extracted on the box
+  as root with `-p`/`--same-owner`** — tar preserved the numeric Windows ownership. `197121` is exactly the local
+  git-bash GID on the Windows machine.
+- A plain **`cp` onto an existing file preserves that file's inode owner+mode**, so the mess propagates through
+  every `cp`-based deploy. It "works" only because the dirs/files are world-writable.
+
+**Why it did NOT break CP1 (and is NOT a GOTCHA-1 failure):** GOTCHA-1 is about artifacts the runtime **writes**
+(DB/`-wal`/`-shm`/logs) — those are correctly `azureuser:644` (the rollup wrote the DB fine). Code is only
+**read** (imported) by the runtime; `666` is world-readable, so import works. Residue = a hygiene/security smell
+(world-writable executable code + root/phantom ownership). Board ruled DEFER (2026-08-23) with the conditions below.
+
+**THE FIX (every future PM deploy, esp. the P2 web-app deploy):**
+1. **Build the artifact WITHOUT owner metadata / extract WITHOUT `-p`.** Prefer `git archive` (carries no owner
+   metadata); if tarring on Windows use `tar --owner=0 --group=0 --numeric-owner` and extract with
+   `--no-same-owner` so files inherit the EXTRACTING (azureuser) ownership — never the Windows numeric IDs.
+2. **After any root-context step, `chown -R azureuser:azureuser` the PM paths + set explicit modes** (files 644,
+   dirs 755). To flip an existing file's owner via a plain deploy, `rm` then copy (a new file created by azureuser
+   in an azureuser-owned dir is azureuser-owned) — but the DIR must be azureuser-owned first.
+3. **★ HARD, TESTED requirement for the P2 web-app deploy runner (Board ruling 2026-08-23):** the deploy MUST
+   `chown -R azureuser:azureuser` the PM code paths AND set modes, with an **acceptance check that FAILS the
+   deploy** if, under the PM paths, ANY entry is still root-owned or numeric-owned, ANY **DIRECTORY is 777**
+   (must be 755), or any file is world-writable (must be 644). **Check the DIRECTORIES, not just the files.**
+
+**Open item:** the CP1-deployed code is currently `root:root 666` in `777`/`197609`-owned dirs (functional,
+deferred). Recorded in `P2_KICKOFF_2026-08-23.md` as **OPEN-A**; remediated by requirement (3) at the P2 web-app
+deploy — NOT silently absorbed.
