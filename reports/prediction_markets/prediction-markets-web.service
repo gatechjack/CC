@@ -1,0 +1,29 @@
+[Unit]
+Description=Prediction Markets web (pm_web) -- standalone, reads only prediction_markets.db
+# DELIBERATELY NOT After=trading-corp.service -- total decoupling from the engine (P2_PLAN 3.1/12).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=azureuser
+Group=azureuser
+WorkingDirectory=/home/azureuser/trading_corp
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/azureuser/trading_corp
+Environment=PM_WEB_HOST=127.0.0.1
+Environment=PM_WEB_PORT=8081
+# NOTE: KEY_VAULT_URI is intentionally OMITTED here -- Phase 1 (/healthz) needs no Anthropic key. It is added
+# only when ANALYZE is built (e3), AFTER proving KeyVault-from-2nd-unit works. Do not add a placeholder.
+ExecStart=/home/azureuser/trading_corp/venv/bin/python trading_corp/scripts/pm_web.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/home/azureuser/trading_corp/data /home/azureuser/trading_corp/logs
+
+[Install]
+WantedBy=multi-user.target
