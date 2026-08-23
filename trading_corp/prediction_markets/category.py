@@ -12,6 +12,7 @@ Spec: reports/prediction_markets/P1_PLAN.md §5.
 """
 from __future__ import annotations
 
+import re
 from typing import Iterable
 
 # Prefix -> canonical category. Multi-token keys (e.g. 'fed-decision') are matched
@@ -137,3 +138,37 @@ async def derive_categories_batch(event_slugs: Iterable[str], *, fetch_events=No
             cat = None
         out[s] = (cat, SOURCE_GAMMA) if cat else (CATEGORY_UNKNOWN, SOURCE_UNKNOWN)
     return out
+
+
+# --- market-shape heuristic for single_game_pct (P2 migration 004; P2_PLAN §5.1, OQ-2, §13A(d)) ---
+# Single-game moneyline (copyable) vs futures/props (a different skill). HEURISTIC only: the reliable
+# discriminator (sportsMarketType=='moneyline' + gameStartTime) is market-level and ABSENT from
+# /closed-positions, so it is deferred behind the migration-004 market_type_source seam. BIAS-DOWN:
+# 'ambiguous' counts as NOT single-game, so single_game_pct is a FLOOR and never overstates copyable share.
+_SINGLE_GAME_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_FUTURES_RE = re.compile(
+    r"champion|championship|mvp|winner|to-win|to_win|title|division|conference|season|"
+    r"playoff|finals|award|series-winner|make-the|to-make|regular-season|rookie-of|coach-of",
+    re.IGNORECASE,
+)
+
+# Categories with NO single-game notion -> single_game_pct renders NULL/n-a (OQ-2), decided at the CATEGORY
+# level in rollup() (a Fed slug can carry a date yet is not a "game"). Starting set, extensible: Fed is the
+# only non-sports LIVE category; 'unknown' rows are uncategorizable so their single-game share is unknowable.
+NON_SINGLE_GAME_CATEGORIES = frozenset({"fed", "unknown"})
+
+
+def classify_market_shape(slug=None, event_slug=None, title=None) -> str:
+    """Heuristic market-shape class for a /closed-positions row -> 'single_game' | 'futures' | 'ambiguous'.
+    Pure + offline. Futures keywords WIN over a date (a dated futures market is still futures -> bias-down,
+    lowers single-game count). A date with no futures keyword -> single_game. Neither -> 'ambiguous'
+    (BIAS-DOWN: NOT counted as single-game). Whether a CATEGORY has any single-game notion (NULL for Fed) is
+    a category-level decision in rollup(), not here."""
+    text = " ".join(x for x in (slug, event_slug, title) if x).lower()
+    if not text:
+        return "ambiguous"
+    if _FUTURES_RE.search(text):
+        return "futures"
+    if _SINGLE_GAME_DATE_RE.search(text):
+        return "single_game"
+    return "ambiguous"

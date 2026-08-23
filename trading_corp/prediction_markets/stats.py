@@ -13,6 +13,7 @@ import json
 from collections import defaultdict
 
 from .db import SCOREABLE_PREDICATE_SQL, scoreable_where
+from .category import classify_market_shape, NON_SINGLE_GAME_CATEGORIES
 from trading_corp.data.kalshi_whale_stats import (
     _edge_factor,
     time_weighted_outcomes,
@@ -29,7 +30,18 @@ DEFAULT_HALF_LIFE_DAYS = 30.0
 _STATS_COLS = [
     "wallet", "category", "n_resolved", "wins", "losses", "win_rate", "net_realized_pnl",
     "total_bought", "cost_basis", "roi", "roi_notional", "avg_bet", "avg_win_price", "last_resolved_ts",
-    "n_excluded", "excluded_pnl", "n_anomaly", "dq_count_pct", "dq_dollar_pct", "data_quality", "updated_ts",
+    "n_excluded", "excluded_pnl", "n_anomaly", "dq_count_pct", "dq_dollar_pct", "data_quality",
+    # migration 004 caveat analytics -- MUST stay in lock-step with the rollup SELECT (e5: INSERT OR
+    # REPLACE resets any table column not listed here to its DEFAULT every run -> silent zeros forever).
+    "n_condition_ids", "n_two_sided", "two_sided_pct", "n_single_game", "n_futures_like",
+    "single_game_pct", "market_type_source", "updated_ts",
+]
+
+# migration-004 one-sided directional-slice companion (P2_PLAN §5.1); written by _rollup_onesided().
+_ONESIDED_COLS = [
+    "wallet", "category", "n_resolved", "wins", "losses", "win_rate", "net_realized_pnl",
+    "total_bought", "cost_basis", "roi", "avg_bet", "avg_win_price", "last_resolved_ts",
+    "is_upper_bound", "updated_ts",
 ]
 
 
@@ -39,6 +51,29 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
     quarantined remainder so the visibility columns are honest even for fully-quarantined
     categories (n_resolved=0, n_excluded>0)."""
     pred = SCOREABLE_PREDICATE_SQL   # the ONE definition
+    # --- migration 004: two-sided structure over ALL rows (hedge/MM tell). n_condition_ids = distinct
+    #     condition_ids; n_two_sided = those the whale held on >1 outcome_index. NOT scoreable-filtered
+    #     (two-sidedness is structural regardless of quarantine). ---
+    two_sided: dict[tuple, tuple] = {}
+    for tr in conn.execute(
+        "SELECT wallet, category, COUNT(*) AS n_cond, "
+        " SUM(CASE WHEN n_out > 1 THEN 1 ELSE 0 END) AS n_two "
+        "FROM (SELECT wallet, category, condition_id, COUNT(DISTINCT outcome_index) AS n_out "
+        "      FROM pm_closed_position GROUP BY wallet, category, condition_id) "
+        "GROUP BY wallet, category"
+    ).fetchall():
+        two_sided[(tr["wallet"], tr["category"])] = (tr["n_cond"] or 0, tr["n_two"] or 0)
+    # --- migration 004: market-shape counts over ALL rows via the pure classifier (bias-down: ambiguous
+    #     is NOT single-game). Per-row pass -- cheap regex, weekly rollup not query-time. ---
+    shape: dict[tuple, list] = defaultdict(lambda: [0, 0])   # (wallet,category) -> [n_single_game, n_futures]
+    for sr in conn.execute(
+        "SELECT wallet, category, slug, event_slug, title FROM pm_closed_position"
+    ).fetchall():
+        cls = classify_market_shape(sr["slug"], sr["event_slug"], sr["title"])
+        if cls == "single_game":
+            shape[(sr["wallet"], sr["category"])][0] += 1
+        elif cls == "futures":
+            shape[(sr["wallet"], sr["category"])][1] += 1
     sql = (
         "SELECT wallet, category, "
         f" SUM(CASE WHEN {pred} THEN 1 ELSE 0 END) AS n_resolved, "
@@ -82,16 +117,73 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
         dq_count = (n_excl / total) if total > 0 else 0.0
         dq_dollar = ((r["abs_excl"] or 0.0) / abs_all) if abs_all > 0 else 0.0
         dq = "contaminated" if (dq_count > dq_threshold or dq_dollar > dq_threshold) else None
+        # migration 004 caveat columns (merged from the two ALL-rows passes above)
+        wc = (r["wallet"], r["category"])
+        n_cond, n_two = two_sided.get(wc, (0, 0))
+        two_sided_pct = (n_two / n_cond) if n_cond > 0 else 0.0
+        n_sg, n_fut = shape.get(wc, (0, 0))
+        # single_game_pct: NULL for non-sports categories (OQ-2 -- Fed has no single-game notion), else
+        # n_single_game / ALL rows (bias-down: ambiguous already excluded from n_single_game).
+        if r["category"] in NON_SINGLE_GAME_CATEGORIES:
+            single_game_pct = None
+        else:
+            single_game_pct = (n_sg / total) if total > 0 else None
         recs.append((r["wallet"], r["category"], n, wins, losses, win_rate, net, tb, cb, roi, roi_notional,
                      avg_bet, r["avg_win_price"], r["last_ts"], n_excl, r["excluded_pnl"] or 0.0,
-                     n_anom, dq_count, dq_dollar, dq, now_ts))
+                     n_anom, dq_count, dq_dollar, dq,
+                     n_cond, n_two, two_sided_pct, n_sg, n_fut, single_game_pct, "slug_heuristic", now_ts))
     ph = ", ".join(["?"] * len(_STATS_COLS))
     conn.executemany(
         "INSERT OR REPLACE INTO pm_category_stats (%s) VALUES (%s)" % (", ".join(_STATS_COLS), ph),
         recs,
     )
+    _rollup_onesided(conn, now_ts=now_ts)   # migration-004 companion: one-sided directional slice
     if hasattr(conn, "commit"):
         conn.commit()
+    return len(recs)
+
+
+def _rollup_onesided(conn, *, now_ts: int) -> int:
+    """migration-004 companion: aggregate SCOREABLE rows on condition_ids the whale held on a SINGLE
+    outcome_index (NOT two-sided) -> pm_category_onesided_stats. The copyable directional signal, but an
+    UPPER BOUND (is_upper_bound=1): a position turns two-sided precisely when the first side sours, so
+    excluding hedged markets is optimistic (survivorship-caveated, §13A(f)). One-sidedness is structural
+    (COUNT(DISTINCT outcome_index)=1 over ALL rows); the aggregate is scoreable (the ONE §3A predicate)."""
+    sql = (
+        "SELECT p.wallet, p.category, "
+        " SUM(1) AS n, "
+        " SUM(CASE WHEN p.won=1 THEN 1 ELSE 0 END) AS wins, "
+        " SUM(CASE WHEN p.won=0 THEN 1 ELSE 0 END) AS losses, "
+        " SUM(p.realized_pnl) AS net, "
+        " SUM(p.total_bought) AS tb, "
+        " SUM(p.cost_basis) AS cb, "
+        " AVG(CASE WHEN p.won=1 THEN p.avg_price END) AS avg_win_price, "
+        " MAX(p.resolved_ts) AS last_ts "
+        "FROM pm_closed_position p "
+        "JOIN (SELECT wallet, category, condition_id FROM pm_closed_position "
+        "      GROUP BY wallet, category, condition_id HAVING COUNT(DISTINCT outcome_index) = 1) oc "
+        "  ON p.wallet=oc.wallet AND p.category=oc.category AND p.condition_id=oc.condition_id "
+        "WHERE " + scoreable_where("p") + " "
+        "GROUP BY p.wallet, p.category"
+    )
+    recs = []
+    for r in conn.execute(sql).fetchall():
+        n = r["n"] or 0
+        wins = r["wins"] or 0
+        losses = r["losses"] or 0
+        cb = r["cb"] or 0.0
+        net = r["net"] or 0.0
+        decided = wins + losses
+        win_rate = (wins / decided) if decided > 0 else None
+        roi = (net / cb) if cb > 0 else None
+        avg_bet = (cb / n) if n > 0 else None
+        recs.append((r["wallet"], r["category"], n, wins, losses, win_rate, net, r["tb"] or 0.0, cb, roi,
+                     avg_bet, r["avg_win_price"], r["last_ts"], 1, now_ts))
+    ph = ", ".join(["?"] * len(_ONESIDED_COLS))
+    conn.executemany(
+        "INSERT OR REPLACE INTO pm_category_onesided_stats (%s) VALUES (%s)" % (", ".join(_ONESIDED_COLS), ph),
+        recs,
+    )
     return len(recs)
 
 
