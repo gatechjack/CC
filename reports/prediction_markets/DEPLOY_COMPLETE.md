@@ -34,6 +34,12 @@ Branch-off base: prod-live **8d77a26** (Jack-confirmed tip).
 - **Step 6 (cron):** `20 3 * * *` (03:20 UTC) refresh `--cap 50000` installed into azureuser crontab
   (idempotent, append-only; backup `pm_cron_bak_20260823_023937.txt`). Slot re-verified clear
   immediately before (no cron/timer at 03:20). First fire 2026-08-23 03:20 UTC.
+  - **★ FIRST FIRE FAILED then FIXED (2026-08-23):** the cron fired but errored `attempt to write a readonly
+    database` — the PM DB was root-owned (created by root `az run-command` backfills) while the cron runs as
+    azureuser. **Resolved:** `chown azureuser:azureuser data/prediction_markets.db` + re-ran refresh AS
+    azureuser (`runuser`) to prove the write (REFRESH_EXIT=0, 12/12 complete, pulled==stored, rollup updated_ts
+    advanced, ownership now azureuser). Standing lesson logged in **`OPS_GOTCHAS.md`** (GOTCHA 1). The cron
+    write path is now healthy.
 
 ## §12 acceptance — items 1–11 PASS (see STEP5_REPORT.md for the item-by-item table)
 Item 11 (branch model) completed by Steps 7–8 above.
