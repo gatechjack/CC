@@ -49,8 +49,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 3  # migrations 001 + 002 + 003 recorded exactly once each
-    assert maxv == 3
+    assert count == 4  # migrations 001 + 002 + 003 + 004 recorded exactly once each
+    assert maxv == 4
 
 
 def test_pk_includes_outcome_index(tmp_path):

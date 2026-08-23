@@ -301,10 +301,56 @@ MIGRATION_003: list[str] = [
     "ALTER TABLE pm_whale ADD COLUMN last_stored INTEGER",
 ]
 
+# migration 004 (2026-08-23, P2 CP1): CAVEAT ANALYTICS as first-class pm_category_stats columns + the
+# one-sided directional-slice companion (P2_PLAN §5.1). Additive; the NEXT rollup() backfills every row.
+# ** e5 (load-bearing): rollup() is extended in the SAME change. stats.rollup() does INSERT OR REPLACE over
+# stats._STATS_COLS, so ANY column added here that is not ALSO added to _STATS_COLS AND computed in the
+# rollup SELECT is reset to its DEFAULT on every run -> the caveat columns would read ZERO on the product
+# page FOREVER, silently. Migration without the wiring is worse than no migration. **
+MIGRATION_004: list[str] = [
+    "ALTER TABLE pm_category_stats ADD COLUMN n_condition_ids    INTEGER NOT NULL DEFAULT 0",  # COUNT(DISTINCT condition_id), ALL rows
+    "ALTER TABLE pm_category_stats ADD COLUMN n_two_sided        INTEGER NOT NULL DEFAULT 0",  # condition_ids held on >1 outcome_index
+    "ALTER TABLE pm_category_stats ADD COLUMN two_sided_pct      REAL    NOT NULL DEFAULT 0",  # n_two_sided/n_condition_ids (hedge/MM tell, §13A(j))
+    "ALTER TABLE pm_category_stats ADD COLUMN n_single_game      INTEGER NOT NULL DEFAULT 0",  # rows classified single_game (dated, not futures)
+    "ALTER TABLE pm_category_stats ADD COLUMN n_futures_like     INTEGER NOT NULL DEFAULT 0",  # rows classified futures (champion|mvp|...)
+    "ALTER TABLE pm_category_stats ADD COLUMN single_game_pct    REAL",                        # n_single_game/total; HEURISTIC; NULL for non-sports (Fed) -- OQ-2
+    "ALTER TABLE pm_category_stats ADD COLUMN market_type_source TEXT DEFAULT 'slug_heuristic'",  # seam: slug_heuristic(P2) | gamma_market_type(later) -- §13A(d)
+    # one-sided directional slice = the copyable signal, but an UPPER BOUND (survivorship-caveated, §13A(f)).
+    # Companion table keyed 1:1 so query_scoreboard LEFT JOINs it (avoids doubling pm_category_stats width).
+    """
+    CREATE TABLE IF NOT EXISTS pm_category_onesided_stats (
+        wallet            TEXT NOT NULL,
+        category          TEXT NOT NULL,
+        n_resolved        INTEGER NOT NULL DEFAULT 0,   -- scoreable rows on condition_ids the whale held ONE-SIDED
+        wins              INTEGER NOT NULL DEFAULT 0,
+        losses            INTEGER NOT NULL DEFAULT 0,
+        win_rate          REAL,
+        net_realized_pnl  REAL NOT NULL DEFAULT 0,
+        total_bought      REAL NOT NULL DEFAULT 0,      -- NOTIONAL sum
+        cost_basis        REAL NOT NULL DEFAULT 0,      -- SUM(total_bought*avg_price) = real USDC cost denominator
+        roi               REAL,                          -- net/cost_basis (cost-based, §13 dec 11); NULL if cost_basis<=0
+        avg_bet           REAL,
+        avg_win_price     REAL,
+        last_resolved_ts  INTEGER,
+        is_upper_bound    INTEGER NOT NULL DEFAULT 1,   -- ALWAYS 1: excludes hedged markets => optimistic (§13A(f))
+        updated_ts        INTEGER,
+        PRIMARY KEY (wallet, category)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_cos_category_roi ON pm_category_onesided_stats(category, roi DESC)",
+]
+
+# migration 005 (paper trading -- NOT in this CP1 checkpoint; reserved here so the definition CANNOT drift,
+# e7 ruling 2026-08-23): pm_paper_trade.size_basis = FIXED CONTRACT/SHARE COUNT, NOT fixed dollars. Then
+# cost_basis = size_basis * entry_price parallels the external side's total_bought(NOTIONAL) * avg_price
+# (§13 dec 11 ROI-denominator parity; OQ-1 fixed-unit-for-comparability). Storing dollars would make
+# cost_basis mean something DIFFERENT on the two halves of the same scoreboard -- do NOT.
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
+    (4, MIGRATION_004),
 ]
 
 
