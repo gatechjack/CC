@@ -30,4 +30,23 @@ Every scoreboard aggregate **reconciles to hand-count to 4 decimals**; `won` is 
 2. **Surface market type** (moneyline / spread / total, derivable free from the slug suffix). Today `single_game%` reads as "copyable" when only ~53% is moneyline. Options: a market-type column + filter, and/or a "moneyline %" (copyable-share) alongside single_game%. This is the deferred §13A(d) dimension — the slug-derived split is zero-cost and would prevent exactly this misread.
 3. **Open follow-up (read-only, offered):** SDTrading's win% and ROI on the **254 moneyline rows alone** (the copyable slice) — UNVERIFIED here; that number decides whether the +90.5% survives once the uncopyable totals/spreads are removed.
 
-*Investigation only. No code change, no deploy, no restart. Runner banked alongside.*
+## Part 2 (Task 1) — three-way slice: WHERE the edge lives (read-only, `pm_sdt_slice.ps1`)
+
+Sliced by exact slug suffix; slice n / net / cost sum to the totals to the cent.
+
+| slice | n | won | lost | win% | net_pnl | cost_basis | cost-ROI | avg_win_px | games | per-game% |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **moneyline** | 254 | 236 | 18 | 92.9% | 2,871,212 | 3,153,143 | **+91.1%** | 0.5053 | 238 | 96.2% |
+| **total** | 167 | 161 | 6 | 96.4% | 1,362,567 | 1,497,739 | **+91.0%** | 0.5253 | 151 | 97.4% |
+| **spread** | 56 | 53 | 3 | 94.6% | 127,259 | 170,119 | **+74.8%** | 0.5218 | 55 | 94.5% |
+| ALL | 477 | 450 | 27 | 94.3% | 4,361,039 | 4,821,001 | +90.5% | 0.5144 | 380 | 96.1% |
+
+**Conclusion — the edge is REAL and copyable, NOT a mirage.** Of the four possible outcomes, the answer is "edge in BOTH moneyline and totals, weak in spreads":
+- **Moneyline (+91.1%, 66% of net = $2.87M)** — the directly-copyable slice is essentially as strong as the whole. The live MLB-moneyline division is well-founded; SDTrading is the whale the scoreboard suggests. (This kills the "moneylines-only near zero → roster question" outcome.)
+- **Totals (+91.0%, 31% of net = $1.36M)** — an EQUALLY strong slice. Capturing it (contingent on Kalshi listing — Task 2) grows the copyable net from $2.87M to $4.23M (**+47%**) at the SAME ROI. Moneyline+totals together = 97% of the edge.
+- **Spreads (+74.8%, 3% of net = $0.13M)** — still positive but the weakest and smallest slice; low priority even if listed.
+- **avg_win_price ~0.51-0.53 across ALL slices** — the edge is picking ~even-money winners at a high rate (CONTESTED, not chalk); consistent across slices and genuinely notable.
+
+per-game vs per-leg is high both ways (correlated legs within moneyline [238 games / 254 legs] and totals [151 / 167]); the decisive number is per-slice ROI, and moneyline + totals are both ~+91%.
+
+*Investigation only. No code change, no deploy, no restart. Runners banked alongside.*
