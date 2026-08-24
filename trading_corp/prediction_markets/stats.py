@@ -10,6 +10,7 @@ Spec: reports/prediction_markets/P1_PLAN.md §3A, §6, §7, §8.
 from __future__ import annotations
 
 import json
+import time
 from collections import defaultdict
 
 from .db import SCOREABLE_PREDICATE_SQL, scoreable_where
@@ -264,11 +265,19 @@ def query_scoreboard(conn, *, category: str | None = None, routine: str = "net_r
     q = (
         "SELECT cs.*, ss.score AS score, ss.wilson_lcb AS wilson_lcb, "
         "ss.edge_factor AS edge_factor, ss.params_json AS params_json, "
-        "COALESCE(w.backfill_complete, 0) AS backfill_complete "
+        "COALESCE(w.backfill_complete, 0) AS backfill_complete, "
+        # migration-004 one-sided directional slice (P2 CP2 render contract, deferred from CP1). LEFT JOIN
+        # so a whale with NO one-sided slice still ranks -- the fields come back NULL and the page renders
+        # honest-empty ("--"), never a fabricated 0. is_upper_bound is ALWAYS 1: the figure excludes hedged
+        # markets so it is optimistic by construction (§13A(f)); it MUST render LABELED AS AN UPPER BOUND.
+        "os.roi AS onesided_roi, os.n_resolved AS onesided_n, os.win_rate AS onesided_win_rate, "
+        "os.avg_win_price AS onesided_avg_win_price, os.is_upper_bound AS onesided_is_upper_bound "
         "FROM pm_category_stats cs "
         "LEFT JOIN pm_score_snapshot ss "
         "  ON cs.wallet=ss.wallet AND cs.category=ss.category AND ss.routine=? "
         "LEFT JOIN pm_whale w ON cs.wallet = w.wallet "
+        "LEFT JOIN pm_category_onesided_stats os "
+        "  ON cs.wallet=os.wallet AND cs.category=os.category "
         "WHERE cs.n_resolved >= ?"
     )
     params: list = [routine, min_resolved]
@@ -286,8 +295,67 @@ def query_scoreboard(conn, *, category: str | None = None, routine: str = "net_r
     return out
 
 
+# ── scoreboard read + freshness helpers (P2 CP2 web layer; also usable by the CLI) ──────────────
+
+def distinct_categories(conn) -> list[str]:
+    """Categories present in pm_category_stats, for the scoreboard filter (sorted, non-NULL)."""
+    return [r["category"] for r in conn.execute(
+        "SELECT DISTINCT category FROM pm_category_stats WHERE category IS NOT NULL ORDER BY category"
+    ).fetchall()]
+
+
+def max_refresh_ts(conn) -> int | None:
+    """MAX(pm_whale.last_refresh_ts) -- the data-freshness source for refresh_band(). None if never set
+    (=> refresh_band renders RED/unknown, never hidden)."""
+    row = conn.execute("SELECT MAX(last_refresh_ts) AS ts FROM pm_whale").fetchone()
+    return int(row["ts"]) if row is not None and row["ts"] is not None else None
+
+
+REFRESH_GREEN_MAX_DAYS = 8.0    # <= 8d green: within the weekly cycle + a day of grace
+REFRESH_AMBER_MAX_DAYS = 15.0   # 8-15d amber: missed one weekly cycle; > 15d red: missed two+, or never refreshed
+
+
+def refresh_band_state(ts: int | None, now_ts: int) -> dict:
+    """Freshness band for the scoreboard stamp, calibrated to the WEEKLY refresh cadence. green <= 8d,
+    amber 8-15d, red > 15d OR ts missing. Pure (now_ts is passed, never read here) so it is deterministic
+    under test. A missing/zero ts is RED and labeled 'no refresh timestamp' -- honest-stale, NEVER hidden."""
+    if ts is None or ts <= 0:
+        return {"ts": None, "age_days": None, "band": "red", "iso": None, "note": "no refresh timestamp"}
+    age_days = max(0.0, (now_ts - ts) / 86400.0)
+    if age_days <= REFRESH_GREEN_MAX_DAYS:
+        band = "green"
+    elif age_days <= REFRESH_AMBER_MAX_DAYS:
+        band = "amber"
+    else:
+        band = "red"
+    return {"ts": int(ts), "age_days": age_days, "band": band,
+            "iso": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts)), "note": None}
+
+
 def _fmt(v, spec, default="-"):
     return format(v, spec) if isinstance(v, (int, float)) else default
+
+
+def scoreboard_flags(row: dict) -> list[str]:
+    """The ONE flag deriver -- consumed by BOTH format_report (CLI) and the web scoreboard, so the
+    product page and the CLI can NEVER diverge on which flags a row carries (P2 Phase-2 parity bar #1).
+    Tokens: INCOMPLETE-NOT-RANKED (§13A(k) partial/failed backfill), CHALK, CONTESTED,
+    CONTAMINATED(cnt%/$%) (§3A data_quality), ANOM:n (§3A clause-a count)."""
+    flags: list[str] = []
+    if not row.get("backfill_complete"):
+        flags.append("INCOMPLETE-NOT-RANKED")   # §13A(k): PARTIAL/FAILED backfill -> excluded from ranking
+    if row.get("chalk"):
+        flags.append("CHALK")
+    if row.get("contested"):
+        flags.append("CONTESTED")
+    if row.get("data_quality"):
+        flags.append("%s(cnt%s/$%s)" % (
+            str(row["data_quality"]).upper(),
+            _fmt((row.get("dq_count_pct") or 0) * 100, ".0f") + "%",
+            _fmt((row.get("dq_dollar_pct") or 0) * 100, ".0f") + "%"))
+    if row.get("n_anomaly"):
+        flags.append("ANOM:%d" % row["n_anomaly"])
+    return flags
 
 
 def format_report(board: list[dict], *, fmt: str = "table") -> str:
@@ -300,20 +368,7 @@ def format_report(board: list[dict], *, fmt: str = "table") -> str:
              "(net/total_bought), NOT ranked, for legacy/scout comparison only (§13 dec 11)",
              hdr, "-" * len(hdr)]
     for r in board:
-        flags = []
-        if not r.get("backfill_complete"):
-            flags.append("INCOMPLETE-NOT-RANKED")   # §13A(k): PARTIAL/FAILED backfill -> excluded from ranking
-        if r.get("chalk"):
-            flags.append("CHALK")
-        if r.get("contested"):
-            flags.append("CONTESTED")
-        if r.get("data_quality"):
-            flags.append("%s(cnt%s/$%s)" % (
-                str(r["data_quality"]).upper(),
-                _fmt((r.get("dq_count_pct") or 0) * 100, ".0f") + "%",
-                _fmt((r.get("dq_dollar_pct") or 0) * 100, ".0f") + "%"))
-        if r.get("n_anomaly"):
-            flags.append("ANOM:%d" % r["n_anomaly"])
+        flags = scoreboard_flags(r)   # THE shared deriver -- identical tokens on the web scoreboard (parity)
         wr = r.get("win_rate")
         roi = r.get("roi")                    # cost-based (RANKED)
         roin = r.get("roi_notional")          # notional (NOT ranked; legacy comparison)

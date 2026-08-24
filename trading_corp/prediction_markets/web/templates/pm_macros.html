@@ -1,0 +1,31 @@
+{# ── refresh_band(refresh) ────────────────────────────────────────────────────────────────────
+   The data-freshness stamp, calibrated to the WEEKLY refresh cadence (green <=8d, amber 8-15d, red
+   >15d or unknown). `refresh` is stats.refresh_band_state(...). STRUCTURAL GUARANTEE: the scoreboard
+   table partial calls this at its TOP on every render, in the SAME fragment as the rows, so a
+   scoreboard number can NEVER be shown without its freshness beside it. A missing timestamp renders
+   RED "UNKNOWN" -- honest-stale, never hidden. #}
+{% macro refresh_band(refresh) -%}
+  <div class="pm-refresh pm-band-{{ refresh.band }}" data-refresh-band="{{ refresh.band }}"
+       title="Data freshness. Weekly refresh cadence: green &le;8d, amber 8-15d, red &gt;15d or unknown.">
+    <span class="pm-dot" aria-hidden="true"></span>
+    <span class="pm-refresh-label">data freshness</span>
+    {%- if refresh.ts %}
+      <span class="pm-refresh-val">{{ '%.1f'|format(refresh.age_days) }}d old</span>
+      <span class="pm-refresh-iso">last refresh {{ refresh.iso }}</span>
+    {%- else %}
+      <span class="pm-refresh-val">UNKNOWN</span>
+      <span class="pm-refresh-iso">{{ refresh.note }}</span>
+    {%- endif %}
+    <span class="pm-band-tag">{{ refresh.band|upper }}</span>
+  </div>
+{%- endmacro %}
+
+{# ── flag_badges(flags) ───────────────────────────────────────────────────────────────────────
+   Renders the flag tokens from stats.scoreboard_flags(row) -- the SAME list the CLI report emits.
+   data-flag carries the exact token so the parity test can compare the page's flag set to the CLI's. #}
+{% macro flag_badges(flags) -%}
+  {%- for f in flags -%}
+    {%- set kind = f.split('(')[0].split(':')[0]|lower -%}
+    <span class="pm-flag pm-flag-{{ kind }}" data-flag="{{ f }}">{{ f }}</span>
+  {%- endfor -%}
+{%- endmacro %}
