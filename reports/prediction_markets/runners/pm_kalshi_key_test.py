@@ -67,19 +67,24 @@ async def _main():
         print("KeyVault client init FAILED: %s: %s" % (type(e).__name__, str(e)[:200]))
         return
 
-    ex_id, ok1 = _fetch(client, "KALSHI-API-KEY-ID")
-    ex_pem, ok2 = _fetch(client, "KALSHI-PRIVATE-KEY-PEM")
-    print("EXISTING key retrieved:  id=%s  pem=%s" % (ok1, ok2))
-    nw_id, ok3 = _fetch(client, "Kalshi-Karen-TWO-API-KEY")
-    nw_pem, ok4 = _fetch(client, "Karen-Kalshi-TWO-PRIVATE-KEY")
-    print("NEW Karen-TWO retrieved: id=%s  pem=%s" % (ok3, ok4))
+    # Test all three candidate keys so we can tell WHICH the engine uses + whether it is the dead one:
+    #  KALSHI (original), KALSHI-KAREN (the "one" key the poly_kalshi division may use), Karen-TWO (Jack's new).
+    keys = []
+    for label, id_name, pem_name in (
+        ("KALSHI (original)",   "KALSHI-API-KEY-ID",           "KALSHI-PRIVATE-KEY-PEM"),
+        ("KALSHI-KAREN (one)",  "KALSHI-KAREN-API-KEY-ID",     "KALSHI-KAREN-PRIVATE-KEY-PEM"),
+        ("Karen-TWO (new)",     "Kalshi-Karen-TWO-API-KEY",    "Karen-Kalshi-TWO-PRIVATE-KEY"),
+    ):
+        kid, ok_id = _fetch(client, id_name)
+        pem, ok_pem = _fetch(client, pem_name)
+        print("%-20s retrieved: id=%s pem=%s" % (label, ok_id, ok_pem))
+        if ok_id and ok_pem:
+            keys.append((label, kid, pem))
 
     ext = "https://external-api.kalshi.com/trade-api/v2"   # the ORDER host where poly_kalshi 401s
     for base in (ext, None):
-        if ok1 and ok2:
-            await _test_key("EXISTING KALSHI key", ex_id, ex_pem, base)
-        if ok3 and ok4:
-            await _test_key("NEW Karen-TWO key", nw_id, nw_pem, base)
+        for (label, kid, pem) in keys:
+            await _test_key(label, kid, pem, base)
     print("\n== END key auth test ==")
 
 
