@@ -15,7 +15,7 @@ import json
 import sys
 import time
 
-from trading_corp.prediction_markets import category, db, ingest, names, rosters, stats
+from trading_corp.prediction_markets import category, db, ingest, names, paper, rosters, stats
 
 
 def _now() -> int:
@@ -122,6 +122,18 @@ def _cmd_sync_names(args) -> int:
     return 0
 
 
+async def _cmd_paper_poll(args) -> int:
+    """Poll /positions for PINNED whales -> capture genuinely-open paper entries (CP3a). Reads the live
+    client read-only; writes ONLY pm_paper_trade in the PM DB (never the legacy DB, never the engine).
+    NO cron -- run as a one-shot for Jack to review before any schedule is installed."""
+    db.init_db(args.db)
+    async with _client() as c:
+        with db.connect(args.db) as conn:
+            res = await paper.poll_pinned(conn, client=c, now_ts=_now())
+    print(json.dumps(res, indent=2, default=str))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm_cli", description="Prediction Markets P1 CLI")
     p.add_argument("--db", default=db.pm_db_path(), help="PM DB path (default: PM_DB_PATH or data/prediction_markets.db)")
@@ -164,6 +176,9 @@ def build_parser() -> argparse.ArgumentParser:
     sn.add_argument("--status", action="store_true",
                     help="print the last sync-names run (ts + counts) and exit; no write")
     sn.set_defaults(func=_cmd_sync_names, is_async=False)
+
+    pp = sub.add_parser("paper-poll", help="poll /positions for PINNED whales -> capture paper entries (CP3a)")
+    pp.set_defaults(func=_cmd_paper_poll, is_async=True)
     return p
 
 

@@ -1,0 +1,251 @@
+"""Paper-trading poller + adjudicator for the Prediction Markets farm league (CP3a).
+
+Standalone farm-league logic. Reads the datastore (`db`) and derives categories (`category`); the
+read-only Polymarket client is INJECTED (`poll_pinned(..., client=...)`). Does NOT edit `ingest.py`
+(off-limits) and NEVER writes the legacy DB. The engine is untouched.
+
+TWO BIASES (labelled here + in the schema; surfaced in the UI in CP3b):
+  1. `entry_observed_ts` is OBSERVATION time (+/- the poll interval), NOT a fill ts. `/positions` carries
+     no fill timestamp; the poller stamps the time it SAW the position open. Recency basis is observation.
+  2. Same-poll open-and-close is INVISIBLE -> BIAS-UP: a whale who enters and exits inside one interval
+     never appears, so the misses skew toward fast round-trips / quick losses and the paper record reads
+     BETTER than reality. Asserted, not measured (see CP3A report cross-check).
+
+STALE vs RESOLVED is a two-phase adjudication (addendum 1): a vanished position is NOT classified on the
+disappearance (a `/positions` row drops on BOTH whale-exit AND market settle). The poller marks it
+`pending_adjudication`; `adjudicate()` (off the weekly `/closed-positions` refresh) decides
+`closed`(resolution) vs `stale`(whale_exit) deterministically -- biases DOWN (a whale exit never books
+paper P&L).
+
+Spec: reports/prediction_markets/P2_PLAN.md 5.2 (as amended 2026-08-24) + CP3A_CONTAMINATION_GATE.md.
+"""
+from __future__ import annotations
+
+import sqlite3
+import time
+from collections import defaultdict
+from typing import Any
+
+from .category import derive_category_from_slug
+
+# size comparison tolerance for scale-in/reduction detection (sizes are contract counts; a real
+# scale-in moves size by >= ~1 contract, JSON float noise is ~1e-12, so 1e-6 cleanly separates them).
+_SIZE_EPS = 1e-6
+
+# pm_paper_config code DEFAULTS -- a missing pm_paper_config table/row degrades HONESTLY to these rather
+# than erroring (the migration also seeds them; these are the safety net on a read path).
+CONFIG_DEFAULTS: dict[str, float] = {
+    "poll_interval_sec": 300.0,     # 5 min
+    "grace_window_sec": 172800.0,   # 48 h adjudication grace (addendum 1)
+    "size_basis": 100.0,            # fixed paper stake (contracts/shares; e7 -- NOT the whale's size, NOT dollars)
+}
+
+
+class PaperError(RuntimeError):
+    """Base error for the paper farm-league poller/adjudicator."""
+
+
+def _f(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _i(v: Any, default: int = 0) -> int:
+    try:
+        return int(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def get_config(conn, key: str) -> float:
+    """Numeric config value from pm_paper_config, else the code DEFAULT. Tolerates a missing table/row
+    (degrades honestly; never creates the table on a read path)."""
+    default = CONFIG_DEFAULTS.get(key, 0.0)
+    try:
+        row = conn.execute("SELECT value FROM pm_paper_config WHERE key = ?", (key,)).fetchone()
+    except sqlite3.OperationalError:
+        return default                         # table absent -> honest default
+    if row is None or row[0] is None:
+        return default
+    return _f(row[0], default)
+
+
+# ---- /positions PositionRow field access -----------------------------------------------------------
+# The shared client's PositionRow (trading_corp/data/polymarket_data_api_client.py) parses only a subset
+# of fields into attributes; outcomeIndex / redeemable / curPrice / endDate land in `.extra`. Read them
+# from there (a plain object with those attributes also works, for tests/fixtures).
+
+def _extra(p) -> dict:
+    ex = getattr(p, "extra", None)
+    return ex if isinstance(ex, dict) else {}
+
+
+def pos_outcome_index(p) -> int:
+    return _i(_extra(p).get("outcomeIndex", getattr(p, "outcome_index", 0)), 0)
+
+
+def pos_end_date(p) -> str:
+    return str(_extra(p).get("endDate", getattr(p, "end_date", "")) or "")
+
+
+def is_genuinely_open(p) -> bool:
+    """OR-filter (ruling D1): a `/positions` row is RESOLVED-UNREDEEMED (EXCLUDE) if `redeemable` is true
+    OR `curPrice` sits at a settled bound (<=0 or >=1). Genuine opens have 0 < curPrice < 1 and redeemable
+    false. Bias-DOWN by construction: over-excluding drops a genuine open (allowed); under-excluding books
+    a phantom entry on a settled position (forbidden) -- the asymmetry is why the guard is OR (not AND) and
+    uses <=/>= bounds. The redeemable<=>curPrice biconditional held on n=3 only, so BOTH are checked.
+    A missing curPrice coerces to 0.0 -> treated as settled (over-exclude, bias-down)."""
+    ex = _extra(p)
+    if bool(ex.get("redeemable")):
+        return False
+    cur = _f(ex.get("curPrice", getattr(p, "cur_price", 0.0)), 0.0)
+    if cur <= 0.0 or cur >= 1.0:
+        return False
+    return True
+
+
+# ---- the poller ------------------------------------------------------------------------------------
+
+async def poll_pinned(conn, *, client, now_ts: int | None = None,
+                      poll_interval_sec: int | None = None, size_basis: float | None = None) -> dict:
+    """Poll `/positions` for PINNED whales (pm_watchlist status='pinned'), capture genuinely-open
+    positions IN THE PINNED CATEGORY as paper entries, diff scale-ins/reductions on tracked legs, and
+    mark vanished legs `pending_adjudication`. Per-whale isolation (one whale's error never aborts the
+    run). Idempotent via the open guard: a leg that already has an OPEN paper row is never re-captured.
+
+    Category filter: a whale is pinned per (wallet, category); only positions whose tier-1 slug category
+    matches the pinned category are captured, so a UFC-pinned whale's politics positions are NOT booked
+    (cross-category leakage would be the phantom-pairs bug one level down). Tier-1 coverage is ~85-90%,
+    so a mis-derived position in the pinned category is a COVERAGE gap (not a P&L inflation)."""
+    now = now_ts if now_ts is not None else int(time.time())
+    interval = int(poll_interval_sec if poll_interval_sec is not None else get_config(conn, "poll_interval_sec"))
+    basis = float(size_basis if size_basis is not None else get_config(conn, "size_basis"))
+
+    by_wallet: dict[str, list[str]] = defaultdict(list)
+    for r in conn.execute("SELECT wallet, category FROM pm_watchlist WHERE status = 'pinned'").fetchall():
+        by_wallet[(r["wallet"] or "").lower()].append(r["category"])
+
+    per_whale: list[dict] = []
+    for wallet, cats in by_wallet.items():
+        try:
+            positions = await client.fetch_positions(wallet)
+        except Exception as e:                                 # per-whale isolation (mirrors ingest.backfill_wallets)
+            per_whale.append({"wallet": wallet, "categories": sorted(set(cats)), "error": repr(e)[:200]})
+            continue
+        n_returned = len(positions)
+        genuinely_open = [p for p in positions if is_genuinely_open(p)]
+        # cap-hit signal (D2): the shared client's fetch_positions is un-paginated; record the count so a
+        # future default-page cap is VISIBLE (my probe found no cap up to 57; a suspiciously round large
+        # count is the tell). No silent truncation.
+        for category in sorted(set(cats)):
+            res = _process_category(conn, wallet, category, genuinely_open, now, interval, basis)
+            res["positions_returned"] = n_returned
+            res["genuinely_open"] = len(genuinely_open)
+            per_whale.append(res)
+        if hasattr(conn, "commit"):
+            conn.commit()
+
+    return {"per_whale": per_whale, "totals": _sum_totals(per_whale),
+            "now_ts": now, "poll_interval_sec": interval, "size_basis": basis}
+
+
+def _process_category(conn, wallet: str, category: str, genuinely_open: list, now: int,
+                      interval: int, basis: float) -> dict:
+    # positions in THIS pinned category (tier-1 slug derivation; consistent with ingest's categorization)
+    cat_pos: dict[tuple, Any] = {}
+    for p in genuinely_open:
+        pc, _src = derive_category_from_slug(getattr(p, "event_slug", "") or "", getattr(p, "slug", "") or "")
+        if pc == category:
+            cat_pos[(str(getattr(p, "condition_id", "") or ""), pos_outcome_index(p))] = p
+
+    open_trades = {
+        (r["condition_id"], _i(r["outcome_index"], 0)): r
+        for r in conn.execute(
+            "SELECT * FROM pm_paper_trade WHERE wallet=? AND category=? AND status='open'",
+            (wallet, category)).fetchall()
+    }
+
+    captured = adds = reductions = touched = vanished = 0
+    for key, p in cat_pos.items():
+        row = open_trades.get(key)
+        if row is None:
+            _insert_entry(conn, wallet, category, p, now, interval, basis)   # open guard: no OPEN row -> NEW entry
+            captured += 1
+            continue
+        prior = row["last_observed_size"]
+        if prior is None:
+            prior = row["whale_size_at_observation"]
+        prior = _f(prior, 0.0)
+        cur = _f(getattr(p, "size", 0.0), 0.0)
+        pk = (row["condition_id"], row["outcome_index"], row["entry_observed_ts"])
+        if cur > prior + _SIZE_EPS:                                          # scale-in: NOT a new entry (addendum 3)
+            conn.execute(
+                "UPDATE pm_paper_trade SET n_observed_adds = n_observed_adds + 1, last_add_observed_ts=?, "
+                "last_observed_size=?, last_observed_ts=?, updated_ts=? "
+                "WHERE wallet=? AND condition_id=? AND outcome_index=? AND entry_observed_ts=?",
+                (now, cur, now, now, wallet, *pk))
+            adds += 1
+        elif cur < prior - _SIZE_EPS:                                       # partial whale exit -> log, no status change
+            conn.execute(
+                "UPDATE pm_paper_trade SET n_observed_reductions = n_observed_reductions + 1, "
+                "last_reduction_observed_ts=?, last_observed_size=?, last_observed_ts=?, updated_ts=? "
+                "WHERE wallet=? AND condition_id=? AND outcome_index=? AND entry_observed_ts=?",
+                (now, cur, now, now, wallet, *pk))
+            reductions += 1
+        else:                                                                # unchanged -> touch last-seen
+            conn.execute(
+                "UPDATE pm_paper_trade SET last_observed_size=?, last_observed_ts=?, updated_ts=? "
+                "WHERE wallet=? AND condition_id=? AND outcome_index=? AND entry_observed_ts=?",
+                (cur, now, now, wallet, *pk))
+            touched += 1
+
+    for key, row in open_trades.items():
+        if key not in cat_pos:                                              # vanished pre-resolution -> pending (addendum 1)
+            conn.execute(
+                "UPDATE pm_paper_trade SET status='pending_adjudication', exit_observed_ts=?, updated_ts=? "
+                "WHERE wallet=? AND condition_id=? AND outcome_index=? AND entry_observed_ts=?",
+                (now, now, wallet, row["condition_id"], row["outcome_index"], row["entry_observed_ts"]))
+            vanished += 1
+
+    # loudness (the ingest `pulled == stored` analogue): every genuinely-open pinned-category position is
+    # EITHER newly captured OR matched an already-open row -- no silent drop.
+    accounted = captured + adds + reductions + touched
+    if accounted != len(cat_pos):
+        raise PaperError("poller drop: wallet=%s category=%s in_category=%d accounted=%d"
+                         % (wallet, category, len(cat_pos), accounted))
+
+    return {"wallet": wallet, "category": category, "in_category": len(cat_pos), "captured": captured,
+            "adds": adds, "reductions": reductions, "touched": touched, "vanished": vanished,
+            "open_after": _count_open(conn, wallet, category)}
+
+
+def _insert_entry(conn, wallet: str, category: str, p, now: int, interval: int, basis: float) -> None:
+    avg = _f(getattr(p, "avg_price", 0.0), 0.0)
+    size = _f(getattr(p, "size", 0.0), 0.0)
+    conn.execute(
+        "INSERT INTO pm_paper_trade ("
+        "wallet, category, condition_id, outcome_index, slug, event_slug, title, outcome, side, "
+        "entry_observed_ts, entry_price_avg_at_observation, whale_size_at_observation, size_basis, "
+        "cost_basis, poll_interval_sec, entry_basis, market_end_date, last_observed_size, last_observed_ts, "
+        "status, source, opened_ts, updated_ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'BUY', ?, ?, ?, ?, ?, ?, 'positions_observation', ?, ?, ?, "
+        "'open', 'poller', ?, ?)",
+        (wallet, category, str(getattr(p, "condition_id", "") or ""), pos_outcome_index(p),
+         str(getattr(p, "slug", "") or ""), str(getattr(p, "event_slug", "") or ""),
+         str(getattr(p, "title", "") or ""), str(getattr(p, "outcome", "") or ""),
+         now, avg, size, basis, basis * avg, interval, pos_end_date(p), size, now, now, now))
+
+
+def _count_open(conn, wallet: str, category: str) -> int:
+    return conn.execute("SELECT COUNT(1) FROM pm_paper_trade WHERE wallet=? AND category=? AND status='open'",
+                        (wallet, category)).fetchone()[0]
+
+
+def _sum_totals(per_whale: list[dict]) -> dict:
+    keys = ("in_category", "captured", "adds", "reductions", "touched", "vanished")
+    out = {k: sum(_i(r.get(k), 0) for r in per_whale) for k in keys}
+    out["errors"] = sum(1 for r in per_whale if r.get("error"))
+    out["pairs"] = sum(1 for r in per_whale if "category" in r)
+    return out

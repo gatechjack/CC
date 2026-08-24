@@ -380,6 +380,8 @@ MIGRATION_005: list[str] = [
         last_add_observed_ts            INTEGER,
         n_observed_reductions           INTEGER NOT NULL DEFAULT 0,  -- observed size DECREASES (partial whale exit) -- no status change in CP3a
         last_reduction_observed_ts      INTEGER,
+        last_observed_size              REAL,                        -- most-recent /positions size for this leg -> scale-in/reduction diff vs prior poll
+        last_observed_ts                INTEGER,                     -- most-recent poll that saw this leg OPEN (bounds the exit window)
         status                          TEXT NOT NULL DEFAULT 'open',-- open | pending_adjudication | closed | stale | void
         exit_observed_ts                INTEGER,                     -- when the position vanished from /positions -> pending_adjudication
         resolved_ts                     INTEGER,                     -- from pm_closed_position at adjudication (close_source='resolution')

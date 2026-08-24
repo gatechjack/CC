@@ -122,8 +122,8 @@ def test_migration_005_paper_trade_lifecycle(tmp_path):
     assert {"status", "exit_observed_ts", "resolved_ts", "won", "realized_pnl",
             "close_source", "stale_ts", "stale_reason"} <= pt
     # scale-in / reduction observation (addendum 3), diagnostic-only
-    assert {"n_observed_adds", "last_add_observed_ts",
-            "n_observed_reductions", "last_reduction_observed_ts"} <= pt
+    assert {"n_observed_adds", "last_add_observed_ts", "n_observed_reductions",
+            "last_reduction_observed_ts", "last_observed_size", "last_observed_ts"} <= pt
     # entry provenance + display-only whale size + parity columns
     assert {"entry_price_avg_at_observation", "whale_size_at_observation", "size_basis", "cost_basis",
             "poll_interval_sec", "entry_basis", "market_end_date", "pnl_suspect", "suspect_reason"} <= pt
