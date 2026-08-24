@@ -21,6 +21,7 @@ Spec: reports/prediction_markets/P2_PLAN.md 5.2 (as amended 2026-08-24) + CP3A_C
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from collections import defaultdict
@@ -357,3 +358,99 @@ def adjudicate(conn, *, now_ts: int | None = None, grace_window_sec: int | None 
         conn.commit()
     return {"pending_in": len(pending), "closed": closed, "staled": staled,
             "still_pending": still_pending, "grace_window_sec": grace, "subset": subset}
+
+
+# ---- roster/watchlist seed from SCOUT PROVENANCE (C2.4) ---------------------------------------------
+
+def _wallet_of(entry) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("wallet") or entry.get("proxy_wallet") or "").lower()
+    return str(entry or "").lower()
+
+
+def _name_of(entry) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("user_name") or entry.get("name") or "")
+    return ""
+
+
+def load_pin_provenance(path: str | None) -> list[dict]:
+    """Load the curated scout pin-provenance list from a yaml file: a list of
+    {wallet?, user_name?, category, source}. Missing/empty file -> []. The category here is PROVENANCE
+    (from a pre-fabrication scout record), NEVER derived from pm_category_stats (C2.4)."""
+    if not path or not os.path.exists(path):
+        return []
+    import yaml  # lazy (only when a provenance path is given)
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or []
+    if isinstance(data, dict):
+        data = data.get("pins") or []
+    return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+
+
+def seed_farm_roster(conn, *, pinned_entries, provenance, now_ts: int | None = None) -> dict:
+    """Seed pm_roster + pm_watchlist(status='pinned') for the CURRENT pinned whales using the CURATED
+    scout PROVENANCE (never pm_category_stats -- C2.4). Idempotent (INSERT OR IGNORE).
+
+    pinned_entries: the current pinned/live roster entries (legacy agent_state, read-only) -- each a dict
+      with wallet/proxy_wallet + optional user_name (or a bare wallet string).
+    provenance: list of {wallet?, user_name?, category, source} curated from pre-fabrication scout records.
+      A pinned wallet matched by WALLET (preferred) or by USER_NAME gets that category; a pinned wallet with
+      NO provenance match is UNRESOLVED -- NOT seeded, NOT guessed (C2.4). Returns {seeded, unresolved, ...};
+      the caller HALTS if unresolved is non-empty. pm_category_stats may VALIDATE a pair later, never generate one.
+    """
+    now = now_ts if now_ts is not None else int(time.time())
+    by_wallet: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    for prov in provenance:
+        if not isinstance(prov, dict) or not prov.get("category"):
+            continue
+        w = str(prov.get("wallet") or "").lower()
+        nm = str(prov.get("user_name") or "").strip().lower()
+        if w:
+            by_wallet[w] = prov
+        if nm:
+            by_name.setdefault(nm, prov)
+
+    seeded: list[dict] = []
+    unresolved: list[dict] = []
+    seen: set[str] = set()
+    for e in pinned_entries or []:
+        w = _wallet_of(e)
+        if not w or w in seen:
+            continue
+        seen.add(w)
+        nm = _name_of(e)
+        prov = by_wallet.get(w) or by_name.get(nm.strip().lower())
+        if not prov:
+            unresolved.append({"wallet": w, "user_name": nm})       # C2.4: list, do NOT guess a category
+            continue
+        cat = str(prov["category"]).lower()
+        src = str(prov.get("source") or "scout_provenance")
+        label = nm or str(prov.get("user_name") or "")
+        conn.execute(
+            "INSERT OR IGNORE INTO pm_roster (wallet, category, user_name, source, added_ts, active) "
+            "VALUES (?, ?, ?, ?, ?, 1)", (w, cat, label, src, now))
+        conn.execute(
+            "INSERT OR IGNORE INTO pm_watchlist (wallet, category, added_ts, source, status, pinned_ts, updated_ts) "
+            "VALUES (?, ?, ?, ?, 'pinned', ?, ?)", (w, cat, now, src, now, now))
+        seeded.append({"wallet": w, "category": cat, "user_name": label, "source": src})
+
+    if hasattr(conn, "commit"):
+        conn.commit()
+    return {"n_seeded": len(seeded), "n_unresolved": len(unresolved),
+            "seeded": seeded, "unresolved": unresolved}
+
+
+def validate_pairs_have_history(conn, seeded) -> list[dict]:
+    """C2.4: pm_category_stats/pm_closed_position may VALIDATE a seeded pair (does the whale actually have
+    resolved rows in that category?) but NEVER generate one. Returns per-pair coverage; a pair with NO
+    history is a flag to eyeball (category possibly wrong), not an auto-fix."""
+    out = []
+    for s in seeded:
+        row = conn.execute("SELECT COUNT(1) FROM pm_closed_position WHERE wallet=? AND category=?",
+                           (s["wallet"], s["category"])).fetchone()
+        n = row[0] if row else 0
+        out.append({"wallet": s["wallet"], "category": s["category"],
+                    "rows_in_category": n, "has_history": n > 0})
+    return out

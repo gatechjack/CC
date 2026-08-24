@@ -301,3 +301,76 @@ def test_adjudicate_fails_loud_and_mutates_nothing_when_pinned_not_refreshed(tmp
             paper.adjudicate(conn, now_ts=NOW)
         st = conn.execute("SELECT status FROM pm_paper_trade").fetchone()[0]
     assert st == "pending_adjudication"                        # assertion ran BEFORE any row was touched
+
+
+# ---- roster/watchlist seed from scout provenance (C2.4) ------------------------------------------
+
+def test_seed_farm_roster_seeds_pins_and_flags_unresolved(tmp_path):
+    p = _db(tmp_path)
+    provenance = [
+        {"wallet": "0xaaa", "user_name": "Kh4mz4t", "category": "ufc", "source": "ufc_scout"},
+        {"user_name": "SDTrading", "category": "mlb", "source": "live"},     # name-only (wallet from agent_state)
+    ]
+    pinned_entries = [
+        {"wallet": "0xAAA", "user_name": "Kh4mz4t"},           # wallet match (case-insensitive)
+        {"wallet": "0xbbb", "user_name": "SDTrading"},         # name match (provenance carries no wallet)
+        {"wallet": "0xccc", "user_name": "MysteryWhale"},      # NO provenance -> UNRESOLVED (never guessed)
+    ]
+    with db.connect(p) as conn:
+        res = paper.seed_farm_roster(conn, pinned_entries=pinned_entries, provenance=provenance, now_ts=NOW)
+        roster = {(r["wallet"], r["category"]) for r in conn.execute("SELECT wallet, category FROM pm_roster")}
+        watch = {(r["wallet"], r["category"], r["status"])
+                 for r in conn.execute("SELECT wallet, category, status FROM pm_watchlist")}
+    assert res["n_seeded"] == 2
+    assert res["n_unresolved"] == 1
+    assert res["unresolved"][0]["wallet"] == "0xccc"
+    assert ("0xaaa", "ufc") in roster
+    assert ("0xbbb", "mlb") in roster                          # name-matched provenance
+    assert ("0xaaa", "ufc", "pinned") in watch
+
+
+def test_seed_farm_roster_idempotent(tmp_path):
+    p = _db(tmp_path)
+    provenance = [{"wallet": "0xaaa", "user_name": "K", "category": "ufc"}]
+    entries = [{"wallet": "0xaaa", "user_name": "K"}]
+    with db.connect(p) as conn:
+        paper.seed_farm_roster(conn, pinned_entries=entries, provenance=provenance, now_ts=NOW)
+        paper.seed_farm_roster(conn, pinned_entries=entries, provenance=provenance, now_ts=NOW + 1)   # re-run
+        n_roster = conn.execute("SELECT COUNT(1) FROM pm_roster").fetchone()[0]
+        n_watch = conn.execute("SELECT COUNT(1) FROM pm_watchlist").fetchone()[0]
+    assert n_roster == 1 and n_watch == 1
+
+
+def test_seed_then_subset_assertion_passes(tmp_path):
+    """A seeded pin lands in pm_roster active AND pm_watchlist pinned -> the C2.3 subset assertion passes."""
+    p = _db(tmp_path)
+    provenance = [{"wallet": "0xaaa", "user_name": "K", "category": "ufc"}]
+    entries = [{"wallet": "0xaaa", "user_name": "K"}]
+    with db.connect(p) as conn:
+        paper.seed_farm_roster(conn, pinned_entries=entries, provenance=provenance, now_ts=NOW)
+        report = paper.assert_pinned_subset_of_refresh(conn)   # must NOT raise
+    assert report["unrefreshed"] == []
+    assert report["n_pinned"] == 1
+
+
+def test_load_pin_provenance_reads_yaml(tmp_path):
+    y = tmp_path / "prov.yaml"
+    y.write_text("pins:\n  - {wallet: '0xAbc', user_name: 'W', category: 'ufc', source: 's'}\n",
+                 encoding="utf-8")
+    prov = paper.load_pin_provenance(str(y))
+    assert len(prov) == 1 and prov[0]["category"] == "ufc"
+    assert paper.load_pin_provenance(None) == []               # missing path -> []
+    assert paper.load_pin_provenance(str(tmp_path / "nope.yaml")) == []
+
+
+def test_seeded_pairs_validate_against_history(tmp_path):
+    """pm_closed_position VALIDATES a pair (does the whale have rows in that category) -- never generates one."""
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _closed(conn, "0xaaa", "0xc1", oi=0, won=1)
+        conn.execute("UPDATE pm_closed_position SET category='ufc' WHERE wallet='0xaaa'")
+        val = paper.validate_pairs_have_history(
+            conn, [{"wallet": "0xaaa", "category": "ufc"}, {"wallet": "0xaaa", "category": "nba"}])
+    by = {(v["wallet"], v["category"]): v for v in val}
+    assert by[("0xaaa", "ufc")]["has_history"] is True
+    assert by[("0xaaa", "nba")]["has_history"] is False        # validated (no rows), NOT generated

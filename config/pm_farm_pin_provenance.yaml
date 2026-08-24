@@ -1,0 +1,35 @@
+# Curated SCOUT PROVENANCE for the Prediction Markets farm-league paper pins (CP3a, ruling C2.4).
+#
+# The pinning CATEGORY is PROVENANCE from a pre-fabrication committed record (the 2026-08-21 scout
+# runners + the 2026-08-23 re-rank), NEVER derived from pm_category_stats (which is cross-category and
+# would seed phantom pairs the poller would paper-trade). Each entry cites its source. A pinned whale
+# absent from this list is UNRESOLVED: `paper.seed_farm_roster` does NOT seed it and the `migrate-roster`
+# CLI HALTS (exit 3) -- it is never guessed. Matched to a live pinned entry by wallet (preferred) or user_name.
+#
+# VERIFIED 2026-08-24 by direct read (grep) of the committed scout runners in
+# reports/2026-08-21_whale_scouts/runners/ ({wallet,user_name,category} literals),
+# FARM_RERANK_2026-08-23.md (rostered=<cat>), and trading_corp/prediction_markets/rosters.py (G0 list).
+pins:
+  # --- UFC scout 2026-08-21 (pk_add_ufc_paper.ps1, {"category":"UFC"}) ---
+  - {wallet: "0x52f454c43b23504d2dc39e034bf19469fd592b15", user_name: "Kh4mz4t",     category: "ufc", source: "ufc_scout_2026-08-21 (pk_add_ufc_paper.ps1)"}
+  - {wallet: "0x99b1b05948d6e58a51fcd366b7e4b183b198196a", user_name: "STC14",       category: "ufc", source: "ufc_scout_2026-08-21 (pk_add_ufc_paper.ps1)"}
+  - {wallet: "0x1f7105a18d9f36aef7c83e5df210e57cf487b2e4", user_name: "000why000",   category: "ufc", source: "ufc_scout_2026-08-21 (pk_add_ufc_paper.ps1)"}
+  - {wallet: "0x6dd6314d1670f9f1ccccbd6746b0bf2f2fa0f5f4", user_name: "4751346",     category: "ufc", source: "ufc_scout_2026-08-21 (pk_add_ufc_paper.ps1)"}
+  - {wallet: "0xc3e550fae1c90b71675f3355e5864c240bea519d", user_name: "kutsumiakia", category: "ufc", source: "ufc_scout_2026-08-21 (pk_add_ufc_paper.ps1)"}
+  # --- UFC re-rank additions 2026-08-23 (stage2 pool pk_ufc_score_stage2_ro.ps1 + FARM_RERANK rostered=ufc; pinned POSTP1 Item 2) ---
+  - {wallet: "0x43e0f84fe8fb4623a5ff485fe9f7bc0f4b458618", user_name: "evanng",       category: "ufc", source: "ufc_scout stage2 + FARM_RERANK_2026-08-23 rostered=ufc + rosters.py G0 (UFC)"}
+  - {wallet: "0x767a7964deeea63dddd0cba6db39503f328d8ac5", user_name: "MadeiraIsland", category: "ufc", source: "ufc_scout stage2 + FARM_RERANK_2026-08-23 rostered=ufc"}
+  # --- Fed scout 2026-08-21 (pk_add_fed_paper.ps1, {"category":"FED"}) ---
+  - {wallet: "0xd1acd3925d895de9aec98ff95f3a30c5279d08d5", user_name: "Kickstand7",  category: "fed", source: "fed_scout_2026-08-21 (pk_add_fed_paper.ps1)"}
+  - {wallet: "0x71edffd0d70a1da823ff07a3c6fc81457294d338", user_name: "pako",        category: "fed", source: "fed_scout_2026-08-21 (pk_add_fed_paper.ps1)"}
+  # --- NBA scout 2026-08-21 (pk_add_betmechanic_paper.ps1, {"category":"NBA"}) ---
+  - {wallet: "0xa6a856a8c8a7f14fd9be6ae11c367c7cbb755009", user_name: "BetMechanic", category: "nba", source: "nba_scout_2026-08-21 (pk_add_betmechanic_paper.ps1)"}
+  # --- NFL scout 2026-08-21 (pk_add_nfl_paper.ps1, {"category":"NFL"}) ---
+  - {wallet: "0x75e091ca3f8e5481c2166c82fba0669e3a65fe50", user_name: "FordBronco",   category: "nfl", source: "nfl_scout_2026-08-21 (pk_add_nfl_paper.ps1)"}
+  - {wallet: "0x2fb0f88ef5ba40e799b996e6f07b590d92b4abf8", user_name: "AIisTheNewWD", category: "nfl", source: "nfl_scout_2026-08-21 (pk_add_nfl_paper.ps1)"}
+  # --- MLB LIVE division (poly_kalshi_mlb/live_whales): category is the live-division ROLE, not a paper scout.
+  #     Included for completeness; CP3a seeds paper pins from pinned_whales ONLY, so these are used only if
+  #     --include-live is passed (live-whale paper-alongside is a P3 decision). xifutloong3's full wallet is
+  #     truncated in the repo -> name-match against live agent_state (which carries the full wallet).
+  - {wallet: "0x16bb9951a36fce71e2ef57890b786145e0ba8492", user_name: "SDTrading",   category: "mlb", source: "poly_kalshi_mlb live division (NET_VERIFY_TARGET.md); FARM_RERANK rostered=mlb"}
+  - {user_name: "xifutloong3", category: "mlb", source: "poly_kalshi_mlb live division; full wallet from live agent_state (repo has only truncated 0x2dc1..b33c)"}
