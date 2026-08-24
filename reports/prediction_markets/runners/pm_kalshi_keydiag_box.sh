@@ -7,6 +7,8 @@ P0=$(systemctl show -p MainPID --value trading-corp.service 2>/dev/null); echo "
 START=$(systemctl show -p ExecMainStartTimestamp --value trading-corp.service 2>/dev/null)
 PT=$(systemctl show -p PrivateTmp --value trading-corp.service 2>/dev/null)
 echo "ENGINE_START=$START   PrivateTmp=$PT"
+echo "--- [LIVE] poly_kalshi_mlb still armed + 401-looping? (recent journal, timestamped) ---"
+journalctl -u trading-corp.service -n 150 --no-pager 2>&1 | grep -iE 'poly_kalshi loop cycle failed|authentication_error|Trading not allowed' | tail -3
 ROOT=/home/azureuser/trading_corp
 VP=$ROOT/venv/bin/python
 
