@@ -1,0 +1,42 @@
+{% extends "pm_base.html" %}
+{% from "pm_macros.html" import refresh_band, whale_label %}
+{% block title %}{{ (whale.user_name if whale else None) or wallet[:10] }} &middot; Prediction Markets{% endblock %}
+{% block content %}
+<section class="pm-section">
+  {{ refresh_band(refresh) }}
+  <p class="pm-crumb"><a href="/">&larr; scoreboard</a></p>
+
+  <header class="pm-whale-head">
+    <h1 class="pm-h1 pm-whale-title">{{ whale_label((whale.user_name if whale else None), wallet) }}</h1>
+    <div class="pm-whale-meta">
+      {% if whale and whale.backfill_complete %}<span class="pm-chip pm-chip-ok">backfill complete</span>
+      {% elif whale %}<span class="pm-chip pm-chip-warn" title="§13A(k): partial/failed backfill -> NOT ranked">INCOMPLETE &mdash; not ranked</span>{% endif %}
+    </div>
+  </header>
+
+  {% if not cats %}
+    <div class="pm-empty" data-empty="1">&mdash; no resolved history for this wallet. (Honest-empty: nothing to show, not a fabricated zero.)</div>
+  {% else %}
+  <div class="pm-panel">
+    <h2 class="pm-h2">Categories <span class="pm-sub2">pick one to see the drill-through detail</span></h2>
+    <div class="pm-table-scroll">
+    <table class="pm-table">
+      <thead><tr><th>category</th><th class="pm-num">n</th><th class="pm-num">excl</th><th class="pm-num">roi (cost)</th><th class="pm-num">net</th><th></th></tr></thead>
+      <tbody>
+      {% for c in cats %}
+        <tr>
+          <td><a class="pm-drill-link" href="/whale/{{ wallet }}/{{ c.category }}">{{ c.category }}</a></td>
+          <td class="pm-num">{{ c.n_resolved }}</td>
+          <td class="pm-num pm-muted">{{ c.n_excluded or 0 }}</td>
+          <td class="pm-num {% if c.roi is not none and c.roi >= 0 %}pm-gain{% elif c.roi is not none %}pm-loss{% endif %}">{% if c.roi is not none %}{{ '%+.1f'|format(c.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
+          <td class="pm-num {% if c.net_realized_pnl is not none and c.net_realized_pnl >= 0 %}pm-gain{% elif c.net_realized_pnl is not none %}pm-loss{% endif %}">{% if c.net_realized_pnl is not none %}{{ '%+.0f'|format(c.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
+          <td><a class="pm-drill-link" href="/whale/{{ wallet }}/{{ c.category }}">view &rarr;</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -15,7 +15,7 @@ import json
 import sys
 import time
 
-from trading_corp.prediction_markets import category, db, ingest, rosters, stats
+from trading_corp.prediction_markets import category, db, ingest, names, rosters, stats
 
 
 def _now() -> int:
@@ -105,6 +105,23 @@ def _cmd_report(args) -> int:
     return 0
 
 
+def _cmd_sync_names(args) -> int:
+    """Populate pm_whale.user_name from the roster labels (CP2 Phase 3, Option A). Re-runnable +
+    idempotent -- names go STALE if a whale renames on Polymarket, so re-run to refresh. --status prints
+    the last run (ts + counts) without writing. Does NOT touch ingest.py; never writes the legacy DB."""
+    if getattr(args, "status", False):
+        with db.connect(args.db) as conn:
+            rec = names.last_sync(conn)
+        print(json.dumps(rec or {"last_run_ts": None, "note": "sync-names never run"}, indent=2))
+        return 0
+    roster = rosters.load_seed_roster(
+        legacy_db_path=args.legacy_db, seed_yaml_path=args.seed_yaml, extra_wallets=args.wallets or [])
+    with db.connect(args.db) as conn:
+        counts = names.sync_user_names(conn, roster, now_ts=_now())
+    print(json.dumps(counts, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm_cli", description="Prediction Markets P1 CLI")
     p.add_argument("--db", default=db.pm_db_path(), help="PM DB path (default: PM_DB_PATH or data/prediction_markets.db)")
@@ -138,6 +155,15 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--min-resolved", type=int, default=stats.DEFAULT_MIN_RESOLVED, dest="min_resolved")
     rep.add_argument("--format", default="table", choices=["table", "json"])
     rep.set_defaults(func=_cmd_report, is_async=False)
+
+    sn = sub.add_parser("sync-names", help="populate pm_whale.user_name from roster labels "
+                        "(re-runnable + idempotent; names go STALE on a Polymarket rename -> re-run)")
+    sn.add_argument("--legacy-db", default=rosters.LEGACY_DB_DEFAULT)
+    sn.add_argument("--seed-yaml", default=None)
+    sn.add_argument("--wallets", nargs="*", default=None, help="extra wallets ADDED to the roster union")
+    sn.add_argument("--status", action="store_true",
+                    help="print the last sync-names run (ts + counts) and exit; no write")
+    sn.set_defaults(func=_cmd_sync_names, is_async=False)
     return p
 
 

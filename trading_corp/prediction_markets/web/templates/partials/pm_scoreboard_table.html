@@ -1,4 +1,4 @@
-{% from "pm_macros.html" import refresh_band, flag_badges %}
+{% from "pm_macros.html" import refresh_band, flag_badges, whale_label %}
 {# STRUCTURAL FRESHNESS: the band renders FIRST, in the SAME fragment as the rows. The rows literally cannot
    be returned without it -- freshness is a property of this template, not a convention someone can forget. #}
 {{ refresh_band(refresh) }}
@@ -28,9 +28,11 @@
   <tbody>
   {% for r in board %}
     <tr class="{% if not r.backfill_complete %}pm-row-unranked{% endif %}">
-      <td class="pm-mono" title="{{ r.wallet }}">{{ r.wallet }}</td>
+      {# name for recognition, wallet for truth; the whole label links to the whale drill-through detail #}
+      <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
       <td>{{ r.category }}</td>
-      <td class="pm-num">{{ r.n_resolved if r.n_resolved is not none else '—' }}</td>
+      {# n_resolved -> the scoreable rows (drill) #}
+      <td class="pm-num">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}—{% endif %}</td>
 
       {# win% -- chalk indicator, muted, never the rank key #}
       <td class="pm-num pm-muted">{% if r.win_rate is not none %}{{ '%.0f'|format(r.win_rate * 100) }}%{% else %}—{% endif %}</td>
@@ -44,18 +46,19 @@
       {# 1-sided roi -- LABELED UPPER BOUND (survivorship-caveated); honest-empty when there is no slice #}
       <td class="pm-num">{% if r.onesided_roi is not none %}<span class="pm-upper" title="UPPER BOUND: excludes hedged markets, optimistic by construction; entry-time copy cannot pick survivors (§13A(f)). n={{ r.onesided_n }}.">{{ '%+.1f'|format(r.onesided_roi * 100) }}%&nbsp;<span class="pm-upper-tag">&uarr;bound</span></span>{% else %}—{% endif %}</td>
 
-      {# two-sided% -- GRAIN per (wallet,category); honest-empty when no condition_ids (never a fake 0%) #}
-      <td class="pm-num">{% if r.n_condition_ids and r.n_condition_ids > 0 %}{{ '%.0f'|format(r.two_sided_pct * 100) }}%{% else %}—{% endif %}</td>
+      {# two-sided% -- GRAIN per (wallet,category); honest-empty when no condition_ids (never a fake 0%) -> drill #}
+      <td class="pm-num">{% if r.n_condition_ids and r.n_condition_ids > 0 %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=two_sided">{{ '%.0f'|format(r.two_sided_pct * 100) }}%</a>{% else %}—{% endif %}</td>
 
-      {# single-game% -- n/a for fed/unknown (NOT 0%); — when no data; else the pct #}
-      <td class="pm-num">{% if r.category in non_single_game_categories %}<span class="pm-na" title="Not applicable for this category (OQ-2: no single-game notion).">n/a</span>{% elif r.single_game_pct is none %}—{% else %}{{ '%.0f'|format(r.single_game_pct * 100) }}%{% endif %}</td>
+      {# single-game% -- n/a for fed/unknown (NOT 0%); — when no data; else the pct -> drill #}
+      <td class="pm-num">{% if r.category in non_single_game_categories %}<span class="pm-na" title="Not applicable for this category (OQ-2: no single-game notion).">n/a</span>{% elif r.single_game_pct is none %}—{% else %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=single_game">{{ '%.0f'|format(r.single_game_pct * 100) }}%</a>{% endif %}</td>
 
-      {# avg win px + chalk/contested badge (the badge token matches the shared flag) #}
-      <td class="pm-num">{% if r.avg_win_price is not none %}{{ '%.2f'|format(r.avg_win_price) }}{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}—{% endif %}</td>
+      {# avg win px -> drill to the won rows; chalk/contested badge stays outside the link (token matches the shared flag) #}
+      <td class="pm-num">{% if r.avg_win_price is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=won">{{ '%.2f'|format(r.avg_win_price) }}</a>{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}—{% endif %}</td>
 
       <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}—{% endif %}</td>
 
-      <td class="pm-num">{% if r.score is not none %}{{ '%.3f'|format(r.score) }}{% else %}<span class="pm-na">not ranked</span>{% endif %}</td>
+      {# score -> the whale "why ranked here" detail #}
+      <td class="pm-num">{% if r.score is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}" title="why ranked here">{{ '%.3f'|format(r.score) }}</a>{% else %}<span class="pm-na">not ranked</span>{% endif %}</td>
 
       <td class="pm-flags">{{ flag_badges(r.flags) }}</td>
     </tr>

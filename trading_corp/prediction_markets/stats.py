@@ -266,6 +266,11 @@ def query_scoreboard(conn, *, category: str | None = None, routine: str = "net_r
         "SELECT cs.*, ss.score AS score, ss.wilson_lcb AS wilson_lcb, "
         "ss.edge_factor AS edge_factor, ss.params_json AS params_json, "
         "COALESCE(w.backfill_complete, 0) AS backfill_complete, "
+        # CP2 Phase-3 display name: a recognition label beside the wallet. NULL when a whale has no
+        # user_name -- ingest NEVER populates it (/closed-positions carries no name); names.sync_user_names
+        # copies roster labels in. On NULL the page renders the WALLET, never a blank/fabricated name.
+        # Wallet stays the identity; the name is display-only (never keyed on).
+        "w.user_name AS user_name, "
         # migration-004 one-sided directional slice (P2 CP2 render contract, deferred from CP1). LEFT JOIN
         # so a whale with NO one-sided slice still ranks -- the fields come back NULL and the page renders
         # honest-empty ("--"), never a fabricated 0. is_upper_bound is ALWAYS 1: the figure excludes hedged

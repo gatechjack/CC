@@ -1,0 +1,148 @@
+{% extends "pm_base.html" %}
+{% from "pm_macros.html" import refresh_band, whale_label, drillable %}
+{% block title %}{{ whale.user_name or wallet[:10] }} &middot; {{ category }} &middot; Prediction Markets{% endblock %}
+{% block content %}
+<section class="pm-section">
+  {{ refresh_band(refresh) }}
+
+  <p class="pm-crumb"><a href="/">&larr; scoreboard</a></p>
+
+  <header class="pm-whale-head">
+    <h1 class="pm-h1 pm-whale-title">{{ whale_label((whale.user_name if whale else None), wallet) }}</h1>
+    <div class="pm-whale-meta">
+      <span class="pm-chip">category <strong>{{ category }}</strong></span>
+      {% if whale %}
+        {% if whale.backfill_complete %}<span class="pm-chip pm-chip-ok">backfill complete</span>
+        {% else %}<span class="pm-chip pm-chip-warn" title="§13A(k): partial/failed backfill -> NOT ranked">INCOMPLETE &mdash; not ranked</span>{% endif %}
+        {% if whale.last_pulled is not none and whale.last_stored is not none %}
+          <span class="pm-chip {% if whale.last_pulled != whale.last_stored %}pm-chip-warn{% endif %}"
+                title="rows pulled vs stored on the last backfill (a gap means an incomplete pull)">pulled {{ whale.last_pulled }} / stored {{ whale.last_stored }}</span>
+        {% endif %}
+      {% endif %}
+    </div>
+    <p class="pm-whale-names-note">
+      {% if whale and whale.user_name %}
+        Name shown for recognition; the wallet <span class="pm-mono" title="{{ wallet }}">{{ wallet }}</span> is the identity (names change).
+        {% if name_sync and name_sync.last_run_ts %}Names as of {{ name_sync.last_run_ts|utcdate }} &mdash; re-run <code>pm_cli sync-names</code> after a rename (stored names go stale).
+        {% else %}<span class="pm-na">Names never synced</span> &mdash; run <code>pm_cli sync-names</code>.{% endif %}
+      {% else %}
+        <span class="pm-na">No display name</span> &mdash; showing the wallet. (Not every whale has a roster label; an honest gap beats a fabricated name.)
+      {% endif %}
+    </p>
+  </header>
+
+  {% if not cstats %}
+    <div class="pm-empty" data-empty="1">&mdash; no resolved history for this whale in <strong>{{ category }}</strong>. (Honest-empty: nothing to show, not a fabricated zero.)</div>
+  {% else %}
+
+  {# ── WHY RANKED: score decomposition, both routines side by side ── #}
+  <div class="pm-panel">
+    <h2 class="pm-h2">Why ranked here <span class="pm-sub2">score = wilson_lcb &times; edge_factor</span></h2>
+    <div class="pm-decomp">
+      {% for routine in ['net_roi', 'recency_weighted'] %}
+        {% set d = decomp.get(routine) %}
+        <div class="pm-decomp-card">
+          <div class="pm-decomp-routine">{{ routine }}</div>
+          {% if d %}
+            <div class="pm-decomp-score">{{ '%.3f'|format(d.score) }}</div>
+            <div class="pm-decomp-eq">
+              <span class="pm-decomp-factor">{{ '%.3f'|format(d.wilson_lcb) }}</span> wilson_lcb
+              &times; <span class="pm-decomp-factor">{{ '%.3f'|format(d.edge_factor) }}</span> edge
+            </div>
+            <div class="pm-decomp-params">
+              {% for k, v in d.params.items() %}<span class="pm-kv"><span class="pm-kv-k">{{ k }}</span>{{ v }}</span>{% endfor %}
+            </div>
+          {% else %}
+            <div class="pm-na">not ranked &mdash; below min_resolved, or incomplete backfill (§13A(k))</div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# ── PROFILE: every caveat drills to its rows (R5); caveats travel with the number ── #}
+  <div class="pm-panel">
+    <h2 class="pm-h2">Profile <span class="pm-sub2">every number drills to its rows &mdash; click a value</span></h2>
+    <div class="pm-profile">
+
+      <div class="pm-stat pm-stat-drill">
+        <div class="pm-stat-label">n resolved</div>
+        <div class="pm-stat-val">{{ drillable(cstats.n_resolved, wallet, category, 'scoreable') }}</div>
+        <div class="pm-stat-hint">scoreable rows (pnl_suspect=0)</div>
+      </div>
+
+      <div class="pm-stat">
+        <div class="pm-stat-label">win% <span class="pm-muted">(chalk indicator, not ranked)</span></div>
+        <div class="pm-stat-val">{% if cstats.win_rate is not none %}{{ '%.0f'|format(cstats.win_rate * 100) }}%{% else %}&mdash;{% endif %}
+          <span class="pm-muted pm-stat-sub">{{ cstats.wins or 0 }}W / {{ cstats.losses or 0 }}L</span></div>
+      </div>
+
+      <div class="pm-stat">
+        <div class="pm-stat-label">ROI (cost) <span class="pm-primary">ranked</span></div>
+        <div class="pm-stat-val {% if cstats.roi is not none and cstats.roi >= 0 %}pm-gain{% elif cstats.roi is not none %}pm-loss{% endif %}">{% if cstats.roi is not none %}{{ '%+.1f'|format(cstats.roi * 100) }}%{% else %}&mdash;{% endif %}</div>
+        <div class="pm-stat-hint">net / cost_basis (§13 dec 11)</div>
+      </div>
+
+      <div class="pm-stat">
+        <div class="pm-stat-label">ROI (notional) <span class="pm-muted">comparison only</span></div>
+        <div class="pm-stat-val pm-muted">{% if cstats.roi_notional is not none %}{{ '%+.1f'|format(cstats.roi_notional * 100) }}%{% else %}&mdash;{% endif %}</div>
+        <div class="pm-stat-hint">net / total_bought &mdash; NOT ranked</div>
+      </div>
+
+      <div class="pm-stat">
+        <div class="pm-stat-label">1-sided ROI <span class="pm-upper-tag">&uarr;bound</span></div>
+        <div class="pm-stat-val">{% if onesided and onesided.roi is not none %}{{ '%+.1f'|format(onesided.roi * 100) }}% <span class="pm-muted pm-stat-sub">n={{ onesided.n_resolved }}</span>{% else %}&mdash;{% endif %}</div>
+        <div class="pm-stat-hint">UPPER BOUND: excludes hedged markets, optimistic by construction; entry-time copy can&rsquo;t pick survivors (§13A(f))</div>
+      </div>
+
+      <div class="pm-stat pm-stat-drill">
+        <div class="pm-stat-label">two-sided% <span class="pm-muted">per (wallet, category)</span></div>
+        <div class="pm-stat-val">{% if cstats.n_condition_ids and cstats.n_condition_ids > 0 %}{{ drillable('%.0f%%'|format(cstats.two_sided_pct * 100), wallet, category, 'two_sided') }} <span class="pm-muted pm-stat-sub">{{ cstats.n_two_sided }}/{{ cstats.n_condition_ids }} cids</span>{% else %}&mdash;{% endif %}</div>
+        <div class="pm-stat-hint">both-outcome condition_ids / condition_ids &mdash; grain per (wallet, category), NOT the per-wallet §13A(j) figure</div>
+      </div>
+
+      <div class="pm-stat {% if category not in non_single_game_categories %}pm-stat-drill{% endif %}">
+        <div class="pm-stat-label">single-game%</div>
+        <div class="pm-stat-val">{% if category in non_single_game_categories %}<span class="pm-na" title="OQ-2: no single-game notion for this category">n/a</span>{% elif cstats.single_game_pct is none %}&mdash;{% else %}{{ drillable('%.0f%%'|format(cstats.single_game_pct * 100), wallet, category, 'single_game') }} <span class="pm-muted pm-stat-sub">{{ cstats.n_single_game }}/{{ (cstats.n_resolved or 0) + (cstats.n_excluded or 0) }}</span>{% endif %}</div>
+        <div class="pm-stat-hint">single-game rows / all rows &mdash; heuristic; n/a for fed/unknown, never 0%</div>
+      </div>
+
+      <div class="pm-stat pm-stat-drill">
+        <div class="pm-stat-label">avg win px</div>
+        <div class="pm-stat-val">{% if cstats.avg_win_price is not none %}{{ drillable('%.2f'|format(cstats.avg_win_price), wallet, category, 'won') }}{% if cstats.avg_win_price >= 0.85 %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif cstats.avg_win_price < 0.70 %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}&mdash;{% endif %}</div>
+        <div class="pm-stat-hint">avg price of won rows &mdash; CHALK &ge; 0.85, CONTESTED &lt; 0.70</div>
+      </div>
+
+      <div class="pm-stat {% if cstats.n_excluded %}pm-stat-drill{% endif %}">
+        <div class="pm-stat-label">data quality</div>
+        <div class="pm-stat-val">{% if cstats.data_quality %}<span class="pm-badge pm-badge-contaminated">{{ cstats.data_quality|upper }}</span> {% endif %}{% if cstats.n_excluded %}{{ drillable(cstats.n_excluded ~ ' excluded', wallet, category, 'quarantined') }}{% else %}<span class="pm-muted">0 excluded</span>{% endif %}</div>
+        <div class="pm-stat-hint">quarantined rows (pnl_suspect=1); count {{ '%.0f'|format((cstats.dq_count_pct or 0) * 100) }}% / $ {{ '%.0f'|format((cstats.dq_dollar_pct or 0) * 100) }}%{% if cstats.n_anomaly %} &middot; {{ cstats.n_anomaly }} anomaly-flagged (recorded, not excluded){% endif %}</div>
+      </div>
+
+      <div class="pm-stat">
+        <div class="pm-stat-label">net realized</div>
+        <div class="pm-stat-val {% if cstats.net_realized_pnl is not none and cstats.net_realized_pnl >= 0 %}pm-gain{% elif cstats.net_realized_pnl is not none %}pm-loss{% endif %}">{% if cstats.net_realized_pnl is not none %}{{ '%+.0f'|format(cstats.net_realized_pnl) }}{% else %}&mdash;{% endif %}</div>
+        <div class="pm-stat-hint">over scoreable rows</div>
+      </div>
+
+    </div>
+  </div>
+
+  {# ── DRILL PANEL: the shared row renderer, filtered to the selected drill ── #}
+  <div class="pm-panel">
+    <div class="pm-drill-toolbar" role="tablist">
+      <span class="pm-drill-toolbar-label">rows:</span>
+      {% for dk in drills %}
+        <a class="pm-drill-tab {% if dk == drill %}pm-drill-tab-active{% endif %}"
+           href="/whale/{{ wallet }}/{{ category }}?drill={{ dk }}"
+           hx-get="/whale/{{ wallet }}/{{ category }}/positions?drill={{ dk }}"
+           hx-target="#pm-drill-panel" hx-swap="innerHTML" hx-push-url="true">{{ dk }}</a>
+      {% endfor %}
+    </div>
+    <div id="pm-drill-panel">
+      {% include "partials/pm_position_rows.html" %}
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
