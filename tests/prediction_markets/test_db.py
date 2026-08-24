@@ -49,8 +49,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 4  # migrations 001 + 002 + 003 + 004 recorded exactly once each
-    assert maxv == 4
+    assert count == 5  # migrations 001..005 recorded exactly once each
+    assert maxv == 5
 
 
 def test_pk_includes_outcome_index(tmp_path):
@@ -99,3 +99,42 @@ def test_pm_db_path_env_override(monkeypatch, tmp_path):
     assert db.pm_db_path() == p
     db.init_db()  # no arg -> uses the env override
     assert os.path.exists(p)
+
+
+def test_migration_005_paper_trade_lifecycle(tmp_path):
+    """Migration 005 (CP3a): pm_paper_trade carries the COMPLETE open->pending_adjudication->
+    closed|stale|void lifecycle in ONE migration; entry columns are observation-provenance (no entry_ts
+    alias, addendum 2); pm_paper_config is seeded with the tunable poll interval + adjudication grace
+    window + fixed size basis."""
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        pt = {r[1] for r in conn.execute("PRAGMA table_info(pm_paper_trade)")}
+        pt_pk = {r[1] for r in conn.execute("PRAGMA table_info(pm_paper_trade)") if r[5] > 0}
+        cfg = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM pm_paper_config")}
+    assert {"pm_paper_trade", "pm_paper_config"} <= tables
+    # PK: two-sided legs (outcome_index) + full-exit-then-re-enter over time (entry_observed_ts)
+    assert pt_pk == {"wallet", "condition_id", "outcome_index", "entry_observed_ts"}
+    # entry_observed_ts is the ONLY entry-time column -- no entry_ts alias (addendum 2 ruling)
+    assert "entry_observed_ts" in pt and "entry_ts" not in pt
+    # complete lifecycle present in ONE migration (the _STATS_COLS trap)
+    assert {"status", "exit_observed_ts", "resolved_ts", "won", "realized_pnl",
+            "close_source", "stale_ts", "stale_reason"} <= pt
+    # scale-in / reduction observation (addendum 3), diagnostic-only
+    assert {"n_observed_adds", "last_add_observed_ts",
+            "n_observed_reductions", "last_reduction_observed_ts"} <= pt
+    # entry provenance + display-only whale size + parity columns
+    assert {"entry_price_avg_at_observation", "whale_size_at_observation", "size_basis", "cost_basis",
+            "poll_interval_sec", "entry_basis", "market_end_date", "pnl_suspect", "suspect_reason"} <= pt
+    # pm_paper_config seeded (addendum 1 grace window; tunable poll interval; fixed size basis)
+    assert cfg.get("poll_interval_sec") == "300"
+    assert cfg.get("grace_window_sec") == "172800"
+    assert cfg.get("size_basis") == "100"
+    # status DEFAULTs to 'open' on insert of a minimal row
+    with db.connect(p) as conn:
+        conn.execute(
+            "INSERT INTO pm_paper_trade (wallet, category, condition_id, outcome_index, "
+            "entry_observed_ts, opened_ts) VALUES ('0xabc', 'mlb', '0xcond', 0, 111, 111)")
+        st = conn.execute("SELECT status FROM pm_paper_trade WHERE wallet='0xabc'").fetchone()[0]
+    assert st == "open"
