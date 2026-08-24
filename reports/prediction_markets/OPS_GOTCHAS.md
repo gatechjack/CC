@@ -81,6 +81,34 @@ into the STANDING SECURITY ITEM below.
 
 ---
 
+## ★ GOTCHA 3: the box code lives at the DOUBLE path `~/trading_corp/trading_corp/` — deploy THERE, not `~/trading_corp/prediction_markets/` (found at CP2 Phase-2, 2026-08-24)
+
+**Symptom:** the CP2 Phase-2 file deploy extracted the tarball with `tar -C ~` so the package landed at
+`~/trading_corp/prediction_markets/…` (SINGLE `trading_corp`). Backup-before-overwrite then failed
+(`cp: cannot stat ~/trading_corp/prediction_markets/stats.py`) and the GOTCHA-2 gate tripped on a stale
+pre-existing `775` dir there → the runner **ABORTED before restarting pm_web**. No harm: nothing real was
+overwritten, nothing restarted (the two safeguards did their job).
+
+**Root cause / the real layout (proven read-only by import-resolution):** the box is a **repo-root checkout**.
+`~/trading_corp/` is the REPO ROOT (holds `venv/`, `data/`, and the `trading_corp/` PACKAGE dir). The importable
+package is therefore at **`~/trading_corp/trading_corp/prediction_markets/…`** (DOUBLE `trading_corp`). pm_web
+runs `WorkingDirectory=~/trading_corp` + `PYTHONPATH=~/trading_corp`, so `import trading_corp.prediction_markets…`
+resolves to the DOUBLE path (`s.__file__` → `~/trading_corp/trading_corp/prediction_markets/stats.py`). The live
+PM DB is `~/trading_corp/data/prediction_markets.db` (repo-root `/data`). The box tree is **NOT a git checkout**
+(`git rev-parse` → "not a git repository") → deploys are **file-copy**, not `git pull`.
+
+**STANDING RULE for every PM box deploy:**
+1. **Extract with `tar -C ~/trading_corp`** so the tarball's `trading_corp/…` paths land at
+   `~/trading_corp/trading_corp/…` (DOUBLE). **Never `-C ~`** (that makes the inert single path).
+2. **Prove the target by import-resolution BEFORE restart**, never by assumption:
+   `cd ~/trading_corp && venv/bin/python -c "import trading_corp.prediction_markets.stats as s; print(s.__file__)"`.
+3. **Keep backup-before-overwrite + the sha/gate abort** — the backup failing to find the file at the target is
+   the tell that the path is wrong; the gate refusing to restart is what kept it safe.
+4. A stray single-path `~/trading_corp/prediction_markets/` is dead/inert (nothing imports it); if a botched
+   deploy leaves one, remove it **guarded** (it lacks `ingest.py`, and the real double-path `stats.py` exists).
+
+---
+
 ## STANDING SECURITY ITEM (CP2 Phase-1 threat scan + follow-up, both 2026-08-23) — WHOLE-PLATFORM, JACK'S HANDS, DO NOT FIX IN A CHECKPOINT
 
 Same class as the Authelia trading-rule tightening and the VM geo-migration: a deliberate, separately-planned
