@@ -29,3 +29,30 @@
     <span class="pm-flag pm-flag-{{ kind }}" data-flag="{{ f }}">{{ f }}</span>
   {%- endfor -%}
 {%- endmacro %}
+
+{# ── whale_label(name, wallet, href) ──────────────────────────────────────────────────────────────
+   CP2 Phase-3 display name. NAME for recognition, WALLET for truth: the display name is primary, the
+   (truncated) wallet stays visible, and the FULL wallet is in the title for copy/verify. Wallet is the
+   IDENTITY (names change; the legacy division keyed idempotency on wallet). A MISSING name renders the
+   WALLET -- never a blank, never a placeholder that reads like a name. #}
+{% macro whale_label(name, wallet, href=None) -%}
+  {%- set w = wallet or '' -%}
+  {%- if href %}<a class="pm-whale-link" href="{{ href }}">{% endif -%}
+  {%- if name -%}
+    <span class="pm-wname">{{ name }}</span><span class="pm-waddr pm-mono" title="{{ w }}">{{ w[:10] }}{% if w|length > 14 %}&hellip;{{ w[-4:] }}{% endif %}</span>
+  {%- else -%}
+    <span class="pm-waddr pm-mono pm-waddr-only" title="{{ w }} (no display name)">{{ w[:10] }}{% if w|length > 14 %}&hellip;{{ w[-4:] }}{% endif %}</span>
+  {%- endif -%}
+  {%- if href %}</a>{% endif -%}
+{%- endmacro %}
+
+{# ── drillable(disp, wallet, category, drill) ─────────────────────────────────────────────────────
+   Wrap a caveat value as a drill link (R5: every aggregate reaches its rows). Works WITHOUT JS (the
+   href navigates to the whale page with the drill pre-applied); HTMX upgrades it to swap ONLY the
+   in-page drill panel. `disp` is the already-formatted value string. #}
+{% macro drillable(disp, wallet, category, drill) -%}
+  <a class="pm-drill-link" href="/whale/{{ wallet }}/{{ category }}?drill={{ drill }}"
+     hx-get="/whale/{{ wallet }}/{{ category }}/positions?drill={{ drill }}"
+     hx-target="#pm-drill-panel" hx-swap="innerHTML" hx-push-url="true"
+     title="drill to the {{ drill }} rows">{{ disp }}</a>
+{%- endmacro %}

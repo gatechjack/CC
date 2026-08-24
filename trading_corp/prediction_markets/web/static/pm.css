@@ -102,3 +102,83 @@ th.pm-primary{color:var(--mono)}
 .pm-footer{border-top:1px solid var(--edge); background:rgba(15,23,42,.4); margin-top:auto}
 .pm-footer{display:flex; gap:1rem; padding:.6rem 1.25rem; font-size:.72rem; color:var(--muted); max-width:1800px; margin:0 auto; width:100%}
 .pm-footer-right{margin-left:auto}
+
+/* ── CP2 Phase 3: whale detail + drill-through + display names ───────────────────────────── */
+/* display-name label (scoreboard cell + whale header): NAME for recognition, WALLET for truth */
+.pm-wcell{max-width:16rem; white-space:normal}
+.pm-whale-link{display:inline-flex; align-items:baseline; gap:.4rem; flex-wrap:wrap}
+.pm-whale-link:hover .pm-wname{color:var(--accent)}
+.pm-wname{font-weight:600; color:var(--mono)}
+.pm-waddr{font-size:.72rem; color:var(--muted)}
+.pm-waddr-only{color:var(--mono)}         /* no display name -> the wallet IS the label (never a placeholder) */
+
+/* drill links: a caveat value that reaches its rows */
+.pm-drill-link{color:var(--mono); border-bottom:1px dashed var(--edge2); cursor:pointer}
+.pm-drill-link:hover{color:var(--accent); border-bottom-color:var(--accent)}
+.pm-crumb{margin:.2rem 0 .8rem; font-size:.8rem}
+.pm-crumb a{color:var(--muted)} .pm-crumb a:hover{color:var(--accent)}
+
+/* whale header */
+.pm-whale-head{margin:.3rem 0 1rem}
+.pm-whale-title{display:flex; align-items:baseline; gap:.6rem; flex-wrap:wrap}
+.pm-whale-meta{display:flex; gap:.5rem; flex-wrap:wrap; margin:.5rem 0}
+.pm-chip{font-size:11px; padding:.15rem .5rem; border-radius:.3rem; background:var(--pane2); color:var(--muted); border:1px solid var(--edge2)}
+.pm-chip-ok{background:rgba(16,185,129,.14); color:var(--green); border-color:rgba(16,185,129,.4)}
+.pm-chip-warn{background:rgba(245,158,11,.14); color:var(--warn); border-color:rgba(245,158,11,.4)}
+.pm-whale-names-note{font-size:.78rem; color:var(--muted); margin:.3rem 0 0}
+.pm-whale-names-note code{background:var(--pane2); padding:.05rem .3rem; border-radius:.25rem; color:var(--mono)}
+
+/* panels */
+.pm-panel{background:var(--pane); border:1px solid var(--edge); border-radius:.6rem; padding:1rem; margin:1rem 0}
+.pm-h2{font-size:1rem; font-weight:600; margin:0 0 .75rem; display:flex; align-items:baseline; gap:.5rem; flex-wrap:wrap}
+.pm-sub2{font-size:.75rem; color:var(--muted); font-weight:400}
+
+/* score decomposition */
+.pm-decomp{display:flex; gap:1rem; flex-wrap:wrap}
+.pm-decomp-card{flex:1 1 16rem; background:var(--bg); border:1px solid var(--edge); border-radius:.5rem; padding:.8rem}
+.pm-decomp-routine{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted)}
+.pm-decomp-score{font-size:1.6rem; font-weight:700; font-variant-numeric:tabular-nums; margin:.2rem 0}
+.pm-decomp-eq{font-size:.8rem; color:var(--muted)}
+.pm-decomp-factor{color:var(--mono); font-weight:600}
+.pm-decomp-params{display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.5rem}
+.pm-kv{font-size:11px; background:var(--pane2); border-radius:.3rem; padding:.1rem .4rem; color:var(--mono)}
+.pm-kv-k{color:var(--muted); margin-right:.3rem}
+
+/* caveat profile grid */
+.pm-profile{display:grid; grid-template-columns:repeat(auto-fill,minmax(11rem,1fr)); gap:.6rem}
+.pm-stat{background:var(--bg); border:1px solid var(--edge); border-radius:.5rem; padding:.6rem .7rem}
+.pm-stat-drill{border-left:2px solid var(--accent)}
+.pm-stat-label{font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted)}
+.pm-stat-val{font-size:1.05rem; font-weight:650; font-variant-numeric:tabular-nums; margin:.15rem 0}
+.pm-stat-sub{font-size:.7rem; font-weight:400}
+.pm-stat-hint{font-size:10px; color:var(--muted); line-height:1.3}
+
+/* drill toolbar (tabs) */
+.pm-drill-toolbar{display:flex; gap:.35rem; flex-wrap:wrap; align-items:center; margin-bottom:.6rem}
+.pm-drill-toolbar-label{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-right:.3rem}
+.pm-drill-tab{font-size:.78rem; padding:.25rem .6rem; border-radius:.35rem; background:var(--pane2); color:var(--muted); border:1px solid var(--edge2)}
+.pm-drill-tab:hover{color:var(--mono)}
+.pm-drill-tab-active{background:var(--accent); color:#fff; border-color:var(--accent)}
+
+/* reconciliation banner (defence-in-depth: a drill that doesn't reconcile SHOWS it) */
+.pm-recon{display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; font-size:.78rem; padding:.4rem .65rem; border-radius:.4rem; margin-bottom:.6rem; border:1px solid var(--edge2); background:var(--pane2)}
+.pm-recon code{color:var(--mono)}
+.pm-recon-tag{font-size:10px; font-weight:700; letter-spacing:.06em; padding:.1rem .4rem; border-radius:.3rem}
+.pm-recon-ok{border-color:rgba(16,185,129,.35)}
+.pm-recon-ok .pm-recon-tag{background:rgba(16,185,129,.18); color:var(--green)}
+.pm-recon-bad{border-color:var(--loss); background:rgba(244,63,94,.12)}
+.pm-recon-bad .pm-recon-tag{background:var(--loss); color:#fff}
+.pm-recon-eq{color:var(--muted)}
+.pm-recon-warn{color:var(--loss); font-weight:600}
+
+/* position rows */
+.pm-positions td{vertical-align:top}
+.pm-mktline{color:var(--mono)}
+.pm-mktsub{font-size:.7rem; color:var(--muted); margin-top:.1rem}
+.pm-oi{font-size:.72rem}
+.pm-won-y{color:var(--gain)} .pm-won-n{color:var(--loss)}
+.pm-row-suspect{opacity:.68}
+.pm-scoreable{font-size:11px; color:var(--muted)}
+.pm-badge-src{background:rgba(148,163,184,.16); color:var(--muted); text-transform:none; font-weight:600}
+.pm-badge-quar{background:rgba(244,63,94,.16); color:var(--loss); border:1px solid rgba(244,63,94,.4)}
+.pm-badge-anom{background:rgba(245,158,11,.16); color:var(--warn)}

@@ -1,0 +1,76 @@
+{# ── THE ONE shared position-row renderer (CP2 Phase 3, Ruling R5) ────────────────────────────────
+   Serves the product drill-through NOW and the diagnostics view LATER -- do NOT fork it. Rendered
+   identically regardless of caller (parity, checkpoint 3). Inputs:
+     rows        : list of pm_closed_position dicts (positions.drill_rows)
+     recon       : positions.reconcile(...) dict or None  -> the live reconciliation banner
+     drill_label : human label for what is being shown (positions.DRILL_LABELS)
+   BIAS-DOWN: if the drill count does not reconcile with its aggregate, a LOUD banner says so -- a
+   reconciliation failure is visible in prod, never silent. Honest-empty '—' for missing values. #}
+
+{%- if recon %}
+  <div class="pm-recon {% if recon.ok %}pm-recon-ok{% else %}pm-recon-bad{% endif %}"
+       data-recon-ok="{{ 1 if recon.ok else 0 }}" data-recon-actual="{{ recon.actual }}"
+       data-recon-expected="{{ recon.expected }}" data-recon-aggregate="{{ recon.aggregate }}">
+    <span class="pm-recon-tag">{{ 'RECONCILES' if recon.ok else 'MISMATCH' }}</span>
+    <span>showing <strong>{{ recon.actual }}</strong>
+      {%- if recon.measure == 'distinct_cids' %} condition_ids ({{ rows|length }} rows){% else %} rows{% endif %}
+      {%- if drill_label %} &middot; {{ drill_label }}{% endif %}</span>
+    <span class="pm-recon-eq">reconciles with <code>{{ recon.aggregate }}</code> =
+      <strong>{{ recon.expected }}</strong></span>
+    {%- if not recon.ok %}
+      <span class="pm-recon-warn">drill count {{ recon.actual }} &ne; aggregate {{ recon.expected }}
+        &mdash; this is a defect, not a display detail</span>
+    {%- endif %}
+  </div>
+{%- elif drill_label %}
+  <div class="pm-recon"><span>{{ drill_label }} &middot; <strong>{{ rows|length }}</strong> rows</span></div>
+{%- endif %}
+
+{% if not rows %}
+  <div class="pm-empty" data-empty="1">&mdash; no rows. (Honest-empty: nothing to show, not a fabricated zero.)</div>
+{% else %}
+<div class="pm-table-scroll">
+<table class="pm-table pm-positions">
+  <thead>
+    <tr>
+      <th>resolved</th>
+      <th>market</th>
+      <th>outcome</th>
+      <th class="pm-num" title="Average fill price for this position (scale-ins collapsed by the API).">avg&nbsp;px</th>
+      <th class="pm-num" title="total_bought = NOTIONAL (share count / payout at $1), NOT USDC cost (§13A(g)).">notional</th>
+      <th class="pm-num" title="cost_basis = total_bought x avg_price = real USDC cost (the ROI denominator).">cost</th>
+      <th class="pm-num" title="realized PnL for this position (can be negative).">realized</th>
+      <th title="Won = cur_price &ge; 0.9 at resolution.">won</th>
+      <th title="Scoreable, or quarantined (pnl_suspect=1, excluded) with its reason, or a clause-(a) anomaly flag (recorded, NOT excluded).">status</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="{% if r.pnl_suspect %}pm-row-suspect{% endif %}" data-cid="{{ r.condition_id }}" data-oi="{{ r.outcome_index }}">
+      <td class="pm-muted">{{ r.resolved_ts|utcdate }}</td>
+      <td>
+        <div class="pm-mktline">{{ r.title or r.slug or '&mdash;'|safe }}</div>
+        <div class="pm-mktsub pm-mono">{{ r.slug or '&mdash;'|safe }}
+          {%- if r.event_slug %} &middot; <span class="pm-muted">{{ r.event_slug }}</span>{% endif %}
+          {%- if r.category_source and r.category_source != 'slug_prefix' %}
+            <span class="pm-badge pm-badge-src" title="category derived via {{ r.category_source }} (a mis-categorized row can explain a weird stat)">{{ r.category_source }}</span>
+          {%- endif %}
+        </div>
+      </td>
+      <td>{{ r.outcome or '&mdash;'|safe }}<span class="pm-muted pm-oi">&nbsp;({{ r.outcome_index }})</span></td>
+      <td class="pm-num">{% if r.avg_price is not none %}{{ '%.2f'|format(r.avg_price) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num pm-muted">{% if r.total_bought is not none %}{{ '%.0f'|format(r.total_bought) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num">{% if r.cost_basis is not none %}{{ '%.0f'|format(r.cost_basis) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num {% if r.realized_pnl is not none and r.realized_pnl >= 0 %}pm-gain{% elif r.realized_pnl is not none %}pm-loss{% endif %}">{% if r.realized_pnl is not none %}{{ '%+.0f'|format(r.realized_pnl) }}{% else %}&mdash;{% endif %}</td>
+      <td>{% if r.won == 1 %}<span class="pm-won-y">won</span>{% elif r.won == 0 %}<span class="pm-won-n">lost</span>{% else %}&mdash;{% endif %}</td>
+      <td class="pm-status">
+        {%- if r.pnl_suspect %}<span class="pm-badge pm-badge-quar" title="Quarantined (pnl_suspect=1): EXCLUDED from stats + ranking (§3A).">QUARANTINED{% if r.suspect_reason %}: {{ r.suspect_reason }}{% endif %}</span>
+        {%- else %}<span class="pm-scoreable">scoreable</span>{% endif %}
+        {%- if r.pnl_anomaly %} <span class="pm-badge pm-badge-anom" title="Clause-(a) anomaly (§13A(f)): RECORDED, not excluded.">ANOM{% if r.anomaly_reason %}: {{ r.anomaly_reason }}{% endif %}</span>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
