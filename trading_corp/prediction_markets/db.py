@@ -419,12 +419,50 @@ MIGRATION_005: list[str] = [
     "INSERT OR IGNORE INTO pm_paper_config(key, value) VALUES ('size_basis', '100')",
 ]
 
+# migration 006 (2026-08-24, CP3a): farm roster + watchlist. pm_farm (P1, documented-only) is SUPERSEDED,
+# split into pm_roster (the universal (wallet, category) roster the weekly refresh + poller read) and
+# pm_watchlist (per-(wallet,category) farm status: 'watchlist' = candidate/Analyze-able, NOT paper;
+# 'pinned' = forward paper-trading -- the poller polls pinned rows). Keyed (wallet, category) so a whale's
+# PINNING CATEGORY is explicit provenance (C2.4: it is NOT derivable from pm_category_stats, which is
+# cross-category). search_run_id is a nullable seam for CP3b search -- pm_search_run is a LATER migration,
+# NOT this one (P2_PLAN §5.3 amended: 006 = roster + watchlist only).
+MIGRATION_006: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_roster (
+        wallet      TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        user_name   TEXT,
+        source      TEXT,                          -- provenance of the (wallet,category) pair (e.g. 'scout_ufc_2026-08-21')
+        added_ts    INTEGER,
+        active      INTEGER NOT NULL DEFAULT 1,     -- the weekly refresh source is pm_roster WHERE active=1 (Ruling B)
+        notes       TEXT,
+        PRIMARY KEY (wallet, category)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_roster_active ON pm_roster(active)",
+    """
+    CREATE TABLE IF NOT EXISTS pm_watchlist (
+        wallet         TEXT NOT NULL,
+        category       TEXT NOT NULL,
+        added_ts       INTEGER,
+        source         TEXT,
+        status         TEXT NOT NULL DEFAULT 'watchlist',  -- watchlist (candidate, NOT paper) | pinned (forward paper)
+        pinned_ts      INTEGER,
+        search_run_id  INTEGER,                            -- nullable seam for CP3b search (pm_search_run = later migration)
+        updated_ts     INTEGER,
+        PRIMARY KEY (wallet, category)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_watchlist_status ON pm_watchlist(status)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
     (4, MIGRATION_004),
     (5, MIGRATION_005),
+    (6, MIGRATION_006),
 ]
 
 

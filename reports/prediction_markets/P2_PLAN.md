@@ -101,6 +101,20 @@ CREATE INDEX IF NOT EXISTS ix_pm_cos_category_roi ON pm_category_onesided_stats(
 - **market_type**: only the `market_type_source='slug_heuristic'` seam ships in P2; the reliable discriminator (`sportsMarketType=='moneyline'` + `gameStartTime`) is market-level, absent from `/closed-positions`, and capturing it means a gamma call per market — deferred (§13A(c)/(d)); the seam lets a later additive migration add a real `pm_closed_position.market_type` and flip the flag.
 
 ### 5.2 Migration 005 — paper trading (Ruling D)
+
+> **AMENDMENT 2026-08-24 (CP3a build, branch `prediction-markets-cp3a-2026-08-24`; see
+> `CP3A_CONTAMINATION_GATE.md`).** This section's DDL predates the CP3a rulings and is superseded on three
+> points; the shipped `db.py` `MIGRATION_005` is authoritative:
+> 1. **Entry is OBSERVATION-provenance, not a fill.** The poller reads `/positions` (which carries **no
+>    fill timestamp**), not `/activity`. The entry-time column is **`entry_observed_ts`** (observation time
+>    +/- the poll interval); there is **no `entry_ts`** column or alias. Recency basis is observation-time.
+> 2. **The lifecycle gained `pending_adjudication`** (a vanished position is not classified on the
+>    disappearance) plus `whale_size_at_observation` (display-only), `close_source`, and scale-in/reduction
+>    observation columns (`n_observed_adds`/`n_observed_reductions`, diagnostic-only).
+> 3. **`pm_paper_category_stats` and `pm_paper_score_snapshot` are DEFERRED to CP3b**, not migration 005.
+>    Migration 005 ships `pm_paper_trade` + `pm_paper_config` only (never a stats column ahead of its
+>    deriver — the inverse of the `_STATS_COLS` trap). The paper-stats DDL below is CP3b design reference.
+
 ```sql
 -- 005: FORWARD paper-trading of pinned whales (§6 non-preclusion). Grain = one paper POSITION per copied
 -- directional entry. Carries REAL entry_ts (distinct from resolved_ts) => entry-basis recency is first-class.
@@ -151,6 +165,18 @@ CREATE INDEX IF NOT EXISTS ix_pm_pss_cat_routine_score ON pm_paper_score_snapsho
 Lifecycle in a **new** `prediction_markets/paper.py` (additive; imports §3A helpers from `ingest.py`, does NOT edit it): **OPEN** = paper-entry job (§7.2) inserts on a pinned whale's new `/activity` BUY in the pinned category; **MARK/CLOSE/STALE** = weekly refresh (resolution is not time-critical; a whale with an open paper position that no longer appears in `/positions` and has not resolved → `status='stale'`); **paper_rollup** mirrors `stats.rollup()` over `status='closed'` scoreable rows → `pm_paper_category_stats`. Entry-basis recency becomes real: `compute_scores(..., recency_basis='entry_ts')` over `(won, entry_ts)`.
 
 ### 5.3 Migration 006 — roster + watchlist + search-run (Ruling B)
+
+> **AMENDMENT 2026-08-24 (CP3a build).** Two changes; the shipped `db.py` `MIGRATION_006` is authoritative:
+> 1. **Migration 006 = `pm_roster` + `pm_watchlist` ONLY.** `pm_search_run` is deferred to its own LATER
+>    migration (CP3b search) and does NOT land in 006. The `pm_search_run` DDL below is CP3b design
+>    reference only.
+> 2. **Category attribution is SUPERSEDED (ruling C2.4).** Do NOT derive a whale's pinning category from
+>    its "dominant `pm_category_stats` category" (as the transition note below states) — `pm_category_stats`
+>    is cross-category by construction, so that would seed phantom (wallet, category) pairs the poller would
+>    paper-trade. Seed `(wallet, category)` from **SCOUT PROVENANCE** (the recorded reason the whale was
+>    pinned); an unresolvable category is listed and HALTED on, never guessed; `pm_category_stats` may only
+>    VALIDATE a seeded pair, never generate one.
+
 ```sql
 -- 006: FARM ROSTER as PM-DB source of truth (Ruling B). Decouples site + weekly refresh from legacy
 -- agent_state. One-time convenience-seed import from legacy; NO reads back after. Site NEVER writes legacy DB.

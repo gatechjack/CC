@@ -49,8 +49,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 5  # migrations 001..005 recorded exactly once each
-    assert maxv == 5
+    assert count == 6  # migrations 001..006 recorded exactly once each
+    assert maxv == 6
 
 
 def test_pk_includes_outcome_index(tmp_path):
@@ -138,3 +138,30 @@ def test_migration_005_paper_trade_lifecycle(tmp_path):
             "entry_observed_ts, opened_ts) VALUES ('0xabc', 'mlb', '0xcond', 0, 111, 111)")
         st = conn.execute("SELECT status FROM pm_paper_trade WHERE wallet='0xabc'").fetchone()[0]
     assert st == "open"
+
+
+def test_migration_006_roster_and_watchlist(tmp_path):
+    """Migration 006 (CP3a): pm_roster (universal (wallet,category) roster; active=1 default -> the weekly
+    refresh source) + pm_watchlist (per-(wallet,category) farm status watchlist|pinned). The PINNING
+    CATEGORY lives here as explicit provenance (C2.4), NOT derived from cross-category pm_category_stats."""
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        r_pk = {r[1] for r in conn.execute("PRAGMA table_info(pm_roster)") if r[5] > 0}
+        r_cols = {r[1] for r in conn.execute("PRAGMA table_info(pm_roster)")}
+        w_pk = {r[1] for r in conn.execute("PRAGMA table_info(pm_watchlist)") if r[5] > 0}
+        w_cols = {r[1] for r in conn.execute("PRAGMA table_info(pm_watchlist)")}
+    assert {"pm_roster", "pm_watchlist"} <= tables
+    assert r_pk == {"wallet", "category"}
+    assert w_pk == {"wallet", "category"}
+    assert {"user_name", "source", "added_ts", "active", "notes"} <= r_cols
+    assert {"status", "pinned_ts", "search_run_id", "updated_ts"} <= w_cols
+    # defaults: roster.active=1, watchlist.status='watchlist'
+    with db.connect(p) as conn:
+        conn.execute("INSERT INTO pm_roster (wallet, category) VALUES ('0xw', 'ufc')")
+        conn.execute("INSERT INTO pm_watchlist (wallet, category) VALUES ('0xw', 'ufc')")
+        active = conn.execute("SELECT active FROM pm_roster WHERE wallet='0xw'").fetchone()[0]
+        status = conn.execute("SELECT status FROM pm_watchlist WHERE wallet='0xw'").fetchone()[0]
+    assert active == 1
+    assert status == "watchlist"
