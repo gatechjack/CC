@@ -7,6 +7,8 @@ hide a bug.
 """
 import sqlite3
 
+import pytest
+
 from trading_corp.prediction_markets import db, paper
 from trading_corp.prediction_markets.category import derive_category_from_slug
 from trading_corp.data.polymarket_data_api_client import PositionRow
@@ -180,3 +182,122 @@ def test_get_config_seeded_and_degrades_when_absent(tmp_path):
         assert paper.get_config(bare, "size_basis") == 100.0
     finally:
         bare.close()
+
+
+# ---- adjudicator ---------------------------------------------------------------------------------
+
+def _roster(conn, wallet, category):
+    conn.execute("INSERT OR IGNORE INTO pm_roster (wallet, category, active) VALUES (?, ?, 1)",
+                 (wallet, category))
+
+
+def _insert_pending(conn, wallet, category, cond, *, oi=0, entry_price=0.40, size_basis=100.0,
+                    end_date="2020-01-01", entry_ts=NOW):
+    conn.execute(
+        "INSERT INTO pm_paper_trade (wallet, category, condition_id, outcome_index, entry_observed_ts, "
+        "entry_price_avg_at_observation, size_basis, cost_basis, market_end_date, status, exit_observed_ts, "
+        "opened_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_adjudication', ?, ?, ?)",
+        (wallet, category, cond, oi, entry_ts, entry_price, size_basis, size_basis * entry_price,
+         end_date, entry_ts, entry_ts, entry_ts))
+
+
+def _closed(conn, wallet, cond, *, oi=0, won=1, pnl_suspect=0, suspect_reason=None, resolved_ts=NOW):
+    conn.execute(
+        "INSERT OR REPLACE INTO pm_closed_position (wallet, condition_id, outcome_index, won, realized_pnl, "
+        "resolved_ts, pnl_suspect, suspect_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (wallet, cond, oi, won, 12.34, resolved_ts, pnl_suspect, suspect_reason))   # 12.34 = WHALE's pnl, ignored by paper
+
+
+def test_adjudicate_books_resolution_won(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xc1", entry_price=0.40, size_basis=100.0)
+        _closed(conn, WALLET, "0xc1", won=1, resolved_ts=NOW)
+        res = paper.adjudicate(conn, now_ts=NOW + 10)
+        row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
+    assert res["closed"] == 1
+    assert row["status"] == "closed"
+    assert row["close_source"] == "resolution"
+    assert row["won"] == 1
+    assert abs(row["realized_pnl"] - (100.0 - 40.0)) < 1e-9      # size_basis - cost_basis (won), NOT the whale's pnl
+    assert row["resolved_ts"] == NOW
+
+
+def test_adjudicate_books_resolution_lost(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xc1", entry_price=0.40, size_basis=100.0)
+        _closed(conn, WALLET, "0xc1", won=0)
+        paper.adjudicate(conn, now_ts=NOW)
+        row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
+    assert row["status"] == "closed"
+    assert abs(row["realized_pnl"] - (-40.0)) < 1e-9             # -cost_basis (lost)
+
+
+def test_adjudicate_marks_stale_past_grace(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xgone", end_date="2020-01-01")   # long past; NO pm_closed_position
+        res = paper.adjudicate(conn, now_ts=NOW, grace_window_sec=172800)
+        row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
+    assert res["staled"] == 1
+    assert row["status"] == "stale"
+    assert row["close_source"] == "whale_exit"
+    assert row["realized_pnl"] is None                          # stale is EXCLUDED from realized
+
+
+def test_adjudicate_stays_pending_within_grace(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xrecent", end_date="2020-01-01")
+        res = paper.adjudicate(conn, now_ts=NOW, grace_window_sec=10**12)         # grace so large nothing is past
+        row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
+    assert res["still_pending"] == 1
+    assert row["status"] == "pending_adjudication"
+
+
+def test_adjudicate_unparseable_end_date_stays_pending(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xnoend", end_date="")            # unparseable end_date
+        res = paper.adjudicate(conn, now_ts=NOW, grace_window_sec=1)              # tiny grace
+        row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
+    assert res["still_pending"] == 1                            # bias-down: never stale on a guess
+    assert row["status"] == "pending_adjudication"
+
+
+def test_adjudicate_imports_pnl_suspect_parity(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xq")
+        _closed(conn, WALLET, "0xq", won=1, pnl_suspect=1, suspect_reason="row_invariant")
+        paper.adjudicate(conn, now_ts=NOW)
+        row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
+    assert row["pnl_suspect"] == 1
+    assert row["suspect_reason"] == "row_invariant"
+
+
+def test_subset_assertion_fails_loud_on_unrefreshed_pinned(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT)                            # pinned but NOT in pm_roster active
+        with pytest.raises(paper.PaperSubsetError) as ei:
+            paper.assert_pinned_subset_of_refresh(conn)
+    assert WALLET in str(ei.value)
+
+
+def test_adjudicate_fails_loud_and_mutates_nothing_when_pinned_not_refreshed(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT)                            # pinned, not refreshed
+        _insert_pending(conn, WALLET, MLB_CAT, "0xc1")
+        with pytest.raises(paper.PaperSubsetError):
+            paper.adjudicate(conn, now_ts=NOW)
+        st = conn.execute("SELECT status FROM pm_paper_trade").fetchone()[0]
+    assert st == "pending_adjudication"                        # assertion ran BEFORE any row was touched

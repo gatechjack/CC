@@ -24,6 +24,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 from .category import derive_category_from_slug
@@ -249,3 +250,110 @@ def _sum_totals(per_whale: list[dict]) -> dict:
     out["errors"] = sum(1 for r in per_whale if r.get("error"))
     out["pairs"] = sum(1 for r in per_whale if "category" in r)
     return out
+
+
+# ---- the adjudicator (runs off the EXISTING weekly /closed-positions refresh, NOT the poller) --------
+
+class PaperSubsetError(PaperError):
+    """C2.3: a PINNED-paper whale is NOT in the weekly /closed-positions refresh set, so its
+    pending_adjudication rows could never resolve (silent limbo -- a working-looking system that quietly
+    never closes). Raised to FAIL LOUD; never warn-and-continue."""
+
+
+def assert_pinned_subset_of_refresh(conn) -> dict:
+    """C2.3 subset assertion: every PINNED-paper wallet must be in the weekly refresh set
+    (pm_roster WHERE active=1 -- Ruling B's refresh source). If any pinned wallet is not refreshed, its
+    vanished positions would sit in pending_adjudication forever. FAIL LOUD naming the offenders; never
+    warn-and-continue. Read-only + idempotent; returns the membership report (also used at seed time)."""
+    pinned = sorted({(r["wallet"] or "").lower() for r in conn.execute(
+        "SELECT DISTINCT wallet FROM pm_watchlist WHERE status='pinned'").fetchall()})
+    refreshed = {(r["wallet"] or "").lower() for r in conn.execute(
+        "SELECT DISTINCT wallet FROM pm_roster WHERE active=1").fetchall()}
+    unrefreshed = [w for w in pinned if w not in refreshed]
+    report = {"n_pinned": len(pinned), "n_refreshed": len(refreshed), "unrefreshed": unrefreshed}
+    if unrefreshed:
+        raise PaperSubsetError(
+            "PINNED-but-UNREFRESHED wallet(s) -- their pending_adjudication rows would never resolve; "
+            "add them to pm_roster (active=1) or unpin: %s" % unrefreshed)
+    return report
+
+
+def _parse_end_date(s) -> int | None:
+    """Parse a /positions endDate (ISO date or datetime, optional trailing 'Z') to a UTC unix ts.
+    None if missing/unparseable -> the caller treats 'cannot prove we are past resolution' as NOT stale."""
+    if not s:
+        return None
+    t = str(s).strip().replace("Z", "+00:00")
+    dt = None
+    try:
+        dt = datetime.fromisoformat(t)
+    except ValueError:
+        try:
+            dt = datetime.fromisoformat(t[:10])          # date-only fallback ("2026-09-01")
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def _past_grace(market_end_date, now: int, grace: int) -> bool:
+    ts = _parse_end_date(market_end_date)
+    if ts is None:
+        return False                                      # cannot prove past-resolution -> stay pending (never guess stale)
+    return now >= ts + grace
+
+
+def _paper_realized(row, won: int) -> float:
+    """PAPER realized P&L from resolution, on OUR fixed size_basis (NOT the whale's realized_pnl):
+    a won leg pays $1/contract -> size_basis - cost_basis; a lost leg pays 0 -> -cost_basis."""
+    basis = _f(row["size_basis"], 0.0)
+    cost = _f(row["cost_basis"], 0.0)
+    return (basis - cost) if won else (-cost)
+
+
+def adjudicate(conn, *, now_ts: int | None = None, grace_window_sec: int | None = None) -> dict:
+    """Resolve pending_adjudication paper trades off the EXISTING weekly /closed-positions data
+    (pm_closed_position), NOT off the poller (addendum 1, two-phase):
+      - a matching pm_closed_position (wallet, condition_id, outcome_index) exists -> status='closed',
+        close_source='resolution', book paper realized_pnl + won, import the 3A pnl_suspect parity.
+      - no match AND we are past market_end_date + grace_window -> status='stale', close_source='whale_exit'
+        (EXCLUDED from realized stats).
+      - no match, within grace (or end_date unparseable) -> stay pending (resolution may still land).
+    Biases DOWN: a whale exit never books paper P&L; an unparseable end_date is never called stale.
+    Runs the C2.3 subset assertion FIRST -- FAILS LOUD before touching any row."""
+    now = now_ts if now_ts is not None else int(time.time())
+    grace = int(grace_window_sec if grace_window_sec is not None else get_config(conn, "grace_window_sec"))
+    subset = assert_pinned_subset_of_refresh(conn)        # FAIL LOUD before adjudicating anything
+
+    pending = conn.execute("SELECT * FROM pm_paper_trade WHERE status='pending_adjudication'").fetchall()
+    closed = staled = still_pending = 0
+    for row in pending:
+        w = (row["wallet"] or "").lower()
+        pk = (row["wallet"], row["condition_id"], row["outcome_index"], row["entry_observed_ts"])
+        cp = conn.execute(
+            "SELECT won, realized_pnl, resolved_ts, pnl_suspect, suspect_reason FROM pm_closed_position "
+            "WHERE wallet=? AND condition_id=? AND outcome_index=?",
+            (w, row["condition_id"], _i(row["outcome_index"], 0))).fetchone()
+        if cp is not None:
+            won = _i(cp["won"], 0)
+            conn.execute(
+                "UPDATE pm_paper_trade SET status='closed', close_source='resolution', resolved_ts=?, "
+                "won=?, realized_pnl=?, pnl_suspect=?, suspect_reason=?, updated_ts=? "
+                "WHERE wallet=? AND condition_id=? AND outcome_index=? AND entry_observed_ts=?",
+                (cp["resolved_ts"], won, _paper_realized(row, won), _i(cp["pnl_suspect"], 0),
+                 cp["suspect_reason"], now, *pk))
+            closed += 1
+        elif _past_grace(row["market_end_date"], now, grace):
+            conn.execute(
+                "UPDATE pm_paper_trade SET status='stale', close_source='whale_exit', stale_ts=?, "
+                "stale_reason='vanished_pre_resolution_grace_elapsed', updated_ts=? "
+                "WHERE wallet=? AND condition_id=? AND outcome_index=? AND entry_observed_ts=?",
+                (now, now, *pk))
+            staled += 1
+        else:
+            still_pending += 1
+    if hasattr(conn, "commit"):
+        conn.commit()
+    return {"pending_in": len(pending), "closed": closed, "staled": staled,
+            "still_pending": still_pending, "grace_window_sec": grace, "subset": subset}

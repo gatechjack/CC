@@ -134,6 +134,20 @@ async def _cmd_paper_poll(args) -> int:
     return 0
 
 
+def _cmd_paper_adjudicate(args) -> int:
+    """Resolve pending_adjudication paper trades off pm_closed_position (weekly). Sync; no network.
+    FAILS LOUD (exit 2) if a pinned-paper whale is not in the refresh set (C2.3) -- never warn-continue."""
+    db.init_db(args.db)
+    try:
+        with db.connect(args.db) as conn:
+            res = paper.adjudicate(conn, now_ts=_now())
+    except paper.PaperSubsetError as e:
+        print(json.dumps({"error": "subset_assertion_failed", "detail": str(e)}, indent=2), file=sys.stderr)
+        return 2
+    print(json.dumps(res, indent=2, default=str))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm_cli", description="Prediction Markets P1 CLI")
     p.add_argument("--db", default=db.pm_db_path(), help="PM DB path (default: PM_DB_PATH or data/prediction_markets.db)")
@@ -179,6 +193,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     pp = sub.add_parser("paper-poll", help="poll /positions for PINNED whales -> capture paper entries (CP3a)")
     pp.set_defaults(func=_cmd_paper_poll, is_async=True)
+
+    pa = sub.add_parser("paper-adjudicate",
+                        help="resolve pending_adjudication paper trades off pm_closed_position (CP3a)")
+    pa.set_defaults(func=_cmd_paper_adjudicate, is_async=False)
     return p
 
 
