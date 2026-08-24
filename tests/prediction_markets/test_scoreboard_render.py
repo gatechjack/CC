@@ -162,17 +162,17 @@ def test_honest_empty_no_fabricated_zero(seeded):
 
 
 def test_two_sided_honest_empty_when_no_condition_ids(seeded):
-    # degenerate row (n_condition_ids=0) must render '—', never a fabricated 0%
+    # degenerate row (n_condition_ids=0) must render '—' in the two-sided cell, never a fabricated 0%. Every
+    # OTHER cell is set non-empty so the ONLY '—' in the row can come from the two-sided honest-empty guard.
     from trading_corp.prediction_markets.web.app import templates
     row = {"wallet": "0xz", "category": "sports", "n_resolved": 5, "win_rate": 0.5, "roi": 0.1,
-           "roi_notional": 0.1, "onesided_roi": None, "onesided_n": None, "n_condition_ids": 0,
-           "two_sided_pct": 0.0, "single_game_pct": None, "avg_win_price": 0.5, "chalk": False,
+           "roi_notional": 0.1, "onesided_roi": 0.2, "onesided_n": 10, "n_condition_ids": 0,
+           "two_sided_pct": 0.0, "single_game_pct": 0.5, "avg_win_price": 0.5, "chalk": False,
            "contested": False, "net_realized_pnl": 10.0, "score": 0.2, "backfill_complete": 1, "flags": []}
     out = templates.get_template("partials/pm_scoreboard_table.html").render(
         board=[row], refresh=stats.refresh_band_state(NOW - TWO_DAYS, NOW))
     cell = re.search(r"<tr\b.*?</tr>", out, re.S).group(0)
-    # the two-sided% cell shows the em-dash, not "0%"
-    assert "—" in cell
+    assert "—" in cell                # the two-sided% cell shows the em-dash (honest-empty), not "0%"
 
 
 def test_cost_is_ranked_notional_is_comparison_only(seeded):
