@@ -117,23 +117,59 @@ whole-platform change with real blast radius (touches live code that scheduled t
 severity on a box that trades real funds. All findings are READ-ONLY observations; nothing was changed and no
 secret VALUES were ever printed. **Ordered by what an attacker actually needs** (remote / no-foothold first).
 
-**#1 — Engine dashboard listens on `0.0.0.0:8000` (all interfaces), not loopback. [HIGHEST — remote, no local foothold needed.]**
-CONFIRMED it is the engine dashboard: `ss -tlnp` shows `LISTEN 0.0.0.0:8000` owned by `python pid=851007`, which
-is the child of `trading-corp.service` (`MainPID=850993`). If reachable from the internet it bypasses
-Caddy+Authelia entirely. Whether it IS reachable depends on THREE gates, and none was verifiable from the box:
-  - The NIC has **no direct public IP** (IMDS `privateIpAddress:"10.0.0.4"`, `publicIpAddress:""`) — the box is
-    fronted by a separate public-IP/LB resource (the inbound `172.171.189.116` from the DNS work), so an
-    internet→:8000 path first needs **that resource to forward :8000**.
-  - Then the **Azure NSG must allow :8000 inbound** — NSG rules are NOT in IMDS → UNVERIFIED from the box.
-  - Then on-box **`ufw` must permit :8000** — `ufw` is **active**, but listing its rules needs root → UNVERIFIED.
-  All three UNVERIFIED-from-box → **ACTION (Jack, Azure portal): the NIC's NSG inbound rules — is `:8000`
-  permitted? That single rule is the whole risk gate.** If the front resource doesn't forward :8000 and/or the
-  NSG denies it, this is latent; if any path forwards :8000, the engine dashboard is internet-exposed with no
-  auth in front. CONTRAST (the correct pattern): `pm_web` binds **`127.0.0.1:8081` loopback-only** and CANNOT
-  drift — the unit pins `PM_WEB_HOST=127.0.0.1` and the launcher default is also `127.0.0.1`; reachable ONLY via
-  the proxy.
+**★ CURRENT RANK (2026-08-24, after Jack's portal NSG verification):** #1 (`:8000` exposure) is **RESOLVED-LOW**
+— the NSG proved it is NOT internet-reachable. The top REMAINING open item is now **#2 (engine-tree ownership
+mix, local latent)**; **#3** is a resolved false-positive → hygiene. Read the verified rule table in #1 below
+instead of re-investigating the network posture.
 
-**#2 — Mixed / phantom ownership across the engine tree. [LOCAL, latent — needs a foothold first.]**
+**#1 — Engine dashboard binds `0.0.0.0:8000` (all interfaces), not loopback. [RESOLVED-LOW / defence-in-depth gap — VERIFIED NOT internet-reachable, Jack's portal read 2026-08-24.]**
+CONFIRMED it is the engine dashboard: `ss -tlnp` showed `LISTEN 0.0.0.0:8000` owned by `python pid=851007`, the
+child of `trading-corp.service` (`MainPID=850993`). If reachable from the internet it would bypass Caddy+Authelia
+entirely. **Jack verified the network posture in the Azure portal 2026-08-24 — this is CLOSED as a remote risk;
+read the rule table, do NOT re-derive it.**
+
+**★ CORRECTION (supersedes the earlier read):** the NIC **DOES have a public IP, directly**. Portal:
+`tc-prod-nic > IP configurations > ipconfig1` carries public IP **172.171.189.116** attached DIRECTLY; there is
+**no load balancer** in front. The box is **directly internet-facing** and the **NSG is the ONLY gate** (not one
+of two). The earlier note — "NIC has no public IP (IMDS `publicIpAddress:""`) → a separate front resource must
+forward :8000" — was **WRONG**. **★ LESSON: IMDS did NOT reflect the attached public IP** — never conclude "no
+public IP" from an empty IMDS `publicIpAddress`; check the NIC's ipConfig in the portal.
+
+**NSG topology (portal-verified):** NIC-level NSG = **None**; the subnet **tc-prod-subnet** (in `tc-prod-vnet`)
+has **tc-prod-nsg** — the ONLY filter protecting the VM. Subnet also has NAT gateway **tc-prod-natgw**; route
+table **None**.
+
+**`tc-prod-nsg` INBOUND rules, exactly as read (2026-08-24) — the whole gate, do not re-pull:**
+
+| prio | name | port | proto | source | action |
+|---|---|---|---|---|---|
+| 110 | home-operator-ssh | 22 | TCP | 98.231.16.63/32 | Allow |
+| 1000 | AllowSSHFromHome | 22 | TCP | 98.231.16.63/32 | Allow |
+| 1010 | AllowHTTP | 80 | TCP | Internet | Allow |
+| 1020 | AllowHTTPS | 443 | TCP | Internet | Allow |
+| 65000 | AllowVnetInBound | Any | Any | VirtualNetwork | Allow (Azure default) |
+| 65001 | AllowAzureLoadBalancerInBound | Any | Any | AzureLoadBalancer | Allow (Azure default) |
+| 65500 | DenyAllInBound | Any | Any | Any | Deny (Azure default) |
+
+**VERDICT: port 8000 is NOT exposed.** No rule allows it → it falls through to `DenyAllInBound`. The engine
+dashboard on `0.0.0.0:8000` is **NOT reachable from the internet.** Only **22** (single home IP), **80**, **443**
+are open inbound.
+
+**Why RESOLVED-LOW, not closed outright (defence-in-depth gap):** the dashboard SHOULD be loopback-only; today it
+is protected by a **network rule**, not by the **binding**. If the NSG is ever loosened, OR anything gains a
+foothold inside the vnet (**`AllowVnetInBound` permits EVERYTHING intra-vnet**), the dashboard is reachable with
+**no Caddy and no Authelia** in front. `pm_web` binds `127.0.0.1:8081` and CANNOT drift (the unit pins
+`PM_WEB_HOST=127.0.0.1` + the launcher default); the engine predates that discipline.
+**DURABLE FIX — parked for a planned window, NOT now:** rebind the engine dashboard to `127.0.0.1:8000`. That is
+an **ENGINE change requiring an engine restart** → it belongs with the other whole-platform items (VM
+geo-migration, ownership pass) — Jack's, deliberate, scheduled. **Do NOT attempt it.**
+
+**SSH inbound (record):** restricted to a **single source IP `98.231.16.63/32`** (Jack's home) — tighter than
+typical, good posture. ⚠ **OPERATIONAL RISK: if Jack's home IP changes he loses SSH until that rule is updated**
+(better known before than during). Rules **110 and 1000 are duplicates** (same port 22, same source) — harmless,
+noted; do not touch.
+
+**#2 — Mixed / phantom ownership across the engine tree. [★ TOP OPEN ITEM as of 2026-08-24 — LOCAL, latent, needs a foothold first.]**
 `root:root` + `197609:197121` (a Windows UID/GID baked into a tar built on the Windows dev box) + world-writable
 entries. The nested `scripts/` dir (`197609:755`) holds timer-scheduled engine code (pct-pruner /
 watchlist-stats / watchlist-deep). Mixed-owner-or-world-writable executable code + scheduled execution = a local
