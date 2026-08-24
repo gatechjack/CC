@@ -51,16 +51,18 @@ if (-not $ok) { Remove-Item "$tmp" -Recurse -Force; exit 1 }
 Remove-Item "$tmp" -Recurse -Force
 Write-Host ("[local] wrote reference manifest (" + $files.Count + " files, LF)")
 
-Write-Host "[local] scp stage + reference to box..."
+Write-Host "[local] scp stage + reference + box script to the box..."
 scp -o StrictHostKeyChecking=accept-new "$stage" ($h + ":pm_p3_deploy.tgz")
 if ($LASTEXITCODE -ne 0) { Write-Host "SCP tgz FAILED - STOP"; exit 1 }
 scp -o StrictHostKeyChecking=accept-new "$ref" ($h + ":pm_p3_deploy.sha256")
 if ($LASTEXITCODE -ne 0) { Write-Host "SCP ref FAILED - STOP"; exit 1 }
+scp -o StrictHostKeyChecking=accept-new "$boxsh" ($h + ":pm_p3_deploy_box.sh")
+if ($LASTEXITCODE -ne 0) { Write-Host "SCP box.sh FAILED - STOP"; exit 1 }
 
-Write-Host "[box] running the FAIL-CLOSED deploy as root (az run-command)..."
-$b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($boxsh))
-$scriptArg = "echo $b64 | base64 -d | bash"
-$out = az vm run-command invoke -g $rg -n $vm --command-id RunShellScript --scripts $scriptArg --query "value[0].message" -o tsv 2>&1 | Out-String
+Write-Host "[box] running the FAIL-CLOSED deploy as root (az runs the scp'd box script)..."
+# Pass a SHORT command that runs the scp'd file. Inline b64 blew the Windows command-line length cap;
+# bash reading the file has no length/quoting/splitting limit.
+$out = az vm run-command invoke -g $rg -n $vm --command-id RunShellScript --scripts "bash /home/azureuser/pm_p3_deploy_box.sh" --query "value[0].message" -o tsv 2>&1 | Out-String
 Write-Host $out
 $deployOk = ($out -match 'DEPLOY_VERDICT=OK')
 Remove-Item "$stage" -ErrorAction SilentlyContinue
