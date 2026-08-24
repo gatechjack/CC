@@ -171,8 +171,8 @@ def test_two_sided_honest_empty_when_no_condition_ids(seeded):
            "contested": False, "net_realized_pnl": 10.0, "score": 0.2, "backfill_complete": 1, "flags": []}
     out = templates.get_template("partials/pm_scoreboard_table.html").render(
         board=[row], refresh=stats.refresh_band_state(NOW - TWO_DAYS, NOW))
-    cell = re.search(r"<tr\b.*?</tr>", out, re.S).group(0)
-    assert "—" in cell                # the two-sided% cell shows the em-dash (honest-empty), not "0%"
+    cell = _row_html(out, "0xz")      # the DATA row (not the <thead> header row)
+    assert cell and "—" in cell       # the two-sided% cell shows the em-dash (honest-empty), not "0%"
 
 
 def test_cost_is_ranked_notional_is_comparison_only(seeded):
