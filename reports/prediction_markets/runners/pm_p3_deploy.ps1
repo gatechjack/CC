@@ -66,35 +66,19 @@ $deployOk = ($out -match 'DEPLOY_VERDICT=OK')
 Remove-Item "$stage" -ErrorAction SilentlyContinue
 Remove-Item "$ref" -ErrorAction SilentlyContinue
 
+# prod-live advance is DECOUPLED (Jack's ruling): the ledger is written by a SEPARATE runner, after a
+# human reads this output and agrees the box is right. This runner does NOT touch prod-live.
 Write-Host ""
-Write-Host "=== [STEP 5] prod-live advance (deployed artifacts only; gated on DEPLOY_VERDICT=OK) ==="
-if (-not $deployOk) {
-  Write-Host "DEPLOY_VERDICT != OK -> prod-live NOT advanced (fail-closed). Review the box output above."
-} elseif (-not (Test-Path $plwt)) {
-  Write-Host "prod-live worktree missing at $plwt -> advance manually after review."
-} else {
-  git -C "$plwt" fetch origin 2>&1 | Out-Null
-  $cur = (git -C "$plwt" rev-parse --abbrev-ref HEAD)
-  $dirty = (git -C "$plwt" status --porcelain)
-  $tip = (git -C "$plwt" rev-parse HEAD)
-  $otip = (git -C "$plwt" rev-parse origin/prod-live)
-  if ($cur -ne 'prod-live' -or $dirty -or $tip -ne $otip) {
-    Write-Host ("prod-live worktree not clean/on-anchor (branch=" + $cur + " dirty=" + [bool]$dirty + " tip==origin=" + ($tip -eq $otip) + ") -> SKIP auto-advance.")
-    Write-Host "Advance manually after review:"
-    Write-Host ("  git -C `"$plwt`" checkout prod-live; git -C `"$plwt`" checkout $branch -- <11 files>; git -C `"$plwt`" commit -m 'deploy(pm-p3): CP2 P3 artifacts on prod-live'; git -C `"$plwt`" push origin prod-live")
-  } else {
-    Write-Host ("prod-live worktree clean + on anchor " + $otip.Substring(0,7) + "; advancing...")
-    git -C "$plwt" checkout $branch -- @files
-    git -C "$plwt" add @files
-    git -C "$plwt" diff --cached --quiet
-    if ($LASTEXITCODE -eq 0) {
-      Write-Host "prod-live already carries these bytes -> nothing to advance."
-    } else {
-      git -C "$plwt" commit -m "deploy(pm-p3): record CP2 Phase-3 artifacts on prod-live (== box)"
-      git -C "$plwt" push origin prod-live 2>&1 | Select-Object -Last 2 | Write-Host
-      Write-Host ("prod-live advanced -> " + (git -C "$plwt" rev-parse --short HEAD))
-    }
-  }
-}
+Write-Host "=== prod-live advance = a SEPARATE, deliberate step (decoupled from the deploy) ==="
+Write-Host "prod-live is the LEDGER of what is on the box; write it only AFTER you have READ the output"
+Write-Host "above and agree the deploy is right. 'The script said OK' and 'Jack read it and agrees' are"
+Write-Host "different standards, and the ledger deserves the second. Deploy = the risky part; ledger"
+Write-Host "advance = bookkeeping. Not coupled."
 Write-Host ""
-Write-Host ("=== DONE. deployOk=" + $deployOk + ". In the box output check: GATE_PASS, RESTART_OK, HEALTHZ_OK, DEPLOY_VERDICT=OK, SYNC_NAMES_OK, RENDER_NAME_OK, ENGINE_PID_UNCHANGED=GOOD. ===")
+Write-Host "If the box output shows DEPLOY_VERDICT=OK + GATE_PASS + HEALTHZ_OK + ENGINE_PID_UNCHANGED=GOOD,"
+Write-Host ("advance prod-live (records the 11 PM artifacts from " + $branch + " into worktree")
+Write-Host "cc-prodlive-cp7-wt, byte-verified vs origin/prod-live, then pushes) by pasting THIS ONE LINE:"
+Write-Host ""
+Write-Host "  powershell -ep bypass -f .\pm_p3_prodlive_advance.ps1"
+Write-Host ""
+Write-Host ("=== DEPLOY DONE. deployOk=" + $deployOk + ". Box output to read: BACKUP_KEPT_AT (early), GATE_PASS, RESTART_OK, HEALTHZ_OK, DEPLOY_VERDICT=OK, SYNC_NAMES_*, RENDER_*, ENGINE_PID_UNCHANGED=GOOD. ===")

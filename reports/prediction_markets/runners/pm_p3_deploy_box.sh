@@ -29,6 +29,7 @@ abort(){ echo "DEPLOY_ABORT: $1"; echo "DEPLOY_VERDICT=ABORTED_PRE_RESTART (noth
 echo "=== PM P3 DEPLOY (start) $TS ==="
 PID0=$(systemctl show -p MainPID --value trading-corp.service 2>/dev/null); echo "ENGINE_PID_BEFORE=$PID0"
 WHO=$(id -un); echo "running as: $WHO (expect root via az run-command)"
+echo "BACKUP_KEPT_AT=$BK  <- rollback source if this run goes sideways (created at step [4]; kept until you confirm)"
 
 echo "=== [1] MANIFEST ASSERT (PM-only; ZERO engine files) ==="
 [ -f "$STAGE" ] || abort "stage tarball missing: $STAGE"
@@ -65,7 +66,7 @@ for f in $MODIFIED; do
   t="$ROOT/$f"; [ -f "$t" ] || abort "MODIFIED target missing (wrong path?): $t"
   mkdir -p "$BK/$(dirname "$f")"; cp -p "$t" "$BK/$f" || abort "backup failed: $t"
 done
-echo "BACKUP_OK -> $BK"
+echo "BACKUP_OK (MODIFIED files backed up -> $BK)"
 
 echo "=== [5] DEPLOY FILES (copy staged -> DOUBLE path) ==="
 for f in $FILES; do mkdir -p "$ROOT/$(dirname "$f")"; cp -p "$STG/$f" "$ROOT/$f" || abort "copy failed: $f"; done
