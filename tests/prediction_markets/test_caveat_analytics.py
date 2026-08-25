@@ -147,7 +147,7 @@ def test_migration_004_schema(tmp_path):
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         cs = {r[1] for r in conn.execute("PRAGMA table_info(pm_category_stats)")}
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert maxv == 4
+    assert maxv == 6                                        # head of the migration chain (001-006 incl. CP3a 005/006)
     assert {"n_condition_ids", "n_two_sided", "two_sided_pct", "n_single_game", "n_futures_like",
             "single_game_pct", "market_type_source"} <= cs
     assert "pm_category_onesided_stats" in tables
@@ -165,8 +165,8 @@ def test_migration_004_idempotent_on_p1_shaped_db(tmp_path, monkeypatch):
             "VALUES ('0xw','0xB',0,'ufc',0.5,100.0,50.0,10.0,1.0,1,1)")
         conn.commit()
         v_before = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    monkeypatch.undo()                                          # restore full MIGRATIONS (adds 004)
-    db.init_db(p)                                               # apply 004 on the v3 DB with data
+    monkeypatch.undo()                                          # restore full MIGRATIONS (adds 004+005+006)
+    db.init_db(p)                                               # apply 004+005+006 on the v3 DB with data
     db.init_db(p)                                               # re-run -> no-op
     with db.connect(p) as conn:
         v_after = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
@@ -174,6 +174,6 @@ def test_migration_004_idempotent_on_p1_shaped_db(tmp_path, monkeypatch):
         rows = conn.execute("SELECT COUNT(*) FROM pm_closed_position").fetchone()[0]
         stats.rollup(conn, now_ts=NOW)                         # rollup must populate the new columns
         r = conn.execute("SELECT two_sided_pct FROM pm_category_stats WHERE category='ufc'").fetchone()
-    assert v_before == 3 and v_after == 4 and cnt == 4
+    assert v_before == 3 and v_after == 6 and cnt == 6
     assert rows == 1                                            # existing P1 row intact
     assert r is not None                                       # rollup ran cleanly on the upgraded DB

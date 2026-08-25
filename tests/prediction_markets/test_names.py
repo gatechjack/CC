@@ -111,7 +111,7 @@ def test_update_only_does_not_insert_unbackfilled_wallet(tmp_path):
     assert n == 1 and ghost == 0
 
 
-def test_records_last_run_and_schema_stays_v4(tmp_path):
+def test_records_last_run_and_schema_unbumped_by_pm_meta(tmp_path):
     p = _init(tmp_path)
     with db.connect(p) as conn:
         _whale(conn, "0xaaa")
@@ -120,7 +120,7 @@ def test_records_last_run_and_schema_stays_v4(tmp_path):
         schema_v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert rec is not None and rec["last_run_ts"] == NOW and rec["n_set"] == 1
-    assert schema_v == 4                                     # pm_meta is OUTSIDE the migration chain
+    assert schema_v == 6                                     # pm_meta is OUTSIDE the migration chain -> schema stays at the head (001-006)
     assert "pm_meta" in tables
 
 
