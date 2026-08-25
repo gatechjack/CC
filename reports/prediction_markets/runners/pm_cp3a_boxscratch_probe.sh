@@ -76,14 +76,14 @@ db.init_db('$PREV')
 c=sqlite3.connect('$PREV'); print('copy_after  schema', c.execute('SELECT MAX(version) FROM schema_version').fetchone()[0], 'closed_rows', c.execute('SELECT COUNT(*) FROM pm_closed_position').fetchone()[0])
 tabs={r[0] for r in c.execute('SELECT name FROM sqlite_master').fetchall()}
 print('paper_trade_exists', 'pm_paper_trade' in tabs, 'paper_config', 'pm_paper_config' in tabs, 'roster', 'pm_roster' in tabs, 'watchlist', 'pm_watchlist' in tabs); c.close()" 2>&1 )
-echo "--- [4d-iii] SEED via migrate-roster (reads REAL agent_state mode=ro; seeds the COPY; C2.4 HALTs exit 3 on unresolved) ---"
-( cd "$S" && PYTHONPATH="$S" "$VP" trading_corp/scripts/pm_cli.py --db "$PREV" migrate-roster --legacy-db "$LEG" --provenance "$S/config/pm_farm_pin_provenance.yaml" 2>&1 )
-MR_RC=$?; echo "MIGRATE_ROSTER_RC=$MR_RC (0=all pins resolved, 3=UNRESOLVED pins HALT)"
-echo "--- [4d-iv] THE SEEDED (wallet, category) PAIRS from pm_roster, for Jack to eyeball ---"
+echo "--- [4d-iii] SEED via migrate-roster (reads REAL agent_state mode=ro; seeds EVERY (wallet,category) in pm_category_stats for the migrated whales; C2.4 REVERSED -- no floor, unknown included, nothing unresolved) ---"
+( cd "$S" && PYTHONPATH="$S" "$VP" trading_corp/scripts/pm_cli.py --db "$PREV" migrate-roster --legacy-db "$LEG" 2>&1 )
+MR_RC=$?; echo "MIGRATE_ROSTER_RC=$MR_RC (expect 0)"
+echo "--- [4d-iv] FULL SEEDED EYEBALL TABLE (user_name, category, rows_in_category, status, wallet) -- EVERY pair, for Jack ---"
 "$VP" -c "import sqlite3; c=sqlite3.connect('$PREV'); c.row_factory=sqlite3.Row
-rows=c.execute('SELECT wallet, category, user_name, source FROM pm_roster ORDER BY category, user_name').fetchall()
-print('SEEDED_ROSTER_PAIRS', len(rows))
-for r in rows: print('  %-44s %-5s %-14s %s'%(r['wallet'], r['category'], (r['user_name'] or '')[:14], (r['source'] or '')[:46]))
+rows=c.execute(\"SELECT w.wallet, r.user_name, w.category, s.n_resolved, w.status FROM pm_watchlist w LEFT JOIN pm_roster r ON w.wallet=r.wallet AND w.category=r.category LEFT JOIN pm_category_stats s ON w.wallet=s.wallet AND w.category=s.category WHERE w.status='pinned' ORDER BY r.user_name, w.category\").fetchall()
+print('PINNED_PAIRS_TOTAL', len(rows))
+for r in rows: print('  %-14s %-8s rows=%-6s %-8s %s'%((r['user_name'] or '')[:14], r['category'], (r['n_resolved'] if r['n_resolved'] is not None else 0), r['status'], r['wallet']))
 c.close()" 2>&1
 
 echo ""
