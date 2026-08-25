@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names, farm
+from .. import stats, positions, names, farm, analyze
 from ..category import NON_SINGLE_GAME_CATEGORIES
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -270,3 +270,32 @@ async def farm_list(request: Request, category: str | None = None):
     cat = _clamp_farm_category(category)
     data = await asyncio.to_thread(_load_farm, cat, int(time.time()))
     return templates.TemplateResponse(request, "partials/pm_farm_lists.html", _farm_context(request, cat, data))
+
+
+# ── on-demand ANALYZE (CP3b-2) -- the [Analyze] button on BOTH the Pinned and Candidate lists, SAME path ──
+# This is the ONE pm_web write surface besides sync-names: it writes pm_analysis_cache + pm_analysis_cost in
+# the PM DB (both inside the unit's ReadWritePaths=data). A cache hit spends nothing; the $20/day cap and the
+# "only successful verdicts are cached" rule live in analyze.analyze_whale. The key is NOT wired (e3) so today
+# every call returns the llm_unavailable reasoned-null and the deterministic report renders without a verdict.
+
+def _run_analyze(wallet: str, category: str, force: bool, now_ts: int) -> dict:
+    """Run Analyze on ONE short-lived connection, OFF the event loop. WRITES the PM DB (cache + cost ledger);
+    reads/writes ONLY prediction_markets.db (db._assert_not_legacy guards the path). Sync (analyze narrates
+    synchronously) so it drops straight into asyncio.to_thread with no nested event loop."""
+    with connect() as conn:
+        rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force)
+        day = analyze._utc_day(now_ts)
+        spent, n_calls = analyze.daily_cost(conn, day)
+    return {"report": rep, "flags": analyze.analysis_flags(rep),
+            "cost_today": spent, "cost_cap": analyze.PM_ANALYZE_DAILY_CAP_USD, "cost_day": day}
+
+
+@app.post("/farm/analyze/{wallet}/{category}", response_class=HTMLResponse)
+async def farm_analyze(request: Request, wallet: str, category: str, force: str | None = None):
+    """Analyze a (wallet, category) and swap in the result partial. POST because it may WRITE (narrate ->
+    cache + cost). `?force=1` re-analyzes (evicts the cached verdict first). Same route for a Pinned or a
+    Candidate row -- identity is the (wallet, category), not which list the button sat in."""
+    wallet = (wallet or "").lower()
+    do_force = str(force or "").strip().lower() in ("1", "true", "yes", "on")
+    data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, int(time.time()))
+    return templates.TemplateResponse(request, "partials/pm_analyze_result.html", {"request": request, **data})

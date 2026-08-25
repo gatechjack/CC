@@ -15,7 +15,7 @@ import json
 import sys
 import time
 
-from trading_corp.prediction_markets import category, db, ingest, names, paper, rosters, stats
+from trading_corp.prediction_markets import analyze, category, db, ingest, names, paper, rosters, stats
 
 
 def _now() -> int:
@@ -169,6 +169,30 @@ def _cmd_migrate_roster(args) -> int:
     return 0
 
 
+def _cmd_analyze(args) -> int:
+    """On-demand ANALYZE of ONE (wallet, category) over RESOLVED positions -- the SAME code path as the farm
+    [Analyze] button. Writes pm_analysis_cache + pm_analysis_cost in the PM DB (NEVER agent_state, NEVER the
+    legacy DB). Prints the deterministic report + verdict/null_reason + the day's cost as JSON. --force
+    re-analyzes (evicts the cached verdict); --no-llm forces the disabled_by_flag reasoned-null (the
+    deterministic report still renders). With no ANTHROPIC key in the env the verdict is llm_unavailable --
+    the SAME reasoned-null pm_web renders today (the key is not wired, e3)."""
+    from dataclasses import asdict
+    db.init_db(args.db)
+    with db.connect(args.db) as conn:
+        rep = analyze.analyze_whale(conn, args.wallet, args.category, now_ts=_now(),
+                                    force=args.force, narrator_enabled=not args.no_llm)
+        day = analyze._utc_day(_now())
+        spent, n_calls = analyze.daily_cost(conn, day)
+    out = asdict(rep)
+    out["flags"] = analyze.analysis_flags(rep)
+    out["_cost_today_usd"] = spent
+    out["_cost_cap_usd"] = analyze.PM_ANALYZE_DAILY_CAP_USD
+    out["_cost_day_utc"] = day
+    out["_llm_available"] = analyze.is_llm_available()
+    print(json.dumps(out, indent=2, default=str))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm_cli", description="Prediction Markets P1 CLI")
     p.add_argument("--db", default=db.pm_db_path(), help="PM DB path (default: PM_DB_PATH or data/prediction_markets.db)")
@@ -224,6 +248,15 @@ def build_parser() -> argparse.ArgumentParser:
     mr.add_argument("--legacy-db", default=rosters.LEGACY_DB_DEFAULT)
     mr.add_argument("--seed-yaml", default=None)
     mr.set_defaults(func=_cmd_migrate_roster, is_async=False)
+
+    an = sub.add_parser("analyze",
+                        help="on-demand narrated audit of ONE (wallet,category) over resolved positions (CP3b-2)")
+    an.add_argument("--wallet", required=True)
+    an.add_argument("--category", required=True)
+    an.add_argument("--force", action="store_true", help="re-analyze: evict the cached verdict first")
+    an.add_argument("--no-llm", action="store_true", dest="no_llm",
+                    help="skip narration (disabled_by_flag reasoned-null); deterministic report only")
+    an.set_defaults(func=_cmd_analyze, is_async=False)
     return p
 
 

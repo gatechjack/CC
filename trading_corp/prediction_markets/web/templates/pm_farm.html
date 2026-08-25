@@ -35,5 +35,9 @@
   <div id="pm-farm-lists">
     {% include "partials/pm_farm_lists.html" %}
   </div>
+
+  {# CP3b-2: the [Analyze] button (on both lists above) swaps its result HERE. Lives OUTSIDE #pm-farm-lists
+     so a tab swap does not blow the result away. Empty until the operator analyzes a whale. #}
+  <div id="pm-analyze-panel" class="pm-analyze-panel" aria-live="polite"></div>
 </section>
 {% endblock %}

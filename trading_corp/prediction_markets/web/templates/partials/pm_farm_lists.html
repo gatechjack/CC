@@ -1,4 +1,4 @@
-{% from "pm_macros.html" import refresh_band, flag_badges, whale_label %}
+{% from "pm_macros.html" import refresh_band, flag_badges, whale_label, analyze_button %}
 {# STRUCTURAL FRESHNESS: the band renders FIRST, in the SAME fragment as the rows (a farm number can never
    be shown without its freshness). #}
 {{ refresh_band(refresh) }}
@@ -34,6 +34,7 @@
       <th class="pm-num" title="Average winning price. CHALK &ge; 0.85 (favorites); CONTESTED &lt; 0.70.">avg&nbsp;win&nbsp;px</th>
       <th class="pm-num" title="Net realized PnL over scoreable rows.">net&nbsp;pnl</th>
       <th title="Data-quality + status flags -- the SAME tokens as the scoreboard/CLI (one shared deriver).">flags</th>
+      <th title="On-demand LLM narration over this whale's RESOLVED positions in this category (CP3b-2). Deterministic report always renders; the verdict needs the Anthropic key, not wired yet.">analyze</th>
     </tr>
   </thead>
   <tbody>
@@ -73,6 +74,7 @@
       <td class="pm-num">{% if r.avg_win_price is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=won">{{ '%.2f'|format(r.avg_win_price) }}</a>{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}&mdash;{% endif %}</td>
       <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
       <td class="pm-flags">{{ flag_badges(r.flags) }}</td>
+      <td class="pm-actioncell">{{ analyze_button(r.wallet, r.category) }}</td>
     </tr>
   {% endfor %}
   </tbody>
@@ -100,7 +102,8 @@
   <div class="pm-table-scroll">
   <table class="pm-table pm-farm-table">
     <thead><tr><th>whale</th><th>category</th><th class="pm-num">n</th>
-      <th class="pm-num pm-primary">roi&nbsp;(cost)</th><th class="pm-num">avg&nbsp;win&nbsp;px</th><th>flags</th></tr></thead>
+      <th class="pm-num pm-primary">roi&nbsp;(cost)</th><th class="pm-num">avg&nbsp;win&nbsp;px</th><th>flags</th>
+      <th title="Same on-demand Analyze as the Pinned list -- SAME path (identity = wallet + category).">analyze</th></tr></thead>
     <tbody>
     {% for r in candidates %}
       <tr class="{% if not r.backfill_complete %}pm-row-unranked{% endif %}">
@@ -109,7 +112,8 @@
         <td class="pm-num">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
         <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
         <td class="pm-num">{% if r.avg_win_price is not none %}{{ '%.2f'|format(r.avg_win_price) }}{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}&mdash;{% endif %}</td>
-        <td class="pm-flags">{{ flag_badges(r.flags) }}</td></tr>
+        <td class="pm-flags">{{ flag_badges(r.flags) }}</td>
+        <td class="pm-actioncell">{{ analyze_button(r.wallet, r.category) }}</td></tr>
     {% endfor %}
     </tbody>
   </table>

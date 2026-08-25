@@ -30,6 +30,7 @@ def test_init_creates_all_tables(tmp_path):
     assert {
         "schema_version", "pm_whale", "pm_closed_position",
         "pm_category_stats", "pm_open_position", "pm_score_snapshot",
+        "pm_analysis_cache", "pm_analysis_cost",   # migration 007 (CP3b-2)
     } <= tables
 
 
@@ -49,8 +50,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 6  # migrations 001..006 recorded exactly once each
-    assert maxv == 6
+    assert count == 7  # migrations 001..007 recorded exactly once each
+    assert maxv == 7
 
 
 def test_pk_includes_outcome_index(tmp_path):
