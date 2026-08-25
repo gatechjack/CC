@@ -423,8 +423,10 @@ MIGRATION_005: list[str] = [
 
 # migration 006 (2026-08-24, CP3a): farm roster + watchlist. pm_farm (P1, documented-only) is SUPERSEDED,
 # split into pm_roster (the universal (wallet, category) roster the weekly refresh + poller read) and
-# pm_watchlist (per-(wallet,category) farm status: 'watchlist' = candidate/Analyze-able, NOT paper;
-# 'pinned' = forward paper-trading -- the poller polls pinned rows). Keyed (wallet, category). Seeding is
+# pm_watchlist (per-(wallet,category) farm status: 'candidate' = Analyze-able, NOT paper [CP3b-0 vocab
+# rename 2026-08-25: 'watchlist'->'candidate'; the TABLE keeps the name pm_watchlist -- accepted permanent
+# minor internal oddity, do NOT "fix" it]; 'pinned' = forward paper-trading -- the poller polls pinned
+# rows). Keyed (wallet, category). Seeding is
 # EVERY (wallet,category) in pm_category_stats for the migrated whales (Ruling B; advisor ruling C2.4 was
 # REVERSED 2026-08-25 -- see CP3A_CONTAMINATION_GATE.md). search_run_id is a nullable seam for CP3b search
 # -- pm_search_run is a LATER migration, NOT this one (P2_PLAN §5.3 amended: 006 = roster + watchlist only).
@@ -451,7 +453,7 @@ MIGRATION_006: list[str] = [
         category       TEXT NOT NULL,
         added_ts       INTEGER,
         source         TEXT,
-        status         TEXT NOT NULL DEFAULT 'watchlist',  -- watchlist (candidate, NOT paper) | pinned (forward paper)
+        status         TEXT NOT NULL DEFAULT 'candidate',  -- candidate (Analyze-able, NOT paper) | pinned (forward paper). CP3b-0 rename 'watchlist'->'candidate'; the LIVE DB (already schema 6) keeps its historical 'watchlist' default -- inert (0 rows carry it; every insert writes an explicit status)
         pinned_ts      INTEGER,
         search_run_id  INTEGER,                            -- nullable seam for CP3b search (pm_search_run = later migration)
         updated_ts     INTEGER,

@@ -142,7 +142,7 @@ def test_migration_005_paper_trade_lifecycle(tmp_path):
 
 def test_migration_006_roster_and_watchlist(tmp_path):
     """Migration 006 (CP3a): pm_roster (universal (wallet,category) roster; active=1 default -> the weekly
-    refresh source) + pm_watchlist (per-(wallet,category) farm status watchlist|pinned). The PINNING
+    refresh source) + pm_watchlist (per-(wallet,category) farm status candidate|pinned). The PINNING
     CATEGORY lives here as explicit provenance (C2.4), NOT derived from cross-category pm_category_stats."""
     p = str(tmp_path / "pm.db")
     db.init_db(p)
@@ -157,11 +157,11 @@ def test_migration_006_roster_and_watchlist(tmp_path):
     assert w_pk == {"wallet", "category"}
     assert {"user_name", "source", "added_ts", "active", "notes", "last_polled_ts"} <= r_cols
     assert {"status", "pinned_ts", "search_run_id", "updated_ts"} <= w_cols
-    # defaults: roster.active=1, watchlist.status='watchlist'
+    # defaults: roster.active=1, watchlist.status='candidate' (CP3b-0 rename from 'watchlist')
     with db.connect(p) as conn:
         conn.execute("INSERT INTO pm_roster (wallet, category) VALUES ('0xw', 'ufc')")
         conn.execute("INSERT INTO pm_watchlist (wallet, category) VALUES ('0xw', 'ufc')")
         active = conn.execute("SELECT active FROM pm_roster WHERE wallet='0xw'").fetchone()[0]
         status = conn.execute("SELECT status FROM pm_watchlist WHERE wallet='0xw'").fetchone()[0]
     assert active == 1
-    assert status == "watchlist"
+    assert status == "candidate"
