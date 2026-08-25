@@ -1,0 +1,117 @@
+{% from "pm_macros.html" import refresh_band, flag_badges, whale_label %}
+{# STRUCTURAL FRESHNESS: the band renders FIRST, in the SAME fragment as the rows (a farm number can never
+   be shown without its freshness). #}
+{{ refresh_band(refresh) }}
+
+{# ── PINNED (forward paper-trading; status='pinned') ─────────────────────────────────────────────── #}
+<h2 class="pm-h2">Pinned <span class="pm-count">{{ pinned|length }}</span>
+  {%- if sel_category %} <span class="pm-muted">&middot; {{ sel_category }}</span>{% endif %}</h2>
+
+{# The three-state zero legend -- the poll indicator keeps NEVER-OBSERVED distinct from OBSERVED-nothing-open
+   from OBSERVED-open. A bare "0" would collapse all three and read "does nothing" for the never-polled case. #}
+<p class="pm-poll-legend">
+  <span class="pm-poll pm-poll-never">&#9676; never polled</span> = not yet OBSERVED (absence of observation, not of activity)
+  &nbsp;&middot;&nbsp; <span class="pm-poll pm-poll-empty">polled &middot; 0 open</span> = observed, nothing open
+  &nbsp;&middot;&nbsp; <span class="pm-poll pm-poll-open">&#9679; n open</span> = observed, n currently open
+</p>
+
+{% if not pinned %}
+  <div class="pm-empty" data-empty="1">&mdash; no pinned pairs in this category. (Honest-empty: nothing to show.)</div>
+{% else %}
+<div class="pm-table-scroll">
+<table class="pm-table pm-farm-table">
+  <thead>
+    <tr>
+      <th>whale</th>
+      <th>category</th>
+      <th title="Three-state poll indicator: never polled (NOT observed) / polled &middot; 0 open / n open. last_polled_ts is a timestamp precisely so these three stay distinct (CP3a amendment G).">open</th>
+      <th title="When the poller last actually polled this (wallet, category). Empty = never (the open column says so in words). A stale timestamp is a signal.">last&nbsp;polled</th>
+      <th class="pm-num" title="Scoreable resolved rows (pnl_suspect=0). '0 + quarantined(N)' = N closed positions ALL §3A-excluded -> a real record with NO scoreboard baseline, NOT 'no activity'.">n</th>
+      <th class="pm-num pm-muted" title="Win rate. CHALK INDICATOR ONLY -- never the rank key.">win%<sup>*</sup></th>
+      <th class="pm-num pm-primary" title="Cost-based ROI = net / cost_basis. Context here (the ranked view is the scoreboard).">roi&nbsp;(cost)</th>
+      <th class="pm-num" title="One-sided directional-slice ROI. UPPER BOUND: excludes hedged markets, optimistic by construction; entry-time copy can't pick survivors (§13A(f)).">1-sided&nbsp;roi<sup>&Dagger;</sup></th>
+      <th class="pm-num" title="two-sided condition_ids / condition_ids. GRAIN = per (wallet, category).">two-sided%<sup>&sect;</sup></th>
+      <th class="pm-num" title="Average winning price. CHALK &ge; 0.85 (favorites); CONTESTED &lt; 0.70.">avg&nbsp;win&nbsp;px</th>
+      <th class="pm-num" title="Net realized PnL over scoreable rows.">net&nbsp;pnl</th>
+      <th title="Data-quality + status flags -- the SAME tokens as the scoreboard/CLI (one shared deriver).">flags</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in pinned %}
+    <tr class="{% if not r.backfill_complete %}pm-row-unranked{% endif %}">
+      <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
+      <td>{{ r.category }}{% if r.category == 'unknown' %} <span class="pm-badge pm-badge-unknown" title="'unknown' = a tier-1 slug-derivation MISS, not a data-quality defect. This pair is pinned and paper-trades like any other -- do not hide or merge it.">tier-1&nbsp;miss</span>{% endif %}</td>
+
+      {# ── THE THREE-STATE ZERO -- distinct at a glance, never one "0", never a bare em dash for never-polled ── #}
+      <td class="pm-pollcell">
+        {%- if r.poll_state == 'never_polled' -%}
+          <span class="pm-poll pm-poll-never" title="NEVER POLLED (last_polled_ts IS NULL): the poller has not observed this pair yet. An absence of OBSERVATION, not of activity -- do NOT read as 'this whale does nothing'.">&#9676;&nbsp;never&nbsp;polled</span>
+        {%- elif r.poll_state == 'polled_has_open' -%}
+          <span class="pm-poll pm-poll-open" title="Polled; {{ r.n_open }} currently-open paper position(s).">&#9679;&nbsp;{{ r.n_open }}&nbsp;open</span>
+        {%- else -%}
+          <span class="pm-poll pm-poll-empty" title="Polled; nothing currently open.">polled&nbsp;&middot;&nbsp;0&nbsp;open</span>
+        {%- endif -%}
+      </td>
+
+      {# last_polled_ts itself. Em dash ONLY when never polled -- and there the OPEN column already says
+         "never polled" in words, so the dash is disambiguated, not misleading. #}
+      <td class="pm-muted pm-mono">{% if r.last_polled_ts %}{{ r.last_polled_ts|utcdate }}{% else %}<span class="pm-na" title="never polled -- see the open column">&mdash;</span>{% endif %}</td>
+
+      {# n_resolved -- the 4751346/nfl case renders its REASON (all quarantined), never a bare 0 = "no activity" #}
+      <td class="pm-num">
+        {%- if r.all_quarantined -%}
+          <span class="pm-quar-zero" title="{{ r.n_excluded }} closed position(s), ALL §3A-quarantined (pnl_suspect=1) -> 0 scoreable. A real paper/record baseline of ZERO, NOT 'no activity'.">0&nbsp;<span class="pm-badge pm-badge-quar">quarantined&nbsp;({{ r.n_excluded }})</span></span>
+        {%- elif r.n_resolved is not none -%}
+          <a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>
+        {%- else -%}&mdash;{%- endif -%}
+      </td>
+
+      <td class="pm-num pm-muted">{% if r.win_rate is not none %}{{ '%.0f'|format(r.win_rate * 100) }}%{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num">{% if r.onesided_roi is not none %}<span class="pm-upper" title="UPPER BOUND: excludes hedged markets, optimistic by construction (§13A(f)). n={{ r.onesided_n }}.">{{ '%+.1f'|format(r.onesided_roi * 100) }}%&nbsp;<span class="pm-upper-tag">&uarr;bound</span></span>{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num">{% if r.n_condition_ids and r.n_condition_ids > 0 %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=two_sided">{{ '%.0f'|format(r.two_sided_pct * 100) }}%</a>{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num">{% if r.avg_win_price is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=won">{{ '%.2f'|format(r.avg_win_price) }}</a>{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-flags">{{ flag_badges(r.flags) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="pm-legend">
+  <sup>*</sup> win% is a chalk indicator, <strong>not</strong> a rank key. &nbsp;&middot;&nbsp;
+  <sup>&Dagger;</sup> one-sided ROI is an <strong>upper bound</strong> (excludes hedged markets, §13A(f)). &nbsp;&middot;&nbsp;
+  <sup>&sect;</sup> two-sided% grain = per (wallet, category). &nbsp;&middot;&nbsp;
+  scoreboard cells drill to their rows via the shared position renderer; the board is <strong>displayed, never filtered or ranked out</strong>.
+</p>
+{% endif %}
+
+{# ── CANDIDATES (search results; status='candidate'; NOT paper-traded) ───────────────────────────── #}
+<h2 class="pm-h2">Candidates <span class="pm-count">{{ candidates|length }}</span>
+  {%- if sel_category %} <span class="pm-muted">&middot; {{ sel_category }}</span>{% endif %}</h2>
+{% if not candidates %}
+  <div class="pm-empty pm-empty-nosearch" data-empty="no-search">
+    <strong>No search has run yet.</strong> Candidates are populated by Search (a later checkpoint).
+    This is deliberately <em>not</em> &ldquo;no candidates found&rdquo; and <em>not</em> a bare em dash &mdash;
+    no search has been run, so there is nothing to have found. (Honest-empty: a true statement about the world.)
+  </div>
+{% else %}
+  {# Same identity + caveats as pinned; the [Analyze]/[Pin] row actions are a LATER checkpoint, not this one. #}
+  <div class="pm-table-scroll">
+  <table class="pm-table pm-farm-table">
+    <thead><tr><th>whale</th><th>category</th><th class="pm-num">n</th>
+      <th class="pm-num pm-primary">roi&nbsp;(cost)</th><th class="pm-num">avg&nbsp;win&nbsp;px</th><th>flags</th></tr></thead>
+    <tbody>
+    {% for r in candidates %}
+      <tr class="{% if not r.backfill_complete %}pm-row-unranked{% endif %}">
+        <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
+        <td>{{ r.category }}</td>
+        <td class="pm-num">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
+        <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
+        <td class="pm-num">{% if r.avg_win_price is not none %}{{ '%.2f'|format(r.avg_win_price) }}{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}&mdash;{% endif %}</td>
+        <td class="pm-flags">{{ flag_badges(r.flags) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endif %}

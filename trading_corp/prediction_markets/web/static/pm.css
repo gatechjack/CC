@@ -182,3 +182,31 @@ th.pm-primary{color:var(--mono)}
 .pm-badge-src{background:rgba(148,163,184,.16); color:var(--muted); text-transform:none; font-weight:600}
 .pm-badge-quar{background:rgba(244,63,94,.16); color:var(--loss); border:1px solid rgba(244,63,94,.4)}
 .pm-badge-anom{background:rgba(245,158,11,.16); color:var(--warn)}
+
+/* ── farm league (CP3b-1) ─────────────────────────────────────────────────────────────────── */
+.pm-tabs{display:flex; flex-wrap:wrap; gap:.3rem; margin:.9rem 0 1rem; border-bottom:1px solid var(--edge)}
+.pm-tab{padding:.4rem .8rem; border-radius:.4rem .4rem 0 0; font-size:.85rem; color:var(--muted);
+  border:1px solid transparent; border-bottom:none}
+.pm-tab:hover{background:var(--pane2); color:var(--mono)}
+.pm-tab-active{background:var(--pane2); color:var(--mono); border-color:var(--edge2)}
+.pm-count{display:inline-block; min-width:1.4rem; text-align:center; padding:.05rem .45rem; border-radius:1rem;
+  background:var(--pane2); color:var(--muted); font-size:.78rem; font-weight:600}
+.pm-farm-table td{vertical-align:top}
+
+/* three-state zero -- NEVER-observed vs observed-nothing-open vs observed-open, distinct at a glance */
+.pm-poll-legend{font-size:.78rem; color:var(--muted); margin:.2rem 0 .8rem}
+.pm-pollcell{white-space:nowrap}
+.pm-poll{display:inline-flex; align-items:center; gap:.25rem; padding:.1rem .45rem; border-radius:.35rem;
+  font-size:.78rem; font-weight:600; border:1px solid transparent; white-space:nowrap}
+.pm-poll-never{color:var(--amber); background:rgba(245,158,11,.10); border-color:rgba(245,158,11,.45)}
+.pm-poll-empty{color:var(--muted); background:rgba(148,163,184,.08); border-color:var(--edge2)}
+.pm-poll-open{color:#bfdbfe; background:rgba(59,130,246,.16); border-color:rgba(59,130,246,.6)}
+
+/* quarantined-baseline zero (4751346/nfl): the 0 carries its reason, never a bare zero */
+.pm-quar-zero{display:inline-flex; align-items:center; gap:.3rem; color:var(--muted)}
+.pm-badge-unknown{font-size:.7rem; padding:.05rem .35rem; border-radius:.3rem; color:var(--muted);
+  background:rgba(148,163,184,.10); border:1px solid var(--edge2)}
+
+/* candidates 'no search has run yet' -- an honest-empty that must NOT read as 'nothing found' */
+.pm-empty-nosearch{border:1px dashed var(--edge2); background:rgba(59,130,246,.05); color:var(--mono);
+  padding:.9rem 1.1rem; border-radius:.5rem; line-height:1.55}
