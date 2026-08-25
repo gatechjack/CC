@@ -128,3 +128,41 @@ CP3a = migrations 005 + 006, the `/positions` poller, the adjudicator, and roste
 honest degradation when the CP3b paper stats table is absent. NOT in CP3a: `pm_paper_category_stats`
 + `paper_rollup` (CP3b), the farm UI (CP3b), pin lifecycle + Analyze (CP3c), any cron, any deploy,
 any `main` merge.
+
+## ADDENDUM 2026-08-25 — advisor ruling C2.4 REVERSED by Jack (recorded, not softened)
+
+**C2.4 was wrong and has been reversed.** The advisor ruling C2.4 (this report's original position: seed
+`(wallet, category)` only from curated scout provenance, never from `pm_category_stats`, and HALT on any
+unresolved pin) was made **without having read `P2_PLAN.md`**, **conflicted with P2_PLAN Ruling B** (which
+seeds the roster from `pm_category_stats`), and was **partly justified by an example the advisor invented
+rather than sourced**. Jack looked at the live `/scoreboard` and ruled.
+
+**The ruling (Jack, 2026-08-25):** the watchlist (paper-traded set) is **EVERY `(wallet, category)` pair in
+`pm_category_stats` for the migrated legacy whales** — every combo, not a curated 14. **No minimum-resolved
+floor** (n=3 is a watchlist pair; curation is the board's job at pin time). **`'unknown'`-category pairs
+stay** and paper-trade like any other — for the record: `'unknown'` is a tier-1 slug-derivation failure, not
+a real category, and `kutsumiakia/unknown` (n=1429) is the largest single pair on the board, so this is not
+a corner case (recording it, not acting on it). **All categories are live for paper** (MLB/UFC/NBA/Fed do
+not restrict the farm; cs2/ucl/soccer/epl/nhl/fifwc/nfl/unknown all paper-trade). Nothing reaches real money
+without a P3 account-category attachment, so paper breadth costs nothing.
+
+**What changed in code (this branch):** `seed_farm_roster` now sources pairs from `pm_category_stats` for the
+migrated whale set (`wallets=` from `rosters.load_seed_roster`); `load_pin_provenance` and the
+halt-on-unresolved path are removed from the seed; `validate_pairs_have_history` was repurposed to
+`seeded_pairs_table` (the eyeball reporter). `config/pm_farm_pin_provenance.yaml` STAYS on disk as the
+historical scout attribution but nothing reads it at seed time. P2_PLAN §5.3 amended in the same commit.
+
+**Why this is recorded and not quietly dropped:** a wrong ruling that disappears is how the next one gets
+made. The failure mode here is the same one this gate exists to catch — a claim (C2.4's invented example)
+stated as if sourced. It is left in the record so the next agent sees it was reversed and why.
+
+## VOCABULARY COLLISION — flag for CP3b (do NOT rename in this pass)
+
+Three parties use "watchlist" for two different objects. The mapping, so CP3b does not inherit the confusion:
+- **Jack's FARM LEAGUE** = the dynamic, weekly-scanned candidate pool. **NOT paper-traded.** The greyed-out
+  nav tab, still to be built (CP3b search).
+- **Jack's WATCHLIST** = the permanent, board-locked list that **paper-trades** (what CP3a seeds).
+- **Shipped code (`pm_watchlist.status`):** `status='watchlist'` == Jack's FARM LEAGUE (candidate, not paper);
+  `status='pinned'` == Jack's WATCHLIST (paper-trading). CP3a seeds every migrated pair as `status='pinned'`.
+
+Do NOT rename anything during a reseed (two changes at once); this note is the durable mapping for CP3b.

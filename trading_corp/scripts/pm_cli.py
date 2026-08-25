@@ -149,30 +149,23 @@ def _cmd_paper_adjudicate(args) -> int:
 
 
 def _cmd_migrate_roster(args) -> int:
-    """Seed pm_roster + pm_watchlist(pinned) from the CURRENT pinned whales (legacy agent_state, read-only)
-    using the curated scout PROVENANCE yaml (never pm_category_stats; C2.4). HALTS (exit 3) listing any
-    pinned whale whose pinning category is UNRESOLVED -- never guessed. Idempotent. Reports the full
-    (wallet, category, pinned) table + pm_closed_position validation for Jack to eyeball."""
+    """Seed pm_roster(active=1) + pm_watchlist(pinned) with EVERY (wallet, category) in pm_category_stats
+    for the migrated legacy whale set (Jack's ruling 2026-08-24; C2.4 REVERSED; P2_PLAN Ruling B). NO floor,
+    'unknown' included, ALL categories paper-trade. Idempotent. Nothing can be unresolved -- pairs are
+    generated from rows that exist. Reports the full eyeball table (wallet, user_name, category,
+    rows_in_category, status) -- every pair -- for Jack to review before the poller's first run."""
     db.init_db(args.db)
-    provenance = paper.load_pin_provenance(args.provenance)
-    entries = list(rosters.read_agent_state(args.legacy_db, "polymarket_copy_trader", "pinned_whales") or [])
-    if args.include_live:
-        entries += list(rosters.read_agent_state(args.legacy_db, "poly_kalshi_mlb", "live_whales") or [])
+    roster = rosters.load_seed_roster(legacy_db_path=args.legacy_db, seed_yaml_path=args.seed_yaml)
+    wallets = [r["wallet"] for r in roster]
     with db.connect(args.db) as conn:
-        res = paper.seed_farm_roster(conn, pinned_entries=entries, provenance=provenance, now_ts=_now())
-        res["validation"] = paper.validate_pairs_have_history(conn, res["seeded"])
+        res = paper.seed_farm_roster(conn, wallets=wallets, now_ts=_now())
+        res["pairs"] = paper.seeded_pairs_table(conn, wallets=wallets)
         try:
             res["subset_after"] = paper.assert_pinned_subset_of_refresh(conn)
         except paper.PaperSubsetError as e:
             res["subset_after"] = {"error": str(e)}
-    res["n_provenance"] = len(provenance)
-    res["n_pinned_entries"] = len(entries)
+    res["n_migrated_wallets"] = len(wallets)
     print(json.dumps(res, indent=2, default=str))
-    if res["unresolved"]:
-        print("HALT: %d pinned whale(s) UNRESOLVED (not seeded, not guessed): %s"
-              % (res["n_unresolved"], [u.get("wallet") or u.get("user_name") for u in res["unresolved"]]),
-              file=sys.stderr)
-        return 3
     return 0
 
 
@@ -227,12 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
     pa.set_defaults(func=_cmd_paper_adjudicate, is_async=False)
 
     mr = sub.add_parser("migrate-roster",
-                        help="seed pm_roster + pm_watchlist(pinned) from agent_state + scout provenance (CP3a; C2.4)")
+                        help="seed pm_roster + pm_watchlist(pinned) = every (wallet,category) in pm_category_stats for the migrated whales (CP3a; Ruling B)")
     mr.add_argument("--legacy-db", default=rosters.LEGACY_DB_DEFAULT)
-    mr.add_argument("--provenance", default="config/pm_farm_pin_provenance.yaml",
-                    help="curated scout pin-provenance yaml (wallet/user_name -> category + source)")
-    mr.add_argument("--include-live", action="store_true",
-                    help="also pin poly_kalshi_mlb live_whales for paper (default: paper pinned_whales only)")
+    mr.add_argument("--seed-yaml", default=None)
     mr.set_defaults(func=_cmd_migrate_roster, is_async=False)
     return p
 

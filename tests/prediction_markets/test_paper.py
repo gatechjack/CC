@@ -303,74 +303,83 @@ def test_adjudicate_fails_loud_and_mutates_nothing_when_pinned_not_refreshed(tmp
     assert st == "pending_adjudication"                        # assertion ran BEFORE any row was touched
 
 
-# ---- roster/watchlist seed from scout provenance (C2.4) ------------------------------------------
+# ---- roster/watchlist seed from pm_category_stats (C2.4 REVERSED 2026-08-24; Ruling B) -----------
 
-def test_seed_farm_roster_seeds_pins_and_flags_unresolved(tmp_path):
+def _cat_stats(conn, wallet, category, n_resolved):
+    conn.execute("INSERT OR IGNORE INTO pm_category_stats (wallet, category, n_resolved) VALUES (?, ?, ?)",
+                 (wallet, category, n_resolved))
+
+
+def _whale(conn, wallet, user_name):
+    conn.execute("INSERT OR IGNORE INTO pm_whale (wallet, user_name) VALUES (?, ?)", (wallet, user_name))
+
+
+def test_seed_farm_roster_from_category_stats(tmp_path):
+    """Every (wallet, category) in pm_category_stats for the migrated wallets becomes a pm_roster(active=1)
+    + pm_watchlist(pinned) pair -- NO floor (n=3 stays), 'unknown' included, all categories (C2.4 reversed)."""
     p = _db(tmp_path)
-    provenance = [
-        {"wallet": "0xaaa", "user_name": "Kh4mz4t", "category": "ufc", "source": "ufc_scout"},
-        {"user_name": "SDTrading", "category": "mlb", "source": "live"},     # name-only (wallet from agent_state)
-    ]
-    pinned_entries = [
-        {"wallet": "0xAAA", "user_name": "Kh4mz4t"},           # wallet match (case-insensitive)
-        {"wallet": "0xbbb", "user_name": "SDTrading"},         # name match (provenance carries no wallet)
-        {"wallet": "0xccc", "user_name": "MysteryWhale"},      # NO provenance -> UNRESOLVED (never guessed)
-    ]
     with db.connect(p) as conn:
-        res = paper.seed_farm_roster(conn, pinned_entries=pinned_entries, provenance=provenance, now_ts=NOW)
-        roster = {(r["wallet"], r["category"]) for r in conn.execute("SELECT wallet, category FROM pm_roster")}
+        _whale(conn, "0xaaa", "kutsumiakia")
+        _cat_stats(conn, "0xaaa", "ufc", 121)
+        _cat_stats(conn, "0xaaa", "cs2", 3)          # below any plausible floor -> STILL seeded (no floor)
+        _cat_stats(conn, "0xaaa", "unknown", 1429)   # 'unknown' STAYS
+        res = paper.seed_farm_roster(conn, wallets=["0xAAA"], now_ts=NOW)   # case-insensitive
+        roster = {(r["wallet"], r["category"], r["active"])
+                  for r in conn.execute("SELECT wallet, category, active FROM pm_roster")}
         watch = {(r["wallet"], r["category"], r["status"])
                  for r in conn.execute("SELECT wallet, category, status FROM pm_watchlist")}
-    assert res["n_seeded"] == 2
-    assert res["n_unresolved"] == 1
-    assert res["unresolved"][0]["wallet"] == "0xccc"
-    assert ("0xaaa", "ufc") in roster
-    assert ("0xbbb", "mlb") in roster                          # name-matched provenance
-    assert ("0xaaa", "ufc", "pinned") in watch
+    assert res["n_seeded"] == 3 and res["n_wallets"] == 1
+    assert ("0xaaa", "ufc", 1) in roster
+    assert ("0xaaa", "cs2", 1) in roster             # no floor
+    assert ("0xaaa", "unknown", 1) in roster         # unknown stays
+    assert ("0xaaa", "unknown", "pinned") in watch
+    by = {s["category"]: s for s in res["seeded"]}   # eyeball fields: user_name joined, rows from n_resolved
+    assert by["ufc"]["rows_in_category"] == 121 and by["ufc"]["user_name"] == "kutsumiakia"
+    assert by["ufc"]["status"] == "pinned" and by["unknown"]["rows_in_category"] == 1429
+
+
+def test_seed_scopes_to_migrated_wallets_only(tmp_path):
+    """A wallet with pm_category_stats rows but NOT in the migrated set is NOT seeded."""
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _cat_stats(conn, "0xaaa", "ufc", 10)
+        _cat_stats(conn, "0xother", "nba", 99)       # not in the migrated wallet set
+        res = paper.seed_farm_roster(conn, wallets=["0xaaa"], now_ts=NOW)
+        seeded_wallets = {r["wallet"] for r in conn.execute("SELECT wallet FROM pm_roster")}
+    assert res["n_seeded"] == 1 and seeded_wallets == {"0xaaa"}
 
 
 def test_seed_farm_roster_idempotent(tmp_path):
     p = _db(tmp_path)
-    provenance = [{"wallet": "0xaaa", "user_name": "K", "category": "ufc"}]
-    entries = [{"wallet": "0xaaa", "user_name": "K"}]
     with db.connect(p) as conn:
-        paper.seed_farm_roster(conn, pinned_entries=entries, provenance=provenance, now_ts=NOW)
-        paper.seed_farm_roster(conn, pinned_entries=entries, provenance=provenance, now_ts=NOW + 1)   # re-run
+        _cat_stats(conn, "0xaaa", "ufc", 10)
+        paper.seed_farm_roster(conn, wallets=["0xaaa"], now_ts=NOW)
+        paper.seed_farm_roster(conn, wallets=["0xaaa"], now_ts=NOW + 1)   # re-run
         n_roster = conn.execute("SELECT COUNT(1) FROM pm_roster").fetchone()[0]
         n_watch = conn.execute("SELECT COUNT(1) FROM pm_watchlist").fetchone()[0]
     assert n_roster == 1 and n_watch == 1
 
 
+def test_seeded_pairs_table_is_the_eyeball_list(tmp_path):
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _whale(conn, "0xaaa", "kutsumiakia")
+        _cat_stats(conn, "0xaaa", "ufc", 121)
+        _cat_stats(conn, "0xaaa", "unknown", 1429)
+        paper.seed_farm_roster(conn, wallets=["0xaaa"], now_ts=NOW)
+        table = paper.seeded_pairs_table(conn)
+    assert set(table[0].keys()) == {"wallet", "user_name", "category", "rows_in_category", "status"}
+    by = {t["category"]: t for t in table}
+    assert by["ufc"]["rows_in_category"] == 121 and by["ufc"]["user_name"] == "kutsumiakia"
+    assert by["unknown"]["rows_in_category"] == 1429 and by["unknown"]["status"] == "pinned"
+
+
 def test_seed_then_subset_assertion_passes(tmp_path):
-    """A seeded pin lands in pm_roster active AND pm_watchlist pinned -> the C2.3 subset assertion passes."""
+    """Seed writes pm_roster + pm_watchlist in one pass -> pinned == roster -> the C2.3 subset assertion passes."""
     p = _db(tmp_path)
-    provenance = [{"wallet": "0xaaa", "user_name": "K", "category": "ufc"}]
-    entries = [{"wallet": "0xaaa", "user_name": "K"}]
     with db.connect(p) as conn:
-        paper.seed_farm_roster(conn, pinned_entries=entries, provenance=provenance, now_ts=NOW)
+        _cat_stats(conn, "0xaaa", "ufc", 10)
+        _cat_stats(conn, "0xaaa", "nba", 5)
+        paper.seed_farm_roster(conn, wallets=["0xaaa"], now_ts=NOW)
         report = paper.assert_pinned_subset_of_refresh(conn)   # must NOT raise
-    assert report["unrefreshed"] == []
-    assert report["n_pinned"] == 1
-
-
-def test_load_pin_provenance_reads_yaml(tmp_path):
-    y = tmp_path / "prov.yaml"
-    y.write_text("pins:\n  - {wallet: '0xAbc', user_name: 'W', category: 'ufc', source: 's'}\n",
-                 encoding="utf-8")
-    prov = paper.load_pin_provenance(str(y))
-    assert len(prov) == 1 and prov[0]["category"] == "ufc"
-    assert paper.load_pin_provenance(None) == []               # missing path -> []
-    assert paper.load_pin_provenance(str(tmp_path / "nope.yaml")) == []
-
-
-def test_seeded_pairs_validate_against_history(tmp_path):
-    """pm_closed_position VALIDATES a pair (does the whale have rows in that category) -- never generates one."""
-    p = _db(tmp_path)
-    with db.connect(p) as conn:
-        _closed(conn, "0xaaa", "0xc1", oi=0, won=1)
-        conn.execute("UPDATE pm_closed_position SET category='ufc' WHERE wallet='0xaaa'")
-        val = paper.validate_pairs_have_history(
-            conn, [{"wallet": "0xaaa", "category": "ufc"}, {"wallet": "0xaaa", "category": "nba"}])
-    by = {(v["wallet"], v["category"]): v for v in val}
-    assert by[("0xaaa", "ufc")]["has_history"] is True
-    assert by[("0xaaa", "nba")]["has_history"] is False        # validated (no rows), NOT generated
+    assert report["unrefreshed"] == [] and report["n_pinned"] == 1

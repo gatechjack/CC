@@ -170,12 +170,20 @@ Lifecycle in a **new** `prediction_markets/paper.py` (additive; imports §3A hel
 > 1. **Migration 006 = `pm_roster` + `pm_watchlist` ONLY.** `pm_search_run` is deferred to its own LATER
 >    migration (CP3b search) and does NOT land in 006. The `pm_search_run` DDL below is CP3b design
 >    reference only.
-> 2. **Category attribution is SUPERSEDED (ruling C2.4).** Do NOT derive a whale's pinning category from
->    its "dominant `pm_category_stats` category" (as the transition note below states) — `pm_category_stats`
->    is cross-category by construction, so that would seed phantom (wallet, category) pairs the poller would
->    paper-trade. Seed `(wallet, category)` from **SCOUT PROVENANCE** (the recorded reason the whale was
->    pinned); an unresolvable category is listed and HALTED on, never guessed; `pm_category_stats` may only
->    VALIDATE a seeded pair, never generate one.
+> 2. **Category attribution — RULED 2026-08-24 by Jack (advisor ruling C2.4 REVERSED).** The watchlist
+>    (paper-traded set) is **EVERY `(wallet, category)` pair in `pm_category_stats` for the migrated legacy
+>    whale set** — with **NO minimum-resolved floor** (an n=3 pair is a watchlist pair; curation is the
+>    board's job at pin time, not the migration's), **`'unknown'`-category pairs INCLUDED** (they paper-trade
+>    like any other until Jack refines them), and **ALL categories live for paper** (MLB/UFC/NBA/Fed do NOT
+>    restrict the farm; cs2/ucl/soccer/epl/nhl/fifwc/nfl/unknown all paper-trade — real money still needs a
+>    P3 account-category attachment, so paper breadth costs nothing). This is BROADER than Ruling B's original
+>    wording just below ("the whale's **dominant** `pm_category_stats` category") — it is **every combo, not
+>    the dominant one**. `paper.seed_farm_roster` generates the pairs from `pm_category_stats`; nothing is
+>    "unresolved" (every pair exists by definition). The earlier advisor ruling **C2.4** (seed from scout
+>    provenance, halt-on-unresolved) was made without having read this plan, conflicted with Ruling B, was
+>    partly justified by an invented example, and has been **REVERSED** — see `CP3A_CONTAMINATION_GATE.md`.
+>    `config/pm_farm_pin_provenance.yaml` stays on disk as the historical scout attribution but is **NOT read
+>    at seed time**.
 
 ```sql
 -- 006: FARM ROSTER as PM-DB source of truth (Ruling B). Decouples site + weekly refresh from legacy
