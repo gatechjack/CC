@@ -33,6 +33,11 @@ from .category import derive_category_from_slug
 # scale-in moves size by >= ~1 contract, JSON float noise is ~1e-12, so 1e-6 cleanly separates them).
 _SIZE_EPS = 1e-6
 
+# Round-number /positions counts that signal an un-paginated API page cap (Ruling H). fetch_positions is
+# un-paginated + live-shared (NOT edited); a poll returning EXACTLY one of these is flagged as cap_suspect
+# so the tell reads itself instead of relying on someone eyeballing per-whale counts.
+_CAP_SIGNATURES = {50, 100, 250, 500}
+
 # pm_paper_config code DEFAULTS -- a missing pm_paper_config table/row degrades HONESTLY to these rather
 # than erroring (the migration also seeds them; these are the safety net on a read path).
 CONFIG_DEFAULTS: dict[str, float] = {
@@ -111,55 +116,71 @@ def is_genuinely_open(p) -> bool:
 
 async def poll_pinned(conn, *, client, now_ts: int | None = None,
                       poll_interval_sec: int | None = None, size_basis: float | None = None) -> dict:
-    """Poll `/positions` for PINNED whales (pm_watchlist status='pinned'), capture genuinely-open
-    positions IN THE PINNED CATEGORY as paper entries, diff scale-ins/reductions on tracked legs, and
-    mark vanished legs `pending_adjudication`. Per-whale isolation (one whale's error never aborts the
-    run). Idempotent via the open guard: a leg that already has an OPEN paper row is never re-captured.
+    """Poll `/positions` for PINNED whales (pm_watchlist status='pinned') and capture genuinely-open
+    positions as paper entries. Per whale: fetch once, filter to genuinely-open, then ROUTE each position
+    to its tier-1 derived category. A position whose derived category is in the whale's pinned set is
+    captured under that category; one that is NOT is counted + logged in `skipped` (Ruling F -- an invisible
+    exclusion is survivorship even when expected empty). Per-whale isolation: a fetch error leaves that
+    whale's pairs UN-polled, so their `pm_roster.last_polled_ts` stays stale (Ruling G -- absence is never
+    the signal). Idempotent via the open guard (a leg with an OPEN row is never re-captured).
 
-    Category filter: a whale is pinned per (wallet, category); only positions whose tier-1 slug category
-    matches the pinned category are captured, so a UFC-pinned whale's politics positions are NOT booked
-    (cross-category leakage would be the phantom-pairs bug one level down). Tier-1 coverage is ~85-90%,
-    so a mis-derived position in the pinned category is a COVERAGE gap (not a P&L inflation)."""
+    Under the reversed C2.4 every category a migrated whale trades is pinned, so the category filter is near
+    a no-op today (`skipped` ~0); it still matters once the farm league pins single-category whales, which is
+    exactly why a non-zero `skipped` -- a position deriving to a category the whale is NOT pinned in -- is a
+    tier-1 derivation surprise worth seeing."""
     now = now_ts if now_ts is not None else int(time.time())
     interval = int(poll_interval_sec if poll_interval_sec is not None else get_config(conn, "poll_interval_sec"))
     basis = float(size_basis if size_basis is not None else get_config(conn, "size_basis"))
 
-    by_wallet: dict[str, list[str]] = defaultdict(list)
+    by_wallet: dict[str, set] = defaultdict(set)
     for r in conn.execute("SELECT wallet, category FROM pm_watchlist WHERE status = 'pinned'").fetchall():
-        by_wallet[(r["wallet"] or "").lower()].append(r["category"])
+        by_wallet[(r["wallet"] or "").lower()].add(r["category"])
 
-    per_whale: list[dict] = []
-    for wallet, cats in by_wallet.items():
+    per_pair: list[dict] = []
+    skipped: list[dict] = []          # F: genuinely-open positions whose derived category is NOT pinned for the whale
+    cap_suspects: list[dict] = []     # H: round-number /positions counts
+    errors: list[dict] = []
+    for wallet, pinned_cats in by_wallet.items():
         try:
             positions = await client.fetch_positions(wallet)
-        except Exception as e:                                 # per-whale isolation (mirrors ingest.backfill_wallets)
-            per_whale.append({"wallet": wallet, "categories": sorted(set(cats)), "error": repr(e)[:200]})
+        except Exception as e:                                 # per-whale isolation; this whale's pairs stay UN-polled (G)
+            errors.append({"wallet": wallet, "categories": sorted(pinned_cats), "error": repr(e)[:200]})
             continue
         n_returned = len(positions)
+        if n_returned in _CAP_SIGNATURES:                      # H: cap signature reads itself
+            cap_suspects.append({"wallet": wallet, "positions_returned": n_returned})
         genuinely_open = [p for p in positions if is_genuinely_open(p)]
-        # cap-hit signal (D2): the shared client's fetch_positions is un-paginated; record the count so a
-        # future default-page cap is VISIBLE (my probe found no cap up to 57; a suspiciously round large
-        # count is the tell). No silent truncation.
-        for category in sorted(set(cats)):
-            res = _process_category(conn, wallet, category, genuinely_open, now, interval, basis)
+        by_cat: dict[str, list] = defaultdict(list)
+        for p in genuinely_open:
+            pc, _s = derive_category_from_slug(getattr(p, "event_slug", "") or "", getattr(p, "slug", "") or "")
+            if pc in pinned_cats:
+                by_cat[pc].append(p)
+            else:                                              # F: outside the whale's pinned set -- log with slug
+                skipped.append({"wallet": wallet, "condition_id": str(getattr(p, "condition_id", "") or ""),
+                                "derived_category": pc, "slug": str(getattr(p, "slug", "") or "")})
+        for category in sorted(pinned_cats):                   # EVERY pinned category (empty -> polled, found nothing)
+            res = _process_category(conn, wallet, category, by_cat.get(category, []), now, interval, basis)
             res["positions_returned"] = n_returned
             res["genuinely_open"] = len(genuinely_open)
-            per_whale.append(res)
+            conn.execute("UPDATE pm_roster SET last_polled_ts = ? WHERE wallet = ? AND category = ?",
+                         (now, wallet, category))              # G: mark this pair ACTUALLY polled
+            per_pair.append(res)
         if hasattr(conn, "commit"):
             conn.commit()
 
-    return {"per_whale": per_whale, "totals": _sum_totals(per_whale),
-            "now_ts": now, "poll_interval_sec": interval, "size_basis": basis}
+    totals = _sum_totals(per_pair)
+    totals["n_skipped_category"] = len(skipped)
+    totals["cap_suspects"] = len(cap_suspects)
+    totals["errors"] = len(errors)
+    return {"per_pair": per_pair, "skipped": skipped, "cap_suspects": cap_suspects, "errors": errors,
+            "totals": totals, "now_ts": now, "poll_interval_sec": interval, "size_basis": basis}
 
 
-def _process_category(conn, wallet: str, category: str, genuinely_open: list, now: int,
+def _process_category(conn, wallet: str, category: str, positions: list, now: int,
                       interval: int, basis: float) -> dict:
-    # positions in THIS pinned category (tier-1 slug derivation; consistent with ingest's categorization)
-    cat_pos: dict[tuple, Any] = {}
-    for p in genuinely_open:
-        pc, _src = derive_category_from_slug(getattr(p, "event_slug", "") or "", getattr(p, "slug", "") or "")
-        if pc == category:
-            cat_pos[(str(getattr(p, "condition_id", "") or ""), pos_outcome_index(p))] = p
+    # `positions` is already filtered to genuinely-open AND this pinned category (routed by poll_pinned).
+    cat_pos: dict[tuple, Any] = {
+        (str(getattr(p, "condition_id", "") or ""), pos_outcome_index(p)): p for p in positions}
 
     open_trades = {
         (r["condition_id"], _i(r["outcome_index"], 0)): r
@@ -217,9 +238,9 @@ def _process_category(conn, wallet: str, category: str, genuinely_open: list, no
         raise PaperError("poller drop: wallet=%s category=%s in_category=%d accounted=%d"
                          % (wallet, category, len(cat_pos), accounted))
 
-    return {"wallet": wallet, "category": category, "in_category": len(cat_pos), "captured": captured,
-            "adds": adds, "reductions": reductions, "touched": touched, "vanished": vanished,
-            "open_after": _count_open(conn, wallet, category)}
+    return {"wallet": wallet, "category": category, "polled": True, "in_category": len(cat_pos),
+            "captured": captured, "adds": adds, "reductions": reductions, "touched": touched,
+            "vanished": vanished, "open_after": _count_open(conn, wallet, category)}
 
 
 def _insert_entry(conn, wallet: str, category: str, p, now: int, interval: int, basis: float) -> None:
@@ -244,11 +265,10 @@ def _count_open(conn, wallet: str, category: str) -> int:
                         (wallet, category)).fetchone()[0]
 
 
-def _sum_totals(per_whale: list[dict]) -> dict:
+def _sum_totals(per_pair: list[dict]) -> dict:
     keys = ("in_category", "captured", "adds", "reductions", "touched", "vanished")
-    out = {k: sum(_i(r.get(k), 0) for r in per_whale) for k in keys}
-    out["errors"] = sum(1 for r in per_whale if r.get("error"))
-    out["pairs"] = sum(1 for r in per_whale if "category" in r)
+    out = {k: sum(_i(r.get(k), 0) for r in per_pair) for k in keys}
+    out["pairs"] = len(per_pair)
     return out
 
 

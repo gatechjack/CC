@@ -165,8 +165,59 @@ async def test_no_pinned_whales_is_honest_empty(tmp_path):
     client = _Client([_raw("0xc1")])
     with db.connect(p) as conn:
         res = await paper.poll_pinned(conn, client=client, now_ts=NOW)       # nothing pinned
-    assert res["per_whale"] == []
+    assert res["per_pair"] == []
     assert res["totals"]["captured"] == 0
+
+
+async def test_skipped_category_counted_and_logged(tmp_path):
+    """Ruling F: a genuinely-open position whose derived category is NOT pinned for the whale is counted +
+    logged with its slug (not silently dropped), and is NOT captured."""
+    p = _db(tmp_path)
+    client = _Client([
+        _raw("0xmlb", slug=MLB_SLUG, cur=0.5),                    # mlb -- pinned -> captured
+        _raw("0xufc", slug=UFC_SLUG, cur=0.5),                    # ufc -- NOT pinned for this whale -> skipped
+    ])
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT)                               # pinned for mlb only
+        res = await paper.poll_pinned(conn, client=client, now_ts=NOW)
+        cids = {r["condition_id"] for r in conn.execute("SELECT condition_id FROM pm_paper_trade")}
+    assert res["totals"]["captured"] == 1 and cids == {"0xmlb"}
+    assert res["totals"]["n_skipped_category"] == 1 and len(res["skipped"]) == 1
+    s = res["skipped"][0]
+    assert s["derived_category"] == UFC_CAT and s["slug"] == UFC_SLUG and s["wallet"] == WALLET
+
+
+async def test_last_polled_ts_distinguishes_polled_from_not(tmp_path):
+    """Ruling G: a polled (wallet,category) gets pm_roster.last_polled_ts set; a whale whose fetch ERRORS
+    leaves its pair's last_polled_ts NULL (absence is never the signal)."""
+    p = _db(tmp_path)
+
+    class _ErrClient:
+        async def fetch_positions(self, wallet):
+            if wallet == "0xerr":
+                raise RuntimeError("boom")
+            return [PositionRow.from_api(_raw("0xc1", cur=0.5))]
+
+    with db.connect(p) as conn:
+        _pin(conn, "0xok", MLB_CAT); _roster(conn, "0xok", MLB_CAT)
+        _pin(conn, "0xerr", MLB_CAT); _roster(conn, "0xerr", MLB_CAT)
+        res = await paper.poll_pinned(conn, client=_ErrClient(), now_ts=NOW)
+        ok = conn.execute("SELECT last_polled_ts FROM pm_roster WHERE wallet='0xok'").fetchone()[0]
+        err = conn.execute("SELECT last_polled_ts FROM pm_roster WHERE wallet='0xerr'").fetchone()[0]
+    assert ok == NOW                                             # polled
+    assert err is None                                          # NOT polled (fetch errored) -- distinguishable
+    assert len(res["errors"]) == 1 and res["errors"][0]["wallet"] == "0xerr"
+
+
+async def test_cap_suspect_flag_on_round_count(tmp_path):
+    """Ruling H: a poll returning EXACTLY a round number (50/100/250/500) is flagged cap_suspect."""
+    p = _db(tmp_path)
+    client = _Client([_raw("0x%d" % i, cur=1.0, redeemable=True) for i in range(50)])   # raw count 50 = cap signature
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT)
+        res = await paper.poll_pinned(conn, client=client, now_ts=NOW)
+    assert res["totals"]["cap_suspects"] == 1
+    assert res["cap_suspects"][0]["positions_returned"] == 50
 
 
 def test_get_config_seeded_and_degrades_when_absent(tmp_path):

@@ -424,19 +424,22 @@ MIGRATION_005: list[str] = [
 # migration 006 (2026-08-24, CP3a): farm roster + watchlist. pm_farm (P1, documented-only) is SUPERSEDED,
 # split into pm_roster (the universal (wallet, category) roster the weekly refresh + poller read) and
 # pm_watchlist (per-(wallet,category) farm status: 'watchlist' = candidate/Analyze-able, NOT paper;
-# 'pinned' = forward paper-trading -- the poller polls pinned rows). Keyed (wallet, category) so a whale's
-# PINNING CATEGORY is explicit provenance (C2.4: it is NOT derivable from pm_category_stats, which is
-# cross-category). search_run_id is a nullable seam for CP3b search -- pm_search_run is a LATER migration,
-# NOT this one (P2_PLAN §5.3 amended: 006 = roster + watchlist only).
+# 'pinned' = forward paper-trading -- the poller polls pinned rows). Keyed (wallet, category). Seeding is
+# EVERY (wallet,category) in pm_category_stats for the migrated whales (Ruling B; advisor ruling C2.4 was
+# REVERSED 2026-08-25 -- see CP3A_CONTAMINATION_GATE.md). search_run_id is a nullable seam for CP3b search
+# -- pm_search_run is a LATER migration, NOT this one (P2_PLAN §5.3 amended: 006 = roster + watchlist only).
 MIGRATION_006: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS pm_roster (
         wallet      TEXT NOT NULL,
         category    TEXT NOT NULL,
         user_name   TEXT,
-        source      TEXT,                          -- provenance of the (wallet,category) pair (e.g. 'scout_ufc_2026-08-21')
+        source      TEXT,                          -- how the (wallet,category) pair was seeded (e.g. 'pm_category_stats (Ruling B)')
         added_ts    INTEGER,
-        active      INTEGER NOT NULL DEFAULT 1,     -- the weekly refresh source is pm_roster WHERE active=1 (Ruling B)
+        active      INTEGER NOT NULL DEFAULT 1,     -- INTENDED weekly refresh source per Ruling B; the flip is NOT yet
+                                                    -- implemented (refresh still reads legacy agent_state) -- CP3a open item
+        last_polled_ts INTEGER,                     -- last poll that actually polled this (wallet,category); NULL = never polled
+                                                    -- (distinguishes 'polled, found nothing' from 'not polled at all' -- Ruling G)
         notes       TEXT,
         PRIMARY KEY (wallet, category)
     )

@@ -155,7 +155,7 @@ def test_migration_006_roster_and_watchlist(tmp_path):
     assert {"pm_roster", "pm_watchlist"} <= tables
     assert r_pk == {"wallet", "category"}
     assert w_pk == {"wallet", "category"}
-    assert {"user_name", "source", "added_ts", "active", "notes"} <= r_cols
+    assert {"user_name", "source", "added_ts", "active", "notes", "last_polled_ts"} <= r_cols
     assert {"status", "pinned_ts", "search_run_id", "updated_ts"} <= w_cols
     # defaults: roster.active=1, watchlist.status='watchlist'
     with db.connect(p) as conn:
