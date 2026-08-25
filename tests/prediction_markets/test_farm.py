@@ -163,8 +163,8 @@ def test_farm_page_200_and_three_states_rendered(tmp_path, monkeypatch):
         assert ">%s<" % c in html
     # unknown rendered honestly (tier-1 miss badge), NOT hidden
     assert "pm-badge-unknown" in html
-    # quarantine-zero reason shown, not a bare 0
-    assert "quarantined (7)" in html
+    # quarantine-zero reason shown, not a bare 0 (badge uses &nbsp; so 'quarantined (N)' does not wrap)
+    assert "pm-badge-quar" in html and "quarantined&nbsp;(7)" in html
 
 
 def test_farm_candidates_no_search_message(tmp_path, monkeypatch):
