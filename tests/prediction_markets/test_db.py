@@ -157,11 +157,12 @@ def test_migration_006_roster_and_watchlist(tmp_path):
     assert w_pk == {"wallet", "category"}
     assert {"user_name", "source", "added_ts", "active", "notes", "last_polled_ts"} <= r_cols
     assert {"status", "pinned_ts", "search_run_id", "updated_ts"} <= w_cols
-    # defaults: roster.active=1, watchlist.status='candidate' (CP3b-0 rename from 'watchlist')
+    # defaults: roster.active=1, watchlist.status='watchlist' (VESTIGIAL frozen 006 default; vocab is
+    # 'candidate'|'pinned' -- this asserts the immutable migration, NOT the current vocabulary; see db.py DDL note)
     with db.connect(p) as conn:
         conn.execute("INSERT INTO pm_roster (wallet, category) VALUES ('0xw', 'ufc')")
         conn.execute("INSERT INTO pm_watchlist (wallet, category) VALUES ('0xw', 'ufc')")
         active = conn.execute("SELECT active FROM pm_roster WHERE wallet='0xw'").fetchone()[0]
         status = conn.execute("SELECT status FROM pm_watchlist WHERE wallet='0xw'").fetchone()[0]
     assert active == 1
-    assert status == "candidate"
+    assert status == "watchlist"   # FROZEN 006 default (vestigial); vocab is 'candidate'|'pinned', but 006 is applied+immutable -- do NOT "fix" this to 'candidate'
