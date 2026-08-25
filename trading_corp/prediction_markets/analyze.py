@@ -481,9 +481,11 @@ def narrate(rep: PMAnalysisReport, *, narrator_enabled: bool = True, chat: objec
             log.warning("pm analyze: build chat model failed: %s", e)
             return NarrationResult(None, NULL_UNAVAILABLE, 0.0, 0, 0, None)
     try:
-        from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
-        resp = chat.invoke([SystemMessage(content=_SYSTEM_PROMPT),
-                            HumanMessage(content=_build_user_content(rep))])  # type: ignore[attr-defined]
+        # LangChain (role, content) tuple shorthand -- ChatAnthropic accepts it, so we need NO
+        # langchain_core.messages import here (keeps the fork's narrate decoupled; the injected-chat tests
+        # never import langchain).
+        resp = chat.invoke([("system", _SYSTEM_PROMPT),
+                            ("human", _build_user_content(rep))])  # type: ignore[attr-defined]
         text = str(getattr(resp, "content", "") or "").strip()
         usage = _extract_usage(resp)
         ti = int(usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0) or 0)
