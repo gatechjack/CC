@@ -340,17 +340,134 @@ MIGRATION_004: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_cos_category_roi ON pm_category_onesided_stats(category, roi DESC)",
 ]
 
-# migration 005 (paper trading -- NOT in this CP1 checkpoint; reserved here so the definition CANNOT drift,
-# e7 ruling 2026-08-23): pm_paper_trade.size_basis = FIXED CONTRACT/SHARE COUNT, NOT fixed dollars. Then
-# cost_basis = size_basis * entry_price parallels the external side's total_bought(NOTIONAL) * avg_price
-# (§13 dec 11 ROI-denominator parity; OQ-1 fixed-unit-for-comparability). Storing dollars would make
-# cost_basis mean something DIFFERENT on the two halves of the same scoreboard -- do NOT.
+# migration 005 (2026-08-24, CP3a): paper-trading forward record. pm_paper_trade carries the COMPLETE
+# open -> pending_adjudication -> closed|stale|void lifecycle in ONE migration (the _STATS_COLS lesson: a
+# lifecycle column that lands later than the code deriving it is the trap we already hit). Entry columns
+# are OBSERVATION-provenance, NOT fills -- the poller reads /positions (which carries NO fill ts), so
+# entry_observed_ts is observation time +/- poll_interval_sec and entry_price_avg_at_observation is the
+# whale's avgPrice at observation (scale-ins collapsed), NOT a paper fill price. size_basis = OUR fixed
+# paper stake = FIXED CONTRACT/SHARE COUNT (e7; NOT the whale's size, NOT dollars); then cost_basis =
+# size_basis * entry_price parallels the external side's total_bought(NOTIONAL) * avg_price (ROI-
+# denominator parity, dec 11 -- storing dollars would make cost_basis mean something DIFFERENT on the two
+# halves of the same scoreboard, do NOT). whale_size_at_observation is DISPLAY-ONLY (mirroring the whale's
+# size would import its bankroll into the signal). A vanished position is NOT classified on the
+# disappearance (a row vanishes on BOTH whale-exit AND settle) -> it goes to pending_adjudication, and the
+# weekly /closed-positions adjudicator (paper.py) decides closed(resolution) vs stale(whale_exit) by
+# whether a pm_closed_position row exists by market_end_date + grace_window -- biases DOWN (a whale exit
+# never books paper P&L). PK includes entry_observed_ts so a full-exit-then-re-enter on the same leg is a
+# NEW paper trade; paper.py's open guard enforces at most one OPEN row per (wallet, condition_id, outcome_index).
+MIGRATION_005: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_paper_trade (
+        wallet                          TEXT NOT NULL,
+        category                        TEXT NOT NULL,
+        condition_id                    TEXT NOT NULL,
+        outcome_index                   INTEGER NOT NULL DEFAULT 0,   -- two-sided legs preserved (migration-002 parity)
+        slug                            TEXT,
+        event_slug                      TEXT,
+        title                           TEXT,
+        outcome                         TEXT,
+        side                            TEXT NOT NULL DEFAULT 'BUY',  -- /positions holdings are long the outcome
+        entry_observed_ts               INTEGER NOT NULL,            -- OBSERVATION time (+/- poll_interval_sec), NOT a fill ts; in PK
+        entry_price_avg_at_observation  REAL,                        -- whale avgPrice at observation (scale-ins collapsed), NOT a fill price
+        whale_size_at_observation       REAL,                        -- whale /positions.size at observation -- DISPLAY-ONLY, never a sizing input
+        size_basis                      REAL,                        -- OUR fixed paper stake: FIXED CONTRACT/SHARE COUNT (e7), NOT whale size, NOT dollars
+        cost_basis                      REAL,                        -- size_basis * entry_price_avg_at_observation (ROI-denominator parity, dec 11)
+        poll_interval_sec               INTEGER,                     -- poll interval at capture -> the +/- observation bound self-documents
+        entry_basis                     TEXT,                        -- machine-readable provenance seam (e.g. 'positions_observation')
+        market_end_date                 TEXT,                        -- /positions.endDate -> reason "vanished BEFORE resolution"
+        n_observed_adds                 INTEGER NOT NULL DEFAULT 0,  -- observed size INCREASES on this open row (NOT new entries) -- diagnostic only
+        last_add_observed_ts            INTEGER,
+        n_observed_reductions           INTEGER NOT NULL DEFAULT 0,  -- observed size DECREASES (partial whale exit) -- no status change in CP3a
+        last_reduction_observed_ts      INTEGER,
+        last_observed_size              REAL,                        -- most-recent /positions size for this leg -> scale-in/reduction diff vs prior poll
+        last_observed_ts                INTEGER,                     -- most-recent poll that saw this leg OPEN (bounds the exit window)
+        status                          TEXT NOT NULL DEFAULT 'open',-- open | pending_adjudication | closed | stale | void
+        exit_observed_ts                INTEGER,                     -- when the position vanished from /positions -> pending_adjudication
+        resolved_ts                     INTEGER,                     -- from pm_closed_position at adjudication (close_source='resolution')
+        won                             INTEGER,                     -- paper won from resolution (NOT the whale's)
+        realized_pnl                    REAL,                        -- paper realized from resolution (NOT the whale's pnl)
+        close_source                    TEXT,                        -- resolution | whale_exit | manual -- provenance, not inferred
+        stale_ts                        INTEGER,
+        stale_reason                    TEXT,
+        mark_price                      REAL,                        -- weekly informational mark
+        mark_pnl                        REAL,
+        mark_ts                         INTEGER,
+        pnl_suspect                     INTEGER NOT NULL DEFAULT 0,  -- 3A parity: imported from the matched pm_closed_position at adjudication
+        suspect_reason                  TEXT,
+        source                          TEXT,                        -- e.g. 'poller'
+        pinned_ts                       INTEGER,
+        opened_ts                       INTEGER NOT NULL,            -- row-creation ts
+        updated_ts                      INTEGER,
+        PRIMARY KEY (wallet, condition_id, outcome_index, entry_observed_ts)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_pt_wallet_cat  ON pm_paper_trade(wallet, category)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_pt_status      ON pm_paper_trade(status)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_pt_open_leg    ON pm_paper_trade(wallet, condition_id, outcome_index, status)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_pt_pending_end ON pm_paper_trade(status, market_end_date)",
+    # config: tunable operational params. Key-value so it is trivially extensible; code (paper.get_config)
+    # carries DEFAULTS so a missing table/row degrades honestly to the default rather than erroring.
+    """
+    CREATE TABLE IF NOT EXISTS pm_paper_config (
+        key         TEXT PRIMARY KEY,
+        value       TEXT NOT NULL,
+        updated_ts  INTEGER
+    )
+    """,
+    # seed defaults; INSERT OR IGNORE never clobbers a tuned value (migration is version-gated anyway)
+    "INSERT OR IGNORE INTO pm_paper_config(key, value) VALUES ('poll_interval_sec', '300')",
+    "INSERT OR IGNORE INTO pm_paper_config(key, value) VALUES ('grace_window_sec', '172800')",
+    "INSERT OR IGNORE INTO pm_paper_config(key, value) VALUES ('size_basis', '100')",
+]
+
+# migration 006 (2026-08-24, CP3a): farm roster + watchlist. pm_farm (P1, documented-only) is SUPERSEDED,
+# split into pm_roster (the universal (wallet, category) roster the weekly refresh + poller read) and
+# pm_watchlist (per-(wallet,category) farm status: 'watchlist' = candidate/Analyze-able, NOT paper;
+# 'pinned' = forward paper-trading -- the poller polls pinned rows). Keyed (wallet, category). Seeding is
+# EVERY (wallet,category) in pm_category_stats for the migrated whales (Ruling B; advisor ruling C2.4 was
+# REVERSED 2026-08-25 -- see CP3A_CONTAMINATION_GATE.md). search_run_id is a nullable seam for CP3b search
+# -- pm_search_run is a LATER migration, NOT this one (P2_PLAN §5.3 amended: 006 = roster + watchlist only).
+MIGRATION_006: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_roster (
+        wallet      TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        user_name   TEXT,
+        source      TEXT,                          -- how the (wallet,category) pair was seeded (e.g. 'pm_category_stats (Ruling B)')
+        added_ts    INTEGER,
+        active      INTEGER NOT NULL DEFAULT 1,     -- INTENDED weekly refresh source per Ruling B; the flip is NOT yet
+                                                    -- implemented (refresh still reads legacy agent_state) -- CP3a open item
+        last_polled_ts INTEGER,                     -- last poll that actually polled this (wallet,category); NULL = never polled
+                                                    -- (distinguishes 'polled, found nothing' from 'not polled at all' -- Ruling G)
+        notes       TEXT,
+        PRIMARY KEY (wallet, category)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_roster_active ON pm_roster(active)",
+    """
+    CREATE TABLE IF NOT EXISTS pm_watchlist (
+        wallet         TEXT NOT NULL,
+        category       TEXT NOT NULL,
+        added_ts       INTEGER,
+        source         TEXT,
+        status         TEXT NOT NULL DEFAULT 'watchlist',  -- watchlist (candidate, NOT paper) | pinned (forward paper)
+        pinned_ts      INTEGER,
+        search_run_id  INTEGER,                            -- nullable seam for CP3b search (pm_search_run = later migration)
+        updated_ts     INTEGER,
+        PRIMARY KEY (wallet, category)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_watchlist_status ON pm_watchlist(status)",
+]
 
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
     (3, MIGRATION_003),
     (4, MIGRATION_004),
+    (5, MIGRATION_005),
+    (6, MIGRATION_006),
 ]
 
 

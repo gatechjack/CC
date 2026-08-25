@@ -15,7 +15,7 @@ import json
 import sys
 import time
 
-from trading_corp.prediction_markets import category, db, ingest, names, rosters, stats
+from trading_corp.prediction_markets import category, db, ingest, names, paper, rosters, stats
 
 
 def _now() -> int:
@@ -122,6 +122,53 @@ def _cmd_sync_names(args) -> int:
     return 0
 
 
+async def _cmd_paper_poll(args) -> int:
+    """Poll /positions for PINNED whales -> capture genuinely-open paper entries (CP3a). Reads the live
+    client read-only; writes ONLY pm_paper_trade in the PM DB (never the legacy DB, never the engine).
+    NO cron -- run as a one-shot for Jack to review before any schedule is installed."""
+    db.init_db(args.db)
+    async with _client() as c:
+        with db.connect(args.db) as conn:
+            res = await paper.poll_pinned(conn, client=c, now_ts=_now())
+    print(json.dumps(res, indent=2, default=str))
+    return 0
+
+
+def _cmd_paper_adjudicate(args) -> int:
+    """Resolve pending_adjudication paper trades off pm_closed_position (weekly). Sync; no network.
+    FAILS LOUD (exit 2) if a pinned-paper whale is not in the refresh set (C2.3) -- never warn-continue."""
+    db.init_db(args.db)
+    try:
+        with db.connect(args.db) as conn:
+            res = paper.adjudicate(conn, now_ts=_now())
+    except paper.PaperSubsetError as e:
+        print(json.dumps({"error": "subset_assertion_failed", "detail": str(e)}, indent=2), file=sys.stderr)
+        return 2
+    print(json.dumps(res, indent=2, default=str))
+    return 0
+
+
+def _cmd_migrate_roster(args) -> int:
+    """Seed pm_roster(active=1) + pm_watchlist(pinned) with EVERY (wallet, category) in pm_category_stats
+    for the migrated legacy whale set (Jack's ruling 2026-08-24; C2.4 REVERSED; P2_PLAN Ruling B). NO floor,
+    'unknown' included, ALL categories paper-trade. Idempotent. Nothing can be unresolved -- pairs are
+    generated from rows that exist. Reports the full eyeball table (wallet, user_name, category,
+    rows_in_category, status) -- every pair -- for Jack to review before the poller's first run."""
+    db.init_db(args.db)
+    roster = rosters.load_seed_roster(legacy_db_path=args.legacy_db, seed_yaml_path=args.seed_yaml)
+    wallets = [r["wallet"] for r in roster]
+    with db.connect(args.db) as conn:
+        res = paper.seed_farm_roster(conn, wallets=wallets, now_ts=_now())
+        res["pairs"] = paper.seeded_pairs_table(conn, wallets=wallets)
+        try:
+            res["subset_after"] = paper.assert_pinned_subset_of_refresh(conn)
+        except paper.PaperSubsetError as e:
+            res["subset_after"] = {"error": str(e)}
+    res["n_migrated_wallets"] = len(wallets)
+    print(json.dumps(res, indent=2, default=str))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm_cli", description="Prediction Markets P1 CLI")
     p.add_argument("--db", default=db.pm_db_path(), help="PM DB path (default: PM_DB_PATH or data/prediction_markets.db)")
@@ -164,6 +211,19 @@ def build_parser() -> argparse.ArgumentParser:
     sn.add_argument("--status", action="store_true",
                     help="print the last sync-names run (ts + counts) and exit; no write")
     sn.set_defaults(func=_cmd_sync_names, is_async=False)
+
+    pp = sub.add_parser("paper-poll", help="poll /positions for PINNED whales -> capture paper entries (CP3a)")
+    pp.set_defaults(func=_cmd_paper_poll, is_async=True)
+
+    pa = sub.add_parser("paper-adjudicate",
+                        help="resolve pending_adjudication paper trades off pm_closed_position (CP3a)")
+    pa.set_defaults(func=_cmd_paper_adjudicate, is_async=False)
+
+    mr = sub.add_parser("migrate-roster",
+                        help="seed pm_roster + pm_watchlist(pinned) = every (wallet,category) in pm_category_stats for the migrated whales (CP3a; Ruling B)")
+    mr.add_argument("--legacy-db", default=rosters.LEGACY_DB_DEFAULT)
+    mr.add_argument("--seed-yaml", default=None)
+    mr.set_defaults(func=_cmd_migrate_roster, is_async=False)
     return p
 
 
