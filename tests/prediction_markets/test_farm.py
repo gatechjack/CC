@@ -18,12 +18,19 @@ def _whale(conn, wallet, name=None, backfill=1):
                  (wallet, name, NOW, backfill))
 
 
-def _cstats(conn, wallet, category, *, n_resolved=None, n_excluded=0, roi=None, awp=None, net=None,
-            win_rate=None, n_cids=0, two_sided=None):
-    conn.execute(
-        "INSERT INTO pm_category_stats (wallet, category, n_resolved, n_excluded, roi, avg_win_price, "
-        "net_realized_pnl, win_rate, n_condition_ids, two_sided_pct, updated_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (wallet, category, n_resolved, n_excluded, roi, awp, net, win_rate, n_cids, two_sided, NOW))
+def _cstats(conn, wallet, category, *, n_resolved=None, n_excluded=None, roi=None, awp=None, net=None,
+            win_rate=None, n_cids=None, two_sided=None):
+    # Migration-004 caveat columns (two_sided_pct, n_condition_ids, ...) are NOT NULL DEFAULT 0. Insert ONLY
+    # the values we actually set, so an unset one falls back to its DEFAULT instead of an explicit NULL (which
+    # NOT NULL rejects). single_game_pct stays unset -> NULL (nullable; NULL-for-Fed by design).
+    cols = {"n_resolved": n_resolved, "n_excluded": n_excluded, "roi": roi, "avg_win_price": awp,
+            "net_realized_pnl": net, "win_rate": win_rate, "n_condition_ids": n_cids, "two_sided_pct": two_sided}
+    names, vals = ["wallet", "category", "updated_ts"], [wallet, category, NOW]
+    for col, v in cols.items():
+        if v is not None:
+            names.append(col); vals.append(v)
+    conn.execute("INSERT INTO pm_category_stats (%s) VALUES (%s)"
+                 % (", ".join(names), ", ".join(["?"] * len(vals))), vals)
 
 
 def _pin(conn, wallet, category, *, last_polled_ts=None, status="pinned"):

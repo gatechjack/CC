@@ -91,9 +91,9 @@
   {%- if sel_category %} <span class="pm-muted">&middot; {{ sel_category }}</span>{% endif %}</h2>
 {% if not candidates %}
   <div class="pm-empty pm-empty-nosearch" data-empty="no-search">
-    <strong>No search has run yet.</strong> Candidates are populated by Search (a later checkpoint).
-    This is deliberately <em>not</em> &ldquo;no candidates found&rdquo; and <em>not</em> a bare em dash &mdash;
-    no search has been run, so there is nothing to have found. (Honest-empty: a true statement about the world.)
+    <strong>No search has run yet.</strong> Candidates are populated by Search (a later checkpoint) &mdash;
+    until a search runs, there is nothing to have found. The list is empty because no search has run,
+    <em>not</em> because a search returned empty. (Honest-empty: a true statement about the world.)
   </div>
 {% else %}
   {# Same identity + caveats as pinned; the [Analyze]/[Pin] row actions are a LATER checkpoint, not this one. #}
