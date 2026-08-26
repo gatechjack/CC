@@ -182,3 +182,87 @@ th.pm-primary{color:var(--mono)}
 .pm-badge-src{background:rgba(148,163,184,.16); color:var(--muted); text-transform:none; font-weight:600}
 .pm-badge-quar{background:rgba(244,63,94,.16); color:var(--loss); border:1px solid rgba(244,63,94,.4)}
 .pm-badge-anom{background:rgba(245,158,11,.16); color:var(--warn)}
+
+/* ── farm league (CP3b-1) ─────────────────────────────────────────────────────────────────── */
+.pm-tabs{display:flex; flex-wrap:wrap; gap:.3rem; margin:.9rem 0 1rem; border-bottom:1px solid var(--edge)}
+.pm-tab{padding:.4rem .8rem; border-radius:.4rem .4rem 0 0; font-size:.85rem; color:var(--muted);
+  border:1px solid transparent; border-bottom:none}
+.pm-tab:hover{background:var(--pane2); color:var(--mono)}
+.pm-tab-active{background:var(--pane2); color:var(--mono); border-color:var(--edge2)}
+.pm-count{display:inline-block; min-width:1.4rem; text-align:center; padding:.05rem .45rem; border-radius:1rem;
+  background:var(--pane2); color:var(--muted); font-size:.78rem; font-weight:600}
+.pm-farm-table td{vertical-align:top}
+
+/* three-state zero -- NEVER-observed vs observed-nothing-open vs observed-open, distinct at a glance */
+.pm-poll-legend{font-size:.78rem; color:var(--muted); margin:.2rem 0 .8rem}
+.pm-pollcell{white-space:nowrap}
+.pm-poll{display:inline-flex; align-items:center; gap:.25rem; padding:.1rem .45rem; border-radius:.35rem;
+  font-size:.78rem; font-weight:600; border:1px solid transparent; white-space:nowrap}
+.pm-poll-never{color:var(--amber); background:rgba(245,158,11,.10); border-color:rgba(245,158,11,.45)}
+.pm-poll-empty{color:var(--muted); background:rgba(148,163,184,.08); border-color:var(--edge2)}
+.pm-poll-open{color:#bfdbfe; background:rgba(59,130,246,.16); border-color:rgba(59,130,246,.6)}
+
+/* quarantined-baseline zero (4751346/nfl): the 0 carries its reason, never a bare zero */
+.pm-quar-zero{display:inline-flex; align-items:center; gap:.3rem; color:var(--muted)}
+.pm-badge-unknown{font-size:.7rem; padding:.05rem .35rem; border-radius:.3rem; color:var(--muted);
+  background:rgba(148,163,184,.10); border:1px solid var(--edge2)}
+
+/* candidates 'no search has run yet' -- an honest-empty that must NOT read as 'nothing found' */
+.pm-empty-nosearch{border:1px dashed var(--edge2); background:rgba(59,130,246,.05); color:var(--mono);
+  padding:.9rem 1.1rem; border-radius:.5rem; line-height:1.55}
+
+/* ── CP3b-2: on-demand ANALYZE (button on both lists -> result panel) ─────────────────────────── */
+.pm-btn-sm{padding:.22rem .6rem; font-size:.76rem; border-radius:.35rem}
+.pm-actioncell{white-space:nowrap}
+.pm-analyze-btn[disabled]{opacity:.5; cursor:progress}
+.pm-analyze-btn.htmx-request{opacity:.5; cursor:progress}
+
+.pm-analyze-panel{margin-top:1rem}
+.pm-analyze-panel:empty{display:none}                     /* no empty box before the first analyze */
+.pm-analyze{background:var(--pane); border:1px solid var(--edge2); border-radius:.6rem; padding:1rem 1.1rem;
+  margin-top:1rem; animation:pm-fade .18s ease-out}
+@keyframes pm-fade{from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:none}}
+.pm-analyze-head{display:flex; align-items:flex-start; gap:1rem; margin-bottom:.6rem}
+.pm-analyze-actions{margin-left:auto; display:flex; align-items:center; gap:.5rem}
+
+/* verdict */
+.pm-verdict{background:var(--bg); border:1px solid var(--edge); border-left:3px solid var(--accent);
+  border-radius:.5rem; padding:.8rem .9rem; margin:.4rem 0 .8rem}
+.pm-verdict-text{margin:0; font-size:.95rem; line-height:1.5; color:var(--mono)}
+.pm-verdict-meta{margin-top:.5rem; font-size:.72rem; color:var(--muted)}
+.pm-verdict-meta code{background:var(--pane2); padding:.05rem .3rem; border-radius:.25rem}
+
+/* reasoned-null: a verdict-shaped card that states WHY there is no verdict, in words */
+.pm-verdict-null{display:flex; gap:.7rem; align-items:flex-start; border-left-color:var(--warn); background:rgba(245,158,11,.05)}
+.pm-null-tag{flex:none; font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+  padding:.15rem .45rem; border-radius:.3rem; background:rgba(245,158,11,.18); color:var(--warn); margin-top:.1rem}
+.pm-null-body strong{color:var(--mono)}
+.pm-null-body p{margin:.25rem 0 0; font-size:.8rem; line-height:1.5}
+.pm-null-llm_unavailable{border-left-color:var(--accent); background:rgba(59,130,246,.05)}
+.pm-null-llm_unavailable .pm-null-tag{background:rgba(59,130,246,.18); color:var(--accent)}
+.pm-null-no_resolved_positions{border-left-color:var(--muted); background:rgba(148,163,184,.06)}
+.pm-null-no_resolved_positions .pm-null-tag{background:rgba(148,163,184,.18); color:var(--muted)}
+.pm-null-daily_cap_hit{border-left-color:var(--loss); background:rgba(244,63,94,.06)}
+.pm-null-daily_cap_hit .pm-null-tag{background:rgba(244,63,94,.18); color:var(--loss)}
+
+/* data-state banners */
+.pm-analyze-state{padding:.55rem .8rem; border-radius:.45rem; font-size:.82rem; line-height:1.5; margin:.2rem 0 .8rem}
+.pm-state-empty{border:1px dashed var(--edge2); background:var(--pane2); color:var(--mono)}
+.pm-state-thin{border:1px solid rgba(245,158,11,.4); background:rgba(245,158,11,.08); color:var(--mono)}
+.pm-state-thin strong,.pm-state-empty strong{color:var(--warn)}
+
+/* deterministic profile grid (reuses .pm-profile/.pm-stat from CP2 Phase 3) */
+.pm-analyze-profile{margin:.2rem 0 .7rem}
+.pm-stat-bad{border-color:rgba(244,63,94,.4)}
+.pm-analyze-flags{margin:.2rem 0 .7rem; max-width:none}
+
+/* samples */
+.pm-analyze-samples{margin:.3rem 0 .6rem}
+.pm-analyze-samples>summary{cursor:pointer; font-size:.8rem; color:var(--muted); margin-bottom:.4rem}
+.pm-analyze-samples>summary:hover{color:var(--mono)}
+
+/* footer: cost accounting + provenance */
+.pm-analyze-foot{display:flex; gap:1rem; flex-wrap:wrap; align-items:baseline; margin-top:.6rem;
+  padding-top:.6rem; border-top:1px solid var(--edge); font-size:.76rem}
+.pm-analyze-cost strong{color:var(--mono)}
+.pm-analyze-prov{margin-left:auto}

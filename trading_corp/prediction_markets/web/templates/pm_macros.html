@@ -46,6 +46,18 @@
   {%- if href %}</a>{% endif -%}
 {%- endmacro %}
 
+{# ── analyze_button(wallet, category) ─────────────────────────────────────────────────────────────
+   CP3b-2: the on-demand [Analyze] action, IDENTICAL on the Pinned and the Candidate lists (identity is
+   the (wallet, category), not which list the button sat in). POST -> swaps the result into #pm-analyze-panel.
+   hx-disabled-elt="this" disables the button for the in-flight request so a double-click can't double-spend.
+   The deterministic report always renders; the verdict needs the Anthropic key (not wired -> llm_unavailable). #}
+{% macro analyze_button(wallet, category) -%}
+  <button class="pm-btn pm-btn-sm pm-analyze-btn"
+     title="Analyze {{ category }}: LLM narration over this whale's RESOLVED positions (deterministic report always renders; the verdict needs the Anthropic key, not wired yet)."
+     hx-post="/farm/analyze/{{ wallet }}/{{ category }}" hx-target="#pm-analyze-panel" hx-swap="innerHTML"
+     hx-disabled-elt="this">Analyze</button>
+{%- endmacro %}
+
 {# ── drillable(disp, wallet, category, drill) ─────────────────────────────────────────────────────
    Wrap a caveat value as a drill link (R5: every aggregate reaches its rows). Works WITHOUT JS (the
    href navigates to the whale page with the drill pre-applied); HTMX upgrades it to swap ONLY the

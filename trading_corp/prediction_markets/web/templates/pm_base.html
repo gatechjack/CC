@@ -21,9 +21,9 @@
       <nav class="pm-nav">
         {% set path = request.url.path %}
         <a href="/" class="pm-nav-link {% if path == '/' %}pm-nav-active{% endif %}">Scoreboard</a>
-        <span class="pm-nav-link pm-nav-disabled" title="Not in this checkpoint (CP3/CP4)">Farm league</span>
-        <span class="pm-nav-link pm-nav-disabled" title="Not in this checkpoint (CP3)">Search</span>
-        <span class="pm-nav-link pm-nav-disabled" title="Not in this checkpoint (CP4)">Paper</span>
+        <a href="/farm" class="pm-nav-link {% if path.startswith('/farm') %}pm-nav-active{% endif %}">Farm league</a>
+        <span class="pm-nav-link pm-nav-disabled" title="Not in this checkpoint (later CP3b)">Search</span>
+        <span class="pm-nav-link pm-nav-disabled" title="Not in this checkpoint (later CP3b)">Paper</span>
       </nav>
       <div class="pm-header-right">{% block header_extras %}{% endblock %}</div>
     </div>

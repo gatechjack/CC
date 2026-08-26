@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names
+from .. import stats, positions, names, farm, analyze
 from ..category import NON_SINGLE_GAME_CATEGORIES
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -221,3 +221,81 @@ async def whale_positions(request: Request, wallet: str, category: str, drill: s
     d = _clamp_drill(drill, category)
     data = await asyncio.to_thread(_load_drill, wallet, category, d)
     return templates.TemplateResponse(request, "partials/pm_position_rows.html", {"request": request, **data})
+
+
+# ── farm league (CP3b-1) -- READ-ONLY over existing tables: category tabs + Pinned list + Candidates ──
+
+def _clamp_farm_category(category: str | None) -> str | None:
+    """Hand-editable ?category= -> None (=All) or the raw value. ''/'all' => None. A category with no pinned
+    pairs still renders honest-empty (never a 422); the board is displayed, never filtered by validity."""
+    cat = category or None
+    if cat is not None and cat.strip().lower() in ("", "all"):
+        cat = None
+    return cat
+
+
+def _load_farm(category: str | None, now_ts: int) -> dict:
+    """Farm read on ONE short-lived connection, OFF the loop. Tabs = the pinned categories (data-driven);
+    the pinned rows (all, or the tab's category) with the three-state zero; the candidate rows (empty until
+    Search); a summary; freshness. Reads ONLY the PM DB. NO write, NO rollup, NO migration."""
+    with connect() as conn:
+        data = {
+            "tabs": farm.farm_categories(conn, farm.PINNED),
+            "pinned": farm.farm_rows(conn, status=farm.PINNED, category=category),
+            "candidates": farm.farm_rows(conn, status=farm.CANDIDATE, category=category),
+            "summary": farm.farm_summary(conn),
+            "refresh": stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts),
+        }
+    return data
+
+
+def _farm_context(request: Request, category: str | None, data: dict) -> dict:
+    return {"request": request, "sel_category": category or "", "poll_states": farm.POLL_LABELS, **data}
+
+
+@app.get("/farm", response_class=HTMLResponse)
+async def farm_page(request: Request, category: str | None = None):
+    """Farm-league page (read-only). Category tabs, the Pinned list (all 114 board-locked pairs, three-state
+    zero, edge-case reasons), the Candidates tab (empty until Search -- says so in words). Direct-linkable +
+    JS-off (the tabs are plain links; HTMX only upgrades them to a partial swap)."""
+    cat = _clamp_farm_category(category)
+    data = await asyncio.to_thread(_load_farm, cat, int(time.time()))
+    return templates.TemplateResponse(request, "pm_farm.html", _farm_context(request, cat, data))
+
+
+@app.get("/farm/list", response_class=HTMLResponse)
+async def farm_list(request: Request, category: str | None = None):
+    """The lists fragment (Pinned + Candidates for the selected tab) for HTMX tab swaps. Same read as the
+    full page; the tab bar swaps THIS partial. Freshness renders inside it, never without the rows."""
+    cat = _clamp_farm_category(category)
+    data = await asyncio.to_thread(_load_farm, cat, int(time.time()))
+    return templates.TemplateResponse(request, "partials/pm_farm_lists.html", _farm_context(request, cat, data))
+
+
+# ── on-demand ANALYZE (CP3b-2) -- the [Analyze] button on BOTH the Pinned and Candidate lists, SAME path ──
+# This is the ONE pm_web write surface besides sync-names: it writes pm_analysis_cache + pm_analysis_cost in
+# the PM DB (both inside the unit's ReadWritePaths=data). A cache hit spends nothing; the $20/day cap and the
+# "only successful verdicts are cached" rule live in analyze.analyze_whale. The key is NOT wired (e3) so today
+# every call returns the llm_unavailable reasoned-null and the deterministic report renders without a verdict.
+
+def _run_analyze(wallet: str, category: str, force: bool, now_ts: int) -> dict:
+    """Run Analyze on ONE short-lived connection, OFF the event loop. WRITES the PM DB (cache + cost ledger);
+    reads/writes ONLY prediction_markets.db (db._assert_not_legacy guards the path). Sync (analyze narrates
+    synchronously) so it drops straight into asyncio.to_thread with no nested event loop."""
+    with connect() as conn:
+        rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force)
+        day = analyze._utc_day(now_ts)
+        spent, n_calls = analyze.daily_cost(conn, day)
+    return {"report": rep, "flags": analyze.analysis_flags(rep),
+            "cost_today": spent, "cost_cap": analyze.PM_ANALYZE_DAILY_CAP_USD, "cost_day": day}
+
+
+@app.post("/farm/analyze/{wallet}/{category}", response_class=HTMLResponse)
+async def farm_analyze(request: Request, wallet: str, category: str, force: str | None = None):
+    """Analyze a (wallet, category) and swap in the result partial. POST because it may WRITE (narrate ->
+    cache + cost). `?force=1` re-analyzes (evicts the cached verdict first). Same route for a Pinned or a
+    Candidate row -- identity is the (wallet, category), not which list the button sat in."""
+    wallet = (wallet or "").lower()
+    do_force = str(force or "").strip().lower() in ("1", "true", "yes", "on")
+    data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, int(time.time()))
+    return templates.TemplateResponse(request, "partials/pm_analyze_result.html", {"request": request, **data})

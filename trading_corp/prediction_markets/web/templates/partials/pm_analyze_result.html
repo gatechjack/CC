@@ -1,0 +1,163 @@
+{% from "pm_macros.html" import flag_badges, whale_label %}
+{# CP3b-2 ANALYZE result (HTMX partial; swaps into #pm-analyze-panel). The deterministic report ALWAYS
+   renders in full; the verdict is a SEPARATE block that is either the narration or a reasoned-null with its
+   reason IN WORDS. Thinness travels with the verdict (a thin sample is marked; a zero-row slice refuses
+   honestly). The Anthropic key is NOT wired (e3) so today the verdict is the llm_unavailable reasoned-null. #}
+<section class="pm-analyze" data-wallet="{{ report.wallet }}" data-category="{{ report.category }}"
+         data-state="{{ report.data_state }}" data-null-reason="{{ report.null_reason or '' }}">
+
+  <div class="pm-analyze-head">
+    <h3 class="pm-h2">Analyze &middot;
+      {{ whale_label(report.user_name, report.wallet, href='/whale/' ~ report.wallet ~ '/' ~ report.category) }}
+      <span class="pm-sub2">&middot; {{ report.category }}</span></h3>
+    <div class="pm-analyze-actions">
+      {% if report.served_from_cache %}<span class="pm-chip" title="Served from pm_analysis_cache (skill_version {{ report.skill_version }}); this read spent nothing.">cached</span>{% endif %}
+      <button class="pm-btn pm-btn-sm" title="Re-run: evicts the cached verdict for this (wallet, category, skill_version) and analyzes again."
+              hx-post="/farm/analyze/{{ report.wallet }}/{{ report.category }}?force=1"
+              hx-target="#pm-analyze-panel" hx-swap="innerHTML">Re-analyze</button>
+    </div>
+  </div>
+
+  {# ── VERDICT (or reasoned-null) ─────────────────────────────────────────────────────────────────── #}
+  {% if report.verdict %}
+    <div class="pm-verdict">
+      <p class="pm-verdict-text">{{ report.verdict }}</p>
+      <div class="pm-verdict-meta">narrated by <code>{{ report.model }}</code> &middot;
+        {{ report.tokens_in }}+{{ report.tokens_out }} tok &middot; ${{ '%.4f'|format(report.cost_usd) }}</div>
+    </div>
+  {% else %}
+    <div class="pm-verdict pm-verdict-null pm-null-{{ report.null_reason }}">
+      <span class="pm-null-tag">no&nbsp;verdict</span>
+      <div class="pm-null-body">
+        <strong>{{ report.null_reason_label }}</strong>
+        {% if report.null_reason == 'llm_unavailable' %}
+          <p class="pm-muted">The deterministic report below is complete and unaffected. Narration needs the
+            Anthropic key <em>reachable from the pm_web process</em>, which is not wired yet &mdash; that is a
+            Key&nbsp;Vault / unit change (not something Analyze can do for itself). An importable library is
+            <strong>capability, not a working token</strong>.</p>
+        {% elif report.null_reason == 'daily_cap_hit' %}
+          <p class="pm-muted">The ${{ '%.2f'|format(cost_cap) }}/day analysis cost cap is reached for
+            {{ cost_day }} (UTC). The deterministic report still renders; narration resumes tomorrow (UTC) or
+            when the cap is raised.</p>
+        {% elif report.null_reason == 'no_resolved_positions' %}
+          <p class="pm-muted">There are no scoreable resolved positions in <code>{{ report.category }}</code>
+            for this wallet, so there is nothing to narrate.
+            {% if report.all_quarantined %}All {{ report.n_excluded }} closed position(s) here are
+            §3A-quarantined &mdash; a real record of <strong>zero scoreable</strong>, not "no activity".{% endif %}</p>
+        {% elif report.null_reason == 'disabled_by_flag' %}
+          <p class="pm-muted">Narration was disabled for this run. The deterministic report is unaffected.</p>
+        {% else %}
+          <p class="pm-muted">The narration call did not return a verdict. The deterministic report below is
+            unaffected.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {# ── reconciliation vs the weekly rollup (never silent) ────────────────────────────────────────── #}
+  {% if not report.reconciled %}
+    <div class="pm-recon pm-recon-bad"><span class="pm-recon-tag">STALE ROLLUP</span>
+      <span class="pm-recon-warn">{{ report.recon_note }}</span></div>
+  {% endif %}
+
+  {# ── data-state banner: thin marked, empty refuses honestly ────────────────────────────────────── #}
+  {% if report.is_empty %}
+    <div class="pm-analyze-state pm-state-empty">
+      <strong>No resolved positions</strong> in <code>{{ report.category }}</code> for this wallet
+      ({{ report.n_total_rows }} row(s) in slice{% if report.n_excluded %}, all {{ report.n_excluded }} §3A-quarantined{% endif %}).
+      Nothing to score &mdash; refused honestly, not a zero that reads as "no activity".
+    </div>
+  {% elif report.is_thin %}
+    <div class="pm-analyze-state pm-state-thin">
+      <strong>Thin sample:</strong> only {{ report.n_resolved }} scoreable resolved position(s) &mdash; below
+      the {{ report.min_resolved }}-position threshold. Rates below are shown but are <em>not</em> trustworthy
+      at this n. (This whale is displayed, never filtered out; the thinness travels with the number.)
+    </div>
+  {% endif %}
+
+  {# ── deterministic numbers (fresh from pm_closed_position; same formulas as the scoreboard) ─────── #}
+  <div class="pm-profile pm-analyze-profile">
+    <div class="pm-stat">
+      <div class="pm-stat-label">n resolved</div>
+      <div class="pm-stat-val">{{ report.n_resolved }}
+        {%- if report.all_quarantined %} <span class="pm-badge pm-badge-quar" title="all §3A-quarantined">quarantined&nbsp;({{ report.n_excluded }})</span>{% endif %}</div>
+      <div class="pm-stat-hint">of {{ report.n_total_rows }} total &middot; {{ report.n_excluded }} excluded &middot; {{ report.wins }}W/{{ report.losses }}L</div>
+    </div>
+    <div class="pm-stat">
+      <div class="pm-stat-label">roi (cost)<sup>&dagger;</sup></div>
+      <div class="pm-stat-val {% if report.roi is not none and report.roi >= 0 %}pm-gain{% elif report.roi is not none %}pm-loss{% endif %}">
+        {% if report.roi is not none %}{{ '%+.1f'|format(report.roi * 100) }}%{% else %}&mdash;{% endif %}</div>
+      <div class="pm-stat-hint">the metric &middot; notional {% if report.roi_notional is not none %}{{ '%+.1f'|format(report.roi_notional * 100) }}%{% else %}&mdash;{% endif %} (not ranked)</div>
+    </div>
+    <div class="pm-stat">
+      <div class="pm-stat-label">net pnl</div>
+      <div class="pm-stat-val {% if report.net_realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.0f'|format(report.net_realized_pnl) }}</div>
+      <div class="pm-stat-hint">cost_basis {{ '%.0f'|format(report.cost_basis) }} USDC</div>
+    </div>
+    <div class="pm-stat">
+      <div class="pm-stat-label">win%<sup>*</sup></div>
+      <div class="pm-stat-val">{% if report.win_rate is not none %}{{ '%.0f'|format(report.win_rate * 100) }}%{% else %}&mdash;{% endif %}</div>
+      <div class="pm-stat-hint">chalk indicator, never a rank key</div>
+    </div>
+    <div class="pm-stat">
+      <div class="pm-stat-label">avg win px</div>
+      <div class="pm-stat-val">{% if report.avg_win_price is not none %}{{ '%.2f'|format(report.avg_win_price) }}{% else %}&mdash;{% endif %}
+        {%- if report.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif report.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}</div>
+      <div class="pm-stat-hint">&ge;0.85 favorite-farming &middot; &lt;0.70 contrarian</div>
+    </div>
+    <div class="pm-stat">
+      <div class="pm-stat-label">1-sided roi<sup>&Dagger;</sup></div>
+      <div class="pm-stat-val">{% if report.onesided_roi is not none %}{{ '%+.1f'|format(report.onesided_roi * 100) }}% <span class="pm-upper-tag">&uarr;bound</span>{% else %}&mdash;{% endif %}</div>
+      <div class="pm-stat-hint">upper bound &middot; n={{ report.onesided_n if report.onesided_n is not none else '&mdash;'|safe }} &middot; excludes hedged</div>
+    </div>
+    <div class="pm-stat">
+      <div class="pm-stat-label">two-sided%</div>
+      <div class="pm-stat-val">{% if report.two_sided_pct is not none %}{{ '%.0f'|format(report.two_sided_pct * 100) }}%{% else %}&mdash;{% endif %}</div>
+      <div class="pm-stat-hint">{{ report.n_condition_ids if report.n_condition_ids is not none else 0 }} condition_ids &middot; hedge/MM tell</div>
+    </div>
+    <div class="pm-stat {% if report.data_quality %}pm-stat-bad{% endif %}">
+      <div class="pm-stat-label">data quality</div>
+      <div class="pm-stat-val">{% if report.data_quality %}<span class="pm-loss">{{ report.data_quality|upper }}</span>{% else %}clean{% endif %}</div>
+      <div class="pm-stat-hint">quar {{ '%.0f'|format(report.dq_count_pct * 100) }}% cnt / {{ '%.0f'|format(report.dq_dollar_pct * 100) }}% $</div>
+    </div>
+  </div>
+
+  {% if flags %}<div class="pm-flags pm-analyze-flags">{{ flag_badges(flags) }}</div>{% endif %}
+
+  {# ── illustrative rows (largest by |PnL|); drill for the full set ──────────────────────────────── #}
+  {% if report.samples %}
+    <details class="pm-analyze-samples" open>
+      <summary>Largest resolved positions by |PnL| ({{ report.samples|length }} shown) &middot;
+        <a class="pm-drill-link" href="/whale/{{ report.wallet }}/{{ report.category }}?drill=scoreable">all rows</a></summary>
+      <div class="pm-table-scroll">
+        <table class="pm-table">
+          <thead><tr><th>market</th><th>outcome</th><th class="pm-num">entry</th><th class="pm-num">cost</th><th class="pm-num">pnl</th></tr></thead>
+          <tbody>
+          {% for s in report.samples %}
+            <tr class="{% if s.pnl_suspect %}pm-row-suspect{% endif %}">
+              <td class="pm-mktline" title="{{ s.condition_id_short }}">{{ s.title or '—' }}{% if s.pnl_suspect %} <span class="pm-badge pm-badge-quar">quar</span>{% endif %}</td>
+              <td>{{ s.outcome or '—' }}{% if s.won == 1 %} <span class="pm-won-y">won</span>{% elif s.won == 0 %} <span class="pm-won-n">lost</span>{% endif %}</td>
+              <td class="pm-num">{% if s.avg_price is not none %}{{ '%.2f'|format(s.avg_price) }}{% else %}&mdash;{% endif %}</td>
+              <td class="pm-num">{% if s.cost_basis is not none %}{{ '%.0f'|format(s.cost_basis) }}{% else %}&mdash;{% endif %}</td>
+              <td class="pm-num {% if s.realized_pnl is not none and s.realized_pnl >= 0 %}pm-gain{% elif s.realized_pnl is not none %}pm-loss{% endif %}">{% if s.realized_pnl is not none %}{{ '%+.0f'|format(s.realized_pnl) }}{% else %}&mdash;{% endif %}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  {% endif %}
+
+  <div class="pm-analyze-foot">
+    <span class="pm-analyze-cost" title="One shared per-UTC-day counter in the PM DB (pm_analysis_cost). A cache hit spends nothing.">
+      analysis spend {{ cost_day }} (UTC): <strong>${{ '%.4f'|format(cost_today) }}</strong> / ${{ '%.2f'|format(cost_cap) }} cap</span>
+    <span class="pm-analyze-prov pm-muted">source: pm_closed_position (resolved only) &middot; skill v{{ report.skill_version }} &middot; {{ report.generated_ts|utcdate }}</span>
+  </div>
+
+  <p class="pm-legend">
+    <sup>&dagger;</sup> cost-based ROI (net / cost_basis) is the metric; notional ROI is legacy-comparison only. &nbsp;&middot;&nbsp;
+    <sup>*</sup> win% is a chalk indicator, <strong>not</strong> a rank key. &nbsp;&middot;&nbsp;
+    <sup>&Dagger;</sup> one-sided ROI is an <strong>upper bound</strong> (excludes hedged markets, §13A(f)). &nbsp;&middot;&nbsp;
+    numbers are fresh from the resolved rows; <strong>no /activity, no fills</strong> (this is a settled-position record, not a trade audit).
+  </p>
+</section>

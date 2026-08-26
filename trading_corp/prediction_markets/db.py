@@ -423,8 +423,17 @@ MIGRATION_005: list[str] = [
 
 # migration 006 (2026-08-24, CP3a): farm roster + watchlist. pm_farm (P1, documented-only) is SUPERSEDED,
 # split into pm_roster (the universal (wallet, category) roster the weekly refresh + poller read) and
-# pm_watchlist (per-(wallet,category) farm status: 'watchlist' = candidate/Analyze-able, NOT paper;
-# 'pinned' = forward paper-trading -- the poller polls pinned rows). Keyed (wallet, category). Seeding is
+# pm_watchlist (per-(wallet,category) farm status: 'candidate' = Analyze-able, NOT paper [CP3b-0 vocab
+# rename 2026-08-25 'watchlist'->'candidate']; 'pinned' = forward paper-trading -- the poller polls pinned
+# rows). Keyed (wallet, category). >>> TWO IMMUTABLE ODDITIES BELOW -- do NOT "tidy" either into a migration:
+#   (1) the TABLE keeps the name pm_watchlist (renaming = a rebuild of 114 board-locked rows; not worth it).
+#   (2) the CREATE has DEFAULT 'watchlist' -- VESTIGIAL. The vocabulary is 'candidate'|'pinned'; this default
+#       is preserved because 006 is APPLIED on live (sqlite_master stores `DEFAULT 'watchlist'` verbatim
+#       forever) so the source stays BYTE-IDENTICAL to the ledgered 006 (2fc9173). It never materializes
+#       (every insert writes an explicit status; 006 never re-runs). A CP3b-0 edit to 'candidate' was
+#       REVERTED for exactly this reason -- an applied migration is history, not code. Do NOT re-apply it,
+#       and do NOT "normalize" it via a later migration (that would rebuild the 114 rows to fix a value that
+#       never appears). Seeding is
 # EVERY (wallet,category) in pm_category_stats for the migrated whales (Ruling B; advisor ruling C2.4 was
 # REVERSED 2026-08-25 -- see CP3A_CONTAMINATION_GATE.md). search_run_id is a nullable seam for CP3b search
 # -- pm_search_run is a LATER migration, NOT this one (P2_PLAN §5.3 amended: 006 = roster + watchlist only).
@@ -461,6 +470,50 @@ MIGRATION_006: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_watchlist_status ON pm_watchlist(status)",
 ]
 
+# migration 007 (2026-08-25, CP3b-2): on-demand ANALYZE cache + cost ledger for the forked whale narrator.
+# NUMBERED ON LANDING -- 007 is simply the next integer after 006; it is NOT reserved. Analyze (CP3b-2) adds
+# its table before Search (pm_search_run) and the paper scoreboard (pm_paper_category_stats), so the analyze
+# cache genuinely IS 007; those deferred tables become 008/009+ WHENEVER THEY land (never pre-assigned).
+#   pm_analysis_cache: keyed (wallet, category, skill_version). skill_version REPLACES the legacy 24h TTL as
+#     the ONLY invalidation axis -- bump PM_ANALYZE_SKILL_VERSION (analyze.py) on any prompt/model/report-shape
+#     change and every prior row misses -> re-narrates. A cache HIT returns the stored row and spends NOTHING
+#     (no LLM call, no cost-ledger write). Only a SUCCESSFUL verdict is ever cached: reasoned-nulls
+#     (llm_unavailable / daily_cap_hit / disabled_by_flag / llm_error / no_resolved_positions) are NOT stored,
+#     so the moment the ANTHROPIC key is wired (e3, Jack's hands) the next analyze narrates fresh instead of
+#     serving a stale "llm_unavailable" from cache.
+#   pm_analysis_cost: ONE visible per-UTC-day counter (day_utc PK). The engine tracks this narrator's spend in
+#     agent_state; PM must NEVER write agent_state (isolation) -> its OWN ledger here. The $20/day cap
+#     (PM_ANALYZE_DAILY_CAP_USD) is read from code, the SPEND is recorded here so the accounting is auditable
+#     with a plain SELECT.
+MIGRATION_007: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_analysis_cache (
+        wallet         TEXT NOT NULL,
+        category       TEXT NOT NULL,
+        skill_version  TEXT NOT NULL,               -- replaces the legacy 24h TTL: the ONLY invalidation axis
+        verdict        TEXT,                         -- narration text (only successful verdicts are cached)
+        null_reason    TEXT,                         -- provenance of a cached non-verdict (in practice NULL: nulls aren't cached)
+        report_json    TEXT NOT NULL,                -- the deterministic PMAnalysisReport snapshot (rendered on a hit)
+        model          TEXT,                         -- LLM model id used (NULL on a reasoned-null)
+        cost_usd       REAL NOT NULL DEFAULT 0,      -- this call's spend (0 on cache hit / reasoned-null)
+        tokens_in      INTEGER NOT NULL DEFAULT 0,
+        tokens_out     INTEGER NOT NULL DEFAULT 0,
+        n_resolved     INTEGER,                       -- denormalized: at-a-glance thinness in a cache listing
+        created_ts     INTEGER NOT NULL,
+        PRIMARY KEY (wallet, category, skill_version)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_ac_created ON pm_analysis_cache(created_ts)",
+    """
+    CREATE TABLE IF NOT EXISTS pm_analysis_cost (
+        day_utc     TEXT PRIMARY KEY,                 -- 'YYYY-MM-DD' (UTC) -- ONE row per day, the whole ledger
+        usd         REAL NOT NULL DEFAULT 0,          -- accumulated Analyze LLM spend this UTC day
+        n_calls     INTEGER NOT NULL DEFAULT 0,       -- narrations that actually hit the API this day
+        updated_ts  INTEGER
+    )
+    """,
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -468,6 +521,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (4, MIGRATION_004),
     (5, MIGRATION_005),
     (6, MIGRATION_006),
+    (7, MIGRATION_007),
 ]
 
 
