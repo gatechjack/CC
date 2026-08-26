@@ -133,7 +133,9 @@ async def poll_pinned(conn, *, client, now_ts: int | None = None,
     basis = float(size_basis if size_basis is not None else get_config(conn, "size_basis"))
 
     by_wallet: dict[str, set] = defaultdict(set)
-    for r in conn.execute("SELECT wallet, category FROM pm_watchlist WHERE status = 'pinned'").fetchall():
+    # Stage-0 funnel gate (migration 008): active=1 excludes off-funnel (removed) pairs so a removed pair is
+    # NEVER polled and accrues no new paper trades. Drop this gate and a removed pair polls invisibly.
+    for r in conn.execute("SELECT wallet, category FROM pm_watchlist WHERE status = 'pinned' AND active = 1").fetchall():
         by_wallet[(r["wallet"] or "").lower()].add(r["category"])
 
     per_pair: list[dict] = []
@@ -285,8 +287,10 @@ def assert_pinned_subset_of_refresh(conn) -> dict:
     (pm_roster WHERE active=1 -- Ruling B's refresh source). If any pinned wallet is not refreshed, its
     vanished positions would sit in pending_adjudication forever. FAIL LOUD naming the offenders; never
     warn-and-continue. Read-only + idempotent; returns the membership report (also used at seed time)."""
+    # Stage-0 funnel gate (008): only ACTIVE pinned pairs are subject to this invariant -- a removed pair does
+    # not paper-trade (the poller skips it), so it needs no refresh guarantee; its pm_roster row is untouched.
     pinned = sorted({(r["wallet"] or "").lower() for r in conn.execute(
-        "SELECT DISTINCT wallet FROM pm_watchlist WHERE status='pinned'").fetchall()})
+        "SELECT DISTINCT wallet FROM pm_watchlist WHERE status='pinned' AND active=1").fetchall()})
     refreshed = {(r["wallet"] or "").lower() for r in conn.execute(
         "SELECT DISTINCT wallet FROM pm_roster WHERE active=1").fetchall()}
     unrefreshed = [w for w in pinned if w not in refreshed]
@@ -437,7 +441,7 @@ def seeded_pairs_table(conn, wallets=None) -> list[dict]:
          "FROM pm_watchlist w "
          "LEFT JOIN pm_roster r ON w.wallet = r.wallet AND w.category = r.category "
          "LEFT JOIN pm_category_stats s ON w.wallet = s.wallet AND w.category = s.category "
-         "WHERE w.status = 'pinned'")
+         "WHERE w.status = 'pinned' AND w.active = 1")   # Stage-0 funnel gate (008): removed pairs off the review table
     params: list = []
     if wallets:
         wl = sorted({(x or "").lower() for x in wallets if x})

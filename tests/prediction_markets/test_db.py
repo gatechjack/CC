@@ -50,8 +50,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 7  # migrations 001..007 recorded exactly once each
-    assert maxv == 7
+    assert count == 8  # migrations 001..008 recorded exactly once each (008 = CP3b Stage-0 pm_watchlist.active)
+    assert maxv == 8
 
 
 def test_pk_includes_outcome_index(tmp_path):

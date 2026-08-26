@@ -514,6 +514,37 @@ MIGRATION_007: list[str] = [
     """,
 ]
 
+# migration 008 (2026-08-26, CP3b Stage 0): reversible off-funnel removal for pm_watchlist pairs.
+# NUMBERED ON LANDING -- 008 is simply the next integer after 007 (live is at schema 7); NOT reserved.
+#
+# WHY A FLAG (`active`), NOT A STATUS VALUE -- do NOT "simplify" this into the status enum:
+#   Removal must be REVERSIBLE and must restore the pair's PRIOR status automatically. A boolean flip
+#   (active 1<->0) leaves `status` UNTOUCHED, so a removed 'pinned' pair returns as 'pinned' with its
+#   record intact -- no bookkeeping of "what was it before". Overloading status='removed' would DESTROY the
+#   value it overwrites (restore then means remembering candidate-vs-pinned by hand -- discipline that
+#   eventually goes wrong); deleting the pm_roster row would lose the pair entirely. The flag is the only
+#   one of the three that delivers reversibility STRUCTURALLY, not by discipline. (RULED 2026-08-26.)
+#
+#   removal_reason carries the THREE DISTINCT exclusion STATES in the DATA (not just a doc), because two of
+#   them return and one never does, and that difference must be readable from the row without a doc:
+#     'not_probed'       -- pending analysis, expected to return  (e.g. cbb: keyword never searched NCAAB)
+#     'dormant_calendar' -- measured dormant, returns next cycle  (e.g. fifwc: World Cup concluded)
+#     'structural'       -- permanent, never a subject            (e.g. unknown: tier-1 slug-derivation fail)
+#   removal_ts = when the pair was flipped to active=0.
+#
+# active DEFAULT 1: every existing row (the 114 board-locked pairs) and every future insert is IN-FUNNEL
+# until explicitly removed -- `ADD COLUMN NOT NULL DEFAULT 1` backfills the 114 existing rows to 1 at ALTER
+# time. Consumers gate `AND active=1` (Stage 0 gated the poller, the pinned-subset assertion, the
+# seeded-pairs review, and the farm tile/list/candidate-count reads; the Stage-1 paper rollup MUST gate it
+# too when it lands). THIS MIGRATION ONLY BUILDS THE MECHANISM -- it flips NOTHING. The 22-row removal write
+# (active=0 for cbb/fifwc/unknown) is a SEPARATE authorization.
+MIGRATION_008: list[str] = [
+    "ALTER TABLE pm_watchlist ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE pm_watchlist ADD COLUMN removal_reason TEXT",
+    "ALTER TABLE pm_watchlist ADD COLUMN removal_ts INTEGER",
+    "CREATE INDEX IF NOT EXISTS ix_pm_watchlist_active ON pm_watchlist(active)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -522,6 +553,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (5, MIGRATION_005),
     (6, MIGRATION_006),
     (7, MIGRATION_007),
+    (8, MIGRATION_008),
 ]
 
 
