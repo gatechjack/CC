@@ -252,3 +252,22 @@ def test_deactivated_pair_absent_from_query_scoreboard(tmp_path):
     assert "0xkeep" in board                               # active=1 -> ranked
     assert "0xpure" in board                               # absent from pm_watchlist -> still ranked (LEFT JOIN)
     assert "0xgone" not in board                           # active=0 -> excluded from the ranker too
+
+
+def test_query_scoreboard_join_is_pair_grain_no_fanout(tmp_path):
+    """The gate JOINs pm_watchlist on (wallet, category) -- the PAIR grain -- NOT on wallet alone. This test
+    (unlike the three-wallet one above) is the ONLY one that can catch a wallet-grain join: ONE wallet with
+    TWO categories, one deactivated + one active. A wallet-grain join would (a) FAN OUT (each cs row joins
+    every wl row for that wallet) AND (b) OVER-EXCLUDE / mis-include (the deactivated pair survives via the
+    active pair's wl row). Correct pair-grain -> EXACTLY ONE row, the ACTIVE category. Assert the total row
+    COUNT, not just presence."""
+    with db.connect(_fresh(tmp_path)) as conn:
+        _cstats(conn, "0xmulti", "nba")                    # active category -> must survive, rank normally
+        _cstats(conn, "0xmulti", "unknown")                # deactivated category -> must drop
+        _pin(conn, "0xmulti", "nba", active=1)
+        _pin(conn, "0xmulti", "unknown", active=1)
+        _remove(conn, "0xmulti", "unknown", "structural")  # deactivate ONLY the unknown pair
+        conn.commit()
+        board = stats.query_scoreboard(conn, min_resolved=1)
+    assert len(board) == 1                                 # fan-out + over-inclusion check (wallet-grain gives 2)
+    assert board[0]["wallet"] == "0xmulti" and board[0]["category"] == "nba"   # the ACTIVE pair, never dropped

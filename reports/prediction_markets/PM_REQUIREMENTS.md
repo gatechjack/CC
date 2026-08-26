@@ -64,9 +64,10 @@ exclusion is **per CATEGORY** (`cbb`, `fifwc`, `unknown` show nowhere; he will r
 code agent later and re-admit any that prove Kalshi-copyable). The Stage-4 seed writer **defaults new rows to
 `active=1`**, so a **newly discovered whale in an excluded category would insert as `active=1` and surface as
 a prospect** — a row-level flag cannot stop a pair that did not exist when the 22 were deactivated.
-**The requirement:** Stage 4's search needs a **category-level** exclusion of its own — either (a) a
-deactivated-category list the search filters against, or (b) search scoped at source to the 15 tile
-categories. **Mechanism NOT chosen; Stage 4 is unauthorized — do not implement.** Recorded so it is not
+**The requirement:** Stage 4's candidate SELECTION needs a **category-level** exclusion of its own — which
+whales SURFACE as prospects / are eligible to pin — e.g. a deactivated-category list the selection filters
+against. **This is a SELECTION / presentation concern, NOT an ingest concern: the PULL stays all-categories
+(see R5).** **Mechanism NOT chosen; Stage 4 is unauthorized — do not implement.** Recorded so it is not
 rediscovered the hard way (a whale leaking into an excluded category on the live board).
 
 ### R3 — Resolution comes from the resolution authority (gamma `/markets`), never `/closed-positions`.  *(the §B finding)*
@@ -80,6 +81,13 @@ For each number a screen shows, a test seeds a pair where the **required-source 
 value** and asserts the UI shows the **required** source. The missing-rollup substitution shipped because the
 only test asserted a number was *present*, never what it was *derived from*. This is the deepest anti-drift:
 a silent wrong-source fallback breaks the build.
+
+### R5 — INGEST STAYS ALL-CATEGORIES; category exclusion is a PRESENTATION / SELECTION concern, never an INGEST concern.  *(RULED 2026-08-26, item 3)*
+Jack raised scoping the whale-activity PULL to tracked categories only. **RULED AGAINST:**
+- It contradicts deferred-pending-analysis: `cbb` / `fifwc` / `unknown` are excluded PENDING ANALYSIS, and Jack intends to find copyable categories inside them later. If the pull stops collecting them, the evidence for that analysis stops accumulating.
+- `unknown` is a slug-derivation FAILURE, not a category — category-scoped ingestion cannot exclude what it failed to classify, and would hide the derivation gap.
+- Scoping ingestion to the live categories was already rejected earlier in this build; reversing it must be deliberate, not a side effect of a query fix.
+**Standing principle:** category exclusion lives at the QUERY layer (the `active` gate), the TILE set, and candidate SELECTION (R2) — NEVER at ingest. **The pull stays all-categories.**
 
 ---
 
