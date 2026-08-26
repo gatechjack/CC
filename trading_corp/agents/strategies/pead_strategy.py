@@ -42,6 +42,7 @@ from trading_corp.agents.strategies.pead_signal import (
 )
 from trading_corp.persistence.pead_observability import insert_scan_evaluation
 from trading_corp.data.rh_bars import RHBarsError, fetch_rh_daily_bars
+from trading_corp.brokers.robinhood import QuoteSymbolUnresolved  # rename-defense sentinel (hooks 1/2)
 from trading_corp.data.earnings_provider import EarningsProvider
 from trading_corp.persistence import db
 from trading_corp.persistence.models import (
@@ -499,6 +500,7 @@ class PEADStrategy:
                     "report_time": slot_by.get(cand.symbol),   # BMO/AMC slot carried for a future confirmation gate; None = unknown (do NOT default)
                     "name": cand.symbol,
                     "company_name": name_by.get(cand.symbol),   # General::Name (display-only; ticker stays the identity)
+                    "instrument_id": None,   # hook 3: rename-stable identity; populated below for live entries
                     # ledger trade-card fields
                     "entry_reference_price": entry_price,  # overwritten with realized fill (live)
                     "stop_price": prim["stop_level"],
@@ -515,6 +517,14 @@ class PEADStrategy:
             # real order at open+buffer (~9:31 ET) via _place_or_paper → data_exec.place.
             # The PAPER path is UNCHANGED (no real order; estimate qty + record now).
             if self._is_live():
+                # Hook 3: persist the rename-stable instrument_id at entry so a later
+                # ticker rename can be auto-healed by identity (see _reresolve...).
+                _resolver = getattr(broker, "instrument_id_for", None)
+                if _resolver is not None:
+                    try:
+                        order.extra["instrument_id"] = await _resolver(cand.symbol)
+                    except Exception:  # noqa: BLE001 -- best-effort; never block an entry
+                        pass
                 self._write_intent(order, max_hold_seconds=max_hold_seconds)
                 cash_remaining -= per_name               # deplete settled cash so the next name resizes (#5)
                 self.logger_agent.log_event(
@@ -621,6 +631,10 @@ class PEADStrategy:
         rows = self._open_rows()
         if not rows:
             return [], cadence
+        # Hook 3 (rename-defense): identity re-resolution of any rows flagged
+        # symbol_unresolved -- auto-heals a mid-hold ticker rename by instrument_id
+        # BEFORE the next exit eval. Runs every tick / any window. No-op if none flagged.
+        await self._reresolve_unresolved_symbols(broker)
         # ── Market-hours gate (the off-hours-exit fix) ───────────────────────
         # Only EVALUATE exits inside [open - eval_lead, close]; only PLACE at/after
         # open+buffer. Outside the window: no eval, no snapshot, no order, NO cancel.
@@ -639,7 +653,17 @@ class PEADStrategy:
             if prim is None:
                 continue                              # not a PEAD-managed row yet
             try:
-                last = float(await broker.quote(r["symbol"]))
+                last = float(await broker.quote(r["symbol"], strict=True))
+            except QuoteSymbolUnresolved:
+                # RENAMED / DELISTED ticker: NEVER derive a stop from a not-found $0.
+                # Flag for hook-3 identity re-resolution and SKIP exit eval this tick
+                # (this is the root fix for the ISSC phantom-stop-on-$0 bug).
+                self._flag_symbol_unresolved(r["order_id"], r["symbol"])
+                self.logger_agent.log_event(
+                    self.SLUG, "pead_symbol_unresolved",
+                    {"strategy": self.SLUG, "division": self.SLUG,
+                     "symbol": r["symbol"], "order_id": r["order_id"]})
+                continue
             except Exception as e:  # noqa: BLE001
                 log.debug("pead_strategy.manage: quote(%s) failed: %s", r["symbol"], e)
                 continue
@@ -768,6 +792,64 @@ class PEADStrategy:
                 "WHERE order_id=? AND result IS NULL",
                 (result, now, exit_price, pnl, rule, order_id),
             )
+
+    # ── Rename-defense (hooks 2 & 3) ─────────────────────────────────────────
+    def _flag_symbol_unresolved(self, order_id: str, symbol: str) -> None:
+        """Durably mark an open row whose ticker no longer resolves at the broker
+        (renamed/delisted) so (a) exit eval is SKIPPED instead of firing a phantom
+        stop off a $0 quote, and (b) hook-3 re-resolution can auto-heal it."""
+        now = datetime.now(timezone.utc).isoformat()
+        with db.connect(self.db_url) as conn:
+            conn.execute(
+                "UPDATE paper_trade_record SET extra_json=json_set(json_set("
+                "COALESCE(extra_json,'{}'),'$.symbol_unresolved',1),"
+                "'$.symbol_unresolved_ts',?) WHERE order_id=? AND result IS NULL",
+                (now, order_id),
+            )
+
+    async def _reresolve_unresolved_symbols(self, broker) -> int:
+        """Identity re-resolution (hook 3): for open rows flagged symbol_unresolved
+        that carry a persisted instrument_id, ask the broker for the CURRENT ticker of
+        that stable instrument (RH keeps the instrument across a rename; the CUSIP is
+        unchanged) and rewrite the ledger symbol + name. Auto-heals the ISSC->IA class
+        without a manual edit. Returns rows healed. No-op when the broker lacks
+        symbol_for_instrument_id or nothing is flagged."""
+        resolver = getattr(broker, "symbol_for_instrument_id", None)
+        if resolver is None:
+            return 0
+        with db.connect(self.db_url) as conn:
+            flagged = conn.execute(
+                "SELECT order_id, symbol, extra_json FROM paper_trade_record "
+                "WHERE result IS NULL "
+                "AND json_extract(extra_json,'$.symbol_unresolved')=1 "
+                "AND json_extract(extra_json,'$.instrument_id') IS NOT NULL"
+            ).fetchall()
+        healed = 0
+        for order_id, symbol, extra_json in flagged:
+            try:
+                iid = json.loads(extra_json or "{}").get("instrument_id")
+            except (TypeError, ValueError):
+                iid = None
+            if not iid:
+                continue
+            cur = await resolver(iid)
+            if cur and cur != symbol:
+                now = datetime.now(timezone.utc).isoformat()
+                with db.connect(self.db_url) as conn:
+                    conn.execute(
+                        "UPDATE paper_trade_record SET symbol=?, extra_json=json_set(json_set("
+                        "json_set(extra_json,'$.name',?),'$.symbol_unresolved',0),"
+                        "'$.symbol_reresolved_ts',?) WHERE order_id=? AND result IS NULL",
+                        (cur, cur, now, order_id),
+                    )
+                self.logger_agent.log_event(
+                    self.SLUG, "pead_symbol_reresolved",
+                    {"strategy": self.SLUG, "division": self.SLUG,
+                     "old_symbol": symbol, "new_symbol": cur,
+                     "instrument_id": iid, "order_id": order_id},
+                )
+                healed += 1
+        return healed
 
     def _reduce_open_qty(self, order_id: str, residual_qty: float) -> None:
         """Shrink an open row's qty to the residual after a PARTIAL fractional exit so

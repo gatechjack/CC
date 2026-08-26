@@ -47,7 +47,7 @@ class _FakeBroker:
     async def snapshot(self):
         return SimpleNamespace(equity=5000.0)
 
-    async def quote(self, symbol):
+    async def quote(self, symbol, *, strict=False):   # strict accepted (rename-defense); price unchanged
         return self.price
 
 

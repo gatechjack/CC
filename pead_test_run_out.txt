@@ -1,0 +1,32 @@
+﻿START pead_test_run
+2026-08-26T17:00:16Z
+=== overlaid file md5 (branch code under test) ===
+e90af223ef645153971208523ef9a16a  /home/azureuser/pead_rename_scratch/trading_corp/brokers/robinhood.py
+fc3d6de66c8fd2e88ed6c6f2e36b6668  /home/azureuser/pead_rename_scratch/trading_corp/agents/strategies/pead_strategy.py
+=== venv python ===
+Python 3.12.13
+=== pytest (box venv, scratch tree; engine + prod DB untouched) ===
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.0.3, pluggy-1.6.0 -- /home/azureuser/trading_corp/venv/bin/python
+rootdir: /home/azureuser/pead_rename_scratch
+collecting ... collected 15 items
+
+tests/test_pead_rename_defense.py::test_notfound_symbol_skips_exit_never_sells PASSED [  6%]
+tests/test_pead_rename_defense.py::test_identity_reresolution_auto_rewrites_issc_to_ia PASSED [ 13%]
+tests/test_pead_offhours_single_outcome.py::test_deferred_is_not_terminal_then_exactly_one_exit_at_open PASSED [ 20%]
+tests/test_pead_offhours_single_outcome.py::test_drift_marker_not_consumed_pre_open_fires_once_at_open PASSED [ 26%]
+tests/test_pead_offhours_gate.py::test_overnight_is_closed PASSED        [ 33%]
+tests/test_pead_offhours_gate.py::test_after_close_is_closed PASSED      [ 40%]
+tests/test_pead_offhours_gate.py::test_just_before_eval_window_is_closed PASSED [ 46%]
+tests/test_pead_offhours_gate.py::test_pre_open_window_evaluates_but_defers PASSED [ 53%]
+tests/test_pead_offhours_gate.py::test_eval_window_opens_at_30min_before PASSED [ 60%]
+tests/test_pead_offhours_gate.py::test_still_pre_open_just_before_buffer PASSED [ 66%]
+tests/test_pead_offhours_gate.py::test_session_places PASSED             [ 73%]
+tests/test_pead_offhours_gate.py::test_placement_opens_at_open_plus_buffer PASSED [ 80%]
+tests/test_pead_offhours_gate.py::test_weekend_is_closed PASSED          [ 86%]
+tests/test_pead_offhours_gate.py::test_config_lead_and_buffer_overrides PASSED [ 93%]
+tests/test_pead_offhours_gate.py::test_half_day_close_shrinks_window PASSED [100%]
+
+============================== 15 passed in 7.77s ==============================
+PYTEST_RC=0
+DONE pead_test_run (scratch+stage cleaned)

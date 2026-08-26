@@ -39,6 +39,20 @@ from trading_corp.persistence.models import FillEvent, Position, ProposedOrder
 
 log = logging.getLogger(__name__)
 
+
+class QuoteSymbolUnresolved(Exception):
+    """Raised by RobinhoodBroker.quote(symbol, strict=True) when `symbol` resolves
+    to NO Robinhood instrument (renamed / delisted) -- as opposed to a genuine
+    no-quote (the instrument exists but has no recent trade). Lets a caller
+    re-resolve the symbol by identity instead of pricing it as 0.0 and firing a
+    phantom stop. Only ever raised when the caller opts in via strict=True; the
+    default quote() path (strict=False) is byte-for-byte unchanged for every
+    existing division that shares this broker."""
+
+    def __init__(self, symbol: str):
+        super().__init__(f"symbol does not resolve to a Robinhood instrument: {symbol!r}")
+        self.symbol = symbol
+
 # Module-level shared login state. robin_stocks itself is a process-wide
 # singleton, so we just need to ensure rs.login() runs at most once across
 # all RobinhoodBroker instances.
@@ -738,7 +752,7 @@ class RobinhoodBroker(Broker):
             available_buying_power=available_bp,
         )
 
-    async def quote(self, symbol: str) -> float:
+    async def quote(self, symbol: str, *, strict: bool = False) -> float:
         """Last trade price for a stock or crypto symbol. Returns 0.0 for options.
 
         robin_stocks deprecated `"last_trade_price"` as a `priceType` value
@@ -750,6 +764,10 @@ class RobinhoodBroker(Broker):
 
         Crypto symbols use the unified "{CODE}/USD" form (matching Coinbase)
         and route to rs.crypto.get_crypto_quote.
+
+        strict=True is opt-in (default False keeps EVERY existing caller unchanged):
+        when the equity path yields no price, a renamed/delisted symbol (resolving
+        to no instrument) raises QuoteSymbolUnresolved instead of returning 0.0.
         """
         if " " in symbol or "#" in symbol:
             return 0.0
@@ -782,7 +800,55 @@ class RobinhoodBroker(Broker):
         prices = await asyncio.to_thread(rs.stocks.get_latest_price, [symbol])
         if prices and prices[0]:
             return float(prices[0])
+        # No price from the equity path. In STRICT mode, distinguish a RENAMED /
+        # DELISTED ticker (resolves to no instrument) from a genuine no-quote (the
+        # instrument exists, e.g. a halt) so the caller can re-resolve by identity
+        # instead of pricing it as 0.0 and firing a phantom stop. strict=False
+        # (default) keeps the original behavior for every other division.
+        if strict:
+            try:
+                inst = await asyncio.to_thread(rs.stocks.get_instruments_by_symbols, symbol)
+            except Exception as e:  # noqa: BLE001 -- a lookup failure is treated as unresolved
+                log.debug("RobinhoodBroker.quote strict lookup failed for %s: %s", symbol, e)
+                inst = None
+            if not inst or not isinstance(inst[0], dict) or not inst[0].get("id"):
+                raise QuoteSymbolUnresolved(symbol)
         return 0.0
+
+    async def instrument_id_for(self, symbol: str) -> str | None:
+        """Stable Robinhood instrument_id for `symbol`, persisted at PEAD entry so a
+        later ticker rename can be followed by IDENTITY (the instrument_id is
+        rename-stable; the CUSIP is unchanged). Additive; no existing caller."""
+        if not symbol or not symbol.isalpha() or len(symbol) > 5:
+            return None
+        self._require_connected()
+        import robin_stocks.robinhood as rs  # type: ignore
+        try:
+            data = await asyncio.to_thread(rs.stocks.get_instruments_by_symbols, symbol)
+        except Exception as e:  # noqa: BLE001
+            log.debug("RobinhoodBroker.instrument_id_for(%s) failed: %s", symbol, e)
+            return None
+        if data and isinstance(data[0], dict):
+            return data[0].get("id")
+        return None
+
+    async def symbol_for_instrument_id(self, instrument_id: str) -> str | None:
+        """Current ticker for a stable instrument_id (follows a rename -- e.g. the
+        ISSC->IA instrument keeps its id). Used by PEAD identity re-resolution.
+        Additive; no existing caller affected."""
+        if not instrument_id:
+            return None
+        self._require_connected()
+        import robin_stocks.robinhood as rs  # type: ignore
+        try:
+            inst = await asyncio.to_thread(rs.stocks.get_instrument_by_id, instrument_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug("RobinhoodBroker.symbol_for_instrument_id(%s) failed: %s", instrument_id, e)
+            return None
+        if isinstance(inst, dict):
+            sym = inst.get("symbol")
+            return sym or None
+        return None
 
     # ------------------------------------------------------------------
     # Option-specific data — used by PMCCAgent
