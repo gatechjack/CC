@@ -1,0 +1,28 @@
+﻿START pead_part3_deploy (STAGED: Gate-A + backup + install 2 files; NO restart, NO sudo)
+2026-08-26T18:20:59Z
+=== GATE-A (shared robinhood.py + pead_strategy.py == what we built against) ===
+box robinhood.py   =230e7807720da3cb71af74c77daf396a  (need 230e7807720da3cb71af74c77daf396a)
+box pead_strategy.py=9b9cfdadf8a86c2d5c0db6709127c155  (need 9b9cfdadf8a86c2d5c0db6709127c155)
+=== GATE-A (staged files == branch) ===
+staged robinhood.py=e90af223ef645153971208523ef9a16a (need e90af223ef645153971208523ef9a16a)
+staged pead_strategy.py=fc3d6de66c8fd2e88ed6c6f2e36b6668 (need fc3d6de66c8fd2e88ed6c6f2e36b6668)
+=== PRE-RESTART DIVISION STATE (blast radius = ALL divisions restart) ===
+-- OPEN positions per division (paper_trade_record result IS NULL) --
+  OPEN bitunix_futures        1
+  OPEN robinhood_pead         34
+-- pending_order rows (PEAD intents etc.) --
+-- proposed_order NON-terminal (new/queued/unconfirmed/partially_filled) --
+GATE_FUTURES_OPEN=1 GATE_MACE_NONTERM=0 GATE_PMCC_NONTERM=0 GATE_PENDING_TOTAL=0
+REVIEW: confirm GATE_FUTURES_OPEN=0 (futures flat) and MACE/PMCC non-terminal=0 above.
+NOTE: futures position tracking + SFP reconciler in-flight state may live outside paper_trade_record
+      -- confirm bitunix_futures/bitunix_sfp are flat/reconciled via their own state before restart.
+-- RH session pickle freshness (a STALE pickle risks a device-approval hang on restart) --
+-rw-rw-r-- 1 azureuser azureuser 1396 2026-08-20T18:19:56Z /home/azureuser/.tokens/robinhood.pickle
+-- current engine (PID + live-divisions) --
+  37596 /bin/sh /usr/bin/xvfb-run --auto-servernum --server-args=-screen 0 1280x800x24 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+=== BACKUP + INSTALL (files only; engine NOT restarted) ===
+installed robinhood.py=e90af223ef645153971208523ef9a16a pead_strategy.py=fc3d6de66c8fd2e88ed6c6f2e36b6668
+DEPLOY_STAGED_OK: both files in place + md5-verified; engine NOT restarted (import-time change is INERT until restart).
+NEXT (deliberate window): run pead_part3_restart_verify.ps1 (single restart + all-division verify).
+ROLLBACK (no restart done yet): cp the two *.bak_pre_part3_20260826 back over the originals.
+DONE pead_part3_deploy

@@ -1,0 +1,25 @@
+﻿POSTRESTART READ
+2026-08-26T18:28:24Z
+MainPID=89366 active=active NRestarts=0 (pre-restart PID was 37596)
+=== all division registrations (journal since restart) ===
+  bitunix_sfp=1
+  robinhood_pead=1
+  bitunix_futures=1
+  kalshi_copy_trading=1
+  robinhood_pmcc=1
+  robinhood_mace=1
+=== robinhood broker + mace + hook1 evidence ===
+2026-08-26 18:26:20,837 INFO trading_corp.agents.data_exec: Registered robinhood broker for division=robinhood_pmcc (paper=False)
+2026-08-26 18:26:20,837 INFO trading_corp.agents.data_exec: Registered paper-exec broker for division=robinhood_ira (paper=True)
+2026-08-26 18:26:20,837 INFO trading_corp.agents.data_exec: Registered robinhood broker for division=robinhood_pead (paper=False)
+2026-08-26 18:26:20,837 INFO trading_corp.agents.data_exec: Registered robinhood broker for division=robinhood_mace (paper=False)
+2026-08-26 18:26:39,886 INFO trading_corp.main: Robinhood MACE wired (execution_mode=live, config_hash=93a9fd2f46b8; standby-gated, 4 loops online; go-live BLOCKED on cancel-path fix).
+2026-08-26 18:26:40,287 INFO mace.loops: MACE daily-slots scheduler online.
+2026-08-26 18:26:40,287 INFO mace.loops: MACE manage scheduler online.
+2026-08-26 18:26:40,288 INFO mace.loops: MACE reconcile scheduler online.
+2026-08-26 18:26:40,290 INFO mace.loops: MACE weekly-calendar scheduler online.
+ERRORS(Traceback/FATAL/CRITICAL)=29
+hook1_live(quote strict in deployed file)=1 reresolve=2
+futures_open=1 pead_open=34
+healthz=000
+DONE POSTRESTART READ

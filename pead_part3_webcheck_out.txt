@@ -1,0 +1,33 @@
+﻿START webcheck
+2026-08-26T18:30:59Z
+=== ALL listening TCP ports ===
+*:3389
+*:443
+*:80
+0.0.0.0:22
+0.0.0.0:8000
+127.0.0.1:2019
+127.0.0.1:8081
+127.0.0.1:9091
+127.0.0.53%lo:53
+[::1]:3350
+[::]:22
+=== web/dashboard startup in boot journal (since restart) ===
+2026-08-26 18:29:54,035 INFO trading_corp.web.sfp_cockpit_view: SFP cockpit routes registered at /sfp
+2026-08-26 18:29:54,038 INFO trading_corp.web.sfp_construct_cockpit_view: SFP CONSTRUCT cockpit routes registered at /sfp/construct
+2026-08-26 18:29:54,041 INFO trading_corp.web.sfp_llm_analysis_view: SFP LLM Analysis routes registered at /sfp/llm
+2026-08-26 18:29:54,102 INFO trading_corp.main: Web command center listening on http://0.0.0.0:8000
+=== engine main PID + child procs (web thread?) ===
+    639       1 /home/azureuser/trading_corp/venv/bin/python /home/azureuser/market_context/market_context_recorder.py
+    645       1 /home/azureuser/trading_corp/venv/bin/python /home/azureuser/card_assets/card_watcher.py
+    677       1 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp.agents.strategies.kalshi_crypto_v2_observer
+  40483       1 /home/azureuser/trading_corp/venv/bin/python trading_corp/scripts/pm_web.py
+  89366       1 /bin/sh /usr/bin/xvfb-run --auto-servernum --server-args=-screen 0 1280x800x24 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+  89380   89366 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+  89383   89380 /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/playwright/driver/node /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/playwright/driver/package/cli.js run-driver
+=== curl probes ===
+  http://127.0.0.1:8000/healthz -> 200
+  http://127.0.0.1:8000/ -> 000
+  http://127.0.0.1:80/ -> 308
+  http://127.0.0.1:8080/healthz -> 000
+DONE webcheck

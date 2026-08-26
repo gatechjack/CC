@@ -1,0 +1,46 @@
+﻿START errdiag
+2026-08-26T18:29:29Z
+=== error-line CATEGORIES since restart (18:26) ===
+  total_error_lines=18
+  mention_pead=0
+  mention_robinhood=0
+  mention_QuoteSymbolUnresolved=0
+  mention_ImportError/NameError=0
+  mention_poly_kalshi=6
+  mention_kalshi=6
+  mention_bitunix=0
+=== last 30 error lines (verbatim) ===
+Loading Market Data |Loading Market Data /2026-08-26 18:26:01,488 ERROR pykalshi._base: Response 403: Error body: {"error":{"code":"Trading_is_not_currently_allowed_in_Washington_on_markets_in_Sports,_Elections,_Politics,_Culture,_Tech_and_Science,_and_Mentions.","message":"Trading is not currently allowed in Washington on markets in Sports, Elections, Politics, Culture, Tech and Science, and Mentions."}}
+2026-08-26 18:26:01,489 ERROR trading_corp.main: poly_kalshi loop cycle failed: 403: Trading is not currently allowed in Washington on markets in Sports, Elections, Politics, Culture, Tech and Science, and Mentions. (Trading_is_not_currently_allowed_in_Washington_on_markets_in_Sports,_Elections,_Politics,_Culture,_Tech_and_Science,_and_Mentions.) [POST /portfolio/events/orders]
+Traceback (most recent call last):
+    raise AuthenticationError(
+pykalshi.exceptions.AuthenticationError: 403: Trading is not currently allowed in Washington on markets in Sports, Elections, Politics, Culture, Tech and Science, and Mentions. (Trading_is_not_currently_allowed_in_Washington_on_markets_in_Sports,_Elections,_Politics,_Culture,_Tech_and_Science,_and_Mentions.) [POST /portfolio/events/orders]
+Loading Market Data |Loading Market Data /2026-08-26 18:26:04,631 ERROR yfinance: $BTCUSDT: possibly delisted; no price data found  (period=1d) (Yahoo error = "No data found, symbol may be delisted")
+Loading Market Data -Loading Market Data \2026-08-26 18:26:10,254 ERROR pykalshi._base: Response 403: Error body: {"error":{"code":"Trading_is_not_currently_allowed_in_Washington_on_markets_in_Sports,_Elections,_Politics,_Culture,_Tech_and_Science,_and_Mentions.","message":"Trading is not currently allowed in Washington on markets in Sports, Elections, Politics, Culture, Tech and Science, and Mentions."}}
+2026-08-26 18:26:10,254 ERROR trading_corp.main: poly_kalshi loop cycle failed: 403: Trading is not currently allowed in Washington on markets in Sports, Elections, Politics, Culture, Tech and Science, and Mentions. (Trading_is_not_currently_allowed_in_Washington_on_markets_in_Sports,_Elections,_Politics,_Culture,_Tech_and_Science,_and_Mentions.) [POST /portfolio/events/orders]
+Traceback (most recent call last):
+    raise AuthenticationError(
+pykalshi.exceptions.AuthenticationError: 403: Trading is not currently allowed in Washington on markets in Sports, Elections, Politics, Culture, Tech and Science, and Mentions. (Trading_is_not_currently_allowed_in_Washington_on_markets_in_Sports,_Elections,_Politics,_Culture,_Tech_and_Science,_and_Mentions.) [POST /portfolio/events/orders]
+Loading Market Data -Loading Market Data \Loading Market Data |Loading Market Data /Loading Market Data -2026-08-26 18:26:10,872 ERROR yfinance: $BTCUSDT: possibly delisted; no price data found  (period=1d) (Yahoo error = "No data found, symbol may be delisted")
+2026-08-26 18:26:22,581 ERROR trading_corp.agents.data_exec: Broker connect failed for division=fidelity_joint broker=paper-exec: BrowserType.launch: ENOENT: no such file or directory, stat '/home/azureuser/.cache/ms-playwright/firefox-1511/firefox/lock'
+2026-08-26 18:26:22,585 INFO trading_corp.agents.logger: [audit] data_exec/broker_fallback_to_paper {"division": "fidelity_joint", "error": "BrowserType.launch: ENOENT: no such file or directory, stat '/home/azureuser/.cache/ms-playwright/firefox-1511/firefox/lock'"}
+2026-08-26 18:26:22,586 ERROR trading_corp.agents.data_exec: Broker connect failed for division=fidelity_401k broker=paper-exec: Fidelity shared session bootstrap previously failed: BrowserType.launch: ENOENT: no such file or directory, stat '/home/azureuser/.cache/ms-playwright/firefox-1511/firefox/lock'. Restart the process to retry.
+2026-08-26 18:26:22,587 INFO trading_corp.agents.logger: [audit] data_exec/broker_fallback_to_paper {"division": "fidelity_401k", "error": "Fidelity shared session bootstrap previously failed: BrowserType.launch: ENOENT: no such file or directory, stat '/home/azureuser/.cache/ms-playwright/firefo...
+2026-08-26 18:26:35,551 ERROR trading_corp.data.earnings_provider: EODHD HTTP 404 for BTC/USD.US: HTTP Error 404: Not Found -- RAISING (quota/API failure, not a data gap)
+2026-08-26 18:26:36,355 ERROR yfinance: BTC/USD: No earnings dates found, symbol may be delisted
+=== any Traceback blocks (3 lines context) ===
+Traceback (most recent call last):
+  File "/home/azureuser/trading_corp/trading_corp/main.py", line 5247, in _scheduled_poly_kalshi_loop
+    await loop.poll_cycle(_client)
+  File "/home/azureuser/trading_corp/trading_corp/agents/strategies/poly_kalshi_copy_trader.py", line 225, in poll_cycle
+--
+Traceback (most recent call last):
+  File "/home/azureuser/trading_corp/trading_corp/main.py", line 5247, in _scheduled_poly_kalshi_loop
+    await loop.poll_cycle(_client)
+  File "/home/azureuser/trading_corp/trading_corp/agents/strategies/poly_kalshi_copy_trader.py", line 225, in poll_cycle
+=== web server / healthz ===
+LISTEN 0      4096               *:80              *:*          
+curl / : 000
+curl /healthz : 000
+curl /telemetry/pead : 000
+DONE errdiag
