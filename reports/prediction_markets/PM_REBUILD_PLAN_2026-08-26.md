@@ -1,0 +1,330 @@
+# Prediction Markets — Rebuild Plan (paper-lane-first)
+
+**Date:** 2026-08-26 · **Branch context:** `prediction-markets-cp3b2-2026-08-25` @ `f4fb61d` · live schema **7** · `origin/prod-live 95e78c4`.
+**Mode:** PLAN ONLY. No code, no commits, no branches, no migrations, no deploys, no box mutation. Built from `PM_STATE_REVIEW_2026-08-26.md` (accepted) + a read-only re-read of `paper.py` + the read-only Kalshi listing probe (§F-2, run 2026-08-26).
+**How to read:** §A is the target (self-contained). **§B is the one thing wrong with the proposed sequence — read it first.** §C is the corrected stage plan. §D–§G are the required cross-cutting sections (deletions, decisions RULED, the truncation correction, anti-drift). Facts are labeled; **opinions/recommendations are in §I only.** Nothing is softened.
+
+> **★ RULINGS LANDED 2026-08-26.** Jack ruled all five §F decisions, ran the read-only Kalshi listing probe, then **ruled the tile set: 15 categories IN.** This revision records them: **§B** carries the *gamma-is-the-resolution-authority* framing (not "route around a bug" — the correct source asserting itself). **§F** is now **DECISIONS RULED** with Jack's reasoning. **§F-2** carries the **MEASURED probe + the 15-IN ruling** (3 of the 15 are operator overrides of the probe output; the reasons are recorded). **§C Stage 0** carries the reversible removal of the 22 off-funnel pairs. **Stage 1** leads with the empty-list expectation. **Excluded categories are recorded with THREE DISTINCT states — never a flat "not copyable"** (not-probed / measured-dormant / structural). **Inclusion is ruled; the ticker inventory for nhl/ufc/fed is NOT measured** — three standalone probes stay on the books (§F-2-PROBES).
+
+---
+
+## §A. THE TARGET (Jack's requirements, verbatim — the spec)
+
+> "There is a main Predictions Market Dashboard. This is where all the subdivisions (Account-Category) have pinned whales. Clicking on the Account-Category tile, takes me to the detailed (Account-Category) dashboard that shows live trades and stats for the live sub-division.
+> On the main Predictions Market Dashboard, there is one other menu option: Farm League. When you click on the farm league main screen, there are the category only tiles. These are the Kalshi copyable Polymarket categories. When you click on a category, you get another detailed Dashboard for the category. On this page, you see the pinned whales in this category at the top section (with buttons: Demote and Promote and Analyze). The pinned whales do paper trades and clicking on a whale take you to a detailed page with all their paper trades and stats. On this page, you also see the farm league prospects in a bottom section (with buttons: Promote to watchlist). The farm league is dynamically populated. Move a whale to the watchlist is manually controlled by operator. The prospects do not paper trade, the only stats they have come from the completed trade api. Clicking on a prospect will take me to a detailed page of all their closed trades. Clicking on the analyze button will help the operator decide to promote (or not) to the watchlist to begin paper trading."
+
+**THREE LISTS, THREE BASES (one whale-category pair can be on all three at once, showing different numbers on each):**
+- **PROSPECT** (farm league, bottom section) → **completed trades only** (`pm_closed_position`). Does not paper-trade. Action: Promote-to-watchlist. *(Screen word: "Prospect"; code `status='candidate'`.)*
+- **PINNED / WATCHLIST** (farm league, top section) → **our paper trades only** (`pm_paper_trade`). Actions: Demote, Promote, Analyze. *(Screen word: "Watchlist"; code `status='pinned'`.)*
+- **LIVE** (attached to an Account-Category sub-division) → **live trades only** (P3 tables — not built). **P3, out of scope.**
+
+**⭐ ANALYZE IS THE POINT.** Rough prospect stats are a screen; **Analyze is what decides promotion.** A defect in what Analyze is FED outranks any imprecise number on a screening list. Weight the plan toward Analyze's *input*, not its prose.
+
+Source: `PLATFORM_VISION.md:14-25`, `P1_PLAN.md §2:25-36`. Full recovery + line cites: `PM_STATE_REVIEW_2026-08-26.md §0`. Canonical vocabulary map: §H (RULED §F-3).
+
+---
+
+## §B. THE SEQUENCE IS RIGHT — BUT STAGE 1 AS WRITTEN DOES NOT WORK. (loudest, first)
+
+**The core reframe is correct:** the biased source is only platform-wide because the paper lane is incomplete; finish the paper lane and the bias quarantines to prospects (where Analyze judges). Paper-lane-first is the right order. **But the stated Stage-1 content is insufficient, and here is the fact that breaks it:**
+
+**FACT (`paper.py:335-379`): the adjudicator determines a paper trade's win/loss by looking up a matching `pm_closed_position` row — the same loss-omitted source.**
+- `:354-357` — on a `pending_adjudication` row it `SELECT won,realized_pnl … FROM pm_closed_position WHERE wallet=? AND condition_id=? AND outcome_index=?`.
+- `:358-366` — **match → `status='closed'`, `won` copied from that row**, paper P&L booked.
+- `:367-373` — **no match + past end_date+grace → `status='stale'`, `close_source='whale_exit'`, EXCLUDED from realized stats** (`:341`).
+
+**Consequence:** a whale loss that `/closed-positions` OMITS (the measured bias — `PM_STATE_REVIEW §5`) produces **no `pm_closed_position` row → no match → the paper trade is booked `stale`, not `closed-lost` → it is dropped from the paper realized stats.** So **the paper lane inherits the exact same loss-omission**, and a paper rollup built on it would show the **same inflated win-rate** the completed lane does. Finishing the paper lane *as built* moves the bias from `pm_category_stats` to `pm_paper_category_stats` — it does not quarantine it. **That is worse than today:** today the pinned list is visibly borrowing from the wrong lane; after a naive Stage 1 it would have its own freshly-computed-looking table with the same distortion and nothing on screen saying so.
+
+**THE FIX THAT MAKES THE REFRAME TRUE:** Stage 1 must **re-base the adjudicator on the resolution authority (gamma `/markets`), not on `pm_closed_position` row-presence.** On a vanished/pending paper trade, ask gamma "did this market resolve, and which outcome_index won?" → `won = (our outcome_index == winning_outcome_index)`; book paper P&L on our own `size_basis` (the existing `_paper_realized`, `paper.py:327-332`, is already correct and already independent of the whale's PnL). Only "market not resolved" → `stale` (a genuine pre-resolution whale exit). This makes the paper lane's loss-completeness **independent of the `/closed-positions` omission** — which is the whole point of the reframe. **Without this change, Stage 1 fails its own purpose.**
+
+**★ FRAMING (Jack's ruling — record it THIS way, not as a workaround):** re-basing the adjudicator on gamma is **not** "routing around a bug in `/closed-positions`." **Whether a market resolved and which side won is a fact about the MARKET, not about any wallet's position records.** Gamma `/markets` **is** the resolution authority; `/closed-positions` was never the right source for resolution — it was *convenient*, and convenience became the system of record. Re-basing on gamma is **the correct source asserting itself**, which it always should have. This is the **same root cause the review named — convenience-as-system-of-record — surfacing in a THIRD place:** (1) the pinned rollup borrowing the completed lane, (2) the loss-omission baked into the completed foundation, (3) the adjudicator matching closed-position rows. All three are one mistake wearing three hats. Fixing the adjudicator's *source* is therefore not a patch; it is the platform finally reading resolution from where resolution actually lives.
+
+**Second, smaller sequence issue:** **Promote-to-watchlist (Stage 3) is coupled to Search (Stage 4)** — pinning a *prospect* requires prospects to exist, and there are zero candidates until Search runs. So the prospect→pinned action is dormant until Stage 4. Promote/Demote on *pinned* whales are independent (92 pinned pairs remain after Stage 0). Recommendation: keep Stage 3 for the pinned-side actions + build Promote-to-watchlist's mechanics in Stage 3 but expect it to be exercisable only after Stage 4 (or fold that one action into Stage 4). Flagged, not fatal.
+
+Everything else in the proposed order stands.
+
+---
+
+## §C. THE STAGES (corrected)
+
+Migrations are **numbered on landing** — live is at schema 7. **Stage 0 has already BUILT migration 008** (`pm_watchlist.active`; branch `prediction-markets-stage0-2026-08-26` @ `7cec332`, box-scratch green, NOT yet applied to live), so the downstream numbers are now FIXED: **Stage 1 = 009, Stage 4 = 010, Stage 5 = 011.** If landing order still changes, the numbers follow the landing order, not this plan. Every stage carries the CP3a gate rhythm: **build → box-scratch (pytest actuals + render/verify against a WAL-safe copy of live) → report with SHA → HALT → Jack authorizes deploy separately** (code deploy + any pm_web restart on the root `az vm run-command` channel; poller/adjudicator/cron runs + any live-DB write are separate Jack-authorized acts).
+
+### STAGE 0 — REMOVE THE 22 OFF-FUNNEL PAIRS (funnel hygiene; RULED)
+
+**Ruling:** remove the pinned pairs in the three excluded categories — **cbb (3) + fifwc (8) + unknown (11) = 22 of 114.** The tile set covers the remaining **92** pairs across the 15 IN categories. **REMOVE = stop polling + stop paper-trading. It does NOT mean destroy their record.**
+
+**Mechanism — BUILT + box-scratch GREEN 2026-08-26** (branch `prediction-markets-stage0-2026-08-26` @ `7cec332`; migration-on-copy proven, live untouched; NOT deployed). **ONE removal path for all 22:**
+- **Migration 008 (BUILT):** add to `pm_watchlist` → `active INTEGER NOT NULL DEFAULT 1`, `removal_reason TEXT NULL`, `removal_ts INTEGER NULL`, + index `ix_pm_watchlist_active`. `status` semantics (`candidate`/`pinned`) unchanged.
+- **"Remove from funnel" = `active=0` + `removal_reason` + `removal_ts`.** SEVEN consumer reads each add `AND active=1`: `poll_pinned` (the poller), the pinned-subset assertion, the seeded-pairs review, the farm tile / list / candidate-count reads, and `query_scoreboard` (the F-4 prospects ranker). **The adjudicator reads `pm_paper_trade`, NOT `pm_watchlist` — nothing to gate there; in-flight trades of a removed pair settle naturally.** An inactive pair is off-poll, off-paper — but **its `pm_watchlist` row AND all existing `pm_paper_trade` rows persist untouched** (history preserved).
+- **Reversible by design:** `active=1` restores the pair to the funnel **in its prior status** (pinned stays pinned) with its record intact — nothing was deleted and the flag preserves status. cbb returns after one probe; fifwc returns next World Cup cycle — **both re-enter as themselves, not as new pairs.**
+- **`unknown` uses the identical path** (`active=0`, `removal_reason='structural_slug_failure'`); it simply never gets flipped back — no separate mechanism (per the ruling). Its reversibility machinery exists but goes unused.
+- **The 22, with the THREE DISTINCT reasons recorded per category** (§F-2): cbb(3) `removal_reason='pending_analysis_ncaab_not_probed'` · fifwc(8) `removal_reason='dormant_calendar_returns_next_wc'` · unknown(11) `removal_reason='structural_slug_failure'`.
+- **Why an `active` flag, not `status='removed'` or a roster delete:** a flag **composes** with status (doesn't overload the candidate→pinned lifecycle) and makes reversal a single boolean that **restores the prior status** — directly serving "re-enter with whatever record they had." A `status='removed'` value would lose whether the pair was candidate or pinned; deleting `pm_roster` rows would force a re-seed on return. Both rejected for the reversibility requirement.
+
+**Scope — NOT touched:** `pm_paper_trade` rows (NEVER deleted on removal); legacy; the completed/paper rollups' math; `poly_kalshi_mlb`.
+
+**Dependencies:** none on other stages. **Deploy is a THREE-RUNG LADDER (below), NOT two steps** — migration → gated-code deploy → row write. The **one-time UPDATE of the 22 rows** (`active=0` + reasons) is **rung 3**, a separate Jack-authorized live-DB write, and it MUST come after the gated code is live (else it changes nothing on the box). Stage 0 can only fold into Stage 1's deploy once all three rungs complete.
+
+**Migration: 008 (BUILT)** — the `active`/`removal_reason`/`removal_ts` columns + `ix_pm_watchlist_active`.
+
+**Reuse / replace / delete:** REUSE `pm_watchlist`/`pm_roster`; ADD the `AND active=1` gate to the SEVEN consumer reads (poller, subset assertion, seeded-pairs review, farm tile/list/candidate-count, `query_scoreboard`). DELETE nothing (explicitly: no `pm_paper_trade` deletion; the adjudicator is untouched — it reads `pm_paper_trade`).
+
+**Verification (BASIS tests):**
+1. Remove a pair → assert it is off the poll set (poller skips it) AND no new paper trades accrue AND **its existing `pm_paper_trade` rows still exist** AND `removal_reason` is set.
+2. **Reversibility:** flip `active=1` → assert it re-enters as **PINNED** (prior status) with its old paper rows intact, **not** as a new pair.
+3. `unknown` → same path, `removal_reason='structural_slug_failure'`; documented as never-scheduled-to-return.
+4. Count: after the removal write, active pinned pairs = **92** across the 15 IN categories (114 − 22).
+
+**★ STAGE 0 DEPLOY SEQUENCE — THE THREE-RUNG LADDER (RECORDED 2026-08-26; do NOT collapse to two).**
+An earlier report listed only two authorizations (migration, then the 22-row write) and OMITTED the deploy between them. That two-step order is UNSAFE: the `AND active=1` gates live only on the branch, not on the box. If the row write lands while the box still runs UNGATED readers, `active=0` changes nothing — the poller keeps polling the 22 and the tiles keep showing them. The safe order is three rungs, each verified, row write LAST:
+
+- **Rung 1 — apply migration 008 to live** (ADD the `active` / `removal_reason` / `removal_ts` columns; the 114 rows land `active=1`). No behaviour change: the deployed (ungated) code ignores the new columns. **No pm_web restart needed** — every pm_web read of `pm_watchlist` is name-based (§ item-3b finding: `farm.*` explicit-column/scalar via `sqlite3.Row`; `query_scoreboard` selects no `wl` columns). **Verify:** live schema 7→8; `active` + `removal_reason` + `removal_ts` present; 114 rows `active=1` / 0 `active=0`; `pm_paper_trade` 102 unchanged; `/healthz` 200 and `/farm` still renders 200 on the OLD code (proves ADD COLUMN did not break the running pm_web).
+- **Rung 2 — deploy the gated code** (`db.py` + `paper.py` + `farm.py` + `stats.py`) and **restart pm_web** to load it. With all rows still `active=1`, behaviour is IDENTICAL (poller polls all 114; tiles show all) — the deploy is behaviour-neutral, which is what makes it safe to verify before any data changes. **Verify:** deployed files byte-match the branch; `/farm` + `/scoreboard` render 200; a box-scratch (or live read) confirms the gated queries execute against the live schema without error; a poller dry-check still sees 114 pinned pairs.
+- **Rung 3 — the 22-row `active=0` write** (cbb×3=`not_probed`, fifwc×8=`dormant_calendar`, unknown×11=`structural`). ONLY NOW do the live gates (deployed at rung 2) take effect. **Verify:** live `active=0` count = 22 with the three reason strings; the poller skips them; `/farm` shows 15 categories / 92 pairs; `query_scoreboard` and the farm lists no longer contain the 22; `pm_paper_trade` rows for the removed pairs are still present (history preserved).
+
+Each rung is independently reversible (rung 1: the columns are inert; rung 2: redeploy the prior code; rung 3: flip `active=1` back). The three rungs are separate Jack authorizations.
+
+**Size: SMALL.** A migration + an `active=1` gate on seven reads + a one-time 22-row UPDATE (Jack-run) — but a THREE-rung deploy (above), not one.
+
+---
+
+### STAGE 1 — CLOSE THE PAPER LANE (the reframe's foundation)
+
+> **★★ EXPECT A BLANK WATCHLIST (PINNED) LIST FOR WEEKS — THAT IS THE CORRECT OUTCOME, NOT A BROKEN DEPLOY.** At adjudicator-readiness (2026-08-25) **0 of 102** open paper trades had a resolved market. The gamma re-base changes **how** a resolved trade is judged, not **whether** trades have resolved yet — so immediately after Stage 1 the Watchlist section shows **honest-nothing** where it currently shows **wrong-something**. Meaningful paper numbers accrue over **WEEKS** as the poller runs and markets resolve. **Stage 1's win is that the promotion decision stops reading the biased completed lane — not that pinned instantly shows rich numbers.** Tell anyone watching the page, so "the deploy broke pinned" does not become a false alarm three weeks out. (The screen should say so too — an explicit "no resolved paper trades yet" state, not an empty table.)
+
+**Scope — build:**
+- **1a. Re-base the adjudicator (`paper.py::adjudicate`) on gamma resolution** (§B). Determine won/lost from `fetch_market_resolutions` (gamma `/markets`, the authority) vs the paper trade's `outcome_index`; book paper P&L via the existing `_paper_realized`; `stale` only when gamma says not-resolved past grace. **This is the load-bearing change** (and the correct source asserting itself — §B framing).
+- **1b. Build the paper rollup — migration 009 `pm_paper_category_stats`** (the table `P2_PLAN §6.2` always assumed existed; Stage 0 consumed 008, so this is **009**): PK `(wallet, category)`; `n_closed, wins, losses, win_rate, net_paper_pnl, cost_basis, roi (paper), avg_entry_price, n_open, n_stale, last_resolved_ts, updated_ts`. A `paper_rollup()` deriver (new function; mirrors `stats.rollup()` structure but over `pm_paper_trade WHERE status='closed'`). `n_stale` is surfaced beside `n_closed` (§6.2's honesty requirement — stale paper exits are visible, never silently dropped).
+- **1c. Wire the WATCHLIST (pinned) list to `pm_paper_category_stats`** (paper basis) instead of `pm_category_stats` (completed basis). `farm.py` pinned query + the pinned template. (Reads gate on `active=1` — Stage 0.)
+- **1d. PLAN (do not run) the poller+adjudicator cadence.** The lane needs the poller running repeatedly (to accrue paper entries) and the adjudicator weekly (to resolve them). Propose a schedule (e.g. poller `*/30`, adjudicator weekly) as a **Jack-authorized deploy/cron decision** — Stage 1 writes the plan; Jack runs the one-shot unstick (poller re-run → adjudicate) and installs any cadence in a calm window.
+
+**Scope — NOT touched:** `poll_pinned` vanish-detection logic (unchanged apart from the `active=1` gate from Stage 0); `pm_closed_position` (the adjudicator STOPS reading it); the completed lane (`stats.py`, `pm_category_stats`) — prospects keep reading it as-is.
+
+**Dependencies:** Stage 0 (the `active=1` gate + the 92-pair funnel). External: Jack must run the poller/adjudicator (parked for a calm window — writes the live DB). No ruling needed for 1a/1b/1c (correctness + a deferred table); RULED §F-1 confirms the completed lane stays a screening source, so 1c's basis-switch is the whole fix, not a fix-plus-re-plumb.
+
+**Reuse / replace / delete:** REUSE `PolymarketDataAPIClient.fetch_market_resolutions` (gamma), `pm_paper_trade` (migration 005), `_paper_realized`/`_past_grace`/`get_config`, `stats.rollup` as the shape template. REPLACE the `pm_closed_position`-match branch of `adjudicate()`. DELETE nothing.
+
+**Verification (BASIS tests, not presence):**
+1. **The test that would have caught the substitution:** seed a `(wallet,category)` where **paper WR ≠ completed WR** (e.g. paper 2W/3L=40%, completed 8W/1L=89%); render the Watchlist list; **assert it shows 40% (paper)**, not 89%. If the code reads `pm_category_stats`, this FAILS. (This is the exact drift that shipped undetected.)
+2. **The gamma re-base test:** seed a paper trade whose market gamma-resolved as a LOSS but has **NO `pm_closed_position` row** (the omission case); assert `adjudicate()` books it **`closed`/lost** (via gamma), not `stale`. The old adjudicator staled it (inherited bias); the new one closes-lost it.
+3. Standard: box-scratch pytest actuals + render the pinned list against a WAL-safe copy of live, confirming the paper basis (and the honest empty-state renders as text, not a broken-looking blank table).
+
+**Size: MEDIUM.** The rollup + wiring mirrors `stats.py`; the adjudicator re-base is focused and load-bearing; the poller/adjudicator already exist. Not large (no new screens).
+
+---
+
+### STAGE 2 — THE SCREENS (Farm League hierarchy) — with a scope correction
+
+**★ SCOPE CORRECTION:** the requirement's **main dashboard shows Account-Category (sub-division) tiles — which are P3 (no sub-divisions exist).** So Stage 2 builds the **Farm-League hierarchy** in full and only a **shell** for the main dashboard:
+- **Buildable now:** the main-dashboard **shell** (two menu options: a placeholder "Sub-divisions" section [empty until P3] + "Farm League"); the Farm-League screen → **category TILES** (the **15 RULED-IN categories**, §F-2); the **per-category page** = **WATCHLIST section on top (paper basis, from Stage 1)** + **PROSPECTS section below (completed basis)**.
+- **Tile set (RULED §F-2 — 15):** `mlb · nba · nfl · nhl · wnba · epl · ucl · soccer · atp · wta · tennis · cs2 · golf · ufc · fed`. **Three of these (`nhl`, `ufc`, `fed`) are included on OPERATOR KNOWLEDGE over the probe output** — the probe could not read their game-line tickers (429-throttled for nhl/ufc; Sports-only scope for fed). **Their tiles render; their matcher tickers are UNMEASURED and gated on the follow-up probes (§F-2-PROBES) — inclusion ≠ ticker-verified.** No tile is rendered for cbb/fifwc/unknown (removed in Stage 0).
+- **P3-deferred:** the sub-division tiles + the sub-division detail (live trades). The main dashboard renders an empty/"coming in P3" sub-division area — honest, not fabricated.
+
+**Scope — build:** new routes `GET /` (dashboard shell), `GET /farm` (category tile grid — replaces the flat filtered list), `GET /farm/{category}` (per-category detail: watchlist-top + prospects-below, each drilling to a whale detail). New templates. **Replace** the flat `/farm`. **`/scoreboard`: RETIRE the standalone page, REPURPOSE its ranking (`query_scoreboard`) into the prospects-section ranker** scoped to `(category, candidates)` — RULED §F-4; see §E.
+
+**Scope — NOT touched:** `stats.py`/`pm_category_stats` (prospects read it as-is, rough per §F-1); `analyze.py`; `pm_closed_position`.
+
+**Dependencies:** **Stage 1** (watchlist section reads `pm_paper_category_stats`), **Stage 0** (`active=1` funnel). Rulings LANDED: `/scoreboard` repurpose+retire (§F-4); tile set = the 15 (§F-2); vocabulary Prospect/Watchlist/Live (§F-3).
+
+**Migration: NONE** (read-only reshaping of existing tables into new routes/templates).
+
+**Reuse / replace / delete:** REUSE `farm.py` queries (scoped per category), the three-state poll logic, `scoreboard_flags`, `query_scoreboard` (repurposed into the prospects ranker), the whale-drill (`positions.py`, `pm_position_rows.html`). REPLACE `pm_farm.html` + `partials/pm_farm_lists.html` with the tile→page templates. DELETE the standalone `/scoreboard` route + `pm_scoreboard.html` after repurposing (§E).
+
+**Verification (BASIS tests):**
+- **The three-lists-three-bases test (anti-drift core):** seed a pair present as BOTH a prospect and a watchlist whale, with **different** paper vs completed numbers; render `/farm/{category}`; **assert the WATCHLIST section shows the PAPER number and the PROSPECTS section shows the COMPLETED number.** A silent cross-wiring breaks this.
+- Nav: `/farm` renders exactly the **15 RULED tiles** (no cbb/fifwc/unknown tile); each links to `/farm/{category}`; the dashboard shell renders Farm League + the P3-empty sub-division area honestly.
+
+**Size: LARGE.** New nav model + multiple new screens/templates + replaces the deployed farm. The biggest UI stage.
+
+**★ DISCARDED BUILT WORK (say it plainly):** CP3b-1's flat farm UI — `pm_farm.html` (40) + `partials/pm_farm_lists.html` (113) + the farm-page CSS + the `/scoreboard` page (`pm_scoreboard.html` 45 + `partials/pm_scoreboard_table.html` 65) — is **superseded/reshaped**: roughly **~260 lines of template + the flat-list route logic are replaced.** The underlying `farm.py` queries, the three-state-zero logic, the caveat macros, and `query_scoreboard` are **reused** (re-scoped). Net: a real but bounded discard, concentrated in the presentation layer.
+
+---
+
+### STAGE 3 — THE ACTIONS — with a P3 scope split
+
+**★ SCOPE CORRECTION:** the pinned whale's **"Promote" button = promote to a LIVE sub-division = P3** (no sub-divisions). So Stage 3 builds the **farm-level** actions only; the pinned "Promote" renders **disabled with a "P3" tooltip**.
+
+**Scope — build:**
+- **Promote-to-watchlist (prospect → pinned):** flip `pm_watchlist.status` `candidate→pinned` (and `active=1`), add the pair to `pm_roster`, and **seed the initial `pm_paper_trade` record** (reuse the paper seed path). Operator-controlled, manual. **Coupled to Stage 4** (needs prospects; dormant until Search populates candidates — §B).
+- **Demote (pinned → PROSPECT) — RULED §F-5, NOT pinned→gone:** flip `status` `pinned→candidate`. **Two hard build requirements:** (a) the pair's **paper trades SURVIVE** the demotion (never cascade-delete `pm_paper_trade`); (b) the demoted pair's **screen basis flips back to completed-trades** (renders as a Prospect) **while its paper history stays reachable** (the whale-detail paper view still resolves; a later re-pin resumes with history intact). Reasoning: demote means "not proven," not "never existed." *(Note: Demote and Stage-0 removal are distinct — Demote is candidate↔pinned within the funnel; Stage-0 removal is `active=0`, off-funnel entirely. Both preserve paper history.)*
+- **Promote (pinned → live):** **P3, out of scope** — disabled button.
+
+**Scope — NOT touched:** the completed/paper rollups; `analyze.py`; discovery.
+
+**Dependencies:** **Stage 2** (the page/buttons); **Stage 4** for Promote-to-watchlist to have prospects. Demote target RULED (§F-5).
+
+**Migration:** likely **NONE** (uses `pm_watchlist.status`/`active` + `pinned_ts` + a seeded `pm_paper_trade`). A provenance column (who/when pinned/demoted) is worth adding for legible re-pin history — defer unless wanted.
+
+**Reuse / replace / delete:** REUSE `pm_watchlist`/`pm_roster`/`pm_paper_trade` + the CP3a seed logic. REPLACE/DELETE nothing (never delete paper rows on demote — §F-5).
+
+**Verification (BASIS tests):**
+- Pin a prospect → assert it **moves** (disjoint: off Prospects, on Watchlist), a `pm_paper_trade` seed exists, and **its stats source SWITCHES from completed to paper.**
+- **Demote round-trip (RULED §F-5):** pin → accrue a paper trade → demote → assert (a) the paper trade STILL EXISTS, (b) the pair renders as a Prospect on the COMPLETED basis, (c) the paper history is still reachable, (d) re-pinning resumes with the old paper rows intact.
+
+**Size: SMALL–MEDIUM.** State transitions + buttons; no new tables/screens.
+
+---
+
+### STAGE 4 — SEARCH (populate prospects)
+
+**Scope — build:** **fork** the legacy scout into the PM package (like Analyze — legacy is live PCT code, `DO NOT edit/import`): discovery via `/v1/leaderboard` per category → the **selection rule** (the "trackable" definition — **Jack's ruling still open, `PM_STATE_REVIEW §9 Q2`**) → **backfill** found wallets into `pm_closed_position` (reuse `ingest`) → write candidates (`pm_watchlist status='candidate'`) → rank the prospects (`query_scoreboard`, completed basis — rough, per §F-1) → record the run in **migration 010 `pm_search_run`** (Stage 1 took 009, so this is **010**; shape from the legacy summary dict — `PM_STATE_REVIEW §6 Q6`). **Resolve the rank-before-backfill circularity** (`§9 Q3`): rank **after** backfill OR on a discovery-time inline compute — **Jack's ruling still open.**
+
+**Search categories (RULED §F-2):** search the **15 RULED-IN categories** (`mlb, nba, nfl, nhl, wnba, epl, ucl, soccer, atp, wta, tennis, cs2, golf, ufc, fed`). Do **not** search cbb/fifwc/unknown (removed in Stage 0; cbb re-enters after its probe, fifwc next WC cycle). **For `nhl`/`ufc`/`fed` the matcher needs the game-line tickers the follow-up probes (§F-2-PROBES) will confirm** — Search can discover whales now, but the copy-matcher wiring for those three waits on the ticker inventory.
+
+**Scope — NOT touched:** legacy scout files (fork, never edit); the paper lane; the completed rollup math.
+
+**Dependencies:** **Jack rulings still open** — Q2 (trackable definition), Q3 (rank-before-backfill). Category set RULED (§F-2). **The loss-omission (§F-1):** Search ranks candidates on the biased completed stats — a **rough screen**; Analyze is the promotion judge. **The bias is not fully quarantined:** it shapes the candidate SET, just not the pin/promote decision. Acceptable per §F-1, but stated.
+
+**Migration: 010** `pm_search_run`.
+
+**Reuse / replace / delete:** REUSE (as FORK source) `seed_polymarket_watchlist_deep.py` / `refresh_polymarket_whales.py`; REUSE `PolymarketDataAPIClient`, `ingest` (backfill), `stats` (rank). DELETE nothing.
+
+**Verification (BASIS test):** a newly-searched+backfilled candidate renders **completed-trade numbers** (fresh `pm_closed_position` rows), **not** paper, **not** fabricated-empty; assert the ranking key is **cost-ROI, never win%** (chalk lesson).
+
+**Size: LARGE.** Fork + discovery + backfill + ranking + the circularity resolution; the most ruling-blocked stage (Q2/Q3 open).
+
+---
+
+### STAGE 5 — ANALYZE INPUT INTEGRITY (make the promotion judge honest)
+
+**Scope — build (RULED §F-1: screening-source):** make Analyze's **input** honest independent of the loss-omitted foundation. For the **single pair being analyzed**, re-source the **losses** via `/activity` REDEEM-grounding (the method the loss-visibility probe already implements), reconcile against `/closed-positions`, and feed Analyze the honest loss set. Per-pair, on-demand — does **not** re-plumb the platform-wide completed rollup (§F-1 (i) was ruled out precisely to avoid that).
+
+**★ THE LARGE-WHALE CORRECTION (carried from Jack — my review was wrong here):** `/activity` truncates at 5,000 rows. Single-pair scoping helps **small** whales (full history) but **does NOT eliminate truncation for large ones** — **BetMechanic/nba alone has 6,782 resolved decisions.** So Stage 5 must **not assume truncation away.** Design: Analyze **measures the loss-completeness coverage** (the loss-probe's `A_only`-within-window method) and **stamps every report with an explicit, measured completeness bound** — full history for small whales; a recent window for large whales. Analyze tells the operator *how honest its own input is*, per whale.
+
+**Scope — NOT touched:** the platform-wide completed rollup (per-pair, on-demand); the paper lane.
+
+**Dependencies:** RULED §F-1 fixes Stage 5's shape. The loss-visibility measurement (done). Optionally the KV wiring (`§9 Q9`) so Analyze produces LLM verdicts — but the **input-honesty work is independent of whether the LLM is wired** (the deterministic report + completeness stamp render regardless; today every verdict is correctly `llm_unavailable`).
+
+**Migration:** optional **011** — a `loss_completeness` field on `pm_analysis_cache`, OR fold into `report_json` (no migration).
+
+**Reuse / replace / delete:** REUSE `analyze.py`, the client (`/activity` + gamma), and the **loss-visibility probe's method verbatim**. No deletions.
+
+**Verification (BASIS test):** Analyze on **evanng** (known loss-omitted) → assert the report's loss input reflects the **/activity-REDEEM truth (≈89 held losses)** with a stated completeness bound, **NOT** the `/closed-positions` 33; and for **BetMechanic**, assert the report **carries a windowed-completeness caveat**, not a false "complete."
+
+**Size: MEDIUM–LARGE.**
+
+---
+
+## §D. WHAT GETS DELETED OR RETIRED (part of the plan, not cleanup)
+
+**FACT — within the PM package there is less dead code than "multiple stats attempts" implies.** Those are **git-history iterations on ONE live `stats.py`**, not parallel live programs. The cross-lineage duplication (legacy scorers/scouts vs PM's `stats.py`) is **legacy-side** — `DO NOT TOUCH LEGACY`; PM forks it, PM does not delete it. Actual PM deletions are modest and staged:
+
+| Retire | When / depends on | Note |
+|---|---|---|
+| Standalone `/scoreboard` route + `pm_scoreboard.html` + `pm_scoreboard_table.html` | **In Stage 2** (RULED §F-4) — after `query_scoreboard` is repurposed | Not a required screen; re-commits the pinned-basis error flat |
+| Flat farm templates `pm_farm.html` + `partials/pm_farm_lists.html` | **In Stage 2** | ~150 LOC presentation, superseded; `farm.py` logic reused |
+| `roi_notional` column from the **product** UI (keep in a diagnostics view) | Stage 2 | Second ROI number invites misreading; retain for scout comparison only |
+| `pm_cli analyze` subcommand mismatch | Housekeeping | On the branch, **not the box** — reconcile at the next deploy |
+
+**Docs to mark SUPERSEDED (not delete — history):** scout-shortlist numbers in `FARM_RERANK`/`POSTP1_ITEMS`/`STEP5`. **Legacy code stays untouched by rule.** **cbb/fifwc pairs are REMOVED (Stage 0), not deleted — never recorded as "not copyable."**
+
+---
+
+## §E. `/scoreboard` — RULED §F-4: REPURPOSE THE RANKER, RETIRE THE PAGE
+
+RULED option 2. `/scoreboard` is a P1 data contract that became an unspecified page ranking PINNED pairs on COMPLETED stats — the basis error in its purest form on a top-level screen. `query_scoreboard` is proven and the prospects section needs exactly that ranking. **Move the code into the prospects-section ranker (scoped to `(category, candidates)`), delete the standalone page — in Stage 2.**
+
+| Option | What happens | Consequence |
+|---|---|---|
+| Keep (rejected) | Leave `/scoreboard` as a flat ranking | Wrong-basis surface persists; not a requirement screen |
+| **Repurpose (RULED)** | Move ranking into the **prospects section** of `/farm/{category}`; retire the page | Reuses proven ranking; number lands where the requirement puts it |
+| Retire outright (rejected) | Remove and don't reuse | Loses a tested ranker the prospects section needs |
+
+---
+
+## §F. DECISIONS — RULED 2026-08-26 (Jack's rulings + reasoning; recorded so they stop drifting)
+
+**§F-1 — SCREENING SOURCE (RULED).** `/closed-positions` is a **screening source with a labelled, measured bias — NOT the system of record.** *Reasoning (Jack):* the architecture already implies it — rough prospect stats acceptable, Analyze is the judge, promotion runs on our own paper record. Ruling it system-of-record would force platform-wide loss re-sourcing through `/activity` — the endpoint the platform **deliberately left** because it truncates at 5,000 rows — trading a **measured** bias for an **unmeasured** one and reopening the problem P1 solved. *Action:* label the bias on every prospect-facing number; correct it **in Analyze, per pair, with a measured completeness bound.** *Unblocks:* **Stage 5.**
+
+**§F-2 — NARROW THE TILES TO KALSHI-COPYABLE; MEASURE FIRST → RULED 15 IN.** *Reasoning (Jack):* he had been erring toward **keep-everything-and-remove-as-proven-uncopyable**; he accepts the **inverse** — start with only what we KNOW (or, on operator knowledge, are confident is) copyable — because his operating plan is **ONE CATEGORY AT A TIME**; a narrow known-good funnel suits that better than a wide speculative one. **★ Excluded ≠ un-copyable.** Some excluded categories are unproven, not rejected. **The 15-IN ruling + the three operator overrides + the three distinct exclusion states are in §F-2-RESULTS below.**
+
+**§F-3 — VOCABULARY (RULED).** On screen: "Prospect" (completed) · "Watchlist" (pinned, paper) · "Live" (account-category). In code: `status='candidate'|'pinned'`; table stays `pm_watchlist`. One canonical map (§H). *Reasoning:* Jack is the operator — screens read in his language; the code is internal and renaming is a migration for no user-visible gain.
+
+**§F-4 — REPURPOSE THE RANKER, RETIRE THE PAGE (RULED).** See §E. Move `query_scoreboard` into the prospects-section ranker; delete `/scoreboard` in Stage 2.
+
+**§F-5 — DEMOTE SENDS PINNED → PROSPECT (RULED), not pinned → gone.** *Reasoning (Jack):* the paper record is what we spend weeks accumulating; deleting the pair discards it; demote means "not proven," not "never existed"; a demoted pair must be **re-pinnable later with history intact.** Requirements (Stage 3): paper trades **SURVIVE**; screen basis **flips back to completed** while paper history stays reachable.
+
+### §F-2-RESULTS — KALSHI LISTING PROBE (MEASURED) + THE 15-IN RULING
+
+**Probe:** `cc\pm_kalshi_listing_probe.ps1` + `cc-cp3b\reports\prediction_markets\runners\pm_kalshi_listing_probe.sh` — UNAUTHENTICATED public Kalshi market-data API (`/series`, `/markets`) via python stdlib `urllib`, plus `pm_watchlist` read `mode=ro`. **Run 2026-08-26 17:19Z, azureuser, engine PID 37596 unchanged (before==after), exit 0, 6,971 Kalshi calls, Sports catalog = 3,516 series.** No key, no auth, no write, no box mutation, no engine/poly_kalshi_mlb touch. Reproducible.
+
+**⚠ RATE-LIMIT NOTE (for the next probe author):** the probe's **0.15s call spacing was slightly hot** for Kalshi's limiter and produced **HTTP 429s** that made two categories' game-line checks (`nhl`, `ufc`) **unreadable** — the direct cause of two of the three operator overrides below. **Any future probe uses WIDER spacing.** And **6,971 calls in one run is a lot** (it exhaustively checked every keyword-matched series per category) — future probes should short-circuit per category once the game-line series is confirmed, or scope the series list up front.
+
+**18 pinned categories = 114 pairs.** The probe's **raw** verdict = "Kalshi lists an equivalent series with OPEN markets." **★ The raw verdict OVER-CONFIRMS:** it fires on *any* open market, including **futures/novelty** (mlb surfaced `KXCITYMLBEXPAND`, nba `KXBBALLTEAMUSA`, nfl `KXCOACHOUTNFL`). The **copy target** is the **GAME-LINE / MATCH series**. The table shows the measured evidence and the RULED tile decision (which OVERRIDES the probe in three rows — recorded as judgement, not oversight):
+
+| category | pins | game-line series (measured) | game-line OPEN? | RULED |
+|---|---|---|---|---|
+| **mlb** | 10 | `KXMLBGAME`+`KXMLBSPREAD`+`KXMLBTOTAL` | ✅ all three | **IN** (measured; strongest, in-season) |
+| **wnba** | 4 | `KXWNBAGAME` | ✅ | **IN** (measured; in-season) |
+| **epl** | 6 | `KXEPLGAME` | ✅ | **IN** (measured) |
+| **ucl** | 6 | `KXUCLGAME` | ✅ (today) | **IN** (measured) |
+| **soccer** | 8 | `KXEPLGAME` + league games | ✅ | **IN** (measured) |
+| **atp** | 8 | `KXATPMATCH` | ✅ | **IN** (measured) |
+| **wta** | 4 | `KXWTAMATCH` | ✅ | **IN** (measured) |
+| **tennis** | 4 | `KXATPMATCH`/`KXWTAMATCH` | ✅ | **IN** (measured) |
+| **nba** | 8 | `KXNBAGAME` | ✅ (posted, Oct openers) | **IN** (measured) |
+| **nfl** | 9 | `KXNFLGAME` | ✅ (posted, Sep) | **IN** (measured) |
+| **cs2** | 2 | `KXCS2MAP`/`KXCS2` | ✅ (esports modality) | **IN** (measured) |
+| **golf** | 3 | tournament (`KXCHAMPTOUR`…) | ✅ (tournament modality) | **IN** (measured) |
+| **nhl** | 6 | `KXNHLGAME` | ❓ **429-throttled = UNREADABLE** | **IN — OPERATOR OVERRIDE #1** (National Hockey League, copyable; 429 is not absence; ticker UNMEASURED → probe #2) |
+| **ufc** | 10 | `KXUFCFIGHT` | ❓ **429-throttled + last-seen settled** | **IN — OPERATOR OVERRIDE #2** (Ultimate Fighting Championship, copyable; 429 is not absence; ticker UNMEASURED → probe #2) |
+| **fed** | 4 | *not in Sports catalog (Economics)* | ❓ **probe never looked** | **IN — OPERATOR OVERRIDE #3** (FOMC rate decisions, copyable — prior analysis; scope-artifact was the correct call → this is inclusion not mystery; ticker UNMEASURED → probe #3) |
+| cbb | 3 | keyword false-matched `KXARGNACBBTTS` (Argentine soccer) | ❓ **NOT PROBED** | **OUT — NOT-PROBED / PENDING-ANALYSIS** (one correct-keyword NCAAB probe settles it; off-season regardless). **Never "not copyable."** |
+| fifwc | 8 | WC2026 concluded (Jun–Jul); only host/futures open | ❌ **MEASURED DORMANT** | **OUT — MEASURED-DORMANT (calendar)** (a real measurement, not a knowledge gap; **dormant by CALENDAR, returns next WC cycle** — a DIFFERENT state from pending-analysis; do not conflate). **Never "not copyable."** |
+| unknown | 11 | tier-1 slug-derivation **failure** — not a subject | — | **OUT — STRUCTURAL (PERMANENT)** (can never have a Kalshi equivalent; never gets a tile) |
+
+**★ RULED TILE SET — 15 IN (92 pairs):** `mlb · nba · nfl · nhl · wnba · epl · ucl · soccer · atp · wta · tennis · cs2 · golf · ufc · fed`. 12 measured-copyable + 3 operator overrides (nhl, ufc, fed).
+**★ 3 OUT — THREE DISTINCT STATES (record differently, never conflate):**
+- **cbb → NOT-PROBED / PENDING-ANALYSIS** (a knowledge gap; one probe fixes it).
+- **fifwc → MEASURED-DORMANT (calendar)** (measured, not a gap; returns next World Cup cycle).
+- **unknown → STRUCTURAL (permanent)** (not a category; never returns).
+
+**★ INCLUSION IS RULED; THE TICKER INVENTORY IS NOT.** nhl/ufc/fed are IN on operator knowledge; their game-line **tickers are UNMEASURED**. Do not let "we included it" become "we verified it." Stage 4's matcher needs those tickers — supplied by the follow-up probes below.
+
+### §F-2-PROBES — THREE STANDALONE FOLLOW-UP PROBES (each individually authorized; NOT folded into any build stage)
+
+1. **Correct-keyword NCAAB probe for `cbb`** — decides cbb's return to the tile set (currently OUT/pending). Read-only.
+2. **Slower, un-throttled game-line probe for `nhl` + `ufc`** — **NOT to decide inclusion (ruled IN)** but to **CONFIRM the series tickers** (`KXNHLGAME`, `KXUFCFIGHT`) the Stage-4 matcher will need. Read-only, wider spacing.
+3. **Economics-catalog probe for `fed`** — same reasoning: included on knowledge, **tickers unmeasured**; confirm the FOMC/rate series tickers for the matcher. Read-only.
+
+These stay on the books as separate authorized runs. They do not block the 15-tile Stage 2; probe #1 can promote cbb OUT→IN; probes #2/#3 feed the matcher, not the tile.
+
+---
+
+## §G. CORRECTION CARRIED (Jack's catch on my review)
+
+My state-review said the 5,000-row `/activity` truncation is "a non-issue for one whale." **TRUE for small whales, FALSE for large ones** — BetMechanic/nba has 6,782 resolved decisions. **Stage 5 handles this explicitly** (windowed, measured completeness bound per whale). Correction accepted and built in.
+
+---
+
+## §H. ANTI-DRIFT MEASURE (a real deliverable)
+
+Requirements were lost because handoff docs carried schemas/SHAs and dropped the product description; the missing-rollup substitution shipped because **no test asserted a number's BASIS, only its presence.** Three-part fix:
+
+1. **WHERE the requirements live — one durable doc, in the code's path.** Promote `PM_STATE_REVIEW §0` into **`reports/prediction_markets/PM_REQUIREMENTS.md`** (committed on the branch), referenced from **`trading_corp/prediction_markets/__init__.py`'s docstring** and from every `TRANSITION_TO_*` handoff. **Embed the canonical vocabulary map (below) verbatim.**
+2. **WHAT makes reading it mandatory — a checkpoint exit question.** Every checkpoint report answers: **"Which of the three lists did this change touch, and did it keep their three data bases (completed / paper / live) separate?"** Transition-doc template required first line: *"Restate the three lists and their three bases from memory before touching code."*
+3. **WHAT verification catches a substitution — requirements-as-tests (BASIS tests).** For **every displayed number**, a test seeding a pair where the **required-source value ≠ the wrong-source value**, asserting the UI shows the **required** source. The pinned-list substitution shipped because the only test asserted *presence*; a BASIS test would have **failed loudly** on the fallback. **Every stage in §C carries at least one** (Stage 1 test #1 is the exact one that would have caught the historical bug).
+
+**★ CANONICAL VOCABULARY MAP (RULED §F-3 — write once, here and in `PM_REQUIREMENTS.md`):**
+
+| Screen word (Jack's) | Farm-league section | Data basis | Table / source | Code value |
+|---|---|---|---|---|
+| **Prospect** | bottom section | **completed trades** | `pm_closed_position` → `pm_category_stats` | `pm_watchlist.status='candidate'` |
+| **Watchlist** | top section | **our paper trades** | `pm_paper_trade` → `pm_paper_category_stats` | `pm_watchlist.status='pinned'` |
+| **Live** | account-category sub-division | **live trades** | P3 tables (not built) | — (P3) |
+
+Screens render Jack's words; code keeps its values; the **table name stays `pm_watchlist`.**
+
+---
+
+## §I — OPINIONS / RECOMMENDATIONS (mine, labeled; separate from the facts above)
+
+- **The sequence is right; Stage 1's content is not — fix the adjudicator first.** Everything in §B. If only one thing survives to the next agent: *finishing the paper lane requires re-basing the adjudicator on gamma — the resolution authority — or the paper lane inherits the loss-omission and the reframe silently fails the same way the pinned rollup did.*
+- **Sequence the 15 tiles by in-season liquidity, not alphabetically.** For Jack's one-category-at-a-time model, start where game lines are open and deep **now**: `mlb` (full ML+spread+total) and `wnba` first; then `soccer/epl/ucl` (in-season); then `nfl` (opening Sep), `nba/nhl` (opening Oct); `ufc` is rolling weekend events; `fed` is scheduled FOMC — **low-noise, unambiguous resolution, arguably the most stable category once its tickers are confirmed** (probe #3). `cs2/golf/atp/wta/tennis` are different modalities / rolling — a second wave.
+- **Do the three follow-up probes before Stage 4's matcher, not before Stage 2's tiles.** The tiles are ruled and render now; the matcher is what needs nhl/ufc/fed tickers. Probe #1 (cbb) is independent — run it whenever, since cbb is off-season anyway.
+- **Biggest risk in this plan:** Stage 2 is LARGE and replaces deployed UI while markets are live; gate it hardest (build → box-scratch render → **Jack looks in a browser** → deploy), exactly as CP3b-2 Gate 2 was.
+- **Shortest path to a trustworthy Analyze** (the point): Stage 1 (quarantine the bias off the promotion decision) + Stage 5 (honest per-pair loss input with a measured completeness bound). Stages 0/2/3/4 make the workflow *operable*; Stages 1 and 5 make the *decision* honest. If forced to cut, cut nav polish before either.
+
+---
+
+**Deliverable status:** plan only. No code, no commits, no branch, no migration, no box mutation **except the one read-only Kalshi listing probe Jack authorized** (§F-2-RESULTS; engine PID 37596 unchanged, nothing written). No further probes run. The poller/adjudicator were **planned, not run**; legacy untouched; `poly_kalshi_mlb` untouched. Five rulings + the 15-IN tile ruling folded; gamma-authority framing recorded; the 22-pair reversible removal (Stage 0) proposed with preserve-history + three distinct reasons; the three follow-up probes kept standalone; the rate-limit note recorded. Path handed to Jack; NOT committed.

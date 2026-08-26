@@ -535,9 +535,10 @@ MIGRATION_007: list[str] = [
 # active DEFAULT 1: every existing row (the 114 board-locked pairs) and every future insert is IN-FUNNEL
 # until explicitly removed -- `ADD COLUMN NOT NULL DEFAULT 1` backfills the 114 existing rows to 1 at ALTER
 # time. Consumers gate `AND active=1` (Stage 0 gated the poller, the pinned-subset assertion, the
-# seeded-pairs review, and the farm tile/list/candidate-count reads; the Stage-1 paper rollup MUST gate it
-# too when it lands). THIS MIGRATION ONLY BUILDS THE MECHANISM -- it flips NOTHING. The 22-row removal write
-# (active=0 for cbb/fifwc/unknown) is a SEPARATE authorization.
+# seeded-pairs review, the farm tile/list/candidate-count reads, and stats.query_scoreboard [the F-4
+# prospects ranker]; the Stage-1 paper rollup MUST gate it too when it lands). THIS MIGRATION ONLY BUILDS
+# THE MECHANISM -- it flips NOTHING. The 22-row removal write (active=0 for cbb/fifwc/unknown) is a SEPARATE
+# authorization.
 MIGRATION_008: list[str] = [
     "ALTER TABLE pm_watchlist ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE pm_watchlist ADD COLUMN removal_reason TEXT",

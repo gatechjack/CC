@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from trading_corp.prediction_markets import db, farm, paper
+from trading_corp.prediction_markets import db, farm, paper, stats
 
 NOW = 1_700_000_000
 
@@ -50,6 +50,13 @@ def _remove(conn, wallet, category, reason, *, ts=NOW):
 def _paper(conn, wallet, category, cid):
     conn.execute("INSERT INTO pm_paper_trade (wallet, category, condition_id, outcome_index, "
                  "entry_observed_ts, opened_ts) VALUES (?,?,?,0,?,?)", (wallet, category, cid, NOW, NOW))
+
+
+def _cstats(conn, wallet, category, *, n_resolved=50, roi=0.1, awp=0.6):
+    """A completed-lane stats row (pm_category_stats) -- the basis query_scoreboard ranks. Unset NOT NULL
+    caveat columns fall back to their DEFAULT 0."""
+    conn.execute("INSERT INTO pm_category_stats (wallet, category, n_resolved, roi, avg_win_price, updated_ts) "
+                 "VALUES (?,?,?,?,?,?)", (wallet, category, n_resolved, roi, awp, NOW))
 
 
 class _RecordingClient:
@@ -228,3 +235,20 @@ def test_three_distinct_reasons_are_readable_from_the_row(tmp_path):
         conn.commit()
         reasons = {r[0] for r in conn.execute("SELECT DISTINCT removal_reason FROM pm_watchlist WHERE active=0")}
     assert reasons == {"not_probed", "dormant_calendar", "structural"}   # three states, IN THE DATA
+
+
+def test_deactivated_pair_absent_from_query_scoreboard(tmp_path):
+    """RULING (item 2, 2026-08-26): the deactivated pairs show NOWHERE -- including the F-4 prospects ranker
+    (query_scoreboard). A pair ABSENT from pm_watchlist still ranks (LEFT JOIN); ONLY active=0 is excluded."""
+    with db.connect(_fresh(tmp_path)) as conn:
+        _cstats(conn, "0xkeep", "mlb")                     # prospect, active on the roster -> shown
+        _cstats(conn, "0xgone", "mlb")                     # prospect, gets deactivated -> hidden
+        _cstats(conn, "0xpure", "mlb")                     # prospect NOT on the roster at all -> still shown
+        _pin(conn, "0xkeep", "mlb", active=1)
+        _pin(conn, "0xgone", "mlb", active=1)
+        _remove(conn, "0xgone", "mlb", "structural")       # active=0
+        conn.commit()
+        board = {r["wallet"] for r in stats.query_scoreboard(conn, min_resolved=1)}
+    assert "0xkeep" in board                               # active=1 -> ranked
+    assert "0xpure" in board                               # absent from pm_watchlist -> still ranked (LEFT JOIN)
+    assert "0xgone" not in board                           # active=0 -> excluded from the ranker too
