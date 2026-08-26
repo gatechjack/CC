@@ -529,6 +529,20 @@ class RobinhoodBroker(Broker):
         # the sizer then treats it as no settled-cash source). Additive; the
         # existing equity/buying_power above are unchanged.
         settled_cash: float | None = None
+        # DEPLOYMENT-CAP base = GROSS margin buying power (2:1 Reg-T) — Jack's ruling
+        # 2026-08-26 (REPLACES the prior collateral-net unallocated_margin_cash, which
+        # was ~half). RH's UNIFIED endpoint reports gross as buying_power.buying_power
+        # (~$4,249.48 on the joint acct); robin_stocks' load_account_profile does NOT
+        # expose that unified field, but the identical, ACCOUNT-SCOPED value is the
+        # standard margin-BP identity from the margin-balance breakdown:
+        #     gross = available_funds / maintenance_ratio
+        #           = overnight_buying_power / overnight_ratio
+        #           = 2124.7397 / 0.50 = 4249.4794   (== the unified figure, exact)
+        # None if the margin fields are absent (cash/limited-margin acct) -> the sizer
+        # falls back to the equity/settled-cash basis. ★ NOTE: `available_buying_power`
+        # now carries GROSS BP, NOT a "free/available" figure — the name is a
+        # historical carrier only (the reserve gate + /mace read this same value).
+        available_bp: float | None = None
         try:
             acct = await asyncio.to_thread(
                 rs.profiles.load_account_profile, self._account_number or None
@@ -552,8 +566,39 @@ class RobinhoodBroker(Broker):
                 settled_cash = max(0.0, placeable)
             elif acct_bp is not None:
                 settled_cash = max(0.0, acct_bp)
+
+            # GROSS BP resolution from the margin-balance breakdown.
+            mb = acct.get("margin_balances")
+            mb = mb if isinstance(mb, dict) else {}
+
+            def _mbnum(d, key):
+                try:
+                    v = d.get(key)
+                    return float(v) if v is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            # PRIMARY: gross = overnight_buying_power / overnight_ratio (Reg-T 2:1).
+            obp = _mbnum(mb, "overnight_buying_power")
+            oratio = _mbnum(mb, "overnight_ratio")
+            if obp is not None and oratio is not None and oratio > 0:
+                available_bp = max(0.0, obp / oratio)
+            else:
+                # No overnight margin ratio (cash / limited-margin acct) -> fall back
+                # to the collateral-net fields (conservative; deliberately NOT the
+                # day-trade 4:1 figure).
+                for cand in (_mbnum(mb, "unallocated_margin_cash"),
+                             _mbnum(acct, "unallocated_margin_cash"),
+                             _mbnum(mb, "cash_available_for_withdrawal"),
+                             _mbnum(acct, "cash_available_for_withdrawal")):
+                    if cand is not None:
+                        available_bp = max(0.0, cand)
+                        break
+            log.debug("RobinhoodBroker: gross_bp(computed)=%s (overnight_bp=%s "
+                      "overnight_ratio=%s) portfolio_bp=%s (margin_balances keys=%s)",
+                      available_bp, obp, oratio, acct_bp, sorted(mb.keys()))
         except Exception as e:  # noqa: BLE001 — settled-cash is best-effort; never break the snapshot
-            log.debug("RobinhoodBroker: settled-cash read failed: %s", e)
+            log.debug("RobinhoodBroker: settled-cash/available-bp read failed: %s", e)
 
         positions: list[Position] = []
         account_label = f"{self._username}#{self._account_label}" if self._account_label else self._username
@@ -690,6 +735,7 @@ class RobinhoodBroker(Broker):
             cash=buying_power,
             positions=positions,
             settled_cash=settled_cash,
+            available_buying_power=available_bp,
         )
 
     async def quote(self, symbol: str) -> float:
