@@ -42,7 +42,10 @@ _CAP_SIGNATURES = {50, 100, 250, 500}
 # than erroring (the migration also seeds them; these are the safety net on a read path).
 CONFIG_DEFAULTS: dict[str, float] = {
     "poll_interval_sec": 300.0,     # 5 min
-    "grace_window_sec": 172800.0,   # 48 h adjudication grace (addendum 1)
+    "grace_window_sec": 259200.0,   # 72 h adjudication grace (Jack RULED 2026-08-27: err long -- too short
+                                    # false-stales a slow gamma resolution and loses the data; too long only
+                                    # delays stale. Was 48 h (migration-005 seed, history). Live re-seeded by
+                                    # migration 009. See PM_REBUILD_PLAN Stage-1 grace proposal.)
     "size_basis": 100.0,            # fixed paper stake (contracts/shares; e7 -- NOT the whale's size, NOT dollars)
 }
 
@@ -336,38 +339,62 @@ def _paper_realized(row, won: int) -> float:
     return (basis - cost) if won else (-cost)
 
 
-def adjudicate(conn, *, now_ts: int | None = None, grace_window_sec: int | None = None) -> dict:
-    """Resolve pending_adjudication paper trades off the EXISTING weekly /closed-positions data
-    (pm_closed_position), NOT off the poller (addendum 1, two-phase):
-      - a matching pm_closed_position (wallet, condition_id, outcome_index) exists -> status='closed',
-        close_source='resolution', book paper realized_pnl + won, import the 3A pnl_suspect parity.
-      - no match AND we are past market_end_date + grace_window -> status='stale', close_source='whale_exit'
-        (EXCLUDED from realized stats).
-      - no match, within grace (or end_date unparseable) -> stay pending (resolution may still land).
-    Biases DOWN: a whale exit never books paper P&L; an unparseable end_date is never called stale.
+def collect_pending_condition_ids(conn) -> list[str]:
+    """Distinct condition_ids of all pending_adjudication paper trades. Used by the CLI to build the
+    gamma fetch batch before calling adjudicate(). Read-only + idempotent."""
+    rows = conn.execute(
+        "SELECT DISTINCT condition_id FROM pm_paper_trade WHERE status='pending_adjudication'"
+    ).fetchall()
+    return [r["condition_id"] for r in rows if r["condition_id"]]
+
+
+def adjudicate(conn, resolutions: dict, *, now_ts: int | None = None,
+               grace_window_sec: int | None = None) -> dict:
+    """Resolve pending_adjudication paper trades off GAMMA (the resolution authority -- NOT pm_closed_position).
+
+    GAMMA RE-BASE (Stage 1): resolution authority is PolymarketDataAPIClient.fetch_market_resolutions(),
+    NOT pm_closed_position. This corrects the PM FOUNDATION FINDING (2026-08-26): /closed-positions
+    systematically omits held losses (~63% dropped for evanng), so an adjudicator relying on it can NEVER
+    book those losses. Gamma /markets is the true resolution source -- it reports every market's outcome
+    independently of whether a whale's /closed-positions row exists.
+
+    `resolutions`: dict[condition_id -> record] as returned by fetch_market_resolutions().
+    Each record: {"status": "resolved"|"void"|"pending"|"not_found", "winning_outcome_index": int|None, ...}
+
+    Resolution logic per pending row:
+      - rec["status"]=="resolved": won = (row.outcome_index == rec.winning_outcome_index); book closed,
+        gamma_resolution, paper realized_pnl, pnl_suspect=0, suspect_reason=NULL.
+      - rec["status"]=="void": book status='void', close_source='market_void' (excluded from win/loss).
+      - no rec OR rec["status"]!="resolved|void" AND _past_grace: status='stale', close_source='whale_exit'.
+      - else (within grace): stays pending_adjudication.
+
+    Biases DOWN: unparseable end_date is never called stale; void is excluded from realized stats.
     Runs the C2.3 subset assertion FIRST -- FAILS LOUD before touching any row."""
     now = now_ts if now_ts is not None else int(time.time())
     grace = int(grace_window_sec if grace_window_sec is not None else get_config(conn, "grace_window_sec"))
     subset = assert_pinned_subset_of_refresh(conn)        # FAIL LOUD before adjudicating anything
 
     pending = conn.execute("SELECT * FROM pm_paper_trade WHERE status='pending_adjudication'").fetchall()
-    closed = staled = still_pending = 0
+    closed = voided = staled = still_pending = 0
     for row in pending:
-        w = (row["wallet"] or "").lower()
         pk = (row["wallet"], row["condition_id"], row["outcome_index"], row["entry_observed_ts"])
-        cp = conn.execute(
-            "SELECT won, realized_pnl, resolved_ts, pnl_suspect, suspect_reason FROM pm_closed_position "
-            "WHERE wallet=? AND condition_id=? AND outcome_index=?",
-            (w, row["condition_id"], _i(row["outcome_index"], 0))).fetchone()
-        if cp is not None:
-            won = _i(cp["won"], 0)
+        rec = resolutions.get(row["condition_id"]) or {"status": "not_found"}
+        rec_status = rec.get("status", "not_found")
+        if rec_status == "resolved":
+            winning_idx = rec.get("winning_outcome_index")
+            won = 1 if int(row["outcome_index"] or 0) == winning_idx else 0
             conn.execute(
-                "UPDATE pm_paper_trade SET status='closed', close_source='resolution', resolved_ts=?, "
-                "won=?, realized_pnl=?, pnl_suspect=?, suspect_reason=?, updated_ts=? "
+                "UPDATE pm_paper_trade SET status='closed', close_source='gamma_resolution', resolved_ts=?, "
+                "won=?, realized_pnl=?, pnl_suspect=0, suspect_reason=NULL, updated_ts=? "
                 "WHERE wallet=? AND condition_id=? AND outcome_index=? AND entry_observed_ts=?",
-                (cp["resolved_ts"], won, _paper_realized(row, won), _i(cp["pnl_suspect"], 0),
-                 cp["suspect_reason"], now, *pk))
+                (now, won, _paper_realized(row, won), now, *pk))
             closed += 1
+        elif rec_status == "void":
+            conn.execute(
+                "UPDATE pm_paper_trade SET status='void', close_source='market_void', updated_ts=? "
+                "WHERE wallet=? AND condition_id=? AND outcome_index=? AND entry_observed_ts=?",
+                (now, *pk))
+            voided += 1
         elif _past_grace(row["market_end_date"], now, grace):
             conn.execute(
                 "UPDATE pm_paper_trade SET status='stale', close_source='whale_exit', stale_ts=?, "
@@ -379,8 +406,94 @@ def adjudicate(conn, *, now_ts: int | None = None, grace_window_sec: int | None 
             still_pending += 1
     if hasattr(conn, "commit"):
         conn.commit()
-    return {"pending_in": len(pending), "closed": closed, "staled": staled,
+    return {"pending_in": len(pending), "closed": closed, "voided": voided, "staled": staled,
             "still_pending": still_pending, "grace_window_sec": grace, "subset": subset}
+
+
+# ---- paper stats rollup -> pm_paper_category_stats (Stage 1) -----------------------------------------
+# Mirror stats.rollup's _STATS_COLS + INSERT OR REPLACE discipline (e5 lesson: INSERT OR REPLACE resets any
+# column not in the COLS list to its DEFAULT on every run -> silent zeros forever; lock-step is mandatory).
+# R1 GATE (MANDATORY): only pairs with pm_watchlist active=1 AND status='pinned' are rolled up.
+# A deactivated pair's pm_paper_trade rows SURVIVE but do NOT appear in pm_paper_category_stats. This
+# mirrors the Stage-0 funnel gate (migration 008) at the aggregation layer.
+
+_PAPER_STATS_COLS = [
+    "wallet", "category",
+    "n_closed", "wins", "losses", "win_rate",
+    "net_paper_pnl", "cost_basis", "roi",
+    "avg_entry_price",
+    "n_open", "n_stale", "n_void",
+    "last_resolved_ts",
+    "updated_ts",
+]
+
+
+def paper_rollup(conn, *, now_ts: int | None = None) -> int:
+    """Aggregate pm_paper_trade -> pm_paper_category_stats per (wallet, category).
+
+    R1 GATE: only pairs where pm_watchlist.active=1 AND status='pinned' are aggregated. A deactivated
+    pair's historical pm_paper_trade rows survive untouched but do NOT contribute to the stats table --
+    the paper scoreboard only reflects the active, paper-traded set.
+
+    Mirrors stats.rollup's _STATS_COLS / INSERT OR REPLACE pattern: _PAPER_STATS_COLS is the single
+    source of truth for both the column list and the value tuple -- any future column addition must
+    appear in BOTH or it silently resets to its DEFAULT on every run (e5 lesson).
+
+    Returns the number of (wallet, category) rows written."""
+    now = now_ts if now_ts is not None else int(time.time())
+    sql = (
+        "SELECT pt.wallet, pt.category, "
+        " SUM(CASE WHEN pt.status='closed' THEN 1 ELSE 0 END) AS n_closed, "
+        " SUM(CASE WHEN pt.status='closed' AND pt.won=1 THEN 1 ELSE 0 END) AS wins, "
+        " SUM(CASE WHEN pt.status='closed' AND pt.won=0 THEN 1 ELSE 0 END) AS losses, "
+        " SUM(CASE WHEN pt.status='closed' THEN pt.realized_pnl ELSE 0 END) AS net_paper_pnl, "
+        " SUM(CASE WHEN pt.status='closed' THEN pt.cost_basis ELSE 0 END) AS cost_basis_sum, "
+        " AVG(CASE WHEN pt.status='closed' THEN pt.entry_price_avg_at_observation END) AS avg_entry_price, "
+        " SUM(CASE WHEN pt.status='open' THEN 1 ELSE 0 END) AS n_open, "
+        " SUM(CASE WHEN pt.status='stale' THEN 1 ELSE 0 END) AS n_stale, "
+        " SUM(CASE WHEN pt.status='void' THEN 1 ELSE 0 END) AS n_void, "
+        " MAX(CASE WHEN pt.status='closed' THEN pt.resolved_ts END) AS last_resolved_ts "
+        "FROM pm_paper_trade pt "
+        "JOIN pm_watchlist wl ON wl.wallet=pt.wallet AND wl.category=pt.category "
+        "WHERE wl.active=1 AND wl.status='pinned' "
+        "GROUP BY pt.wallet, pt.category"
+    )
+    recs = []
+    for r in conn.execute(sql).fetchall():
+        n_closed = r["n_closed"] or 0
+        wins = r["wins"] or 0
+        losses = r["losses"] or 0
+        net = r["net_paper_pnl"] or 0.0
+        cb = r["cost_basis_sum"] or 0.0
+        decided = wins + losses
+        win_rate = (wins / decided) if decided > 0 else None
+        roi = (net / cb) if cb > 0 else None
+        recs.append((
+            r["wallet"], r["category"],
+            n_closed, wins, losses, win_rate,
+            net, cb, roi,
+            r["avg_entry_price"],
+            r["n_open"] or 0, r["n_stale"] or 0, r["n_void"] or 0,
+            r["last_resolved_ts"],
+            now,
+        ))
+    ph = ", ".join(["?"] * len(_PAPER_STATS_COLS))
+    conn.executemany(
+        "INSERT OR REPLACE INTO pm_paper_category_stats (%s) VALUES (%s)"
+        % (", ".join(_PAPER_STATS_COLS), ph),
+        recs,
+    )
+    # R1 airtight: a pair that WAS active (has a stats row) then gets deactivated must vanish from the
+    # paper scoreboard TABLE too, not only from the farm display gate. INSERT OR REPLACE above writes just
+    # the current active set; this DELETE removes any stale row for a pair no longer active=1-pinned, so a
+    # deactivated pair shows NOWHERE (PM_REQUIREMENTS R1). No-op on the first run (table empty).
+    conn.execute(
+        "DELETE FROM pm_paper_category_stats WHERE (wallet, category) NOT IN "
+        "(SELECT wallet, category FROM pm_watchlist WHERE active=1 AND status='pinned')"
+    )
+    if hasattr(conn, "commit"):
+        conn.commit()
+    return len(recs)
 
 
 # ---- roster/watchlist seed from pm_category_stats (Jack's ruling 2026-08-24; C2.4 REVERSED) ---------

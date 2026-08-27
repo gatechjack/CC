@@ -15,7 +15,7 @@ import json
 import sys
 import time
 
-from trading_corp.prediction_markets import category, db, ingest, names, paper, rosters, stats
+from trading_corp.prediction_markets import analyze, category, db, ingest, names, paper, rosters, stats
 
 
 def _now() -> int:
@@ -134,17 +134,32 @@ async def _cmd_paper_poll(args) -> int:
     return 0
 
 
-def _cmd_paper_adjudicate(args) -> int:
-    """Resolve pending_adjudication paper trades off pm_closed_position (weekly). Sync; no network.
-    FAILS LOUD (exit 2) if a pinned-paper whale is not in the refresh set (C2.3) -- never warn-continue."""
+async def _cmd_paper_adjudicate(args) -> int:
+    """Resolve pending_adjudication paper trades off GAMMA (the resolution authority; Stage 1 re-base).
+    Fetches market resolutions via PolymarketDataAPIClient.fetch_market_resolutions() for all pending
+    condition_ids, then runs paper.adjudicate(). Async (network); FAILS LOUD (exit 2) on C2.3 violation."""
     db.init_db(args.db)
     try:
         with db.connect(args.db) as conn:
-            res = paper.adjudicate(conn, now_ts=_now())
+            cids = paper.collect_pending_condition_ids(conn)
+        async with _client() as c:
+            resolutions = await c.fetch_market_resolutions(cids)
+        with db.connect(args.db) as conn:
+            res = paper.adjudicate(conn, resolutions, now_ts=_now())
     except paper.PaperSubsetError as e:
         print(json.dumps({"error": "subset_assertion_failed", "detail": str(e)}, indent=2), file=sys.stderr)
         return 2
     print(json.dumps(res, indent=2, default=str))
+    return 0
+
+
+def _cmd_paper_rollup(args) -> int:
+    """Aggregate pm_paper_trade -> pm_paper_category_stats per active pinned (wallet, category) pair
+    (Stage 1). Mirror of the `rollup` subcommand for legacy whale data."""
+    db.init_db(args.db)
+    with db.connect(args.db) as conn:
+        n = paper.paper_rollup(conn, now_ts=_now())
+    print(json.dumps({"rolled_pairs": n}))
     return 0
 
 
@@ -166,6 +181,30 @@ def _cmd_migrate_roster(args) -> int:
             res["subset_after"] = {"error": str(e)}
     res["n_migrated_wallets"] = len(wallets)
     print(json.dumps(res, indent=2, default=str))
+    return 0
+
+
+def _cmd_analyze(args) -> int:
+    """On-demand ANALYZE of ONE (wallet, category) over RESOLVED positions -- the SAME code path as the farm
+    [Analyze] button. Writes pm_analysis_cache + pm_analysis_cost in the PM DB (NEVER agent_state, NEVER the
+    legacy DB). Prints the deterministic report + verdict/null_reason + the day's cost as JSON. --force
+    re-analyzes (evicts the cached verdict); --no-llm forces the disabled_by_flag reasoned-null (the
+    deterministic report still renders). With no ANTHROPIC key in the env the verdict is llm_unavailable --
+    the SAME reasoned-null pm_web renders today (the key is not wired, e3)."""
+    from dataclasses import asdict
+    db.init_db(args.db)
+    with db.connect(args.db) as conn:
+        rep = analyze.analyze_whale(conn, args.wallet, args.category, now_ts=_now(),
+                                    force=args.force, narrator_enabled=not args.no_llm)
+        day = analyze._utc_day(_now())
+        spent, n_calls = analyze.daily_cost(conn, day)
+    out = asdict(rep)
+    out["flags"] = analyze.analysis_flags(rep)
+    out["_cost_today_usd"] = spent
+    out["_cost_cap_usd"] = analyze.PM_ANALYZE_DAILY_CAP_USD
+    out["_cost_day_utc"] = day
+    out["_llm_available"] = analyze.is_llm_available()
+    print(json.dumps(out, indent=2, default=str))
     return 0
 
 
@@ -216,14 +255,27 @@ def build_parser() -> argparse.ArgumentParser:
     pp.set_defaults(func=_cmd_paper_poll, is_async=True)
 
     pa = sub.add_parser("paper-adjudicate",
-                        help="resolve pending_adjudication paper trades off pm_closed_position (CP3a)")
-    pa.set_defaults(func=_cmd_paper_adjudicate, is_async=False)
+                        help="resolve pending_adjudication paper trades via gamma /markets (Stage 1 gamma re-base)")
+    pa.set_defaults(func=_cmd_paper_adjudicate, is_async=True)
+
+    pr = sub.add_parser("paper-rollup",
+                        help="aggregate pm_paper_trade -> pm_paper_category_stats for active pinned pairs (Stage 1)")
+    pr.set_defaults(func=_cmd_paper_rollup, is_async=False)
 
     mr = sub.add_parser("migrate-roster",
                         help="seed pm_roster + pm_watchlist(pinned) = every (wallet,category) in pm_category_stats for the migrated whales (CP3a; Ruling B)")
     mr.add_argument("--legacy-db", default=rosters.LEGACY_DB_DEFAULT)
     mr.add_argument("--seed-yaml", default=None)
     mr.set_defaults(func=_cmd_migrate_roster, is_async=False)
+
+    an = sub.add_parser("analyze",
+                        help="on-demand narrated audit of ONE (wallet,category) over resolved positions (CP3b-2)")
+    an.add_argument("--wallet", required=True)
+    an.add_argument("--category", required=True)
+    an.add_argument("--force", action="store_true", help="re-analyze: evict the cached verdict first")
+    an.add_argument("--no-llm", action="store_true", dest="no_llm",
+                    help="skip narration (disabled_by_flag reasoned-null); deterministic report only")
+    an.set_defaults(func=_cmd_analyze, is_async=False)
     return p
 
 
