@@ -24,7 +24,7 @@ def test_healthz_ok(tmp_path, monkeypatch):
     assert r.status_code == 200
     j = r.json()
     assert j["status"] == "ok" and j["service"] == "pm_web"
-    assert j["pm_db_schema_version"] == 8        # migrations 1-8 applied (P1..CP3b-2 007, CP3b Stage-0 008 pm_watchlist.active)
+    assert j["pm_db_schema_version"] == 9        # migrations 1-9 applied (008 Stage-0 active, 009 Stage-1 paper stats)
 
 
 def test_healthz_degraded_on_unmigrated_db(tmp_path, monkeypatch):

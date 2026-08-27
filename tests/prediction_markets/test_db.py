@@ -50,8 +50,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 8  # migrations 001..008 recorded exactly once each (008 = CP3b Stage-0 pm_watchlist.active)
-    assert maxv == 8
+    assert count == 9  # migrations 001..009 recorded exactly once each (008 Stage-0 active, 009 Stage-1 paper stats)
+    assert maxv == 9
 
 
 def test_pk_includes_outcome_index(tmp_path):
@@ -130,9 +130,10 @@ def test_migration_005_paper_trade_lifecycle(tmp_path):
             "poll_interval_sec", "entry_basis", "market_end_date", "pnl_suspect", "suspect_reason"} <= pt
     # pm_paper_config seeded (addendum 1 grace window; tunable poll interval; fixed size basis)
     assert cfg.get("poll_interval_sec") == "300"
-    # grace: migration-005 seeded 172800 (48h) via INSERT OR IGNORE; migration 009 re-tuned it to 259200 (72h,
-    # Jack RULED 2026-08-27) via INSERT OR REPLACE -- init_db applies ALL migrations, so the live value is 72h.
-    assert cfg.get("grace_window_sec") == "259200"
+    # grace SEED = 172800 (48h, migration-005 INSERT OR IGNORE). init_db does NOT re-tune it: migration 009 is
+    # pure DDL (FIX-2 option ii). The 72h ruling is the CODE DEFAULT (CONFIG_DEFAULTS, see test_paper) and is
+    # written to the LIVE row by an explicit Stage-1 rung step, NOT by init_db -- so a fresh DB reads the seed.
+    assert cfg.get("grace_window_sec") == "172800"
     assert cfg.get("size_basis") == "100"
     # status DEFAULTs to 'open' on insert of a minimal row
     with db.connect(p) as conn:

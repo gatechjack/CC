@@ -576,11 +576,12 @@ MIGRATION_009: list[str] = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_pm_pcs_category_roi ON pm_paper_category_stats(category, roi DESC)",
-    # Stage-1 grace re-tune (Jack RULED 2026-08-27: 48 h -> 72 h). The migration-005 seed used INSERT OR IGNORE
-    # (172800) and is history; this INSERT OR REPLACE sets the LIVE pm_paper_config value to 72 h when 009
-    # lands at rung 1. Runs once (version-gated) so any later manual tuning is preserved. CONFIG_DEFAULTS in
-    # paper.py carries the matching 259200 code default.
-    "INSERT OR REPLACE INTO pm_paper_config(key, value, updated_ts) VALUES ('grace_window_sec', '259200', strftime('%s','now'))",
+    # ** PURE DDL ONLY (Jack RULED 2026-08-27, FIX-2 option ii). ** Migration 009 does ONE thing: create
+    # pm_paper_category_stats + its index. It writes NO config/data row. The 72h grace re-tune (Jack's ruling
+    # stands) is NOT done here -- a schema migration doing a config write was the entanglement that failed the
+    # box-scratch on a partial-upgrade DB. The live grace value is set by an explicit, separately-verifiable
+    # Stage-1 rung step (a Jack-authorized `UPDATE pm_paper_config` -- see PM_REBUILD_PLAN Stage-1 rung ladder);
+    # paper.CONFIG_DEFAULTS carries the matching 259200 code default. Migration-005's 172800 seed stays history.
 ]
 
 MIGRATIONS: list[tuple[int, list[str]]] = [

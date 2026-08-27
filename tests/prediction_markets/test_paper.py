@@ -224,12 +224,16 @@ def test_get_config_seeded_and_degrades_when_absent(tmp_path):
     p = _db(tmp_path)
     with db.connect(p) as conn:
         assert paper.get_config(conn, "poll_interval_sec") == 300.0
-        assert paper.get_config(conn, "grace_window_sec") == 259200.0   # 72h (migration 009 re-tune; Jack 2026-08-27)
+        # SEEDED value is 172800 (48h, migration-005). init_db does NOT re-tune it -- migration 009 is pure DDL
+        # (FIX-2 option ii). The 72h ruling lives as the CODE DEFAULT (asserted below) + a live Stage-1 rung step.
+        assert paper.get_config(conn, "grace_window_sec") == 172800.0
         assert paper.get_config(conn, "size_basis") == 100.0
     # honest degradation: a DB with no pm_paper_config table returns the code DEFAULT, never raises
     bare = sqlite3.connect(str(tmp_path / "bare.db"))
     try:
         assert paper.get_config(bare, "poll_interval_sec") == 300.0
+        # CODE DEFAULT for grace = 259200 (72h, Jack RULED 2026-08-27) -- what a table-less DB falls back to.
+        assert paper.get_config(bare, "grace_window_sec") == 259200.0
         assert paper.get_config(bare, "size_basis") == 100.0
     finally:
         bare.close()

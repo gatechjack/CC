@@ -4,6 +4,14 @@
 random. Is `unknown` a genuine permanent structural failure, or a derivation bug losing us the most active
 markets? **This is a finding, not a work item — no fix opened.**
 
+> **★ CORRECTION FOR THE RECORD (Jack, 2026-08-27) — the alarming version is WRONG; do not inherit it.**
+> The 92% is **NOT a derivation failure concentrated on the most active markets.** All 102 rows are a single
+> Aug-25 poll snapshot that over-sampled long-dated futures + novelty; **77 of 94 are `will-…` markets that
+> genuinely are not game-line copyable.** The funnel has real volume — **253 resolved trackable trades in 7d,
+> 939 in 30d, across 38 of 92 active pairs.** The only real (smaller) issue is the poller's tier-1-only
+> categorization losing some trackable soccer/tennis — a separate, bounded gap, not "we're blind to the whales'
+> activity." (My earlier read was the alarming version; Jack's — this — is correct.)
+
 ## The single biggest fact: all 102 paper rows are ONE poll snapshot
 Every paper row (both the 94 unknown and the 8 eligible) has `entry_observed_ts = 2026-08-25 15:48` — **the CP3a
 gate-3 one-shot poll.** So the 92% is the composition of the whales' OPEN `/positions` at *one instant*, NOT an
