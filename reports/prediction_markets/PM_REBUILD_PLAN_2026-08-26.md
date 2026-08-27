@@ -83,8 +83,8 @@ An earlier report listed only two authorizations (migration, then the 22-row wri
   - **★ PRE-condition — online backup FIRST (do NOT invent a mechanism; use Gate 1's):** the SQLite **online-backup API** with a `mode=ro` source handle — `s=sqlite3.connect('file:<LIVE>?mode=ro',uri=True); d=sqlite3.connect(<BK>); s.backup(d)` — as `pm_cp3b2_gate1_probe.sh:82` did. Record in the rung-1 report: backup path `~/pm_stage0_gate1_dbbackup_<UTC>.db`, its **sha256**, and a **`PRAGMA integrity_check`** result. **Abort the migration if the backup or integrity check fails.**
   - **Verify:** live schema 7→8; `active` + `removal_reason` + `removal_ts` present; 114 rows `active=1` / 0 `active=0`; `pm_paper_trade` 102 unchanged; `/healthz` 200 and `/farm` still renders 200 on the OLD runtime code (every pm_web read of `pm_watchlist` is name-based via `sqlite3.Row`: `farm.*` explicit-column/scalar + `query_scoreboard` selects no `wl` columns; `pm_cli` reads only via gated `paper.*`; the engine does not read it).
   - **Rollback:** the box runs **SQLite 3.37.2** (≥ 3.35.0), so `ALTER TABLE pm_watchlist DROP COLUMN` is available — but the reliable TOTAL revert is **restore the pre-ALTER online backup** (a bare DROP COLUMN leaves `schema_version` at 8). To restore: **stop pm_web first** (it holds live read/write handles) and do it clear of the 03:20 cron; overwrite `prediction_markets.db` (delete any stale `-wal`/`-shm`) with the backup; confirm schema back to 7; restart pm_web. **Lost on restore:** any PM-DB writes since the backup (an analyze-cache write, a cron refresh's ingested rows) — for a rung-1-only rollback that window is the `ALTER` + any concurrent writes, so keep it short.
-- **Rung 2 — deploy the gated code** (`prediction_markets/db.py` + `paper.py` + `farm.py` + `stats.py`) and **restart pm_web**. By now 008 is applied (rung 1) so the gated `active=1` queries find the column; with all rows still `active=1`, behaviour is IDENTICAL (poller polls all 114; tiles show all) — behaviour-neutral, safe to verify before any data change. **Ships PM-ONLY files** — `db.py` here is `prediction_markets/db.py`, **NEVER `persistence/db.py`** (the engine/MACE shared file — do not ship). **Verify:** deployed files byte-match the branch (sha256 box==local); `/farm` + `/scoreboard` 200; gated queries execute against the live schema; poller dry-check still sees 114 pinned.
-  - **★ Governance-A — prod-live artifact ledger (OUTSTANDING):** standing deploy governance requires advancing the `prod-live` branch with a commit recording exactly the deployed artifacts, byte-verified box==branch (as CP3a / CP3b-2 did). For Stage 0 that ledger advance is **not yet authored** — a rung-2 deliverable, prepared when rung 2 is authorized.
+- **Rung 2 — deploy the gated code** (**5 PM-ONLY files:** `prediction_markets/db.py` + `paper.py` + `farm.py` + `stats.py` + `__init__.py`) and **restart pm_web**. By now 008 is applied (rung 1) so the gated `active=1` queries find the column; with all rows still `active=1`, behaviour is IDENTICAL (poller polls all 114; tiles show all) — behaviour-neutral, safe to verify before any data change. **Ships PM-ONLY files** — `db.py` here is `prediction_markets/db.py`, **NEVER `persistence/db.py`** (the engine/MACE shared file — do not ship). **★ `__init__.py` IS in the set (Ruling 2, 2026-08-27):** it carries the anti-drift docstring pointer to `PM_REQUIREMENTS.md` (behaviorally inert) — included so `box==branch` is clean across the whole PM package (no accepted-drift file) and the pointer actually reaches the box; the earlier "4 files" was stale text written before `__init__.py` changed. **Verify:** deployed files byte-match the branch (sha256 box==local, all 5); `/farm` + `/scoreboard` 200; gated queries execute against the live schema; poller dry-check still sees 114 pinned. **Full artifact list + sha256 + rung-2 verification plan: see `STAGE0_RUNG2_ARTIFACT_LEDGER.md` and the RUNG-2 VERIFICATION PLAN below.**
+  - **★ Governance-A — prod-live artifact ledger (MANIFEST AUTHORED 2026-08-27; prod-live commit still a rung-2 deploy step):** standing deploy governance requires advancing the `prod-live` branch with a commit recording exactly the deployed artifacts, byte-verified box==branch (as CP3a / CP3b-2 did). That precedent is **inherently POST-deploy** (its standard is a fresh box re-hash), so it cannot be authored pre-deploy. **Ruling 1 (2026-08-27):** the byte-verified source-of-truth is authored NOW as a **manifest on the branch** — `STAGE0_RUNG2_ARTIFACT_LEDGER.md` (5 artifacts + branch sha256 + additive-on-`95e78c4` + the `box==branch` rung-2 gate + the `db.py`↔rung-1 sha256 cross-check). The **real prod-live path-checkout commit is created AT rung-2 deploy, from that manifest, post box-rehash** — NOT now. box != branch at manifest-write time; `box==branch` is the Gate-2 proof, not a present claim.
   - **★ Governance-B — do NOT disturb `origin/prod-live @ 95e78c4` (MACE forks from that tip):** rung 2 advances prod-live by a **NEW commit only (fast-forward / additive)** — **no amend, no rebase, no force-move** — leaving `95e78c4` intact as an ancestor (exactly as CP3b-2's `2fc9173→95e78c4` fast-forward). MACE's fork base stays in history, undisturbed.
 - **Rung 3 — the 22-row `active=0` write** (cbb×3=`not_probed`, fifwc×8=`dormant_calendar`, unknown×11=`structural`). ONLY NOW do the live gates (rung 2) take effect. **★ The write MUST also stamp `removal_ts`** — set `removal_ts = int(time.time())`, **Unix epoch seconds (INTEGER)**, matching the PM DB's existing timestamp columns (`added_ts`/`pinned_ts`/`updated_ts` are all epoch INTEGER; the seed writes `int(time.time())`) — NOT ISO text. Leaving it NULL loses the "when" permanently. **Verify:** live `active=0` count = 22 carrying the three reason strings **AND `removal_ts` NOT NULL + a plausible epoch** (within the deploy window) on all 22; the poller skips them; `/farm` shows 15 categories / 92 pairs; `query_scoreboard` and the farm lists no longer contain the 22; `pm_paper_trade` rows for the removed pairs are still present (history preserved).
 
@@ -95,9 +95,100 @@ Each rung is independently reversible: rung 1 — restore the pre-ALTER online b
 - **Online backup FIRST (kept, Gate-1 mechanism):** `~/pm_stage0_gate1_dbbackup_20260827T021526Z.db` — **`PRAGMA integrity_check=ok`**, schema-7 snapshot, pm_watchlist 114, 25,083,904 bytes, **sha256 `dfcb8ad78027b68826bed75c86e04022c744ef1a9bf3ff5ef6be1298b15820b5`**.
 - **Byte-verify:** scratch `db.py` sha256 == branch `76eb52b2…dbc93782`; applied via `init_db()` from the ephemeral scratch (`IMPORT_FROM /tmp/…scratch…/db.py`) — **runtime `db.py` NOT touched**; scratch removed.
 - **Post-verify:** schema **7→8**; `active` INTEGER / `removal_reason` TEXT / `removal_ts` INTEGER present; `ix_pm_watchlist_active` present; pm_watchlist **114**, **active=1: 114 / active=0: 0 / removal_reason set: 0 / removal_ts set: 0** (nothing flipped); pm_paper_trade **102** unchanged; pinned 114 / 18 categories / 0 candidates == baseline; **pm_web `/healthz`+`/farm` still 200, `/farm` byte-identical (228,564), pm_web PID 40483 NOT restarted** (behaviour-neutral proof); engine PID **89366** == before.
-- **State now: live PM DB is schema 8; the runtime code is still the OLD (pre-Stage-0) `db.py`/`paper.py`/`farm.py`/`stats.py`** (which ignores the new columns — hence the byte-identical `/farm`). **Rungs 2 (deploy) and 3 (22-row write) remain unauthorized.**
+- **State now: live PM DB is schema 8; the runtime code is still the OLD (pre-Stage-0) `db.py`/`paper.py`/`farm.py`/`stats.py`** (which ignores the new columns — hence the byte-identical `/farm`) **plus the OLD `__init__.py`** (the 5th rung-2 artifact — its docstring lacks the `PM_REQUIREMENTS.md` pointer until rung 2 ships it). **Rungs 2 (deploy) and 3 (22-row write) remain unauthorized.**
 
 **Size: SMALL.** A migration + an `active=1` gate on seven reads + a one-time 22-row UPDATE (Jack-run) — but a THREE-rung deploy (above), not one.
+
+---
+
+### ★ RUNG-2 VERIFICATION PLAN (written 2026-08-27; NOT executed — rung 2 is UNAUTHORIZED)
+
+Rung 2 is the **first** rung where running behaviour can change and it carries the **only** pm_web restart in
+the ladder. All 114 rows are `active=1`, so the gated code SHOULD be **behaviour-neutral** — but that is a
+CLAIM TO VERIFY, not to assume. Deploy set = the **5 PM-only artifacts** in `STAGE0_RUNG2_ARTIFACT_LEDGER.md`.
+Channel = **root `az vm run-command`** (code deploys), fail-closed, mirroring CP3b-2 Gate 2. **Nothing here runs
+until Jack authorizes rung 2 as a separate act.**
+
+**PRE-CONDITIONS (named; capture all in the SAME session, immediately before the code swap):**
+- **PRE-1 Timing — clear of the 03:20 UTC cron.** The nightly `pm_cli refresh` is the only unattended DB
+  writer; deploy in a calm window outside ~03:00–04:00 UTC (rung 1 used 02:15). If the cron could fire
+  mid-deploy, **abort and reschedule**.
+- **PRE-2 Baseline capture (the comparison the neutrality proof rests on).** Capture *now*, not from the
+  rung-1 record (the nightly cron updates `pm_category_stats`, which the pinned tiles render, so `/farm` bytes
+  can legitimately drift day to day — the byte-identical check is only valid against a **same-session**
+  baseline):
+  - `/farm` → HTTP 200, record exact **body byte length `B0`** (this is THE behaviour-neutral baseline).
+  - `/healthz` → 200, `pm_db_schema_version: 8`.
+  - `pm_watchlist`: total **114** / pinned 114 / candidates 0 / `active=1` **114** / `active=0` **0**
+    (funnel untouched — rung 3 not done). Category/pair counts as rendered = **18 categories / 114 pairs**
+    (NOT 15/92 — that is the post-rung-3 state).
+  - `pm_paper_trade` = **102**.
+  - **engine PID** (record — must be unchanged after) and **pm_web PID** (will change — the one restart) and
+    pm_web `NRestarts` (must increment by exactly 1).
+- **PRE-3 Backup decision (MY CALL, as asked): a fresh DB backup is NOT warranted; a per-file CODE backup IS.**
+  Rung 2 is a **code** deploy — it writes **nothing** to the DB (migration 008 already landed in rung 1; schema
+  and data are untouched). So the correct rollback material is a **per-file backup of the CURRENT (pre-Stage-0)
+  box versions of the 5 files**, taken on the box before overwrite (exactly CP3b-2 Gate-2's
+  `pm_cp3b2_gate2_bak_*` dir) — NOT a DB snapshot. **The rung-1 DB backup is the WRONG tool for a rung-2
+  rollback:** it reverts *schema* to 7 and would LOSE every PM write since 02:15Z (cron rows, analyze-cache);
+  it must not be used to roll back a code-only change. (If a fresh off-host copy of the schema-8 DB is wanted
+  for general safety, that is a separate, optional hygiene step — not a rung-2 rollback dependency.)
+- **PRE-4 Box==branch is NOT a pre-state** (box still runs `95e78c4`); it is the **deploy gate** below.
+
+**DEPLOY STEP (fail-closed; the pm_web restart is the only mutation to a running service):**
+1. **Manifest-assert** — exactly the 5 `^trading_corp/prediction_markets/` paths; **leak-abort** any other
+   path; **name-guard** `persistence/db.py` ABSENT (MACE shared file). Refuse to proceed otherwise.
+2. **Chain-of-custody** — the staged artifact's sha256 == the branch sha256 in the manifest (no corrupt
+   transfer) BEFORE any overwrite.
+3. **Per-file backup** — copy the current box versions of the 5 files to `~/pm_stage0_rung2_bak_<UTC>/`
+   (rollback material).
+4. **Copy** the 5 files into place; **chown azureuser:azureuser**, dirs 755 / files 644 / no world-writable
+   (GOTCHA-1/2).
+5. **BOX==BRANCH GATE (fresh re-hash)** — `sha256sum` each of the 5 deployed files ON THE BOX; **each must ==
+   the manifest branch sha256.** Any mismatch → **STOP, do not restart, do not advance prod-live.**
+6. **Restart pm_web ONLY** — `systemctl restart prediction-markets-web`. The engine (`trading-corp.service`)
+   is never referenced.
+7. **prod-live commit is a SEPARATE, LAST, bookkeeping step** — authored only after the post-checks pass, from
+   the manifest recipe (fast-forward only; `95e78c4` stays an ancestor). Not required to "accept" the running
+   state; can wait for a separate confirm.
+
+**ROLLBACK (if the restart comes back unhealthy):** redeploy the PRE-3 per-file backup (the pre-Stage-0 box
+versions) + `systemctl restart prediction-markets-web` → code reverts to the `95e78c4` state; **no DB revert
+is involved** (rung 2 changed no DB state). If pm_web is still unhealthy after restoring the backup → **STOP and
+hand to Jack** (the cause is not the artifact).
+
+**POST-CHECKS (named; all must pass):**
+- **POST-1** `/healthz` 200, `pm_db_schema_version: 8`.
+- **POST-2** `/farm` 200 **AND body byte length == `B0`** (the behaviour-neutral proof — the same standard rung
+  1 met with its byte-identical `/farm`). A byte diff not explained by a same-moment cron write ⇒ behaviour
+  changed ⇒ **STOP**.
+- **POST-3** all **SEVEN** gated queries execute without error on live schema 8:
+  `farm.farm_categories` (farm.py:53), `farm.farm_rows` (farm.py:82), `farm.farm_summary` candidate count
+  (farm.py:120), `paper.poll_pinned` SELECT (paper.py:138, dry), `paper.assert_pinned_subset_of_refresh`
+  (paper.py:293 — must NOT raise), the seeded-pairs review (paper.py:444), `stats.query_scoreboard`
+  (stats.py:291). No `no such column: active` / SQL error from any.
+- **POST-4** poller dry-check still sees **114** pinned (poll set unchanged — all `active=1`).
+- **POST-5** `pm_paper_trade` = **102** (unchanged).
+- **POST-6** schema still **8** (rung 2 does not migrate — confirm no drift).
+- **POST-7** **engine PID == the PRE-2 value** (rung 2 must not touch the engine); legacy DB mtime unchanged;
+  no `SQLITE_BUSY`/`locked`/traceback in the pm_web restart window.
+- **POST-8** pm_web PID **changed** and `NRestarts` incremented by **exactly 1** (a clean single restart, not a
+  crash loop).
+
+**WHAT MAKES ME STOP MID-RUNG AND HAND BACK TO JACK (explicit):**
+- Any of the 5 box re-hashes != the manifest sha256 (custody / GATE-5 failure) → STOP **before** the restart.
+- The leak-guard trips (a non-`prediction_markets/` path, or `persistence/db.py` present) → STOP.
+- pm_web does not return `/healthz` 200 in the restart window, or crash-loops (`NRestarts` jumps > 1) → roll
+  back to the per-file backup; if still unhealthy → STOP + hand back.
+- `/farm` not byte-identical to `B0` (and not a same-moment cron write) → STOP (the neutrality claim is false).
+- Any gated query raises → STOP.
+- **Engine PID changed, legacy mtime changed, or any engine/`persistence/*` file touched → STOP IMMEDIATELY**
+  (blast-radius breach; the engine and MACE are out of scope).
+- schema != 8, or any `pm_watchlist`/`pm_paper_trade` count moved (something wrote the DB) → STOP.
+- The 03:20 cron fires mid-deploy → abort, reschedule.
+- **The PK-collision (see `PK_COLLISION_TRIAGE_2026-08-27.md`) is orthogonal** — if the *next* 03:20 cron
+  collides again on `0x767a…d8ac5`, that is the pre-existing ingest anomaly, **not** a rung-2 regression; do
+  not roll back rung 2 for it.
 
 ---
 
