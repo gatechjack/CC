@@ -290,7 +290,7 @@ th.pm-primary{color:var(--mono)}
 .pm-tile{display:flex; flex-direction:column; gap:.25rem; background:var(--pane); border:1px solid var(--edge);
   border-radius:.6rem; padding:.9rem 1rem; transition:border-color .12s,background .12s}
 .pm-tile:hover{border-color:var(--accent); background:var(--pane2)}
-.pm-tile-name{font-size:1rem; font-weight:650; text-transform:uppercase; letter-spacing:.02em}
+.pm-tile-name{font-size:1rem; font-weight:650; letter-spacing:.02em}   /* casing driven by the template (|upper), one source of truth */
 .pm-tile-hint{font-size:.72rem; color:var(--muted)}
 
 /* per-category page: two structurally distinct stacked regions (Watchlist=paper, Prospects=completed) */

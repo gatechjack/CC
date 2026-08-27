@@ -306,9 +306,19 @@ hand to Jack** (the cause is not the artifact).
 > 2. **Move `/farm-league` → `/farm`** (tiles become the farm root) — and RETIRE the legacy flat `farm_page` handler plus `/farm/list`.
 > 3. **Move `/farm-league/{category}` → `/farm/{category}`.**
 > 4. **REMOVE the temporary `/dashboard` + `/farm-league[/{category}]` paths** once repointed — do NOT leave them as permanent aliases (a stranded alias is exactly how the awkward-URL state becomes permanent).
-> 5. **Retire the superseded flat-presentation templates:** `pm_scoreboard.html`, `partials/pm_scoreboard_table.html`, `pm_farm.html`, `partials/pm_farm_lists.html`. The Stage-2 hierarchy templates (`pm_shell.html`, `pm_dashboard.html`, `pm_farm_league.html`, `pm_farm_category.html`, `pm_category_404.html`) become the primary screens. **Base-template consolidation is a phase-3 sub-decision:** the whale-detail templates (`pm_whale.html`, `pm_whale_overview.html`) still extend the legacy `pm_base.html`, so EITHER repoint them onto `pm_shell.html` (then retire `pm_base.html`) OR keep `pm_base.html` solely for the whale-drill pages — decide explicitly; do not orphan a route.
+> 5. **Retire the superseded flat-presentation templates:** `pm_scoreboard.html`, `partials/pm_scoreboard_table.html`, `pm_farm.html`, `partials/pm_farm_lists.html`. The Stage-2 hierarchy templates (`pm_shell.html`, `pm_dashboard.html`, `pm_farm_league.html`, `pm_farm_category.html`, `pm_category_404.html`) become the primary screens. **Base-template consolidation is a phase-3 sub-decision:** the whale-detail templates (`pm_whale.html`, `pm_whale_overview.html`) still extend the legacy `pm_base.html`, so EITHER repoint them onto `pm_shell.html` (then retire `pm_base.html`) OR keep `pm_base.html` solely for the whale-drill pages — decide explicitly; do not orphan a route. **Keep this MINIMAL** (per the provisional-theme note above — a full redesign supersedes both looks after go-live; don't polish a base that is about to be replaced).
 > 6. **Fix every internal link/nav reference** so nothing points at a retired route (the `pm_base.html` nav's `/` and `/farm`, any hardcoded hrefs).
 > Until all six land, phase 3 is NOT done. Recorded HERE (the plan), not only in a report, so it survives a handoff — a report note is not a durable carrier.
+
+> **★ VISUAL TREATMENT IS PROVISIONAL — a DELIBERATE DEFERRAL, not a gap (Jack, 2026-08-27).** The Stage-2
+> screens (the `pm.css` dark theme + `pm_shell` scaffold) are **functional scaffolding for beginning screens**,
+> chosen so the division can be operated and reviewed now. **Once the PM division is live and functioning, Jack
+> commissions a proper UI build (Claude Design, with some entertaining values) that REPLACES the current visual
+> treatment wholesale.** Two consequences: (a) do NOT read the plain look as an unfinished deliverable — it is the
+> agreed provisional state; (b) **phase-3's base-template consolidation must NOT over-invest in reconciling the two
+> looks** (`pm_base.html` vs `pm_shell.html`) — a full redesign supersedes both after go-live, so consolidation
+> should do the MINIMUM to avoid orphaning a route, nothing more. (The current dark theme stays as-is until that
+> redesign — "go with the planned dark theme," Jack 2026-08-27.)
 
 **★ SCOPE CORRECTION:** the requirement's **main dashboard shows Account-Category (sub-division) tiles — which are P3 (no sub-divisions exist).** So Stage 2 builds the **Farm-League hierarchy** in full and only a **shell** for the main dashboard:
 - **Buildable now:** the main-dashboard **shell** (two menu options: a placeholder "Sub-divisions" section [empty until P3] + "Farm League"); the Farm-League screen → **category TILES** (the **15 RULED-IN categories**, §F-2); the **per-category page** = **WATCHLIST section on top (paper basis, from Stage 1)** + **PROSPECTS section below (completed basis)**.

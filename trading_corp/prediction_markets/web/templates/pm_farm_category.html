@@ -1,11 +1,11 @@
 {% extends "pm_shell.html" %}
-{% block title %}{{ category }} &middot; Farm League &middot; Prediction Markets{% endblock %}
+{% block title %}{{ category|upper }} &middot; Farm League &middot; Prediction Markets{% endblock %}
 {% block content %}
 <section>
   <nav class="pm-crumb"><a href="/dashboard">Dashboard</a> &rsaquo;
-    <a href="/farm-league">Farm League</a> &rsaquo; {{ category }}</nav>
+    <a href="/farm-league">Farm League</a> &rsaquo; {{ category|upper }}</nav>
   <div class="pm-section-head">
-    <h1 class="pm-h1">{{ category }}</h1>
+    <h1 class="pm-h1">{{ category|upper }}</h1>
     <p class="pm-sub">Watchlist (our paper trades) on top, Prospects (completed-trade screening) below.
       This is the Phase-1 skeleton &mdash; per-whale stats and actions arrive in later phases.</p>
   </div>

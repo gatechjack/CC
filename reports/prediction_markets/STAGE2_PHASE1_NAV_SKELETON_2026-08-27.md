@@ -33,10 +33,10 @@ and every legacy page render **byte-for-byte unchanged**.
 | `a1d4cc28eec92a1e8a13a4f043cbbaca0228590ee615f2c5bfd5fdda1050db69` | `web/app.py` | +3 routes + 3 read-only loaders (appended; existing handlers untouched) |
 | `905ce2958ececace66f144489468f53970c25e9b1a87d196c3fb96dc6ebd8ee8` | `web/templates/pm_shell.html` | NEW isolated base (target nav) |
 | `8dadcc458fbbc7b021e4edf11501c762ec8e430565670eae4fb079b8c88fc20c` | `web/templates/pm_dashboard.html` | NEW dashboard shell |
-| `16805a82aacc59a9e351dd158da358022247030517a1706f54a81bae70ec70f3` | `web/templates/pm_farm_league.html` | NEW tile grid |
-| `49a1b5c370309afe0ea1918a1043f3963ed06fed2f98f4f4d3b434f8532d20c9` | `web/templates/pm_farm_category.html` | NEW per-category page |
-| `f227dfbffac1340b78978b8326d5c2223588aeb39a4e1039f9a2a3bc005f4081` | `web/templates/pm_category_404.html` | NEW styled 404 |
-| `e1321ef9ffbab4dd2772f982b8576070f43b73a1b49552670942853b06b4b2c1` | `web/static/pm.css` | APPENDED Stage-2 block (additive; legacy classes untouched) |
+| `a8b671998003a9931f639058ef891e832d92cc6b75bb6cb401cd07bb0dbe5011` | `web/templates/pm_farm_league.html` | NEW tile grid (category display `\|upper`) |
+| `115160aa655e10357ece9acbc4c2e5eeddd871848d24b26452e29d4d8a3e6fc0` | `web/templates/pm_farm_category.html` | NEW per-category page (category display `\|upper`) |
+| `22551ff0e530ce4041f27d54fa064dfd8a1888afebd0b06e61cd41facc5cb15b` | `web/templates/pm_category_404.html` | NEW styled 404 (category display `\|upper`) |
+| `f059504fa3fd0b3005e5234351b5944a640ff9ad709dbb47958f49c33192e38d` | `web/static/pm.css` | APPENDED Stage-2 block (additive); tile-name casing now template-driven |
 
 **NOT deployed (branch-only):** `tests/prediction_markets/test_stage2_nav.py`, this report, the `PM_REBUILD_PLAN`
 edit. **NOT touched:** `paper.py`, `stats.py`, `db.py`, `farm.py` (queries), any data-layer/query/rollup code,
@@ -51,8 +51,11 @@ edit. **NOT touched:** `paper.py`, `stats.py`, `db.py`, `farm.py` (queries), any
 - **`/farm-league`** — breadcrumb "Dashboard › Farm League", heading "Farm League", a subtitle stating the live
   count, then a **responsive grid of category tiles** — one per **active** Kalshi-copyable category (today the 15:
   mlb, nba, nfl, nhl, wnba, epl, ucl, soccer, atp, wta, tennis, cs2, golf, ufc, fed). Each tile is a card
-  (category name + "Watchlist · Prospects" hint) linking to its page. **No cbb/fifwc/unknown tile** (deactivated).
-- **`/farm-league/{category}`** — breadcrumb "Dashboard › Farm League › {category}", heading = the category, then
+  (category name in **UPPERCASE** — e.g. MLB — + "Watchlist · Prospects" hint) linking to its page (the href
+  stays lowercase). **No cbb/fifwc/unknown tile** (deactivated).
+- **`/farm-league/{category}`** — breadcrumb "Dashboard › Farm League › {CATEGORY}", heading = the category name
+  in **UPPERCASE** (e.g. ATP) — casing is consistent everywhere a category name is displayed (tiles, heading,
+  breadcrumb, title, 404); URLs stay lowercase — then
   **two stacked, structurally-distinct panels**: **Watchlist** (top; "our paper trades · N whale(s)"; a
   "phase-2" placeholder; reads the **paper** basis) and **Prospects** (bottom; "completed-trade screening · N
   prospect(s)"; honest-empty "no prospects yet — populated by Search" today; reads the **completed** basis).
@@ -62,6 +65,11 @@ edit. **NOT touched:** `paper.py`, `stats.py`, `db.py`, `farm.py` (queries), any
 **Verdict for Jack:** this is a **usable, navigable skeleton** — you can click Dashboard → Farm League → a
 category → land on the two labelled regions, and back up via breadcrumbs — with the section bodies intentionally
 near-empty (phase-2 fills them). It is NOT a set of empty routes.
+
+**★ Visual treatment is PROVISIONAL (deliberate deferral, not a gap).** The dark scaffold is functional
+beginning-screen styling; once the division is live, Jack commissions a proper UI build (Claude Design) that
+replaces it wholesale — so phase-3's base-template consolidation stays MINIMAL. Recorded in `PM_REBUILD_PLAN`
+Stage 2 ("go with the planned dark theme" until then).
 
 ## 3. WHY IT IS CORRECT (the phase-1 must-haves)
 

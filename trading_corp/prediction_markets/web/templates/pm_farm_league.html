@@ -13,7 +13,7 @@
   <div class="pm-tilegrid">
     {% for c in categories %}
       <a class="pm-tile" href="/farm-league/{{ c }}">
-        <span class="pm-tile-name">{{ c }}</span>
+        <span class="pm-tile-name">{{ c|upper }}</span>
         <span class="pm-tile-hint">Watchlist &middot; Prospects</span>
       </a>
     {% endfor %}
