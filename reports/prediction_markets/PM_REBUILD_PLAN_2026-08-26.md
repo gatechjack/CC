@@ -379,6 +379,14 @@ hand to Jack** (the cause is not the artifact).
 
 **Docs to mark SUPERSEDED (not delete — history):** scout-shortlist numbers in `FARM_RERANK`/`POSTP1_ITEMS`/`STEP5`. **Legacy code stays untouched by rule.** **cbb/fifwc pairs are REMOVED (Stage 0), not deleted — never recorded as "not copyable."**
 
+**§D-cleanup — Stage 2 housekeeping backlog (deferred code-quality, no user-visible change):**
+- **`db.SCHEMA_HEAD` single source of truth (RULED deferred to Stage 2, Jack 2026-08-27).** Today the schema-head
+  version is hard-pinned as an integer literal across ~6 test assertions and the migration-008 test name, so every
+  migration (007→CP3b-2, 009→Stage 1) forces a manual "bump `== N` → `== N+1`" sweep — a maintenance step that once
+  masked a real 7th failure behind the 6 mechanical ones. Proposed fix: `db.SCHEMA_HEAD = max(v for v, _ in MIGRATIONS)`
+  and point the is-at-head assertions at it. **Not implemented in Stage 1** (Jack: keep the rung pass minimal; do it as
+  Stage 2 cleanup). Recorded here so it isn't lost.
+
 ---
 
 ## §E. `/scoreboard` — RULED §F-4: REPURPOSE THE RANKER, RETIRE THE PAGE
