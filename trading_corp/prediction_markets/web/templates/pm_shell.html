@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en" class="pm-dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Prediction Markets{% endblock %}</title>
+  {# VENDORED, loopback-served assets ONLY -- shares pm.css with the legacy pages (ONE app, ONE theme).
+     pm_shell is the Stage-2 navigation-hierarchy base (Dashboard -> Farm League -> category). The legacy
+     pm_base.html stays live for the flat /scoreboard + /farm pages until phase 3 retires them and repoints
+     these routes onto / and /farm (see PM_REBUILD_PLAN Stage 2, the phase-3 repoint deliverable). #}
+  <link rel="stylesheet" href="/static/pm.css" />
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body class="pm-body">
+  <header class="pm-header">
+    <div class="pm-header-inner">
+      <a href="/dashboard" class="pm-brand">
+        <span class="pm-logo">PM</span>
+        <span class="pm-brand-txt">Prediction Markets<span class="pm-brand-sub">dashboard</span></span>
+      </a>
+      {# Target navigation hierarchy. Live sub-divisions are P3 (not built) -> a visibly disabled span,
+         never a fake link. #}
+      <nav class="pm-nav">
+        {% set path = request.url.path %}
+        <a href="/dashboard" class="pm-nav-link {% if path == '/dashboard' %}pm-nav-active{% endif %}">Dashboard</a>
+        <a href="/farm-league" class="pm-nav-link {% if path.startswith('/farm-league') %}pm-nav-active{% endif %}">Farm League</a>
+        <span class="pm-nav-link pm-nav-disabled" title="Live sub-divisions -- coming in P3">Live sub-divisions</span>
+      </nav>
+      <div class="pm-header-right">{% block header_extras %}{% endblock %}</div>
+    </div>
+  </header>
+
+  <main class="pm-main">{% block content %}{% endblock %}</main>
+
+  <footer class="pm-footer">
+    <span>pm_web &middot; farm-league navigation (Stage 2 &middot; phase 1 skeleton)</span>
+    <span class="pm-footer-right">bias down, never up &middot; caveats travel with the number</span>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

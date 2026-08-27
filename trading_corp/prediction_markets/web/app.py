@@ -299,3 +299,68 @@ async def farm_analyze(request: Request, wallet: str, category: str, force: str 
     do_force = str(force or "").strip().lower() in ("1", "true", "yes", "on")
     data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, int(time.time()))
     return templates.TemplateResponse(request, "partials/pm_analyze_result.html", {"request": request, **data})
+
+
+# ── farm-league navigation hierarchy (Stage 2, phase 1) ───────────────────────────────────────────
+# NEW routes ALONGSIDE the legacy /, /scoreboard, /farm (which stay live and unmodified until phase 3
+# retires them and repoints these onto / and /farm -- see PM_REBUILD_PLAN Stage 2, the phase-3 repoint
+# deliverable). READ-ONLY: no write, no rollup, no migration, no change to any query/data-layer function --
+# these loaders only CALL the existing farm.* readers. The two per-category regions read SEPARATE bases by
+# construction: Watchlist(pinned) -> pm_paper_category_stats (paper); Prospects(candidate) -> pm_category_stats
+# (completed). The three-lists / three-bases invariant is honoured even while the regions are near-empty.
+
+def _load_dashboard() -> dict:
+    """Dashboard shell read. Only the active Farm-League category COUNT (data-driven, never hardcoded) so the
+    menu card is honest; the Live sub-division section is P3 and carries no data. OFF the loop, PM DB only."""
+    with connect() as conn:
+        n_categories = len(farm.farm_categories(conn, farm.PINNED))
+    return {"n_categories": n_categories}
+
+
+def _load_farm_league() -> dict:
+    """Farm-League tile read. Tiles = the ACTIVE pinned categories (farm.farm_categories gates active=1), so a
+    removed category yields NO tile and a re-admitted one reappears with no code change. OFF the loop, read-only."""
+    with connect() as conn:
+        categories = farm.farm_categories(conn, farm.PINNED)
+    return {"categories": categories}
+
+
+def _load_farm_category(category: str) -> dict | None:
+    """Per-category read. Returns None when `category` is not an ACTIVE tile (removed / unknown / nonexistent)
+    so the route can 404 -- a deactivated category must not be reachable by URL. The Watchlist and Prospects
+    regions read SEPARATE bases (paper vs completed) via two distinct farm.farm_rows calls; the paths never merge."""
+    with connect() as conn:
+        if category not in farm.farm_categories(conn, farm.PINNED):
+            return None
+        watchlist = farm.farm_rows(conn, status=farm.PINNED, category=category)      # PAPER basis (pinned)
+        prospects = farm.farm_rows(conn, status=farm.CANDIDATE, category=category)    # COMPLETED basis (candidate)
+    return {"category": category, "watchlist": watchlist, "prospects": prospects}
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page(request: Request):
+    """Main Predictions-Market Dashboard shell: the Live sub-division menu option (P3, visibly disabled) + the
+    Farm League menu option. TEMPORARY path -- phase 3 repoints this onto `/`."""
+    data = await asyncio.to_thread(_load_dashboard)
+    return templates.TemplateResponse(request, "pm_dashboard.html", {"request": request, **data})
+
+
+@app.get("/farm-league", response_class=HTMLResponse)
+async def farm_league_page(request: Request):
+    """Farm-League category tiles (the active Kalshi-copyable categories, data-driven). Each tile links to its
+    per-category page. TEMPORARY path -- phase 3 repoints this onto `/farm`."""
+    data = await asyncio.to_thread(_load_farm_league)
+    return templates.TemplateResponse(request, "pm_farm_league.html", {"request": request, **data})
+
+
+@app.get("/farm-league/{category}", response_class=HTMLResponse)
+async def farm_league_category(request: Request, category: str):
+    """Per-category page: Watchlist (paper) on top, Prospects (completed) below. A category NOT in the active
+    tile set (removed / unknown / nonexistent) is NOT reachable -> 404, never a fabricated page. TEMPORARY path
+    -- phase 3 repoints this onto `/farm/{category}`."""
+    category = (category or "").strip().lower()
+    data = await asyncio.to_thread(_load_farm_category, category)
+    if data is None:
+        return templates.TemplateResponse(
+            request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)
+    return templates.TemplateResponse(request, "pm_farm_category.html", {"request": request, **data})

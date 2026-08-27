@@ -292,6 +292,24 @@ hand to Jack** (the cause is not the artifact).
 
 ### STAGE 2 — THE SCREENS (Farm League hierarchy) — with a scope correction
 
+> **★ SPLIT INTO THREE PASSES (Jack, 2026-08-27) — a smaller reviewable drop is the point; do NOT build ahead.**
+> Stage 2 is the largest stage and the one Jack looks at daily, so it ships in three reviewable passes:
+> - **Phase 1 — NAVIGATION SKELETON (BUILT 2026-08-27, branch `prediction-markets-stage2-phase1-2026-08-27`; record `STAGE2_PHASE1_NAV_SKELETON_2026-08-27.md`).** Routes + page shells only. NEW temporary routes `/dashboard`, `/farm-league`, `/farm-league/{category}` built ALONGSIDE the still-live `/`, `/scoreboard`, `/farm` (nothing removed/rewritten). Tiles data-driven off the active funnel (never a hardcoded 15); the per-category page has structurally-distinct Watchlist(paper) + Prospects(completed) regions reading SEPARATE bases even while near-empty; a deactivated/unknown category → 404 (not reachable by URL). Isolated base `pm_shell.html` (legacy `pm_base.html` untouched).
+> - **Phase 2 — PER-CATEGORY CONTENT.** Fill the Watchlist (paper stats + per-whale rows) and Prospects (completed-basis ranking via the repurposed `query_scoreboard`) sections; surface OPEN-POSITION COUNTS as a first-class number (R6). No route removal.
+> - **Phase 3 — RETIRE + REPOINT (the LOAD-BEARING deliverable below).**
+>
+> **★★ PHASE-3 REPOINT — A LOAD-BEARING DEPENDENCY, NOT A TIDY-UP (Jack, 2026-08-27). It CANNOT be deferred silently.**
+> Phase 1 parks the new UI at temporary paths; if phase 3 slips, Jack is stranded with the new hierarchy at awkward
+> URLs and the old flat pages on the good ones. Phase 3 MUST land ALL SIX of these as explicit deliverables (a
+> checklist, not a note) before it is "done":
+> 1. **Move `/dashboard` → `/`** (the main dashboard becomes the root) — and RETIRE the legacy `scoreboard_page` handler on `/` plus the `/scoreboard` fragment route.
+> 2. **Move `/farm-league` → `/farm`** (tiles become the farm root) — and RETIRE the legacy flat `farm_page` handler plus `/farm/list`.
+> 3. **Move `/farm-league/{category}` → `/farm/{category}`.**
+> 4. **REMOVE the temporary `/dashboard` + `/farm-league[/{category}]` paths** once repointed — do NOT leave them as permanent aliases (a stranded alias is exactly how the awkward-URL state becomes permanent).
+> 5. **Retire the superseded flat-presentation templates:** `pm_scoreboard.html`, `partials/pm_scoreboard_table.html`, `pm_farm.html`, `partials/pm_farm_lists.html`. The Stage-2 hierarchy templates (`pm_shell.html`, `pm_dashboard.html`, `pm_farm_league.html`, `pm_farm_category.html`, `pm_category_404.html`) become the primary screens. **Base-template consolidation is a phase-3 sub-decision:** the whale-detail templates (`pm_whale.html`, `pm_whale_overview.html`) still extend the legacy `pm_base.html`, so EITHER repoint them onto `pm_shell.html` (then retire `pm_base.html`) OR keep `pm_base.html` solely for the whale-drill pages — decide explicitly; do not orphan a route.
+> 6. **Fix every internal link/nav reference** so nothing points at a retired route (the `pm_base.html` nav's `/` and `/farm`, any hardcoded hrefs).
+> Until all six land, phase 3 is NOT done. Recorded HERE (the plan), not only in a report, so it survives a handoff — a report note is not a durable carrier.
+
 **★ SCOPE CORRECTION:** the requirement's **main dashboard shows Account-Category (sub-division) tiles — which are P3 (no sub-divisions exist).** So Stage 2 builds the **Farm-League hierarchy** in full and only a **shell** for the main dashboard:
 - **Buildable now:** the main-dashboard **shell** (two menu options: a placeholder "Sub-divisions" section [empty until P3] + "Farm League"); the Farm-League screen → **category TILES** (the **15 RULED-IN categories**, §F-2); the **per-category page** = **WATCHLIST section on top (paper basis, from Stage 1)** + **PROSPECTS section below (completed basis)**.
 - **Tile set (RULED §F-2 — 15):** `mlb · nba · nfl · nhl · wnba · epl · ucl · soccer · atp · wta · tennis · cs2 · golf · ufc · fed`. **Three of these (`nhl`, `ufc`, `fed`) are included on OPERATOR KNOWLEDGE over the probe output** — the probe could not read their game-line tickers (429-throttled for nhl/ufc; Sports-only scope for fed). **Their tiles render; their matcher tickers are UNMEASURED and gated on the follow-up probes (§F-2-PROBES) — inclusion ≠ ticker-verified.** No tile is rendered for cbb/fifwc/unknown (removed in Stage 0).

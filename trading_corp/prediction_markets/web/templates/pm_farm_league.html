@@ -1,0 +1,25 @@
+{% extends "pm_shell.html" %}
+{% block title %}Farm League &middot; Prediction Markets{% endblock %}
+{% block content %}
+<section>
+  <nav class="pm-crumb"><a href="/dashboard">Dashboard</a> &rsaquo; Farm League</nav>
+  <div class="pm-section-head">
+    <h1 class="pm-h1">Farm League</h1>
+    <p class="pm-sub">The <strong>{{ categories|length }}</strong> Kalshi-copyable categories &mdash; driven by
+      the active funnel, never a hardcoded list. Click a category for its Watchlist and Prospects.</p>
+  </div>
+
+  {% if categories %}
+  <div class="pm-tilegrid">
+    {% for c in categories %}
+      <a class="pm-tile" href="/farm-league/{{ c }}">
+        <span class="pm-tile-name">{{ c }}</span>
+        <span class="pm-tile-hint">Watchlist &middot; Prospects</span>
+      </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="pm-empty">No active categories in the funnel.</div>
+  {% endif %}
+</section>
+{% endblock %}
