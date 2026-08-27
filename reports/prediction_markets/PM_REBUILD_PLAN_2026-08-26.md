@@ -90,6 +90,13 @@ An earlier report listed only two authorizations (migration, then the 22-row wri
 
 Each rung is independently reversible: rung 1 — restore the pre-ALTER online backup (clean total revert), or `DROP COLUMN` on SQLite 3.37.2; rung 2 — redeploy the prior per-file artifacts + restart; rung 3 — flip `active=1` back (the flag's whole point). The three rungs are separate Jack authorizations.
 
+**★ RUNG-1 EXECUTION RECORD — DONE 2026-08-27 02:15Z** (migration 008 applied to LIVE; branch `aac882b`; fail-closed runner `pm_stage0_rung1.sh`; authorized rung 1 only).
+- **Pre-checks passed:** UTC 02:15 (clear of the 03:00–04:00 cron window); engine PID **89366**; pm_web `/healthz`+`/farm` = **200** (`/farm` 228,564 bytes); live schema **7**, no `active` column; baseline pm_watchlist **114** / pinned 114 / **18** categories / 0 candidates / pm_paper_trade **102**; `journal_mode=wal`.
+- **Online backup FIRST (kept, Gate-1 mechanism):** `~/pm_stage0_gate1_dbbackup_20260827T021526Z.db` — **`PRAGMA integrity_check=ok`**, schema-7 snapshot, pm_watchlist 114, 25,083,904 bytes, **sha256 `dfcb8ad78027b68826bed75c86e04022c744ef1a9bf3ff5ef6be1298b15820b5`**.
+- **Byte-verify:** scratch `db.py` sha256 == branch `76eb52b2…dbc93782`; applied via `init_db()` from the ephemeral scratch (`IMPORT_FROM /tmp/…scratch…/db.py`) — **runtime `db.py` NOT touched**; scratch removed.
+- **Post-verify:** schema **7→8**; `active` INTEGER / `removal_reason` TEXT / `removal_ts` INTEGER present; `ix_pm_watchlist_active` present; pm_watchlist **114**, **active=1: 114 / active=0: 0 / removal_reason set: 0 / removal_ts set: 0** (nothing flipped); pm_paper_trade **102** unchanged; pinned 114 / 18 categories / 0 candidates == baseline; **pm_web `/healthz`+`/farm` still 200, `/farm` byte-identical (228,564), pm_web PID 40483 NOT restarted** (behaviour-neutral proof); engine PID **89366** == before.
+- **State now: live PM DB is schema 8; the runtime code is still the OLD (pre-Stage-0) `db.py`/`paper.py`/`farm.py`/`stats.py`** (which ignores the new columns — hence the byte-identical `/farm`). **Rungs 2 (deploy) and 3 (22-row write) remain unauthorized.**
+
 **Size: SMALL.** A migration + an `active=1` gate on seven reads + a one-time 22-row UPDATE (Jack-run) — but a THREE-rung deploy (above), not one.
 
 ---
