@@ -89,6 +89,11 @@ Jack raised scoping the whale-activity PULL to tracked categories only. **RULED 
 - Scoping ingestion to the live categories was already rejected earlier in this build; reversing it must be deliberate, not a side effect of a query fix.
 **Standing principle:** category exclusion lives at the QUERY layer (the `active` gate), the TILE set, and candidate SELECTION (R2) — NEVER at ingest. **The pull stays all-categories.**
 
+### R6 — Stage-2 screens MUST surface OPEN-POSITION COUNTS, not only rolled-up (closed) stats.  *(RULED 2026-08-27, T1 rung 2 — do NOT implement yet)*
+**The gap (observed live, T1 rung 2 + rollup):** the `/farm` landing renders generic poll status ("polled") plus pcs-sourced (closed-trade) stats; it does **not** render per-pair *live open-position counts*. Consequence: after a poller run captured **14 new open trades**, `/farm` came back **byte-identical** — the main page could not distinguish *"the poller ran and captured 14 trades"* from *"the poller never ran."* The open positions live in the DB (`pm_paper_trade.status='open'`, and `pm_paper_category_stats.n_open`), but the landing doesn't show them.
+**Why it matters:** once the cadence is installed, `/farm` is the page Jack watches daily. A screen that can't tell "captured 14" from "ran nothing" hides the very signal the cadence exists to produce — and hides a silently-broken poller. This is the presentation analogue of the completeness gap T1 just fixed at the data layer.
+**Requirement:** Stage-2 screens (the Farm-League hierarchy) must display **open-position counts per pair/category** (and ideally last-poll freshness) as a first-class number, distinct from the closed-trade performance stats. The three-state poll token already exists (`farm.poll_state`) but the landing must render the COUNT, not just the status word. **Reasoning kept so it isn't re-lost:** rolled-up stats are closed-trade performance (correctly), so they are stale/empty for a lane that is mostly open trades — the open count is what shows the lane is alive. Do NOT build now; this is a Stage-2 screen requirement.
+
 ---
 
 ## 5. CATEGORY STATUS (as of 2026-08-26)
