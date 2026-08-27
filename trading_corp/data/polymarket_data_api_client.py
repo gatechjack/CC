@@ -85,6 +85,19 @@ class PolymarketRateLimitError(PolymarketDataAPIError):
     """
 
 
+class PolymarketIncompletePositionsError(PolymarketDataAPIError):
+    """`fetch_positions` could not confirm it retrieved a wallet's FULL open book.
+
+    `/positions` caps a single response at a default page size; the full book is
+    retrieved by paging (`fetch_positions_book`). If paging hits the `max_pages`
+    guard while every page is still full (i.e. we never saw a short/terminal page),
+    completeness cannot be asserted and we must NOT silently return a partial book
+    (that is exactly how the 100-cap under-representation of high-volume whales went
+    unnoticed). `fetch_positions` raises this instead; callers that cannot tolerate a
+    partial read (the poller) treat it as "leave this whale un-polled" (Ruling G).
+    """
+
+
 def _is_cloudflare_block(resp: httpx.Response) -> bool:
     """Detect Cloudflare WAF / rate-limit interstitials on a 4xx response.
 
@@ -371,6 +384,22 @@ def _decode_resolution(market: dict) -> dict:
     }
 
 
+@dataclass(frozen=True)
+class PositionBook:
+    """The result of a FULL-BOOK `/positions` fetch (`fetch_positions_book`).
+
+    `complete` is the load-bearing field: True iff paging reached a terminal (short/empty)
+    page, i.e. we can assert we saw the whole open book. False iff the `max_pages` guard was
+    hit while pages were still full — the book may be larger than what `rows` holds, so a
+    caller must NOT treat `rows` as the whole book. `pages` = requests made; `n` = len(rows)
+    after de-duplication by (conditionId, asset).
+    """
+    rows: list[PositionRow]
+    complete: bool
+    pages: int
+    n: int
+
+
 class PolymarketDataAPIClient:
     """Async client for Polymarket's public Data API.
 
@@ -436,16 +465,63 @@ class PolymarketDataAPIClient:
             return []
         return [ActivityRow.from_api(r) for r in rows if isinstance(r, dict)]
 
-    async def fetch_positions(self, wallet: str) -> list[PositionRow]:
-        """Current open positions for one wallet."""
-        rows = await self._get_json(
-            f"{_DATA_API_BASE}/positions",
-            params={"user": wallet},
-            label=f"positions[{wallet[:10]}…]",
-        )
-        if not isinstance(rows, list):
-            return []
-        return [PositionRow.from_api(r) for r in rows if isinstance(r, dict)]
+    async def fetch_positions_book(
+        self, wallet: str, *, page_size: int = 500, max_pages: int = 40,
+    ) -> PositionBook:
+        """Retrieve a wallet's FULL open book from `/positions` by paging.
+
+        `/positions` returns only a default first page (observed ~100 rows, sorted largest-first);
+        `limit` IS honored (verified live: limit=500 -> 500 rows) and `offset` walks further, so the
+        whole book is retrievable -- the "100 cap" was a default parameter, not a hard limit
+        (verified: BetMechanic 1311 positions across 3 pages of 500/500/311). Pages with
+        `limit=page_size` + increasing `offset` until a SHORT page (< page_size) marks the terminal
+        (=> complete). De-dupes by (conditionId, asset) so a book that shifts between pages cannot
+        double-count. `max_pages` is an infinite-loop backstop: hitting it while pages are still full
+        yields complete=False (we could NOT confirm we saw the end).
+        """
+        seen: set[tuple[str, str]] = set()
+        rows: list[PositionRow] = []
+        pages = 0
+        complete = False
+        offset = 0
+        while pages < max_pages:
+            page = await self._get_json(
+                f"{_DATA_API_BASE}/positions",
+                params={"user": wallet, "limit": int(page_size), "offset": int(offset)},
+                label=f"positions[{wallet[:10]}…, limit={page_size}, offset={offset}]",
+            )
+            pages += 1
+            page_rows = [r for r in page if isinstance(r, dict)] if isinstance(page, list) else []
+            for r in page_rows:
+                key = (str(r.get("conditionId") or ""), str(r.get("asset") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(PositionRow.from_api(r))
+            if len(page_rows) < page_size:          # short/empty page = end of the book (terminal)
+                complete = True
+                break
+            offset += page_size
+        return PositionBook(rows=rows, complete=complete, pages=pages, n=len(rows))
+
+    async def fetch_positions(
+        self, wallet: str, *, page_size: int = 500, max_pages: int = 40,
+    ) -> list[PositionRow]:
+        """A wallet's FULL open book (paged internally; see `fetch_positions_book`).
+
+        Backward-compatible list contract -- now the COMPLETE book, not the first-page-only ~100.
+        Raises `PolymarketIncompletePositionsError` if completeness cannot be confirmed: never
+        returns a silent partial (a partial read is exactly what hid the high-volume-whale
+        under-count). Callers that want to branch on completeness without an exception (the poller)
+        call `fetch_positions_book` and read `.complete`.
+        """
+        book = await self.fetch_positions_book(wallet, page_size=page_size, max_pages=max_pages)
+        if not book.complete:
+            raise PolymarketIncompletePositionsError(
+                f"positions[{wallet[:10]}…]: full book NOT confirmed after {book.pages} pages "
+                f"({book.n} rows, page_size={page_size}, max_pages={max_pages}) -- refusing partial"
+            )
+        return book.rows
 
     async def fetch_closed_positions(
         self,
