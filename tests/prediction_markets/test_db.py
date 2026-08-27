@@ -130,7 +130,9 @@ def test_migration_005_paper_trade_lifecycle(tmp_path):
             "poll_interval_sec", "entry_basis", "market_end_date", "pnl_suspect", "suspect_reason"} <= pt
     # pm_paper_config seeded (addendum 1 grace window; tunable poll interval; fixed size basis)
     assert cfg.get("poll_interval_sec") == "300"
-    assert cfg.get("grace_window_sec") == "172800"
+    # grace: migration-005 seeded 172800 (48h) via INSERT OR IGNORE; migration 009 re-tuned it to 259200 (72h,
+    # Jack RULED 2026-08-27) via INSERT OR REPLACE -- init_db applies ALL migrations, so the live value is 72h.
+    assert cfg.get("grace_window_sec") == "259200"
     assert cfg.get("size_basis") == "100"
     # status DEFAULTs to 'open' on insert of a minimal row
     with db.connect(p) as conn:

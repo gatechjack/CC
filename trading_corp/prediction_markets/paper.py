@@ -42,7 +42,10 @@ _CAP_SIGNATURES = {50, 100, 250, 500}
 # than erroring (the migration also seeds them; these are the safety net on a read path).
 CONFIG_DEFAULTS: dict[str, float] = {
     "poll_interval_sec": 300.0,     # 5 min
-    "grace_window_sec": 172800.0,   # 48 h adjudication grace (addendum 1)
+    "grace_window_sec": 259200.0,   # 72 h adjudication grace (Jack RULED 2026-08-27: err long -- too short
+                                    # false-stales a slow gamma resolution and loses the data; too long only
+                                    # delays stale. Was 48 h (migration-005 seed, history). Live re-seeded by
+                                    # migration 009. See PM_REBUILD_PLAN Stage-1 grace proposal.)
     "size_basis": 100.0,            # fixed paper stake (contracts/shares; e7 -- NOT the whale's size, NOT dollars)
 }
 

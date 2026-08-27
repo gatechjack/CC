@@ -224,7 +224,7 @@ def test_get_config_seeded_and_degrades_when_absent(tmp_path):
     p = _db(tmp_path)
     with db.connect(p) as conn:
         assert paper.get_config(conn, "poll_interval_sec") == 300.0
-        assert paper.get_config(conn, "grace_window_sec") == 172800.0
+        assert paper.get_config(conn, "grace_window_sec") == 259200.0   # 72h (migration 009 re-tune; Jack 2026-08-27)
         assert paper.get_config(conn, "size_basis") == 100.0
     # honest degradation: a DB with no pm_paper_config table returns the code DEFAULT, never raises
     bare = sqlite3.connect(str(tmp_path / "bare.db"))
