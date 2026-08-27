@@ -1,4 +1,19 @@
-# Stage-1 BOX-SCRATCH — RED (2026-08-27), 7 failures, STOPPED per instruction
+# Stage-1 BOX-SCRATCH — GREEN after fixes (2026-08-27)
+
+> **★ RESOLVED 2026-08-27 — box-scratch is now GREEN (`PYTEST_EXIT=0`, all pass + 1 skipped).** Jack ruled the
+> fixes: **FIX 1** = bumped the 6 head-pin assertions 8→9 (plus a **7th**, `test_upgrade_backfills`, that the
+> grace-config error had MASKED — fixed by pinning it to `MIGRATIONS[:8]` to keep its "008-in-isolation" intent,
+> not a blind bump). **FIX 2 (Jack overruled my lean → option ii)** = stripped the config write from migration
+> 009 → **009 is now PURE DDL** (box-scratch confirms: after 009 on a `.backup` copy, grace stays `172800` and
+> `pm_paper_config` count stays 3 — 009 writes no config); the 72h ruling now lives as `CONFIG_DEFAULTS=259200`
+> + an explicit **rung 1b** live `UPDATE` (PM_REBUILD_PLAN). BASIS still passes new + **FAILS against old
+> `c77f618` farm.py**. Live untouched (schema 8), PIDs 676/652 unchanged. **No single head-version source exists
+> — proposed (not implemented): `db.SCHEMA_HEAD = max(v for v,_ in MIGRATIONS)` for the is-at-head checks.**
+> The RED record below is retained as the history of what the gate caught.
+
+---
+
+# Stage-1 BOX-SCRATCH — RED (2026-08-27), 7 failures, STOPPED per instruction (superseded by the GREEN re-run above)
 
 **Read-only box-scratch** (scratch code + a `.backup` copy of live; **live DB byte-untouched, schema still 8**;
 engine PID 676 / pm_web 652 unchanged across the run; scratch removed). Branch tip tested: `7070850`.

@@ -71,4 +71,23 @@ missing tier-1 prefixes (`efl`, tennis-futures shapes). It does NOT change Stage
 excludes all `unknown` today — but it's why the poller's paper volume is thinner than the whales' true
 game-line activity, and it should be weighed before the poller cadence is set.
 
+## THE POLLER-GAP LOSS SIZE (measured 2026-08-27) — for the cadence decision
+Of the trackable recent activity in the 92 active pairs, how much would the **tier-1-only poller MISS** (re-derive
+tier-1 on each row's slug → `unknown`)?
+- **7d: 16 of 253 (6.3%)** — soccer 9, tennis 7.
+- **30d: 80 of 939 (8.5%)** — tennis 38, soccer 37, ufc 4, golf 1.
+- It would **CATCH ~92%** (237/7d, 859/30d — the slug-prefix categories). `category_source` agrees: only 16/253
+  and 80/939 rows are `gamma_tags`.
+**So under "start polling now, tier-1-only" (path b), the loss is ~6–8.5%, bounded to soccer + tennis** (plus a
+handful of ufc/golf edge cases). Not a blind spot on the whales' activity — a modest, well-scoped leak until the
+poller gets tier-2 (or the missing tier-1 prefixes are added).
+
+## Is the tier-2 gap a Stage-1 item or a separate ticket? — SEPARATE TICKET (agree with Jack)
+The gap is in `poll_pinned`'s categorization (tier-1 only, no gamma fallback) — a **pre-existing poller behavior
+Stage 1 did not touch**. Stage 1's deliverables (gamma-adjudicator re-base, `pm_paper_category_stats` rollup, the
+pinned→paper wiring) are correct and orthogonal to it; R1 correctly excludes `unknown` regardless. Closing the gap
+is a self-contained ingest/poller change (give the poller the tier-2 fallback, or add `soccer`/tennis-futures
+prefixes) — **its own ticket, not part of the paper-lane close-out.** It does not block Stage 1's value; it caps
+paper volume ~6–8.5% below the whales' true game-line rate until fixed.
+
 **Read-only. No fix opened. Engine/PM DB untouched.**
