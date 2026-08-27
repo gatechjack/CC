@@ -89,7 +89,7 @@ def test_fresh_insert_defaults_active_1(tmp_path):
     assert r["active"] == 1 and r["removal_reason"] is None and r["removal_ts"] is None
 
 
-def test_upgrade_backfills_existing_rows_to_active_1(tmp_path):
+def test_upgrade_backfills_existing_rows_to_active_1(tmp_path, monkeypatch):
     """The 114 board-locked pairs: prove `ADD COLUMN NOT NULL DEFAULT 1` backfills a PRE-008 row to active=1.
     Build a schema-7 DB by hand (pm_watchlist in its migration-006 shape, no active column), then let init_db
     apply ONLY 008."""
@@ -107,6 +107,9 @@ def test_upgrade_backfills_existing_rows_to_active_1(tmp_path):
     conn.commit()
     conn.close()
 
+    # Pin init_db to migrations <=008 so this stays a migration-008-IN-ISOLATION test (its documented intent),
+    # robust to later migrations (009 Stage-1 etc.) -- mirrors test_migration_004_idempotent's MIGRATIONS[:3].
+    monkeypatch.setattr(db, "MIGRATIONS", db.MIGRATIONS[:8])
     db.init_db(p)                                           # applies migration 008 alone
 
     with db.connect(p) as conn:
