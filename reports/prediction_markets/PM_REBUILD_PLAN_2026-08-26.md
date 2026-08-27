@@ -164,10 +164,19 @@ until Jack authorizes rung 2 as a separate act.**
    transfer) BEFORE any overwrite.
 3. **Per-file backup** — copy the current box versions of the 5 files to `~/pm_stage0_rung2_bak_<UTC>/`
    (rollback material).
-4. **Copy** the 5 files into place; **chown azureuser:azureuser**, dirs 755 / files 644 / no world-writable
-   (GOTCHA-1/2).
-5. **BOX==BRANCH GATE (fresh re-hash)** — `sha256sum` each of the 5 deployed files ON THE BOX; **each must ==
-   the manifest branch sha256.** Any mismatch → **STOP, do not restart, do not advance prod-live.**
+4. **Copy** the files into place; **chown azureuser:azureuser**, dirs 755 / **files forced to 644** (`chmod 644`) /
+   no world-writable (GOTCHA-1/2). **★ The `chmod 644` is MANDATORY, not defensive — see STANDING NOTE (perms).**
+5. **BOX==BRANCH GATE (fresh re-hash)** — verify each deployed file ON THE BOX: blob/`sha256sum` **== the manifest
+   branch value** AND **`stat -c '%a'` == 644** AND owner azureuser:azureuser. Any mismatch (content OR perms) →
+   **STOP, do not restart, do not advance prod-live.**
+
+**★ STANDING NOTE (perms) — the tar 664-vs-644 drift is a PROPERTY OF THE MECHANISM, not an incident.** It has now
+recurred on **BOTH** rung-2 deploys (Stage-0 rung 2 and Stage-1 rung 2, 2026-08-27): `git archive` on the deploy
+host emits regular files as `-rw-rw-r--` (664), so any extract-from-tar placement lands 664 while the box baseline
+is 644. **This is reproducible, so the deploy procedure OWNS it:** always `chmod 644` after placement and make the
+re-hash gate (step 5) assert `perms == 644`, not just content. The next agent should NOT re-discover this as a
+surprise — expect 664 out of the tar, force 644, verify it. (Same for any future path-checkout/scp placement whose
+source mode is not guaranteed 644.)
 6. **Restart pm_web ONLY** — `systemctl restart prediction-markets-web`. The engine (`trading-corp.service`)
    is never referenced.
 7. **prod-live commit is a SEPARATE, LAST, bookkeeping step** — authored only after the post-checks pass, from
