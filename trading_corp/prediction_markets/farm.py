@@ -47,8 +47,11 @@ def poll_state(last_polled_ts, n_open) -> str:
 def farm_categories(conn, status: str = PINNED) -> list[str]:
     """Categories with >=1 pair at this farm status -- DRIVES THE TABS (data-driven, never a hardcoded 4;
     MLB/UFC/NBA/Fed being the 'live' set is a P3 account-attachment concern, not this page's tabs)."""
+    # Stage-0 funnel gate (008): active=1 -> a removed category (all its pairs off-funnel) yields NO tile.
+    # This read IS the tile/tab set: miss the gate and a tile renders for a category outside the ruled set.
     return [r["category"] for r in conn.execute(
-        "SELECT DISTINCT category FROM pm_watchlist WHERE status=? AND category IS NOT NULL ORDER BY category",
+        "SELECT DISTINCT category FROM pm_watchlist WHERE status=? AND active=1 AND category IS NOT NULL "
+        "ORDER BY category",
         (status,)).fetchall()]
 
 
@@ -76,7 +79,7 @@ _ROWS_SQL = (
     "LEFT JOIN pm_roster r ON r.wallet=wl.wallet AND r.category=wl.category "
     "LEFT JOIN (SELECT wallet, category, COUNT(*) AS n_open FROM pm_paper_trade WHERE status='open' "
     "          GROUP BY wallet, category) op ON op.wallet=wl.wallet AND op.category=wl.category "
-    "WHERE wl.status=?"
+    "WHERE wl.status=? AND wl.active=1"   # Stage-0 funnel gate (008): removed pairs off the pinned/candidate list
 )
 
 
@@ -113,7 +116,8 @@ def farm_summary(conn) -> dict:
     states = {POLL_NEVER: 0, POLL_NONE_OPEN: 0, POLL_HAS_OPEN: 0}
     for r in pinned:
         states[r["poll_state"]] = states.get(r["poll_state"], 0) + 1
-    n_cand = conn.execute("SELECT COUNT(*) FROM pm_watchlist WHERE status=?", (CANDIDATE,)).fetchone()[0]
+    # Stage-0 funnel gate (008): removed candidates (if any) are off-funnel and not counted.
+    n_cand = conn.execute("SELECT COUNT(*) FROM pm_watchlist WHERE status=? AND active=1", (CANDIDATE,)).fetchone()[0]
     return {
         "n_pinned": len(pinned),
         "pinned_categories": farm_categories(conn, PINNED),

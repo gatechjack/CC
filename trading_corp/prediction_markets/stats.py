@@ -283,7 +283,12 @@ def query_scoreboard(conn, *, category: str | None = None, routine: str = "net_r
         "LEFT JOIN pm_whale w ON cs.wallet = w.wallet "
         "LEFT JOIN pm_category_onesided_stats os "
         "  ON cs.wallet=os.wallet AND cs.category=os.category "
-        "WHERE cs.n_resolved >= ?"
+        # Stage-0 funnel gate (migration 008): a DEACTIVATED (wallet,category) pair (active=0 in pm_watchlist)
+        # must show NOWHERE, including this ranker -- per F-4 query_scoreboard becomes the prospects section of
+        # the category page (RULED 2026-08-26). LEFT JOIN so a pair ABSENT from pm_watchlist (a pure prospect)
+        # still ranks (wl.active IS NULL); ONLY active=0 is excluded. Selects NO wl columns -> shape unchanged.
+        "LEFT JOIN pm_watchlist wl ON cs.wallet=wl.wallet AND cs.category=wl.category "
+        "WHERE cs.n_resolved >= ? AND (wl.active IS NULL OR wl.active = 1)"
     )
     params: list = [routine, min_resolved]
     if category:
