@@ -1,5 +1,11 @@
 # Prediction Markets — TRANSITION: Stage 0 → next code agent (2026-08-27)
 
+> **⛔ SUPERSEDED 2026-08-27 — DO NOT TRUST THIS DOC. Read `TRANSITION_STAGE0_COMPLETE_2026-08-27.md` instead.**
+> This was written during the Stage-0 MIXED STATE. Its central claim — that `/farm` rendering unchanged is CORRECT
+> — is now **FALSE**: rung 2 (code deploy) and rung 3 (the 22-row `active=0` write) are DONE, so `/farm` shows
+> **15 categories / 92 pairs** (182,835 bytes), not the old 18/114 byte-identical render. `origin/prod-live` is
+> `c77f618` (not `95e78c4`); the live PM DB is 92 active / 22 inactive. Kept only as history of the mixed state.
+
 **Read this first. Two things a fresh agent will otherwise get wrong are at the top.**
 
 Branch: `prediction-markets-stage0-2026-08-26` @ **`5ce939b`** — **pushed to `origin`** (github.com/gatechjack/CC), branch under its own name (NOT prod-live, NOT main). `origin` tip == local `5ce939b` (ls-remote confirmed).
