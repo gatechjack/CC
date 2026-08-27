@@ -546,6 +546,38 @@ MIGRATION_008: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_watchlist_active ON pm_watchlist(active)",
 ]
 
+# migration 009 (2026-08-27, Stage 1): paper-trading category stats.
+# Migration 008 was consumed by Stage 0 (active/removal columns on pm_watchlist); this is 009.
+# pm_paper_category_stats aggregates pm_paper_trade per (wallet, category) -- the forward paper-trading
+# scoreboard. Populated by paper.paper_rollup() (mirror of stats.rollup's INSERT OR REPLACE discipline).
+# R1 gate: only active=1 pinned pairs are aggregated (deactivated pairs' rows survive in pm_paper_trade).
+# ** e5 (load-bearing): paper.paper_rollup() uses _PAPER_STATS_COLS lock-step with these columns.
+#    Any column added here MUST also be added to _PAPER_STATS_COLS AND computed in paper_rollup's SELECT,
+#    or INSERT OR REPLACE resets it to its DEFAULT every run -> silent zeros forever (same trap as mig-004).
+MIGRATION_009: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_paper_category_stats (
+        wallet            TEXT NOT NULL,
+        category          TEXT NOT NULL,
+        n_closed          INTEGER NOT NULL DEFAULT 0,   -- COUNT of closed paper trades (status='closed')
+        wins              INTEGER NOT NULL DEFAULT 0,
+        losses            INTEGER NOT NULL DEFAULT 0,
+        win_rate          REAL,                          -- wins/(wins+losses); NULL when 0 decided
+        net_paper_pnl     REAL NOT NULL DEFAULT 0,       -- SUM(realized_pnl) of closed rows
+        cost_basis        REAL NOT NULL DEFAULT 0,       -- SUM(cost_basis) of closed rows (= SUM(size_basis*entry_price))
+        roi               REAL,                          -- net_paper_pnl/cost_basis; NULL when cost_basis<=0
+        avg_entry_price   REAL,                          -- AVG(entry_price_avg_at_observation) of closed rows
+        n_open            INTEGER NOT NULL DEFAULT 0,    -- COUNT of open paper trades
+        n_stale           INTEGER NOT NULL DEFAULT 0,    -- COUNT of stale (whale_exit, excluded from win/loss)
+        n_void            INTEGER NOT NULL DEFAULT 0,    -- COUNT of void (market_void, excluded from win/loss)
+        last_resolved_ts  INTEGER,
+        updated_ts        INTEGER,
+        PRIMARY KEY (wallet, category)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_pcs_category_roi ON pm_paper_category_stats(category, roi DESC)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -555,6 +587,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (6, MIGRATION_006),
     (7, MIGRATION_007),
     (8, MIGRATION_008),
+    (9, MIGRATION_009),
 ]
 
 

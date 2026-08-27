@@ -134,17 +134,32 @@ async def _cmd_paper_poll(args) -> int:
     return 0
 
 
-def _cmd_paper_adjudicate(args) -> int:
-    """Resolve pending_adjudication paper trades off pm_closed_position (weekly). Sync; no network.
-    FAILS LOUD (exit 2) if a pinned-paper whale is not in the refresh set (C2.3) -- never warn-continue."""
+async def _cmd_paper_adjudicate(args) -> int:
+    """Resolve pending_adjudication paper trades off GAMMA (the resolution authority; Stage 1 re-base).
+    Fetches market resolutions via PolymarketDataAPIClient.fetch_market_resolutions() for all pending
+    condition_ids, then runs paper.adjudicate(). Async (network); FAILS LOUD (exit 2) on C2.3 violation."""
     db.init_db(args.db)
     try:
         with db.connect(args.db) as conn:
-            res = paper.adjudicate(conn, now_ts=_now())
+            cids = paper.collect_pending_condition_ids(conn)
+        async with _client() as c:
+            resolutions = await c.fetch_market_resolutions(cids)
+        with db.connect(args.db) as conn:
+            res = paper.adjudicate(conn, resolutions, now_ts=_now())
     except paper.PaperSubsetError as e:
         print(json.dumps({"error": "subset_assertion_failed", "detail": str(e)}, indent=2), file=sys.stderr)
         return 2
     print(json.dumps(res, indent=2, default=str))
+    return 0
+
+
+def _cmd_paper_rollup(args) -> int:
+    """Aggregate pm_paper_trade -> pm_paper_category_stats per active pinned (wallet, category) pair
+    (Stage 1). Mirror of the `rollup` subcommand for legacy whale data."""
+    db.init_db(args.db)
+    with db.connect(args.db) as conn:
+        n = paper.paper_rollup(conn, now_ts=_now())
+    print(json.dumps({"rolled_pairs": n}))
     return 0
 
 
@@ -240,8 +255,12 @@ def build_parser() -> argparse.ArgumentParser:
     pp.set_defaults(func=_cmd_paper_poll, is_async=True)
 
     pa = sub.add_parser("paper-adjudicate",
-                        help="resolve pending_adjudication paper trades off pm_closed_position (CP3a)")
-    pa.set_defaults(func=_cmd_paper_adjudicate, is_async=False)
+                        help="resolve pending_adjudication paper trades via gamma /markets (Stage 1 gamma re-base)")
+    pa.set_defaults(func=_cmd_paper_adjudicate, is_async=True)
+
+    pr = sub.add_parser("paper-rollup",
+                        help="aggregate pm_paper_trade -> pm_paper_category_stats for active pinned pairs (Stage 1)")
+    pr.set_defaults(func=_cmd_paper_rollup, is_async=False)
 
     mr = sub.add_parser("migrate-roster",
                         help="seed pm_roster + pm_watchlist(pinned) = every (wallet,category) in pm_category_stats for the migrated whales (CP3a; Ruling B)")

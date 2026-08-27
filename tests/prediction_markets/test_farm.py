@@ -33,6 +33,18 @@ def _cstats(conn, wallet, category, *, n_resolved=None, n_excluded=None, roi=Non
                  % (", ".join(names), ", ".join(["?"] * len(vals))), vals)
 
 
+def _paper_stats(conn, wallet, category, *, n_closed=0, wins=0, losses=0, win_rate=None, roi=None,
+                 net_paper_pnl=0.0, cost_basis=0.0, n_open=0, n_stale=0, n_void=0):
+    """Seed pm_paper_category_stats -- the Stage 1 paper-basis source for PINNED rows."""
+    conn.execute(
+        "INSERT OR REPLACE INTO pm_paper_category_stats "
+        "(wallet, category, n_closed, wins, losses, win_rate, net_paper_pnl, cost_basis, roi, "
+        " avg_entry_price, n_open, n_stale, n_void, updated_ts) "
+        "VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?,?,?)",
+        (wallet, category, n_closed, wins, losses, win_rate, net_paper_pnl, cost_basis, roi,
+         n_open, n_stale, n_void, NOW))
+
+
 def _pin(conn, wallet, category, *, last_polled_ts=None, status="pinned"):
     conn.execute("INSERT INTO pm_roster (wallet, category, active, last_polled_ts, added_ts) VALUES (?,?,1,?,?)",
                  (wallet, category, last_polled_ts, NOW))
@@ -56,22 +68,38 @@ def _seed(tmp_path):
         _cstats(conn, "0xhasopen", "mlb", n_resolved=50, roi=0.10, awp=0.60, net=100, win_rate=0.5, n_cids=40, two_sided=0.1)
         _pin(conn, "0xhasopen", "mlb", last_polled_ts=NOW)
         _paper_open(conn, "0xhasopen", "mlb", "0xc", n=2)
+        # Stage 1: seed pm_paper_category_stats for PINNED reads (n_closed=5 closed, 2 open)
+        _paper_stats(conn, "0xhasopen", "mlb", n_closed=5, wins=3, losses=2, win_rate=0.6,
+                     net_paper_pnl=50.0, cost_basis=200.0, roi=0.25, n_open=2)
         # State 2 -- polled, NOTHING open
         _whale(conn, "0xnoneopen", "NoneOpen")
         _cstats(conn, "0xnoneopen", "mlb", n_resolved=20, roi=-0.05, awp=0.80, net=-10, win_rate=0.4, n_cids=15, two_sided=0.2)
         _pin(conn, "0xnoneopen", "mlb", last_polled_ts=NOW)
+        # Stage 1: seed pm_paper_category_stats (n_closed=20, 0 open -> POLL_NONE_OPEN preserved)
+        _paper_stats(conn, "0xnoneopen", "mlb", n_closed=20, wins=8, losses=12, win_rate=0.4,
+                     net_paper_pnl=-10.0, cost_basis=300.0, roi=-0.033, n_open=0)
         # State 1 -- NEVER polled (last_polled_ts IS NULL)
         _whale(conn, "0xnever", "Never")
         _cstats(conn, "0xnever", "ufc", n_resolved=5, roi=0.20, awp=0.50, net=5, win_rate=0.6, n_cids=5)
         _pin(conn, "0xnever", "ufc", last_polled_ts=None)
-        # Quarantine-zero edge -- n_resolved=0 but n_excluded>0 (the 4751346/nfl case)
+        # Stage 1: seed pm_paper_category_stats (n_closed=5, 0 open)
+        _paper_stats(conn, "0xnever", "ufc", n_closed=5, wins=3, losses=2, win_rate=0.6,
+                     net_paper_pnl=5.0, cost_basis=100.0, roi=0.05)
+        # Quarantine-zero edge -- for paper stats: n_closed=0 (honest-empty, no paper closed yet)
+        # Note: 'all_quarantined' for paper means n_resolved(=n_closed)=0 AND n_excluded=0 (paper has no
+        # quarantine concept) -> all_quarantined=False for paper. The pm_paper_category_stats row has n_open=0.
         _whale(conn, "0xquar", "Quar")
         _cstats(conn, "0xquar", "nfl", n_resolved=0, n_excluded=7)
         _pin(conn, "0xquar", "nfl", last_polled_ts=NOW)
+        # Stage 1: seed pm_paper_category_stats with 0 closed (honest-empty; paper has no quarantine)
+        _paper_stats(conn, "0xquar", "nfl", n_closed=0, wins=0, losses=0, n_open=0)
         # 'unknown' category -- pinned + paper-traded, rendered honestly (never hidden)
         _whale(conn, "0xunk", "Unk")
         _cstats(conn, "0xunk", "unknown", n_resolved=1444, roi=0.01, awp=0.90, net=50, win_rate=0.5, n_cids=1000, two_sided=0.3)
         _pin(conn, "0xunk", "unknown", last_polled_ts=NOW)
+        # Stage 1: seed pm_paper_category_stats
+        _paper_stats(conn, "0xunk", "unknown", n_closed=10, wins=5, losses=5, win_rate=0.5,
+                     net_paper_pnl=5.0, cost_basis=200.0, roi=0.025, n_open=1)
         conn.commit()
     return p
 
@@ -95,12 +123,14 @@ def test_farm_categories_data_driven(tmp_path):
 
 # ---------- every pinned pair displayed, never filtered/ranked out ----------
 def test_all_pinned_displayed_no_min_resolved_filter(tmp_path):
+    """All 5 pinned pairs are returned, including those with n_closed=0 (honest-empty paper state).
+    Stage 1: n_resolved maps to n_closed from pm_paper_category_stats."""
     with db.connect(_seed(tmp_path)) as conn:
         rows = farm.farm_rows(conn, status=farm.PINNED)
-    assert len(rows) == 5                                      # incl n_resolved=5 (below DEFAULT_MIN_RESOLVED=10) and n_resolved=0 (quarantined)
+    assert len(rows) == 5                                      # all 5 pinned pairs displayed
     by = {(r["wallet"], r["category"]): r for r in rows}
-    assert by[("0xnever", "ufc")]["n_resolved"] == 5           # NOT dropped by a min-resolved gate
-    assert by[("0xquar", "nfl")]["n_resolved"] == 0            # the quarantine-zero pair still shows
+    assert by[("0xnever", "ufc")]["n_resolved"] == 5           # n_closed=5 from pm_paper_category_stats
+    assert by[("0xquar", "nfl")]["n_resolved"] == 0            # paper has 0 closed -- still shows (honest-empty)
 
 
 def test_three_state_on_real_rows(tmp_path):
@@ -115,10 +145,15 @@ def test_three_state_on_real_rows(tmp_path):
 
 
 def test_quarantine_zero_edge(tmp_path):
+    """Stage 1: the PINNED list reads from pm_paper_category_stats (paper basis). Paper has no quarantine
+    concept (n_excluded is NULL -> 0). The 4751346/nfl quarantine-zero is a LEGACY completed-lane concept;
+    in the paper basis the pair shows with n_closed=0 / n_excluded=None -> all_quarantined=False (honest-empty:
+    'no closed paper trades yet', not 'quarantined legacy rows'). The row still SHOWS (never filtered out)."""
     with db.connect(_seed(tmp_path)) as conn:
         q = {(r["wallet"], r["category"]): r for r in farm.farm_rows(conn, status=farm.PINNED)}[("0xquar", "nfl")]
-    assert q["n_resolved"] == 0 and q["n_excluded"] == 7
-    assert q["all_quarantined"] is True                       # renders '0 + quarantined(7)', not a bare 0
+    assert q["n_resolved"] == 0           # n_closed=0 from paper stats (honest-empty, no closed paper trades)
+    assert q["n_excluded"] is None        # paper has no quarantine concept; NULL from the paper JOIN
+    assert q["all_quarantined"] is False  # paper basis: n_excluded is None -> 0 -> all_quarantined=False
 
 
 def test_category_filter_keeps_all_in_category(tmp_path):
@@ -130,11 +165,16 @@ def test_category_filter_keeps_all_in_category(tmp_path):
 
 
 def test_farm_summary_counts(tmp_path):
+    """Stage 1: paper basis means n_quarantined_pairs=0 (paper has no quarantine concept; all_quarantined
+    requires n_resolved=0 AND n_excluded>0, but n_excluded is NULL from pm_paper_category_stats)."""
     with db.connect(_seed(tmp_path)) as conn:
         s = farm.farm_summary(conn)
     assert s["n_pinned"] == 5
     assert s["states"] == {farm.POLL_NEVER: 1, farm.POLL_NONE_OPEN: 3, farm.POLL_HAS_OPEN: 1}
-    assert s["n_quarantined_pairs"] == 1 and s["n_unknown_pairs"] == 1
+    # paper basis: all_quarantined = (n_closed==0 AND n_excluded>0); n_excluded is NULL for paper -> 0
+    # -> no pair qualifies as "quarantined" in the paper sense (honest-empty ≠ quarantined)
+    assert s["n_quarantined_pairs"] == 0
+    assert s["n_unknown_pairs"] == 1
     assert s["n_candidates"] == 0                             # no search has run
 
 
@@ -152,6 +192,9 @@ def _client(tmp_path, monkeypatch):
 
 
 def test_farm_page_200_and_three_states_rendered(tmp_path, monkeypatch):
+    """Stage 1: the PINNED list sources from pm_paper_category_stats (paper basis). The quarantine-zero
+    badge ('quarantined (7)') no longer renders for pinned pairs (paper has no quarantine concept;
+    all_quarantined=False for all paper rows). The three-state zero, tabs, and the 'unknown' badge remain."""
     r = _client(tmp_path, monkeypatch).get("/farm")
     assert r.status_code == 200
     html = r.text
@@ -163,8 +206,9 @@ def test_farm_page_200_and_three_states_rendered(tmp_path, monkeypatch):
         assert ">%s<" % c in html
     # unknown rendered honestly (tier-1 miss badge), NOT hidden
     assert "pm-badge-unknown" in html
-    # quarantine-zero reason shown, not a bare 0 (badge uses &nbsp; so 'quarantined (N)' does not wrap)
-    assert "pm-badge-quar" in html and "quarantined&nbsp;(7)" in html
+    # Stage 1: paper basis has no quarantine concept -> all_quarantined=False -> badge NOT rendered
+    # (The 4751346/nfl quarantine-zero is a legacy completed-lane concept, not a paper concept.)
+    assert "quarantined&nbsp;(7)" not in html
 
 
 def test_farm_candidates_no_search_message(tmp_path, monkeypatch):

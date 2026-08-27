@@ -259,29 +259,41 @@ def _closed(conn, wallet, cond, *, oi=0, won=1, pnl_suspect=0, suspect_reason=No
         (wallet, cond, oi, won, 12.34, resolved_ts, pnl_suspect, suspect_reason))   # 12.34 = WHALE's pnl, ignored by paper
 
 
+def _gamma_resolved(winning_outcome_index: int = 1) -> dict:
+    """Helper: a gamma record for a resolved market. Default winning_outcome_index=1 so a trade with oi=0
+    is a LOSS and a trade with oi=1 is a WIN. Mirrors the shape of fetch_market_resolutions() records."""
+    return {"status": "resolved", "winning_outcome_index": winning_outcome_index,
+            "yes_won": winning_outcome_index == 1, "outcomes": ["No", "Yes"],
+            "outcome_prices": [0.0, 1.0], "closed": True, "title": "Test market"}
+
+
+def _gamma_void() -> dict:
+    return {"status": "void", "winning_outcome_index": None, "yes_won": None,
+            "outcomes": ["No", "Yes"], "outcome_prices": [0.5, 0.5], "closed": True, "title": "Void market"}
+
+
 def test_adjudicate_books_resolution_won(tmp_path):
+    """Gamma re-base: outcome_index=1 wins when winning_outcome_index=1. close_source='gamma_resolution'."""
     p = _db(tmp_path)
     with db.connect(p) as conn:
         _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
-        _insert_pending(conn, WALLET, MLB_CAT, "0xc1", entry_price=0.40, size_basis=100.0)
-        _closed(conn, WALLET, "0xc1", won=1, resolved_ts=NOW)
-        res = paper.adjudicate(conn, now_ts=NOW + 10)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xc1", entry_price=0.40, size_basis=100.0, oi=1)
+        res = paper.adjudicate(conn, {"0xc1": _gamma_resolved(winning_outcome_index=1)}, now_ts=NOW + 10)
         row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
     assert res["closed"] == 1
     assert row["status"] == "closed"
-    assert row["close_source"] == "resolution"
+    assert row["close_source"] == "gamma_resolution"
     assert row["won"] == 1
     assert abs(row["realized_pnl"] - (100.0 - 40.0)) < 1e-9      # size_basis - cost_basis (won), NOT the whale's pnl
-    assert row["resolved_ts"] == NOW
 
 
 def test_adjudicate_books_resolution_lost(tmp_path):
+    """Gamma re-base: outcome_index=0 loses when winning_outcome_index=1."""
     p = _db(tmp_path)
     with db.connect(p) as conn:
         _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
-        _insert_pending(conn, WALLET, MLB_CAT, "0xc1", entry_price=0.40, size_basis=100.0)
-        _closed(conn, WALLET, "0xc1", won=0)
-        paper.adjudicate(conn, now_ts=NOW)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xc1", entry_price=0.40, size_basis=100.0, oi=0)
+        paper.adjudicate(conn, {"0xc1": _gamma_resolved(winning_outcome_index=1)}, now_ts=NOW)
         row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
     assert row["status"] == "closed"
     assert abs(row["realized_pnl"] - (-40.0)) < 1e-9             # -cost_basis (lost)
@@ -291,8 +303,8 @@ def test_adjudicate_marks_stale_past_grace(tmp_path):
     p = _db(tmp_path)
     with db.connect(p) as conn:
         _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
-        _insert_pending(conn, WALLET, MLB_CAT, "0xgone", end_date="2020-01-01")   # long past; NO pm_closed_position
-        res = paper.adjudicate(conn, now_ts=NOW, grace_window_sec=172800)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xgone", end_date="2020-01-01")   # long past; not in resolutions
+        res = paper.adjudicate(conn, {}, now_ts=NOW, grace_window_sec=172800)
         row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
     assert res["staled"] == 1
     assert row["status"] == "stale"
@@ -305,7 +317,7 @@ def test_adjudicate_stays_pending_within_grace(tmp_path):
     with db.connect(p) as conn:
         _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
         _insert_pending(conn, WALLET, MLB_CAT, "0xrecent", end_date="2020-01-01")
-        res = paper.adjudicate(conn, now_ts=NOW, grace_window_sec=10**12)         # grace so large nothing is past
+        res = paper.adjudicate(conn, {}, now_ts=NOW, grace_window_sec=10**12)     # grace so large nothing is past
         row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
     assert res["still_pending"] == 1
     assert row["status"] == "pending_adjudication"
@@ -316,22 +328,35 @@ def test_adjudicate_unparseable_end_date_stays_pending(tmp_path):
     with db.connect(p) as conn:
         _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
         _insert_pending(conn, WALLET, MLB_CAT, "0xnoend", end_date="")            # unparseable end_date
-        res = paper.adjudicate(conn, now_ts=NOW, grace_window_sec=1)              # tiny grace
+        res = paper.adjudicate(conn, {}, now_ts=NOW, grace_window_sec=1)          # tiny grace
         row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
     assert res["still_pending"] == 1                            # bias-down: never stale on a guess
     assert row["status"] == "pending_adjudication"
 
 
-def test_adjudicate_imports_pnl_suspect_parity(tmp_path):
+def test_adjudicate_void_market(tmp_path):
+    """Void markets land status='void', excluded from win/loss."""
     p = _db(tmp_path)
     with db.connect(p) as conn:
         _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
-        _insert_pending(conn, WALLET, MLB_CAT, "0xq")
-        _closed(conn, WALLET, "0xq", won=1, pnl_suspect=1, suspect_reason="row_invariant")
-        paper.adjudicate(conn, now_ts=NOW)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xv", end_date="2020-01-01")
+        res = paper.adjudicate(conn, {"0xv": _gamma_void()}, now_ts=NOW)
         row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
-    assert row["pnl_suspect"] == 1
-    assert row["suspect_reason"] == "row_invariant"
+    assert res["voided"] == 1
+    assert row["status"] == "void"
+    assert row["close_source"] == "market_void"
+    assert row["realized_pnl"] is None                          # void is not booked
+
+
+def test_adjudicate_pnl_suspect_zero_on_gamma_resolution(tmp_path):
+    """Gamma resolution sets pnl_suspect=0 (independent of /closed-positions; no legacy quarantine imported)."""
+    p = _db(tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
+        _insert_pending(conn, WALLET, MLB_CAT, "0xq", oi=1)
+        paper.adjudicate(conn, {"0xq": _gamma_resolved(winning_outcome_index=1)}, now_ts=NOW)
+        row = conn.execute("SELECT * FROM pm_paper_trade").fetchone()
+    assert row["pnl_suspect"] == 0                              # gamma resolution is clean; no legacy quarantine
 
 
 def test_subset_assertion_fails_loud_on_unrefreshed_pinned(tmp_path):
@@ -349,7 +374,7 @@ def test_adjudicate_fails_loud_and_mutates_nothing_when_pinned_not_refreshed(tmp
         _pin(conn, WALLET, MLB_CAT)                            # pinned, not refreshed
         _insert_pending(conn, WALLET, MLB_CAT, "0xc1")
         with pytest.raises(paper.PaperSubsetError):
-            paper.adjudicate(conn, now_ts=NOW)
+            paper.adjudicate(conn, {}, now_ts=NOW)
         st = conn.execute("SELECT status FROM pm_paper_trade").fetchone()[0]
     assert st == "pending_adjudication"                        # assertion ran BEFORE any row was touched
 

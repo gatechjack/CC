@@ -242,6 +242,37 @@ hand to Jack** (the cause is not the artifact).
 
 ---
 
+### ★ STAGE-1 BUILD RECORD + RUNG LADDER (built 2026-08-27; PREPARE-ONLY; NOTHING LIVE)
+
+**Built on the branch (uncommitted→committed this session). NO live migration/deploy/restart/poller/adjudicator/DB-write.** Box-scratch is the gate and is **PENDING** (the VM was restarting; box access resumes when DNS `trading.jacksumner.com` points at the new IP).
+
+**Files changed:** `prediction_markets/paper.py` (adjudicate re-based on gamma + `collect_pending_condition_ids` + `paper_rollup` + `_PAPER_STATS_COLS`), `db.py` (migration 009 `pm_paper_category_stats`), `farm.py` (PINNED→`pm_paper_category_stats`, CANDIDATE→`pm_category_stats`), `scripts/pm_cli.py` (`paper-adjudicate` async gamma fetch, new `paper-rollup`), + tests `test_stage1_adjudicate_gamma.py`, `test_stage1_paper_rollup.py` (+ updated `test_paper.py`/`test_farm.py`).
+
+**Design decisions (facts, verified):**
+- **Gamma is the resolution authority (§B).** `adjudicate(conn, resolutions, ...)` takes a `dict[condition_id→record]` from `PolymarketDataAPIClient.fetch_market_resolutions` (async fetch in the CLI; adjudicate stays sync+testable). `won = (our outcome_index == gamma winning_outcome_index)`. **`pm_closed_position` is no longer read** — the loss-omission cannot enter the paper lane. Gamma field shape CONFIRMED live (INV-1b): `/markets` rows carry `conditionId`/`closed`/`outcomePrices`(winner≈"1")/`outcomes`/`umaResolutionStatus`; `fetch_market_resolutions` encapsulates the decode and returned correct live records.
+- **void** (gamma closed, no winner) → `status='void'`, excluded from win/loss (new terminal). **stale** ONLY when gamma is not-resolved past grace (whale exit). P&L via existing `_paper_realized` (our `size_basis`).
+- **R1 GATE (mandatory) — airtight:** `paper_rollup` aggregates only pairs with `pm_watchlist active=1 AND status='pinned'`, AND deletes any stale stats row for a pair no longer active-pinned. A deactivated pair's `pm_paper_trade` rows SURVIVE but show NOWHERE. **INV-2 measured: 94 of the 102 paper rows are in the 22 deactivated pairs (all `unknown`); only 8 are rollup-eligible, all `open`** → the paper scoreboard is honestly EMPTY after Stage 1 (see honest-expectation below).
+- **BASIS test (anti-drift core):** seeds a pinned pair with `pm_category_stats` win_rate 0.89 AND `pm_paper_category_stats` 0.40; asserts `farm_rows(PINNED)` shows **0.40 (paper)** — fails against old code, passes with the fix.
+
+**★ HONEST EXPECTATION (state plainly):** after Stage 1 lands, the pinned/Watchlist list shows **EMPTY paper stats** — all 102 paper rows are `open` (0 closed), and 94 are off-funnel anyway. This is CORRECT, not a bug. Meaningful numbers accrue over WEEKS as markets resolve and the adjudicator books them.
+
+**★ GRACE-WINDOW PROPOSAL (Jack's ruling, not mine to fix):** current seeded default = **48h** (`grace_window_sec=172800`, migration 005). **My proposal: raise to 72h.** Reasoning: gamma resolution for sports lands within hours (the INV example market ended 14:00Z and was already `resolved`); grace only fires `stale` when gamma is STILL not-resolved past `end_date+grace`, so a longer grace only *delays* stale (which merely excludes — never mis-books) while protecting against false-staling a genuine-but-slow resolution (weekend/FOMC/UMA-dispute lag). 72h absorbs a weekend; 48h is defensible for sports-only. **Bias: err long (never false-stale).** I did NOT change the seed — awaiting your ruling.
+
+**★ POLLER/ADJUDICATOR CADENCE + ORDERING PROPOSAL (plan only; separate authorization):**
+- **Poller** `pm_cli paper-poll` — **every 30 min** (`*/30 * * * *`): captures whale entries/exits from `/positions` before `/activity` truncation; a missed entry is lost.
+- **Adjudicator + rollup** `pm_cli paper-adjudicate` then `pm_cli paper-rollup` — **daily**, after the 03:20 refresh (e.g. `10 4 * * *`): gamma resolves pending, then the paper scoreboard rebuilds. (Daily, not weekly — gamma resolutions land within hours; daily books them promptly.)
+- **Ordering constraint (load-bearing):** within any window **poll → adjudicate → rollup** (poll creates `pending_adjudication`; adjudicate resolves them; rollup reads `closed`). The 03:20 `refresh` (completed lane, prospects/subset) is independent but its window must not overlap adjudicate (the subset assertion). **NO two PM-DB writers overlap** (the Stage-0 window rule). All cron installs are Jack-authorized, azureuser, append-only, slot re-verified live.
+
+**★ STAGE-1 RUNG LADDER (Stage 0's shape; NOTHING below is authorized):**
+- **Rung 0 — BOX-SCRATCH GREEN (the gate).** Copy the branch PM package + `tests/prediction_markets/` to a box `/tmp` scratch; `venv/bin/python -m pytest tests/prediction_markets/ -p no:pytest_ethereum -q` GREEN; prove migration 009 by `db.init_db` on a **`.backup` copy** of live (schema→9, `pm_paper_category_stats` created) with the **live DB byte-untouched (still schema 8)** and engine/pm_web PIDs unchanged. Runner authored (`cc\pm_stage1_boxscratch.*`), **not yet run (VM down).** STOP if any test fails.
+- **Rung 1 — migration 009 → live** (like Stage-0 rung 1: `init_db` from a byte-verified scratch extract; runtime `db.py` untouched). PRE: DB backup (Gate-1 online-backup: path + sha256 + `integrity_check`), window clear of 03:20 cron, PIDs captured. POST: live schema 8→9; `pm_paper_category_stats` present + EMPTY; pm_watchlist 92/22 unchanged; pm_paper_trade 102; `/farm` UNCHANGED (old runtime ignores 009); pm_web PID unchanged. STOP on any deviation.
+- **Rung 2 — deploy the 4 code files + restart pm_web** (`prediction_markets/db.py`+`paper.py`+`farm.py`+`scripts/pm_cli.py`; NEVER `persistence/db.py`). PRE: box==OLD re-hash + per-file CODE backup + baseline. GATE: fresh box re-hash == branch sha256 (all 4). POST: healthz+farm 200; **`/farm` PINNED now shows honest-EMPTY paper (NOT byte-identical — behaviour INTENTIONALLY changes: pinned numbers move from borrowed-completed to empty-paper)** — the BASIS proof is that a seeded paper≠completed pair renders the paper number; all gated queries execute; poller sees 92; pm_paper_trade 102; schema 9; engine PID unchanged. **Backup instrument = the per-file CODE backup (not a DB snapshot).** STOP + rollback (restore the per-file backup + restart) if pm_web unhealthy.
+- **Rung 3 — run poller + adjudicator + install cadence** (separate Jack authorizations; live DB writes). One-shot `paper-poll` → `paper-adjudicate` → `paper-rollup` in a calm window, then install the crons above. This is where paper numbers begin to accrue.
+
+**Checkpoint (§H) answer:** *Which of the three lists did this touch, and did the three data bases stay separate?* It touched the **WATCHLIST (pinned, paper basis)** list — re-basing its adjudicator on gamma, adding its paper rollup, and wiring the pinned list to `pm_paper_category_stats`. **PROSPECT** stays on `pm_category_stats` (completed) — untouched (verified by `test_farm_rows_candidate_still_uses_legacy_stats`). **LIVE** is P3, untouched. The three bases (completed / paper / live) stay separate — the BASIS test proves the pinned list no longer borrows the completed number.
+
+---
+
 ### STAGE 2 — THE SCREENS (Farm League hierarchy) — with a scope correction
 
 **★ SCOPE CORRECTION:** the requirement's **main dashboard shows Account-Category (sub-division) tiles — which are P3 (no sub-divisions exist).** So Stage 2 builds the **Farm-League hierarchy** in full and only a **shell** for the main dashboard:
