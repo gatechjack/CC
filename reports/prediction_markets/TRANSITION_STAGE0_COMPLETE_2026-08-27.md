@@ -100,6 +100,9 @@ in rung 2 — fix, don't explain away).
 2. **Engine PID history `37596 → 89366` never explained.** PID 89366 up since 2026-08-26 18:26:16Z (`NRestarts=0`),
    so a restart happened ~18:26 Aug 26; the *reason* was never established. Read-only PID-history probe authored
    (`cc\pm_pid_history_probe.ps1`) but never run. Engine is OUT OF SCOPE for PM — flagged so it doesn't drop.
-3. **5 obsolete PM DB backups** (CP3a schema-4/6 ×4 + CP3b-2 schema-6) remain in `~` — recommended for deletion,
-   awaiting Jack's authorization (`~/PM_DB_BACKUPS_README.md`). The rung-2 code backup dir is also superseded
-   (deployed code is on origin + byte-verified box==c77f618) — recommended for removal.
+3. **Box backups — CLEANED 2026-08-27 (authorized).** The 5 obsolete PM DB backups (CP3a 1×schema-4 + 3×schema-6,
+   CP3b-2 1×schema-6) and the rung-2 code backup dir were **DELETED** (survivor re-verified first; box==c77f618
+   re-verified before the code-dir delete). **~119.1 MB reclaimed.** The ONLY PM DB backup that remains is the
+   current rollback instrument `pm_stage0_rung3_dbbackup_20260827T130737Z.db` (schema 8) — see
+   `~/PM_DB_BACKUPS_README.md`. Prior-session CP3a/CP3b-2 **non-DB** artifacts (tar, extract dir, `.py.bak`, poll
+   logs, `pm_cp3b2_gate2_bak_…/`, `…_box.sh`) were **left untouched** (not Stage 0's; other divisions may use them).

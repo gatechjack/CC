@@ -20,11 +20,12 @@ Five items. Read-only box reads + the single authorized deletion in item 1. No c
 - **1d. README written:** `~/PM_DB_BACKUPS_README.md` — names the rung-3 file as the current instrument, states
   what restoring each does, and flags the schema-mismatch footgun.
 
-## 2. Box scratch sweep — LIST + RECOMMEND (no deletion; awaiting Jack)
-- `~/pm_stage0_rung2_bak_20260827T123827Z/` (5 OLD pre-deploy files) — **RECOMMEND REMOVE.** Superseded: the
-  deployed code is on `origin` (`c77f618`) and byte-verified `box==c77f618`. Agreed it can go.
-- The 5 **obsolete PM DB backups** in item 1a (CP3a schema-4/6 ×4 + CP3b-2 schema-6) — **RECOMMEND REMOVE**
-  (restoring any under schema-8 code is a footgun). Not Stage 0's, so not deleted under this authorization.
+## 2. Box scratch sweep — RECOMMENDATIONS **EXECUTED 2026-08-27 (authorized follow-up)**
+- `~/pm_stage0_rung2_bak_20260827T123827Z/` (5 OLD pre-deploy files) — **DELETED** (box==c77f618 re-verified
+  first; deployed code is on `origin` `c77f618`).
+- The 5 **obsolete PM DB backups** (item 1a: CP3a 1×schema-4 + 3×schema-6, CP3b-2 1×schema-6) — **DELETED**
+  (survivor rung-3 backup re-verified clean first). **~119.1 MB total reclaimed** across both. The only PM DB
+  backup remaining is the rung-3 schema-8 rollback instrument. `~/PM_DB_BACKUPS_README.md` updated to match.
 - Stage-0 sentinels/tars: already cleaned in rung-2. `/tmp/pm_*`: none. My runners are streamed via stdin and
   never persist on the box. Pre-existing prior-session box scripts (`pm_cp3b2_gate2_box.sh`,
   `pm_kalshi_restart_verify_box.sh`, `pm_p3_deploy_box.sh`, `pm_line_measure.py`) are NOT Stage 0's — left as-is.
