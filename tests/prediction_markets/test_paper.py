@@ -11,7 +11,7 @@ import pytest
 
 from trading_corp.prediction_markets import db, paper
 from trading_corp.prediction_markets.category import derive_category_from_slug
-from trading_corp.data.polymarket_data_api_client import PositionRow
+from trading_corp.data.polymarket_data_api_client import PositionRow, PositionBook
 
 WALLET = "0xwhale"
 MLB_SLUG = "mlb-team-a-team-b-2026-09-01"
@@ -30,9 +30,18 @@ def _raw(cond, *, oi=0, size=100.0, avg=0.40, cur=0.50, redeemable=False, slug=M
 
 
 class _Client:
-    """Fake data-api client; its /positions snapshot is a mutable list of raw API dicts."""
-    def __init__(self, raws):
+    """Fake data-api client; its /positions snapshot is a mutable list of raw API dicts.
+
+    Exposes `fetch_positions_book` (the completeness-aware call the poller now uses, T1) plus
+    `fetch_positions` (the list contract other callers use). `complete=False` simulates a book whose
+    full extent could not be confirmed."""
+    def __init__(self, raws, *, complete=True):
         self.raws = list(raws)
+        self.complete = complete
+
+    async def fetch_positions_book(self, wallet):
+        rows = [PositionRow.from_api(r) for r in self.raws]
+        return PositionBook(rows=rows, complete=self.complete, pages=1, n=len(rows))
 
     async def fetch_positions(self, wallet):
         return [PositionRow.from_api(r) for r in self.raws]
@@ -193,10 +202,11 @@ async def test_last_polled_ts_distinguishes_polled_from_not(tmp_path):
     p = _db(tmp_path)
 
     class _ErrClient:
-        async def fetch_positions(self, wallet):
+        async def fetch_positions_book(self, wallet):
             if wallet == "0xerr":
                 raise RuntimeError("boom")
-            return [PositionRow.from_api(_raw("0xc1", cur=0.5))]
+            rows = [PositionRow.from_api(_raw("0xc1", cur=0.5))]
+            return PositionBook(rows=rows, complete=True, pages=1, n=len(rows))
 
     with db.connect(p) as conn:
         _pin(conn, "0xok", MLB_CAT); _roster(conn, "0xok", MLB_CAT)
@@ -209,15 +219,21 @@ async def test_last_polled_ts_distinguishes_polled_from_not(tmp_path):
     assert len(res["errors"]) == 1 and res["errors"][0]["wallet"] == "0xerr"
 
 
-async def test_cap_suspect_flag_on_round_count(tmp_path):
-    """Ruling H: a poll returning EXACTLY a round number (50/100/250/500) is flagged cap_suspect."""
+async def test_incomplete_book_leaves_whale_unpolled(tmp_path):
+    """T1 (supersedes the old cap_suspect heuristic): a whale whose FULL book cannot be confirmed
+    (`fetch_positions_book.complete=False`) is left UN-polled -- nothing captured, last_polled_ts stays
+    NULL, and it is reported in `incomplete`. A partial read is never silently paper-traded."""
     p = _db(tmp_path)
-    client = _Client([_raw("0x%d" % i, cur=1.0, redeemable=True) for i in range(50)])   # raw count 50 = cap signature
+    client = _Client([_raw("0xc1", cur=0.5)], complete=False)     # book extent unconfirmed
     with db.connect(p) as conn:
-        _pin(conn, WALLET, MLB_CAT)
+        _pin(conn, WALLET, MLB_CAT); _roster(conn, WALLET, MLB_CAT)
         res = await paper.poll_pinned(conn, client=client, now_ts=NOW)
-    assert res["totals"]["cap_suspects"] == 1
-    assert res["cap_suspects"][0]["positions_returned"] == 50
+        n_rows = conn.execute("SELECT COUNT(*) FROM pm_paper_trade").fetchone()[0]
+        lp = conn.execute("SELECT last_polled_ts FROM pm_roster WHERE wallet=?", (WALLET,)).fetchone()[0]
+    assert res["totals"]["incomplete"] == 1
+    assert res["incomplete"][0]["wallet"] == WALLET
+    assert res["totals"]["captured"] == 0 and n_rows == 0         # NOTHING captured on an unconfirmed book
+    assert lp is None                                             # left un-polled (stale) -- distinguishable from "polled, 0 open"
 
 
 def test_get_config_seeded_and_degrades_when_absent(tmp_path):

@@ -33,10 +33,11 @@ from .category import derive_category_from_slug
 # scale-in moves size by >= ~1 contract, JSON float noise is ~1e-12, so 1e-6 cleanly separates them).
 _SIZE_EPS = 1e-6
 
-# Round-number /positions counts that signal an un-paginated API page cap (Ruling H). fetch_positions is
-# un-paginated + live-shared (NOT edited); a poll returning EXACTLY one of these is flagged as cap_suspect
-# so the tell reads itself instead of relying on someone eyeballing per-whale counts.
-_CAP_SIGNATURES = {50, 100, 250, 500}
+# T1 FULL-BOOK PAGING (2026-08-27): the poller now reads a whale's COMPLETE open book via
+# client.fetch_positions_book (limit/offset paging) and gates on its `complete` flag. This SUPERSEDES the
+# old cap_suspect heuristic (Ruling H) -- a poll returning exactly 100 was a symptom of the un-paged fetch;
+# now the client pages to a terminal (short) page and REPORTS completeness, so we no longer guess from a
+# round count. An UNconfirmed book (max_pages hit while pages stay full) leaves the whale un-polled (below).
 
 # pm_paper_config code DEFAULTS -- a missing pm_paper_config table/row degrades HONESTLY to these rather
 # than erroring (the migration also seeds them; these are the safety net on a read path).
@@ -143,17 +144,20 @@ async def poll_pinned(conn, *, client, now_ts: int | None = None,
 
     per_pair: list[dict] = []
     skipped: list[dict] = []          # F: genuinely-open positions whose derived category is NOT pinned for the whale
-    cap_suspects: list[dict] = []     # H: round-number /positions counts
+    incomplete: list[dict] = []       # T1: whales whose FULL book could not be confirmed -> left un-polled
     errors: list[dict] = []
     for wallet, pinned_cats in by_wallet.items():
         try:
-            positions = await client.fetch_positions(wallet)
+            book = await client.fetch_positions_book(wallet)   # T1: FULL open book (paged), with a completeness flag
         except Exception as e:                                 # per-whale isolation; this whale's pairs stay UN-polled (G)
             errors.append({"wallet": wallet, "categories": sorted(pinned_cats), "error": repr(e)[:200]})
             continue
+        if not book.complete:                                  # T1 completeness gate: NEVER write partial captures
+            incomplete.append({"wallet": wallet, "categories": sorted(pinned_cats),
+                               "positions_returned": book.n, "pages": book.pages})
+            continue                                           # leave last_polled_ts stale -- a partial is not a poll (G)
+        positions = book.rows
         n_returned = len(positions)
-        if n_returned in _CAP_SIGNATURES:                      # H: cap signature reads itself
-            cap_suspects.append({"wallet": wallet, "positions_returned": n_returned})
         genuinely_open = [p for p in positions if is_genuinely_open(p)]
         by_cat: dict[str, list] = defaultdict(list)
         for p in genuinely_open:
@@ -165,8 +169,9 @@ async def poll_pinned(conn, *, client, now_ts: int | None = None,
                                 "derived_category": pc, "slug": str(getattr(p, "slug", "") or "")})
         for category in sorted(pinned_cats):                   # EVERY pinned category (empty -> polled, found nothing)
             res = _process_category(conn, wallet, category, by_cat.get(category, []), now, interval, basis)
-            res["positions_returned"] = n_returned
+            res["positions_returned"] = n_returned            # T1: now the FULL book size, not the first-page ~100
             res["genuinely_open"] = len(genuinely_open)
+            res["book_pages"] = book.pages                    # T1: pages fetched to read this whale's whole book
             conn.execute("UPDATE pm_roster SET last_polled_ts = ? WHERE wallet = ? AND category = ?",
                          (now, wallet, category))              # G: mark this pair ACTUALLY polled
             per_pair.append(res)
@@ -175,9 +180,9 @@ async def poll_pinned(conn, *, client, now_ts: int | None = None,
 
     totals = _sum_totals(per_pair)
     totals["n_skipped_category"] = len(skipped)
-    totals["cap_suspects"] = len(cap_suspects)
+    totals["incomplete"] = len(incomplete)                    # T1: whales left un-polled for lack of a confirmed book
     totals["errors"] = len(errors)
-    return {"per_pair": per_pair, "skipped": skipped, "cap_suspects": cap_suspects, "errors": errors,
+    return {"per_pair": per_pair, "skipped": skipped, "incomplete": incomplete, "errors": errors,
             "totals": totals, "now_ts": now, "poll_interval_sec": interval, "size_basis": basis}
 
 

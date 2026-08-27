@@ -47,15 +47,20 @@ Real Polymarket `data-api` GETs (SDTrading/MadeiraIsland/BetMechanic/4751346, th
 Runners `cc\pm_exitdetect_probe.sh` / `pm_exitdetect_probe2.sh`. **Jack's split kept: PAPER=exit PRICE, accuracy>latency,
 `/activity` OK; LIVE=exit SIGNAL, latency>accuracy.**
 
-**Q1 — Is there anything PUSH-based? NO per-wallet push; polling is the only option.** The shared client is 100% httpx
-GET polling — no stream. Polymarket's only realtime surface is the CLOB websocket, whose channels are **market**
-(order-book/trade prints for a market — not per-wallet position state, and not a feed of "wallet W exited") and
-**user** (authenticated with the *account's own* L2 API creds → only YOUR orders; you cannot subscribe to an
-arbitrary whale's fills without their key). No webhook. (The WS host `ws-subscription-clob.polymarket.com` did not
-even resolve from the box — egress/DNS — but that is moot: no third-party-wallet push exists regardless.) **Polling
-floor:** 14 whales × 1–2 `/positions` calls (full-book paging) ≈ 14–30 req/cycle; no 429s at this volume; sub-minute
-(15–30 s) polling is comfortably within limits. The real floor is the **data-api's own indexing lag** after a whale's
-on-chain sale (seconds-to-tens-of-seconds), not our request budget.
+**Q1 — Is there anything PUSH-based? The definitive blocker is auth, not reachability — corrected 2026-08-27.**
+The shared client is 100% httpx GET polling — no stream. Polymarket's realtime surface is the CLOB websocket, whose
+channels are **market** (order-book/trade prints for a market — not per-wallet position state, not a "wallet W
+exited" feed) and **user** (authenticated with the *account's own* L2 API creds → only YOUR orders; **you cannot
+subscribe to an arbitrary whale's fills without their private key** — this is the real, self-standing blocker for
+copy-exit). No webhook is documented. **★ CORRECTION (was overstated):** I wrote "no push available," but I did **not
+verify** it — the WS host `ws-subscription-clob.polymarket.com` **did not resolve from the box (DNS/egress)**, so the
+honest finding is *"could not verify WS reachability from the box."* The auth blocker stands on its own regardless.
+**★ Egress angle (for whoever chases it):** the box could not resolve the WS host — **same class of problem as the
+Kalshi geo-block** (a network-egress/allowlist constraint on the VM, not an API-capability fact). Confirm from a host
+with open egress before treating the WS as unavailable. **Polling floor:** 14 whales × 1–3 `/positions` calls
+(full-book paging) ≈ 20–30 req/cycle; no 429s at this volume; sub-minute (15–30 s) polling is comfortably within
+limits. The real floor is the **data-api's own indexing lag** after a whale's on-chain sale (seconds-to-tens-of-seconds),
+not our request budget.
 
 **Q2 — Does `/positions` return SIZE? YES, on every row** (`size`, contracts; + `avgPrice`, `curPrice` mark,
 `redeemable`). So a **partial exit is a size DIFF**, not a disappearance — *provided the position stays on the page

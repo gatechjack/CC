@@ -61,9 +61,15 @@ def _cstats(conn, wallet, category, *, n_resolved=50, roi=0.1, awp=0.6):
 
 class _RecordingClient:
     """Records which wallets the poller actually fetches. Empty snapshots -> no capture; we assert on WHO
-    was polled, which is exactly what the active=1 gate controls."""
+    was polled, which is exactly what the active=1 gate controls. The poller reads the FULL book via
+    `fetch_positions_book` (T1), so that is the recorded call."""
     def __init__(self):
         self.fetched = []
+
+    async def fetch_positions_book(self, wallet):
+        from trading_corp.data.polymarket_data_api_client import PositionBook
+        self.fetched.append(wallet)
+        return PositionBook(rows=[], complete=True, pages=1, n=0)
 
     async def fetch_positions(self, wallet):
         self.fetched.append(wallet)
