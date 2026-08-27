@@ -110,13 +110,23 @@ Channel = **root `az vm run-command`** (code deploys), fail-closed, mirroring CP
 until Jack authorizes rung 2 as a separate act.**
 
 **PRE-CONDITIONS (named; capture all in the SAME session, immediately before the code swap):**
-- **PRE-1 Timing — clear of the 03:20 UTC cron.** The nightly `pm_cli refresh` is the only unattended DB
-  writer; deploy in a calm window outside ~03:00–04:00 UTC (rung 1 used 02:15). If the cron could fire
-  mid-deploy, **abort and reschedule**.
+- **PRE-1 Timing — clear of the 03:20 UTC cron. ★ LOAD-BEARING, not tidiness — here is WHY:** the byte-identical
+  `/farm` post-check is the *entire* behaviour-neutral proof. `/farm` renders `pm_category_stats`, which the
+  nightly `pm_cli refresh` **rewrites**. So if a cron (or any refresh) fires **between the `B0` baseline capture
+  and the post-deploy `/farm` check**, `/farm` shifts **for ingest reasons that have nothing to do with the
+  deploy** — and the byte-identical proof fails for a cause that is not the code. That would either (a) trigger a
+  false STOP/rollback of a perfectly good deploy, or (b) tempt someone to hand-wave a real byte diff as "probably
+  the cron." Both are unacceptable, so the deploy window must be provably clear of any refresh. **Concrete
+  evidence this is real, not hypothetical:** `/farm` was **228,564** bytes at the rung-1 record and **228,566**
+  at the 2026-08-27 11:58Z pre-refresh snapshot — a 2-byte drift from nightly rollup churn alone, zero code
+  change. The nightly `pm_cli refresh` is the only unattended DB writer; deploy in a calm window outside
+  ~03:00–04:00 UTC (rung 1 used 02:15). If the cron could fire mid-deploy, **abort and reschedule**.
 - **PRE-2 Baseline capture (the comparison the neutrality proof rests on).** Capture *now*, not from the
   rung-1 record (the nightly cron updates `pm_category_stats`, which the pinned tiles render, so `/farm` bytes
   can legitimately drift day to day — the byte-identical check is only valid against a **same-session**
-  baseline):
+  baseline). **★ `B0` must be captured AFTER `/farm` has SETTLED — i.e. after the last refresh completed and no
+  refresh is in flight — NOT from any earlier reading** (the 2026-08-27 ad-hoc refresh wrote rows and moved
+  `/farm`; a pre-refresh reading is already stale as a baseline):
   - `/farm` → HTTP 200, record exact **body byte length `B0`** (this is THE behaviour-neutral baseline).
   - `/healthz` → 200, `pm_db_schema_version: 8`.
   - `pm_watchlist`: total **114** / pinned 114 / candidates 0 / `active=1` **114** / `active=0` **0**
