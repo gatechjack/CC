@@ -101,7 +101,17 @@ Each rung is independently reversible: rung 1 — restore the pre-ALTER online b
 
 ---
 
-### ★ RUNG-2 VERIFICATION PLAN (written 2026-08-27; NOT executed — rung 2 is UNAUTHORIZED)
+### ★ RUNG-2 VERIFICATION PLAN — **EXECUTED 2026-08-27, all checks PASSED (see `RUNG2_DEPLOY_COMPLETE_2026-08-27.md`)**
+
+> **RUNG 2 DONE 2026-08-27 12:33–12:46Z.** 5 files deployed (box==branch fresh re-hash); pm_web restarted
+> 40483→132990 (clean, NRestarts 0); `/farm` byte-identical to B0 (228,569 — behaviour-neutral); 7 gated
+> queries pass; engine 89366 untouched; no PM-DB write. prod-live ledger authored LOCAL `95e78c4`→`c77f618`
+> (**NOT pushed**; origin stays `95e78c4`). Rollback backup `~/pm_stage0_rung2_bak_20260827T123827Z`. **Rung 3
+> (22-row `active=0`) still UNAUTHORIZED** — funnel intact (18 cat / 114 pair). The plan below is retained as
+> the executed procedure of record.
+> **★ pm_refresh.log parser note:** the ad-hoc refresh left an `ADHOC_REFRESH_START …` (non-JSON) line in
+> `~/pm_refresh.log`. Any log-summary tooling must **count JSON blocks (`json.raw_decode`), never lines
+> (`wc -l`)** — the marker is skipped by the block parser but would cause an off-by-one for a line counter.
 
 Rung 2 is the **first** rung where running behaviour can change and it carries the **only** pm_web restart in
 the ladder. All 114 rows are `active=1`, so the gated code SHOULD be **behaviour-neutral** — but that is a
@@ -182,8 +192,11 @@ hand to Jack** (the cause is not the artifact).
 - **POST-6** schema still **8** (rung 2 does not migrate — confirm no drift).
 - **POST-7** **engine PID == the PRE-2 value** (rung 2 must not touch the engine); legacy DB mtime unchanged;
   no `SQLITE_BUSY`/`locked`/traceback in the pm_web restart window.
-- **POST-8** pm_web PID **changed** and `NRestarts` incremented by **exactly 1** (a clean single restart, not a
-  crash loop).
+- **POST-8** pm_web PID **changed** AND **`NRestarts` still 0** AND active/running (`ExecMainStatus=0`). **★
+  CORRECTED 2026-08-27 (was "NRestarts +1" — wrong):** a MANUAL `systemctl restart` does NOT increment
+  `NRestarts` (that counter tracks only `Restart=`-triggered auto-restarts on failure). The clean-restart
+  signal is **PID-changed + NRestarts-unchanged (0) + active/running**; `NRestarts` climbing after the restart
+  would indicate a **crash-loop** (a STOP condition).
 
 **WHAT MAKES ME STOP MID-RUNG AND HAND BACK TO JACK (explicit):**
 - Any of the 5 box re-hashes != the manifest sha256 (custody / GATE-5 failure) → STOP **before** the restart.
