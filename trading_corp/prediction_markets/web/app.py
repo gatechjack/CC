@@ -325,16 +325,28 @@ def _load_farm_league() -> dict:
     return {"categories": categories}
 
 
-def _load_farm_category(category: str) -> dict | None:
+def _load_farm_category(category: str, now_ts: int) -> dict | None:
     """Per-category read. Returns None when `category` is not an ACTIVE tile (removed / unknown / nonexistent)
-    so the route can 404 -- a deactivated category must not be reachable by URL. The Watchlist and Prospects
-    regions read SEPARATE bases (paper vs completed) via two distinct farm.farm_rows calls; the paths never merge."""
+    so the route can 404 -- a deactivated category must not be reachable by URL.
+
+    THE BASIS SEPARATION IS THE POINT (three lists / three bases):
+    - WATCHLIST (pinned) -> `farm.farm_rows(status=PINNED)` -> pm_paper_category_stats (PAPER basis).
+    - PROSPECTS (candidate) -> the F-4 repurposed `stats.query_scoreboard` RANKER -> pm_category_stats
+      (COMPLETED basis), SCOPED to this category's candidate set. query_scoreboard already active-gates,
+      category-scopes and ranks; we filter its board to the candidate wallets so the section shows candidates
+      ONLY (never pinned). The two sections never share a query or a table."""
     with connect() as conn:
         if category not in farm.farm_categories(conn, farm.PINNED):
             return None
-        watchlist = farm.farm_rows(conn, status=farm.PINNED, category=category)      # PAPER basis (pinned)
-        prospects = farm.farm_rows(conn, status=farm.CANDIDATE, category=category)    # COMPLETED basis (candidate)
-    return {"category": category, "watchlist": watchlist, "prospects": prospects}
+        watchlist = farm.farm_rows(conn, status=farm.PINNED, category=category)        # PAPER basis (pinned)
+        cand_wallets = {r["wallet"] for r in
+                        farm.farm_rows(conn, status=farm.CANDIDATE, category=category)}   # candidate SET (active-gated)
+        board = stats.query_scoreboard(conn, category=category)                         # completed-basis ranker (F-4)
+        prospects = [r for r in board if r["wallet"] in cand_wallets]                   # ranked, candidates only
+        for r in prospects:
+            r["flags"] = stats.scoreboard_flags(r)                                      # same tokens as CLI/scoreboard
+        refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
+    return {"category": category, "watchlist": watchlist, "prospects": prospects, "refresh": refresh}
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -359,8 +371,36 @@ async def farm_league_category(request: Request, category: str):
     tile set (removed / unknown / nonexistent) is NOT reachable -> 404, never a fabricated page. TEMPORARY path
     -- phase 3 repoints this onto `/farm/{category}`."""
     category = (category or "").strip().lower()
-    data = await asyncio.to_thread(_load_farm_category, category)
+    data = await asyncio.to_thread(_load_farm_category, category, int(time.time()))
     if data is None:
         return templates.TemplateResponse(
             request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)
     return templates.TemplateResponse(request, "pm_farm_category.html", {"request": request, **data})
+
+
+# ── Watchlist whale detail (Stage 2, phase 2) -- a PINNED whale's PAPER trades + paper stats ───────
+# BASIS: paper (pm_paper_trade / pm_paper_category_stats), read via positions.paper_trades / paper_stats_row.
+# This is DELIBERATELY a separate route + template from the completed /whale/{wallet}/{category} detail: a
+# pinned whale's detail shows OUR paper trades, a prospect's shows its COMPLETED trades -- wiring a pinned row
+# to the completed detail would be the exact basis violation this stage guards. TEMPORARY path (phase-3 nav).
+
+def _load_watchlist_whale(wallet: str, category: str, now_ts: int) -> dict:
+    """A pinned whale's PAPER detail read: whale header + the paper-basis stats + ALL its paper trades, on ONE
+    short-lived read connection, OFF the loop. Reads the PAPER lane ONLY -- never pm_closed_position."""
+    with connect() as conn:
+        whale = positions.whale_row(conn, wallet)
+        pstats = positions.paper_stats_row(conn, wallet, category)
+        trades = positions.paper_trades(conn, wallet, category)
+        refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
+    return {"whale": whale, "pstats": pstats, "trades": trades, "refresh": refresh}
+
+
+@app.get("/watchlist/{wallet}/{category}", response_class=HTMLResponse)
+async def watchlist_whale(request: Request, wallet: str, category: str):
+    """A pinned (Watchlist) whale's PAPER detail: all its paper trades + the paper-basis stats. Distinct from
+    the completed `/whale/{wallet}/{category}` detail (which the Prospects section links to). Honest-empty for
+    an unknown wallet / a pair with no paper trades yet -- never a fabrication. TEMPORARY path."""
+    wallet = (wallet or "").lower()
+    data = await asyncio.to_thread(_load_watchlist_whale, wallet, category, int(time.time()))
+    return templates.TemplateResponse(
+        request, "pm_watchlist_whale.html", {"request": request, "wallet": wallet, "category": category, **data})

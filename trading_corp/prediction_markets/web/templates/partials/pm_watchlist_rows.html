@@ -1,0 +1,54 @@
+{% from "pm_macros.html" import whale_label %}
+{# WATCHLIST rows -- PAPER basis (pm_paper_category_stats via farm.farm_rows status=PINNED). One row per pinned
+   pair. The rollup gates every performance column on status='closed'; OPEN trades feed ONLY the open count. So a
+   pair with N open / 0 closed shows a real open count and honest-empty performance -- that is INFORMATION, not
+   missing data. n_stale/n_void sit beside `closed` so the exclusions are never invisible (survivorship). #}
+{% if not watchlist %}
+  <div class="pm-empty" data-empty="1">&mdash; no pinned whales in this category yet. (Honest-empty: nothing to show.)</div>
+{% else %}
+<div class="pm-table-scroll">
+<table class="pm-table pm-farm-table">
+  <thead>
+    <tr>
+      <th>whale</th>
+      <th class="pm-num" title="OPEN paper positions right now (R6): live COUNT of pm_paper_trade status='open'. This is the number that shows the lane is alive -- it is NOT a performance figure. Click a whale for all its paper trades.">open</th>
+      <th class="pm-num" title="CLOSED (resolved) paper trades. Every performance column is computed over THESE only.">closed</th>
+      <th class="pm-num" title="STALE paper exits (whale left before resolution): EXCLUDED from win/loss. Shown beside closed so the exclusion is never invisible (survivorship).">stale</th>
+      <th class="pm-num pm-muted" title="VOID (market resolved with no winner): excluded terminal.">void</th>
+      <th class="pm-num pm-muted" title="Paper win rate over CLOSED trades. Honest-empty until trades resolve.">win%</th>
+      <th class="pm-num pm-primary" title="Paper cost-based ROI over CLOSED trades -- THE paper metric.">roi&nbsp;(cost)</th>
+      <th class="pm-num" title="Net paper PnL over CLOSED trades.">net&nbsp;pnl</th>
+      <th class="pm-num pm-muted" title="Paper cost basis (CLOSED).">cost</th>
+      <th title="Operator actions. Analyze is LIVE; Demote / Promote are Stage 3 (disabled).">actions</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in watchlist %}
+    <tr>
+      {# whale name -> the PAPER detail (all its paper trades), NOT the completed /whale detail (basis separation) #}
+      <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/watchlist/' ~ r.wallet ~ '/' ~ r.category) }}</td>
+      <td class="pm-num"><a class="pm-drill-link" href="/watchlist/{{ r.wallet }}/{{ r.category }}" title="open paper positions -- click for all paper trades">{{ r.n_open or 0 }}</a></td>
+      <td class="pm-num">{{ r.n_closed if r.n_closed is not none else 0 }}</td>
+      <td class="pm-num">{% if r.n_stale %}<span class="pm-badge pm-badge-anom" title="{{ r.n_stale }} stale paper exit(s) -- excluded from win/loss (survivorship-visible).">{{ r.n_stale }}</span>{% else %}0{% endif %}</td>
+      <td class="pm-num pm-muted">{{ r.n_void or 0 }}</td>
+      <td class="pm-num pm-muted">{% if r.win_rate is not none %}{{ '%.0f'|format(r.win_rate * 100) }}%{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num {% if r.net_paper_pnl is not none and r.net_paper_pnl >= 0 %}pm-gain{% elif r.net_paper_pnl is not none %}pm-loss{% endif %}">{% if r.net_paper_pnl is not none %}{{ '%+.0f'|format(r.net_paper_pnl) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num pm-muted">{% if r.cost_basis is not none %}{{ '%.0f'|format(r.cost_basis) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-actioncell">
+        {# Analyze WIRED (same route/target as the legacy analyze_button macro) -- inlined here ONLY to render the
+           category UPPERCASE in the tooltip (F-3 casing) without editing the shared macro, which would change the
+           legacy /farm page's bytes. hx-post carries the lowercase slug (URL). #}
+        <button class="pm-btn pm-btn-sm pm-analyze-btn"
+           title="Analyze {{ r.category|upper }}: LLM narration over this whale's RESOLVED positions (deterministic report always renders; the verdict needs the Anthropic key, not wired yet)."
+           hx-post="/farm/analyze/{{ r.wallet }}/{{ r.category }}" hx-target="#pm-analyze-panel" hx-swap="innerHTML"
+           hx-disabled-elt="this">Analyze</button>
+        <button class="pm-btn pm-btn-sm" disabled title="Demote to Prospect -- Stage 3 (not built yet)">Demote</button>
+        <button class="pm-btn pm-btn-sm" disabled title="Promote to a live sub-division -- P3 (not built yet)">Promote</button>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

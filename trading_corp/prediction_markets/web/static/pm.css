@@ -300,3 +300,21 @@ th.pm-primary{color:var(--mono)}
 .pm-phase2{border:1px dashed var(--edge2); background:rgba(59,130,246,.05); color:var(--muted);
   padding:.8rem 1rem; border-radius:.5rem; font-size:.82rem; line-height:1.5; margin-top:.6rem}
 .pm-phase2 strong{color:var(--mono)}
+
+/* ── Stage 2 phase 2: per-category content (Watchlist paper table + Prospects completed table + paper detail) ──
+   ADDITIVE ONLY -- new classes + a disabled-button rule + paper-status badges. Reuses the existing .pm-table /
+   .pm-profile / .pm-stat / .pm-badge / .pm-empty machinery; the legacy pages don't use the new selectors. */
+
+/* Stage-3 actions are rendered but DISABLED (visibly, honestly) -- muted, never the accent (which reads as live) */
+.pm-btn[disabled]{opacity:.5; cursor:not-allowed; background:var(--pane2); color:var(--muted)}
+.pm-btn[disabled]:hover{background:var(--pane2); color:var(--muted)}
+.pm-actioncell .pm-btn{margin-right:.3rem}
+.pm-actioncell .pm-btn:last-child{margin-right:0}
+
+/* paper-trade lifecycle badges (open / pending_adjudication / closed / stale / void) */
+.pm-pstatus{text-transform:none; font-weight:600}
+.pm-pstatus-open{background:rgba(59,130,246,.16); color:#bfdbfe; border:1px solid rgba(59,130,246,.55)}
+.pm-pstatus-pending_adjudication{background:rgba(245,158,11,.14); color:var(--warn); border:1px solid rgba(245,158,11,.45)}
+.pm-pstatus-closed{background:rgba(16,185,129,.14); color:var(--green); border:1px solid rgba(16,185,129,.4)}
+.pm-pstatus-stale{background:rgba(148,163,184,.14); color:var(--muted); border:1px solid var(--edge2)}
+.pm-pstatus-void{background:rgba(148,163,184,.10); color:var(--muted); border:1px solid var(--edge2)}

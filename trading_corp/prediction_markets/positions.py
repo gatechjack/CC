@@ -162,3 +162,37 @@ def score_decomposition(conn, wallet: str, category: str) -> dict[str, dict]:
             d["params"] = {}
         out[r["routine"]] = d
     return out
+
+
+# ── paper-lane reads (the WATCHLIST whale detail: OUR paper trades, NOT completed positions) ──────
+# BASIS SEPARATION, expressed in code: these read the PAPER lane (pm_paper_trade / pm_paper_category_stats)
+# and feed ONLY the pinned-whale (Watchlist) detail. The completed-lane reads above (drill_rows /
+# category_stats_row over pm_closed_position / pm_category_stats) feed the PROSPECT detail. Two distinct
+# functions, two distinct tables -- a pinned whale's detail can never silently borrow the completed lane.
+# READ-ONLY; paper.py (the rollup / adjudicator / poller) is NOT touched.
+
+_PAPER_TRADE_COLS = (
+    "wallet, category, condition_id, outcome_index, slug, event_slug, title, outcome, side, status, "
+    "size_basis, cost_basis, entry_price_avg_at_observation, entry_basis, whale_size_at_observation, "
+    "last_observed_size, realized_pnl, won, close_source, mark_price, mark_pnl, market_end_date, "
+    "opened_ts, entry_observed_ts, exit_observed_ts, resolved_ts, stale_ts, stale_reason, updated_ts"
+)
+
+
+def paper_trades(conn, wallet: str, category: str) -> list[dict]:
+    """ALL of a pinned whale's paper trades for (wallet, category) -- the Watchlist whale-detail rows.
+    Reads pm_paper_trade (the PAPER lane), NEVER pm_closed_position. Ordered live-first (open, then
+    pending_adjudication, then terminal) and newest-first within a status. Honest-empty [] when none."""
+    q = ("SELECT %s FROM pm_paper_trade WHERE wallet = ? AND category = ? "
+         "ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'pending_adjudication' THEN 1 ELSE 2 END, "
+         "COALESCE(opened_ts, entry_observed_ts) DESC, condition_id, outcome_index" % _PAPER_TRADE_COLS)
+    return [dict(r) for r in conn.execute(q, [(wallet or "").lower(), category]).fetchall()]
+
+
+def paper_stats_row(conn, wallet: str, category: str) -> dict | None:
+    """The pm_paper_category_stats aggregate for (wallet, category) -- the PAPER-basis summary on the
+    Watchlist whale detail. None when the pair has no rolled-up paper stats yet (all-open pair, or not
+    yet rolled up) -- render honest-empty, never a fabricated zero."""
+    r = conn.execute("SELECT * FROM pm_paper_category_stats WHERE wallet = ? AND category = ?",
+                     [(wallet or "").lower(), category]).fetchone()
+    return dict(r) if r is not None else None

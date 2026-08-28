@@ -104,9 +104,10 @@ def test_category_page_knows_its_category(tmp_path, monkeypatch):
     body = r.text
     assert '<h1 class="pm-h1">MLB</h1>' in body               # heading IS the category, UPPERCASE
     assert 'href="/farm-league">Farm League</a>' in body      # breadcrumb back up the hierarchy
-    # consistent casing: the category NAME renders uppercase everywhere on this page. This page carries NO
-    # category href, so the URL-cased (lowercase) form never appears -> assert the lowercase form is absent.
-    assert "mlb" not in body
+    # consistent casing: the category NAME renders UPPERCASE in every DISPLAY context (h1 / breadcrumb / title).
+    # The lowercase slug appears ONLY inside URL paths (/watchlist/.../mlb, /whale/.../mlb) now that phase 2
+    # renders rows -- assert every lowercase 'mlb' is a URL path segment (preceded by '/'), never display text.
+    assert all(body[m.start() - 1] == '/' for m in re.finditer('mlb', body))
     # F-3: screen words present; internal code words NOT leaked to the UI
     assert "Watchlist" in body and "Prospects" in body
     assert "pinned" not in body and "candidate" not in body
@@ -133,12 +134,16 @@ def test_deactivated_category_not_reachable_by_url(tmp_path, monkeypatch):
 def test_watchlist_and_prospects_read_separate_bases(tmp_path, monkeypatch):
     """Seed DIFFERENT counts on the two bases in ONE category. Watchlist(pinned/paper)=2,
     Prospects(candidate/completed)=1. If the two regions shared a data path (a cross-wire), the counts would
-    be equal -- this asserts they differ AND that each region declares its own basis."""
+    be equal -- this asserts they differ AND that each region declares its own basis.
+    (Phase-2 note: Prospects are now RANKED via query_scoreboard, so the candidate needs completed stats
+    above the ranker floor to surface -- a bare candidate row would rank as nothing.)"""
     client, p = _client(monkeypatch, tmp_path)
     with db.connect(p) as conn:
         _pin(conn, "0xw1", "mlb", status="pinned")       # Watchlist -> paper basis
         _pin(conn, "0xw2", "mlb", status="pinned")       # Watchlist -> paper basis
         _pin(conn, "0xc1", "mlb", status="candidate")    # Prospects -> completed basis
+        conn.execute("INSERT INTO pm_category_stats (wallet, category, n_resolved, roi, win_rate, updated_ts) "
+                     "VALUES (?,?,?,?,?,?)", ("0xc1", "mlb", 20, 0.10, 0.55, NOW))
     r = client.get("/farm-league/mlb")
     assert r.status_code == 200
     body = r.text

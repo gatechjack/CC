@@ -1,0 +1,47 @@
+{% extends "pm_shell.html" %}
+{% from "pm_macros.html" import whale_label, refresh_band %}
+{% block title %}{{ (whale.user_name if whale and whale.user_name else wallet) }} &middot; {{ category|upper }} paper &middot; Prediction Markets{% endblock %}
+{% block content %}
+<section>
+  <nav class="pm-crumb"><a href="/dashboard">Dashboard</a> &rsaquo;
+    <a href="/farm-league">Farm League</a> &rsaquo;
+    <a href="/farm-league/{{ category }}">{{ category|upper }}</a> &rsaquo; watchlist whale</nav>
+
+  <div class="pm-whale-head">
+    <div class="pm-whale-title">
+      <h1 class="pm-h1">{{ whale_label(whale.user_name if whale else None, wallet) }}</h1>
+      <span class="pm-chip">{{ category|upper }}</span>
+      <span class="pm-chip pm-chip-ok">Watchlist &middot; paper basis</span>
+    </div>
+    <p class="pm-sub">ALL of this pinned whale's <strong>paper trades</strong> and paper-basis stats &mdash; the
+      paper lane (our observed copies), NOT the whale's completed-trade history.</p>
+  </div>
+
+  {# PAPER-basis stat panel (pm_paper_category_stats). Performance is over CLOSED trades; the live OPEN count is
+     first-class. Honest-empty when no rollup row yet (open trades still list below). #}
+  <div class="pm-panel">
+    <h2 class="pm-h2">Paper stats <span class="pm-sub2">closed-trade performance + live open count</span></h2>
+    {% if pstats %}
+    <div class="pm-profile">
+      <div class="pm-stat pm-stat-drill"><div class="pm-stat-label">open (live)</div><div class="pm-stat-val">{{ pstats.n_open or 0 }}</div><div class="pm-stat-hint">positions open now</div></div>
+      <div class="pm-stat"><div class="pm-stat-label">closed</div><div class="pm-stat-val">{{ pstats.n_closed or 0 }}</div><div class="pm-stat-hint">resolved paper trades</div></div>
+      <div class="pm-stat"><div class="pm-stat-label">stale</div><div class="pm-stat-val">{{ pstats.n_stale or 0 }}</div><div class="pm-stat-hint">whale-exit, excluded</div></div>
+      <div class="pm-stat"><div class="pm-stat-label">void</div><div class="pm-stat-val">{{ pstats.n_void or 0 }}</div><div class="pm-stat-hint">no-winner, excluded</div></div>
+      <div class="pm-stat"><div class="pm-stat-label">win%</div><div class="pm-stat-val">{% if pstats.win_rate is not none %}{{ '%.0f'|format(pstats.win_rate * 100) }}%{% else %}&mdash;{% endif %}</div><div class="pm-stat-hint">over closed</div></div>
+      <div class="pm-stat"><div class="pm-stat-label">roi (cost)</div><div class="pm-stat-val {% if pstats.roi is not none and pstats.roi >= 0 %}pm-gain{% elif pstats.roi is not none %}pm-loss{% endif %}">{% if pstats.roi is not none %}{{ '%+.1f'|format(pstats.roi * 100) }}%{% else %}&mdash;{% endif %}</div><div class="pm-stat-hint">paper cost-ROI</div></div>
+      <div class="pm-stat"><div class="pm-stat-label">net paper pnl</div><div class="pm-stat-val {% if pstats.net_paper_pnl is not none and pstats.net_paper_pnl >= 0 %}pm-gain{% elif pstats.net_paper_pnl is not none %}pm-loss{% endif %}">{% if pstats.net_paper_pnl is not none %}{{ '%+.0f'|format(pstats.net_paper_pnl) }}{% else %}&mdash;{% endif %}</div><div class="pm-stat-hint">closed only</div></div>
+    </div>
+    {% else %}
+    <div class="pm-empty" data-empty="1">&mdash; no rolled-up paper stats yet. Open positions still list below;
+      performance appears once trades resolve and the rollup runs. (Honest-empty, not missing data.)</div>
+    {% endif %}
+  </div>
+
+  {# ALL paper trades (pm_paper_trade), live-first. #}
+  <div class="pm-panel">
+    <h2 class="pm-h2">Paper trades <span class="pm-sub2">{{ trades|length }} row(s) &middot; live-first</span></h2>
+    {{ refresh_band(refresh) }}
+    {% include "partials/pm_paper_trade_rows.html" %}
+  </div>
+</section>
+{% endblock %}
