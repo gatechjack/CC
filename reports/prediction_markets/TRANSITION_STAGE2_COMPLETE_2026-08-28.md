@@ -1,5 +1,9 @@
 # TRANSITION — STAGE 2 COMPLETE (canonical handoff, 2026-08-28)
 
+> **★ SUPERSEDED (2026-08-28) by `TRANSITION_STAGE3_DEPLOY_2026-08-28.md`** — Stage 3 (R1–R6) is now BUILT and
+> UNSHIPPED; the deploy agent's FIRST read is the Stage-3 deploy handoff. This doc remains accurate for the
+> Stage-2 (live) baseline it describes.
+
 > **This is the canonical handoff. It SUPERSEDES `TRANSITION_STAGE0_COMPLETE_2026-08-27.md`** (which describes a
 > pre-Stage-1 state that no longer exists). **Restate the THREE LISTS / THREE BASES from memory before touching
 > code** (the anti-drift rule, `PM_REQUIREMENTS.md`): **Prospect** = completed trades (`pm_closed_position` →
