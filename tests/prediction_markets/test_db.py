@@ -50,8 +50,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 9  # migrations 001..009 recorded exactly once each (008 Stage-0 active, 009 Stage-1 paper stats)
-    assert maxv == 9
+    assert count == 10  # migrations 001..010 recorded exactly once each (009 Stage-1 paper stats, 010 Stage-3 money layer)
+    assert maxv == 10
 
 
 def test_pk_includes_outcome_index(tmp_path):
@@ -170,3 +170,57 @@ def test_migration_006_roster_and_watchlist(tmp_path):
         status = conn.execute("SELECT status FROM pm_watchlist WHERE wallet='0xw'").fetchone()[0]
     assert active == 1
     assert status == "watchlist"   # FROZEN 006 default (vestigial); vocab is 'candidate'|'pinned', but 006 is applied+immutable -- do NOT "fix" this to 'candidate'
+
+
+def test_migration_010_money_layer_schema(tmp_path):
+    """Migration 010 (Stage 3 R1): the money-layer schema. pm_account (credential REFERENCE + NULLABLE
+    owner_identity; identity is Authelia's -> NO pm_user/pm_role/pm_grant), the sub-division (account,
+    category) entity with sizing/risk/market_types config (FIXED sizing per ruling #1; Kelly column shape
+    carried-not-built; market_types carries 'spread' even if Kalshi lists no run-line), and a per-sub-division
+    live-order log shaped to brokers/kalshi_live.py's actual returns."""
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        acc = {r[1] for r in conn.execute("PRAGMA table_info(pm_account)")}
+        acc_pk = {r[1] for r in conn.execute("PRAGMA table_info(pm_account)") if r[5] > 0}
+        sub = {r[1] for r in conn.execute("PRAGMA table_info(pm_subdivision)")}
+        sub_pk = {r[1] for r in conn.execute("PRAGMA table_info(pm_subdivision)") if r[5] > 0}
+        odr = {r[1] for r in conn.execute("PRAGMA table_info(pm_subdivision_order)")}
+    assert {"pm_account", "pm_subdivision", "pm_subdivision_order"} <= tables
+    # identity tables must be ABSENT -- Authelia owns identity (the app owns only the login->account mapping)
+    assert not ({"pm_user", "pm_role", "pm_grant"} & tables)
+    # pm_account: credential REFERENCE + nullable owner_identity
+    assert acc_pk == {"account_id"}
+    assert {"secret_ref", "owner_identity", "venue", "active"} <= acc
+    # sub-division (account, category) + sizing/risk/market_types config
+    assert sub_pk == {"account_id", "category"}
+    assert {"sizing_mode", "fixed_stake_usd", "kelly_fraction", "market_types",
+            "per_order_usd_cap", "daily_usd_cap", "max_open_usd", "max_orders_per_day",
+            "max_slippage_cents"} <= sub
+    # live-order log shaped to kalshi_live's return: idempotency key, submitted V2 body, outcome, fill facts
+    assert {"client_order_id", "signal_id", "ticker", "order_side", "outcome_leg", "is_exit",
+            "submitted_count", "submitted_price", "time_in_force", "outcome_status",
+            "broker_order_id", "fill_count", "fill_price", "remaining_count", "fee",
+            "error_detail", "dry_run"} <= odr
+    # DDL defaults: owner_identity NULLABLE (empty until Authelia logins), fixed sizing (ruling #1),
+    # market_types carries all three incl 'spread' (Jack's scope ruling) without a future migration.
+    with db.connect(p) as conn:
+        conn.execute("INSERT INTO pm_account (account_id) VALUES ('kalshi_jack')")
+        conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES ('kalshi_jack', 'mlb')")
+        owner, venue = conn.execute(
+            "SELECT owner_identity, venue FROM pm_account WHERE account_id='kalshi_jack'").fetchone()
+        sm, mt = conn.execute(
+            "SELECT sizing_mode, market_types FROM pm_subdivision WHERE account_id='kalshi_jack'").fetchone()
+    assert owner is None          # NULLABLE, empty until family logins arrive
+    assert venue == "kalshi"
+    assert sm == "fixed"          # ruling #1
+    assert "moneyline" in mt and "total" in mt and "spread" in mt   # Jack's scope ruling, carried w/o a migration
+
+
+def test_migration_010_is_pure_ddl():
+    """Jack RULED (mirroring 009's FIX-2): migration 010 is PURE DDL -- no config/data writes. Every statement
+    is a CREATE (table/index); no INSERT/UPDATE/DELETE. So init_db 9->10 adds NO config row."""
+    for stmt in db.MIGRATION_010:
+        head = stmt.strip().split()[0].upper()
+        assert head == "CREATE", "migration 010 must be PURE DDL; got a non-CREATE statement: %r" % stmt[:60]
