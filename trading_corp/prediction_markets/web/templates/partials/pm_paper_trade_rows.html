@@ -1,0 +1,45 @@
+{# PAPER-trade rows (pm_paper_trade) for a pinned whale's Watchlist detail. PAPER lane -- NOT pm_closed_position.
+   Live rows (open / pending) sort first. pnl = realized for terminal rows, mark-to-market for open. Honest-empty
+   '&mdash;' for missing values; honest-empty box when the pair has no paper trades yet. #}
+{% if not trades %}
+  <div class="pm-empty" data-empty="1">&mdash; no paper trades for this pair yet. (Honest-empty: nothing to show.)</div>
+{% else %}
+<div class="pm-table-scroll">
+<table class="pm-table pm-positions">
+  <thead>
+    <tr>
+      <th title="Lifecycle: open / pending_adjudication / closed / stale (whale exit) / void (no winner).">status</th>
+      <th>market</th>
+      <th>outcome</th>
+      <th class="pm-num" title="Observed entry price when we copied the whale's position.">entry&nbsp;px</th>
+      <th class="pm-num" title="Our paper size basis (notional booked for the copy).">size</th>
+      <th class="pm-num" title="Our paper cost basis.">cost</th>
+      <th class="pm-num" title="Realized paper PnL (terminal) or mark-to-market (open).">pnl</th>
+      <th title="won / lost once adjudicated (gamma resolution).">won</th>
+      <th class="pm-num" title="Opened (observed) date.">opened</th>
+      <th class="pm-num" title="Resolved / exited date.">resolved</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for t in trades %}
+    {% set p = t.realized_pnl if t.status in ('closed', 'stale', 'void') else t.mark_pnl %}
+    <tr data-status="{{ t.status }}" data-cid="{{ t.condition_id }}" data-oi="{{ t.outcome_index }}">
+      <td><span class="pm-badge pm-pstatus pm-pstatus-{{ t.status }}">{{ t.status }}</span></td>
+      <td>
+        <div class="pm-mktline">{{ t.title or t.slug or '&mdash;'|safe }}</div>
+        <div class="pm-mktsub pm-mono">{{ t.slug or '&mdash;'|safe }}{% if t.event_slug %} &middot; <span class="pm-muted">{{ t.event_slug }}</span>{% endif %}</div>
+      </td>
+      <td>{{ t.outcome or '&mdash;'|safe }}<span class="pm-muted pm-oi">&nbsp;({{ t.outcome_index }})</span></td>
+      <td class="pm-num">{% if t.entry_price_avg_at_observation is not none %}{{ '%.2f'|format(t.entry_price_avg_at_observation) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num pm-muted">{% if t.size_basis is not none %}{{ '%.0f'|format(t.size_basis) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num">{% if t.cost_basis is not none %}{{ '%.0f'|format(t.cost_basis) }}{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num {% if p is not none and p >= 0 %}pm-gain{% elif p is not none %}pm-loss{% endif %}">{% if p is not none %}{{ '%+.0f'|format(p) }}{% if t.status not in ('closed', 'stale', 'void') %}<span class="pm-muted pm-oi">&nbsp;mtm</span>{% endif %}{% else %}&mdash;{% endif %}</td>
+      <td>{% if t.won == 1 %}<span class="pm-won-y">won</span>{% elif t.won == 0 %}<span class="pm-won-n">lost</span>{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num pm-muted">{{ t.opened_ts|utcdate }}</td>
+      <td class="pm-num pm-muted">{{ t.resolved_ts|utcdate }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

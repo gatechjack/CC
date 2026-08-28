@@ -1,4 +1,5 @@
 {% extends "pm_shell.html" %}
+{% from "pm_macros.html" import refresh_band %}
 {% block title %}{{ category|upper }} &middot; Farm League &middot; Prediction Markets{% endblock %}
 {% block content %}
 <section>
@@ -6,36 +7,34 @@
     <a href="/farm-league">Farm League</a> &rsaquo; {{ category|upper }}</nav>
   <div class="pm-section-head">
     <h1 class="pm-h1">{{ category|upper }}</h1>
-    <p class="pm-sub">Watchlist (our paper trades) on top, Prospects (completed-trade screening) below.
-      This is the Phase-1 skeleton &mdash; per-whale stats and actions arrive in later phases.</p>
+    <p class="pm-sub"><strong>Watchlist</strong> (our paper trades) on top, <strong>Prospects</strong>
+      (completed-trade screening) below &mdash; two lists, two data bases, on one page.</p>
   </div>
 
-  {# TOP region = screen word "Watchlist" = code status='pinned' = PAPER basis (pm_paper_category_stats,
-     read via farm.farm_rows(status=PINNED)). data-basis/data-count expose the basis + roster size for the
-     BASIS test; per-whale performance is deliberately NOT rendered here (phase 2). #}
+  {# TOP region = screen word "Watchlist" = code status='pinned' = PAPER basis (pm_paper_category_stats via
+     farm.farm_rows(status=PINNED)). data-basis/data-count are load-bearing for the BASIS tests. #}
   <div class="pm-panel pm-region" id="pm-region-watchlist" data-basis="paper" data-count="{{ watchlist|length }}">
     <h2 class="pm-h2">Watchlist
       <span class="pm-region-basis">our paper trades &middot;
         <span class="pm-region-count">{{ watchlist|length }}</span> whale(s)</span>
     </h2>
-    <div class="pm-phase2">Per-whale paper performance and the Demote / Promote / Analyze actions arrive in a
-      later phase. This region reads the <strong>paper</strong> basis.</div>
+    {% include "partials/pm_watchlist_rows.html" %}
   </div>
 
-  {# BOTTOM region = screen word "Prospects" = code status='candidate' = COMPLETED basis (pm_category_stats,
-     read via farm.farm_rows(status=CANDIDATE)). A SEPARATE data path from the Watchlist above -- never shared. #}
+  {# BOTTOM region = screen word "Prospects" = code status='candidate' = COMPLETED basis (pm_category_stats via
+     the F-4 repurposed query_scoreboard ranker, filtered to this category's candidates). A SEPARATE data path
+     from the Watchlist -- never shared. Freshness stamp travels with the completed numbers. #}
   <div class="pm-panel pm-region" id="pm-region-prospects" data-basis="completed" data-count="{{ prospects|length }}">
     <h2 class="pm-h2">Prospects
       <span class="pm-region-basis">completed-trade screening &middot;
         <span class="pm-region-count">{{ prospects|length }}</span> prospect(s)</span>
     </h2>
-    {% if prospects %}
-    <div class="pm-phase2">Prospect ranking and the Promote-to-Watchlist action arrive in a later phase.
-      This region reads the <strong>completed</strong> basis.</div>
-    {% else %}
-    <div class="pm-empty-nosearch">No prospects yet &mdash; the Prospects list is populated by Search (a later
-      stage). This region reads the <strong>completed</strong> basis, kept separate from the Watchlist.</div>
-    {% endif %}
+    {{ refresh_band(refresh) }}
+    {% include "partials/pm_prospects_rows.html" %}
   </div>
+
+  {# The [Analyze] result (from a Watchlist row's Analyze button) swaps in HERE -- outside the sections so a
+     future partial refresh cannot blow it away. Empty until the operator analyzes a whale. #}
+  <div id="pm-analyze-panel" class="pm-analyze-panel" aria-live="polite"></div>
 </section>
 {% endblock %}
