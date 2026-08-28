@@ -4,7 +4,6 @@ Proves the mutation SEMANTICS and -- load-bearing -- the THREE-BASES INVARIANT: 
 LISTS (pm_watchlist funnel / attachment) and leaves the OTHER data bases UNTOUCHED. Demote PRESERVES paper (F-5).
 Every action is idempotent; promote-to-live joins ON CATEGORY; detach reverses it. No action reaches execution.
 """
-import inspect
 import sqlite3
 
 from trading_corp.prediction_markets import db, farm, farm_actions, subdivision
@@ -212,9 +211,13 @@ def test_off_funnel_candidate_not_promotable(tmp_path):
 
 # ── structural: no farm action can reach the execution path ──────────────────
 def test_farm_actions_cannot_reach_execution(tmp_path):
-    src = inspect.getsource(farm_actions)
-    assert "KalshiLiveBroker" not in src and "place_order" not in src and "pm_subdivision_order" not in src
-    assert "kalshi_live" not in src and "execution" not in src
+    # STRUCTURAL: the module NAMESPACE holds no broker/execution symbol (dir, NOT the raw source -- the docstring
+    # legitimately NAMES pm_subdivision_order / place_order to document that they are NOT used).
+    ns = dir(farm_actions)
+    for forbidden in ("KalshiLiveBroker", "place_order", "kalshi_live", "execution",
+                      "usd_to_contracts", "build_v2_event_order", "v2_side_and_price"):
+        assert forbidden not in ns, forbidden
+    assert "farm" in ns                                   # imports ONLY the read-only farm vocab module
     # and no order row is ever created by any action (proven live)
     conn = _seed(tmp_path)
     farm_actions.promote_to_watchlist(conn, "0xcand", "mlb", NOW)
