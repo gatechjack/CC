@@ -118,11 +118,9 @@ def test_null_user_name_renders_wallet_never_placeholder(tmp_path, monkeypatch):
     assert "Unknown" not in html and "Anonymous" not in html
 
 
-def test_scoreboard_wallet_cell_links_to_whale_and_shows_name(tmp_path, monkeypatch):
-    _seed(tmp_path, monkeypatch)
-    html = _client().get("/?min_resolved=1").text   # A has 6 scoreable rows (< default 10)
-    assert f'href="/whale/{A}/mlb"' in html
-    assert "Kickstand7" in html                    # the display name reaches the scoreboard row
+# (phase 3) test_scoreboard_wallet_cell_links_to_whale_and_shows_name was REMOVED: the scoreboard PAGE is
+# retired. The wallet-cell -> whale link + display-name behaviour now lives in the Prospects rows (whale_label
+# links to /whale/...), covered by test_stage2_phase2.py; the name-display is covered by the /whale page tests above.
 
 
 # ── reconciliation banner on the page (HARD BAR, checkpoint 2 at the web layer) ─────────────────────
