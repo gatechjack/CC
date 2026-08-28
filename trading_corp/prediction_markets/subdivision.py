@@ -29,15 +29,43 @@ def _ready(conn) -> bool:
 
 
 def list_subdivisions(conn) -> list[dict]:
-    """All ACTIVE sub-divisions as LIVE tiles (joined to their account). Empty list if the tables are absent
-    (pre-migration-010) or empty. Carries NO live-trade data (P3 not built)."""
+    """The VISIBLE sub-divisions as LIVE tiles. VISIBILITY = has >=1 ACTIVE attachment (Jack ruling 3), which
+    RECONCILES with tile-on-create: auto-create always attaches, so a just-created sub-division has an attachment
+    and shows IMMEDIATELY (tile-on-create honored, keyed on attachments not on trades); it drops off the dashboard
+    only when its LAST attachment is detached -- but the ROW PERSISTS (ruling 2: sub-divisions are PERMANENT for
+    lifetime stats; the detail page stays reachable by URL, see get_subdivision). `n_whales` = active attachments.
+    Empty list if the tables are absent. Read-only.
+
+    ** SUB-DIVISIONS ARE PERMANENT (ruling 2): there is deliberately NO delete + NO garbage-collection of an empty
+    one. A future agent must NOT 'clean up' a sub-division with 0 active attachments -- it is FILED (hidden from
+    the dashboard by the visibility gate) precisely so its lifetime stats survive. **"""
     if not _ready(conn):
         return []
+    has_att = _table_exists(conn, "pm_subdivision_attachment")
+    # visibility gate = >=1 active attachment. If the attachment table is absent (a transient pre-011 deploy), it
+    # cannot be applied -> show all active sub-divisions (R3 fallback); post-011 the gate is real.
+    join = ("LEFT JOIN (SELECT account_id, category, COUNT(*) n FROM pm_subdivision_attachment WHERE active=1 "
+            "GROUP BY account_id, category) at ON at.account_id=s.account_id AND at.category=s.category "
+            if has_att else "")
+    n_whales = "COALESCE(at.n, 0) AS n_whales, " if has_att else "0 AS n_whales, "
+    where_visible = "AND COALESCE(at.n, 0) > 0 " if has_att else ""
     rows = conn.execute(
-        "SELECT s.account_id, s.category, s.label AS sub_label, s.market_types, s.sizing_mode, "
-        "       s.fixed_stake_usd, s.created_ts, COALESCE(a.label, s.account_id) AS account_label, a.venue "
-        "FROM pm_subdivision s LEFT JOIN pm_account a ON a.account_id = s.account_id "
-        "WHERE s.active = 1 ORDER BY account_label, s.category").fetchall()
+        "SELECT s.account_id, s.category, s.label AS sub_label, s.market_types, s.sizing_mode, s.fixed_stake_usd, "
+        "       " + n_whales + "s.created_ts, COALESCE(a.label, s.account_id) AS account_label, a.venue "
+        "FROM pm_subdivision s LEFT JOIN pm_account a ON a.account_id = s.account_id " + join +
+        "WHERE s.active = 1 " + where_visible + "ORDER BY account_label, s.category").fetchall()
+    return [dict(r) for r in rows]
+
+
+def active_accounts(conn) -> list[dict]:
+    """The ACTIVE accounts = the promote-to-LIVE TARGETS. Because promote-to-live AUTO-CREATES the (account,
+    category) sub-division on demand (ruling 1), the operator promotes to an ACCOUNT, not to a pre-existing
+    sub-division. Empty if pm_account is absent (pre-migration-010). Read-only; never selects a secret value."""
+    if not _table_exists(conn, "pm_account"):
+        return []
+    rows = conn.execute(
+        "SELECT account_id, COALESCE(label, account_id) AS account_label, venue "
+        "FROM pm_account WHERE active=1 ORDER BY account_label").fetchall()
     return [dict(r) for r in rows]
 
 
@@ -55,19 +83,6 @@ def get_subdivision(conn, account_id: str, category: str) -> dict | None:
 
 
 # ── R6 attachment reads (which whales a sub-division copies) -- READ-ONLY; defensive if the R6 table is absent ─
-def subdivisions_for_category(conn, category: str) -> list[dict]:
-    """The ACTIVE sub-divisions whose category matches `category` -- the valid promote-to-LIVE targets for a
-    pinned pair in that category (the category-join, surfaced to the UI). Empty if the tables are absent
-    (pre-migration-010) or none match. Read-only."""
-    if not _ready(conn):
-        return []
-    rows = conn.execute(
-        "SELECT s.account_id, s.category, COALESCE(a.label, s.account_id) AS account_label "
-        "FROM pm_subdivision s LEFT JOIN pm_account a ON a.account_id = s.account_id "
-        "WHERE s.category = ? AND s.active = 1 ORDER BY account_label", (category,)).fetchall()
-    return [dict(r) for r in rows]
-
-
 def attached_whales(conn, account_id: str, category: str) -> list[dict]:
     """The ACTIVE whales a sub-division copies (its attachments), joined to their display name -- the read-only
     'copies these whales' list on the sub-division page. Empty if the R6 attachment table is absent

@@ -7,7 +7,7 @@ Every action is idempotent; promote-to-live joins ON CATEGORY; detach reverses i
 import inspect
 import sqlite3
 
-from trading_corp.prediction_markets import db, farm, farm_actions
+from trading_corp.prediction_markets import db, farm, farm_actions, subdivision
 
 WALLET = "0x16bb9951a36fce71e2ef57890b786145e0ba8492"
 NOW = 1787900000
@@ -19,7 +19,7 @@ def _seed(tmp_path):
     LONG-LIVED plain connection (db.connect is a context manager -- calling .__enter__() on a throwaway would GC-
     close it immediately; a plain sqlite3 conn stays open for the whole test)."""
     p = str(tmp_path / "pm.db"); db.init_db(p)
-    conn = sqlite3.connect(p)
+    conn = sqlite3.connect(p, isolation_level=None)   # autocommit, matching db.connect -> explicit BEGIN in promote_to_live works
     conn.row_factory = sqlite3.Row
     # funnel: one CANDIDATE (promotable), one PINNED (demotable / attachable)
     conn.execute("INSERT INTO pm_watchlist(wallet,category,status,active,added_ts,updated_ts) VALUES(?,?,?,1,?,?)",
@@ -103,17 +103,51 @@ def test_promote_to_live_attaches_only_and_joins_on_category(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_attachment").fetchone()[0] == 1
 
 
-def test_promote_to_live_category_join_and_missing_subdivision(tmp_path):
+def test_promote_to_live_category_join_and_validation(tmp_path):
     conn = _seed(tmp_path)
-    # a whale pinned in UFC (not mlb) cannot attach to the mlb sub-division -> the join refuses
+    # a whale pinned in UFC (not mlb): the sub-division is created AS (account, category), so a ufc pin can never
+    # produce an mlb attachment -- the category-join refuses (whale not pinned in mlb)
     conn.execute("INSERT INTO pm_watchlist(wallet,category,status,active,added_ts,updated_ts) VALUES('0xufc','ufc',?,1,?,?)",
                  (farm.PINNED, NOW, NOW)); conn.commit()
     assert farm_actions.promote_to_live(conn, "kalshi_jack", "mlb", "0xufc", NOW)["reason"] == "whale_not_pinned_in_category"
-    # a sub-division that does not exist -> no_such_subdivision (no write)
-    assert farm_actions.promote_to_live(conn, "kalshi_jack", "nba", WALLET, NOW)["reason"] == "no_such_subdivision"
+    # a nonexistent ACCOUNT -> no_such_account (an account is credentialed; NEVER auto-created)
+    assert farm_actions.promote_to_live(conn, "nope_acct", "mlb", WALLET, NOW)["reason"] == "no_such_account"
     # a non-pinned (candidate) whale cannot go live
     assert farm_actions.promote_to_live(conn, "kalshi_jack", "mlb", "0xcand", NOW)["reason"] == "whale_not_pinned_in_category"
     assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_attachment").fetchone()[0] == 0   # nothing written
+    assert conn.execute("SELECT COUNT(*) FROM pm_subdivision WHERE account_id='nope_acct'").fetchone()[0] == 0   # no orphan sub-division
+
+
+def test_promote_to_live_auto_creates_subdivision_atomically(tmp_path):
+    """Ruling 1: promoting to an account with NO sub-division for the category CREATES it + attaches, in one go."""
+    conn = _seed(tmp_path)
+    # a second account with NO (kalshi_two, mlb) sub-division yet
+    conn.execute("INSERT INTO pm_account(account_id,venue,label,active,created_ts) VALUES('kalshi_two','kalshi','Two',1,?)", (NOW,))
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM pm_subdivision WHERE account_id='kalshi_two'").fetchone()[0] == 0
+    res = farm_actions.promote_to_live(conn, "kalshi_two", "mlb", WALLET, NOW)
+    assert res["ok"] and res["changed"] and res["created_subdivision"] is True and res["reason"] == "attached"
+    # the sub-division now EXISTS (auto-created with DDL-default config) AND the whale is attached -- atomically
+    sub = conn.execute("SELECT market_types, sizing_mode, active FROM pm_subdivision WHERE account_id='kalshi_two' AND category='mlb'").fetchone()
+    assert sub is not None and sub["sizing_mode"] == "fixed" and sub["active"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_attachment WHERE account_id='kalshi_two' AND active=1").fetchone()[0] == 1
+    # promoting AGAIN (sub-division now exists) does NOT re-create it, and reports no-op
+    res2 = farm_actions.promote_to_live(conn, "kalshi_two", "mlb", WALLET, NOW)
+    assert res2["created_subdivision"] is False and res2["changed"] is False and res2["reason"] == "already_attached"
+
+
+def test_demote_refuses_when_live_attached(tmp_path):
+    """Jack's review case: demote of a pinned+LIVE pair REFUSES (live subset of pinned). Detach first, then demote."""
+    conn = _seed(tmp_path)
+    farm_actions.promote_to_live(conn, "kalshi_jack", "mlb", WALLET, NOW)          # WALLET is now pinned AND live
+    res = farm_actions.demote_to_prospect(conn, WALLET, "mlb", NOW)
+    assert res["ok"] is False and res["changed"] is False and res["reason"] == "attached_live_detach_first"
+    assert res["attachments"] == [{"account_id": "kalshi_jack", "category": "mlb"}]
+    assert _status(conn, WALLET, "mlb") == farm.PINNED                            # NOT demoted -- still pinned+live
+    # detach from live, THEN demote succeeds
+    farm_actions.detach_from_live(conn, "kalshi_jack", "mlb", WALLET, NOW)
+    assert farm_actions.demote_to_prospect(conn, WALLET, "mlb", NOW)["changed"] is True
+    assert _status(conn, WALLET, "mlb") == farm.CANDIDATE
 
 
 def test_same_whale_category_attaches_to_multiple_subdivisions(tmp_path):
@@ -143,6 +177,30 @@ def test_detach_reverses_and_is_reversible(tmp_path):
                        "WHERE account_id='kalshi_jack' AND category='mlb' AND wallet=?", (WALLET,)).fetchone()
     assert row["active"] == 1 and row["removed_ts"] is None
     assert row["added_ts"] == NOW                                                   # ★ original attach ts PRESERVED across detach->re-attach
+
+
+def test_visibility_gate_and_subdivision_permanence(tmp_path):
+    """Ruling 3 (dashboard VISIBILITY = has >=1 ACTIVE attachment) + ruling 2 (sub-division PERSISTS after its last
+    detach). Guards the visibility WHERE clause + the no-soft-delete invariant so a future maintainer cannot
+    silently drop either. _seed creates a (kalshi_jack, mlb) sub-division with NO attachment."""
+    conn = _seed(tmp_path)
+    # a bare sub-division (0 active attachments) is HIDDEN from the /live list ...
+    assert subdivision.list_subdivisions(conn) == []
+    # ... but PERSISTS + is reachable by URL (get_subdivision returns it -- ruling 2)
+    assert subdivision.get_subdivision(conn, "kalshi_jack", "mlb") is not None
+    # attach a pinned whale -> the sub-division becomes VISIBLE (tile-on-create reconciliation), n_whales = 1
+    farm_actions.promote_to_live(conn, "kalshi_jack", "mlb", WALLET, NOW)
+    lst = subdivision.list_subdivisions(conn)
+    assert len(lst) == 1 and lst[0]["account_id"] == "kalshi_jack" and lst[0]["n_whales"] == 1
+    # detach the LAST attachment -> HIDDEN again, but the sub-division ROW SURVIVES active=1 (permanent, ruling 2)
+    farm_actions.detach_from_live(conn, "kalshi_jack", "mlb", WALLET, NOW)
+    assert subdivision.list_subdivisions(conn) == []
+    persisted = conn.execute("SELECT active FROM pm_subdivision WHERE account_id='kalshi_jack' AND category='mlb'").fetchone()
+    assert persisted is not None and persisted["active"] == 1                    # NEVER soft-deleted / GC-d
+    assert subdivision.get_subdivision(conn, "kalshi_jack", "mlb") is not None    # detail still reachable by URL
+    # re-attach -> visible again (the gate is symmetric)
+    farm_actions.promote_to_live(conn, "kalshi_jack", "mlb", WALLET, NOW)
+    assert len(subdivision.list_subdivisions(conn)) == 1
 
 
 def test_off_funnel_candidate_not_promotable(tmp_path):

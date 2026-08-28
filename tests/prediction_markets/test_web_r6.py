@@ -93,11 +93,22 @@ def test_get_never_mutates(monkeypatch, tmp_path):
     assert cl.get("/live/kalshi_jack/mlb/attach/%s" % WALLET).status_code == 405
 
 
-def test_promote_to_live_nonexistent_subdivision_is_safe(monkeypatch, tmp_path):
+def test_promote_to_live_wrong_category_is_safe_no_autocreate(monkeypatch, tmp_path):
     cl, p = _mk(monkeypatch, tmp_path)
-    r = cl.post("/live/kalshi_jack/nba/attach/%s" % WALLET, follow_redirects=False)     # no nba sub-division
+    # WALLET is pinned in mlb, not nba -> the category-join refuses; auto-create must NOT fire (no orphan sub-division)
+    r = cl.post("/live/kalshi_jack/nba/attach/%s" % WALLET, follow_redirects=False)
     assert r.status_code == 303                                                         # no crash
     assert _attach_count(p) == 0                                                        # nothing attached
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_subdivision WHERE account_id='kalshi_jack' AND category='nba'").fetchone()[0] == 0
+
+
+def test_demote_route_refuses_when_live_attached(monkeypatch, tmp_path):
+    cl, p = _mk(monkeypatch, tmp_path)
+    cl.post("/live/kalshi_jack/mlb/attach/%s" % WALLET, follow_redirects=False)         # WALLET now pinned AND live
+    r = cl.post("/farm/mlb/demote/%s" % WALLET, follow_redirects=False)
+    assert r.status_code == 303                                                         # 303 (safe no-op), never a crash
+    assert _status(p, WALLET, "mlb") == farm.PINNED                                     # REFUSED: still pinned+live (live subset of pinned)
 
 
 def test_live_pages_stay_read_only(monkeypatch, tmp_path):

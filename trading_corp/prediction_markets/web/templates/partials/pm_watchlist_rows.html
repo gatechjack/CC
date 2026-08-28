@@ -49,17 +49,18 @@
           <button class="pm-btn pm-btn-sm" type="submit"
              title="Demote to Prospect: stop paper-trading (paper history is kept; display basis flips back to completed).">Demote</button>
         </form>
-        {# PROMOTE-TO-LIVE (R6): attach this pinned whale to a live sub-division of THIS category (join ON CATEGORY).
-           One button per available sub-division (chosen 1/some/all). Inert + honest when none exists yet. #}
-        {% if live_subdivisions %}
-          {% for sd in live_subdivisions %}
-          <form method="post" action="/live/{{ sd.account_id }}/{{ r.category }}/attach/{{ r.wallet }}" class="pm-inline-form">
+        {# PROMOTE-TO-LIVE (R6): copy this pinned whale on a live ACCOUNT's {category} sub-division. The target is an
+           ACCOUNT -- promote-to-live AUTO-CREATES the (account, category) sub-division on demand (joined ON category)
+           -- chosen 1/some/all. Inert + honest when no account is provisioned yet. #}
+        {% if live_accounts %}
+          {% for acct in live_accounts %}
+          <form method="post" action="/live/{{ acct.account_id }}/{{ r.category }}/attach/{{ r.wallet }}" class="pm-inline-form">
             <button class="pm-btn pm-btn-sm" type="submit"
-               title="Promote to LIVE: attach this whale to the {{ sd.account_label }} · {{ r.category|upper }} sub-division (creates a copy attachment -- does NOT place an order).">Promote &rsaquo; {{ sd.account_label }}</button>
+               title="Promote to LIVE: copy this whale on {{ acct.account_label }}'s {{ r.category|upper }} sub-division (auto-created if new; creates a copy attachment -- does NOT place an order).">Promote &rsaquo; {{ acct.account_label }}</button>
           </form>
           {% endfor %}
         {% else %}
-          <span class="pm-muted pm-btn-sm" title="No live {{ r.category|upper }} sub-division exists yet -- provision one before promoting to live.">Promote &middot; no live {{ r.category|upper }} sub-division</span>
+          <span class="pm-muted pm-btn-sm" title="No live account provisioned yet -- add a credentialed account before promoting to live.">Promote &middot; no live account</span>
         {% endif %}
       </td>
     </tr>

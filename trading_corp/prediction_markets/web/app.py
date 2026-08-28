@@ -239,11 +239,12 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
         for r in prospects:
             r["flags"] = stats.scoreboard_flags(r)                                      # same tokens as CLI/scoreboard
         refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
-        # R6: the ACTIVE sub-divisions in THIS category = the valid promote-to-LIVE targets (the category-join,
-        # surfaced so a Watchlist row can offer "promote to <this sub-division>". Empty until one is provisioned.)
-        live_subdivisions = subdivision.subdivisions_for_category(conn, category)
+        # R6: the ACTIVE accounts = the promote-to-LIVE targets. Auto-create (ruling 1) makes the (account,
+        # category) sub-division on demand, so a Watchlist row offers "promote to <account>", not a pre-existing
+        # sub-division. Empty until an account is provisioned (credentialed) -> the honest inert note.
+        live_accounts = subdivision.active_accounts(conn)
     return {"category": category, "watchlist": watchlist, "prospects": prospects, "refresh": refresh,
-            "live_subdivisions": live_subdivisions}
+            "live_accounts": live_accounts}
 
 
 @app.get("/", response_class=HTMLResponse)

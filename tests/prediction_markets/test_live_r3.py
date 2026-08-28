@@ -24,6 +24,11 @@ def _client(monkeypatch, tmp_path, *, schema=10, seed=False):
             conn.execute("INSERT INTO pm_subdivision (account_id, category, label, market_types, sizing_mode, "
                          "fixed_stake_usd, active, created_ts) VALUES "
                          "('kalshi_jack','mlb','Jack MLB','moneyline,total,spread','fixed',5.0,1,1787000000)")
+            # R6 ruling 3: a sub-division is VISIBLE in the /live list only when it has >=1 ACTIVE attachment.
+            # Auto-create (ruling 1) always attaches, so a real sub-division always has one -> seed an attachment
+            # so tile-on-create (created-with-an-attachment shows immediately) reflects the reconciliation.
+            conn.execute("INSERT INTO pm_subdivision_attachment (account_id, category, wallet, active, source, added_ts) "
+                         "VALUES ('kalshi_jack','mlb','0xseedwhale',1,'seed',1787000000)")
     from trading_corp.prediction_markets.web.app import app
     return TestClient(app)
 
