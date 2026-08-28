@@ -6,8 +6,6 @@
 
 Spec: reports/prediction_markets/P2_PLAN.md (farm league); CP3b-1 rulings 2026-08-25.
 """
-from fastapi.testclient import TestClient
-
 from trading_corp.prediction_markets import db, farm
 
 NOW = 1_700_000_000
@@ -183,42 +181,6 @@ def test_candidates_empty_until_search(tmp_path):
         assert farm.farm_rows(conn, status=farm.CANDIDATE) == []
 
 
-# ---------- the page (TestClient) ----------
-def _client(tmp_path, monkeypatch):
-    p = _seed(tmp_path)
-    monkeypatch.setenv("PM_DB_PATH", p)
-    from trading_corp.prediction_markets.web.app import app
-    return TestClient(app)
-
-
-def test_farm_page_200_and_three_states_rendered(tmp_path, monkeypatch):
-    """Stage 1: the PINNED list sources from pm_paper_category_stats (paper basis). The quarantine-zero
-    badge ('quarantined (7)') no longer renders for pinned pairs (paper has no quarantine concept;
-    all_quarantined=False for all paper rows). The three-state zero, tabs, and the 'unknown' badge remain."""
-    r = _client(tmp_path, monkeypatch).get("/farm")
-    assert r.status_code == 200
-    html = r.text
-    # all three poll-state classes present -> the three-state zero is distinct in the DOM, not one '0'
-    assert "pm-poll-never" in html and "pm-poll-empty" in html and "pm-poll-open" in html
-    assert "never polled" in html                             # never-polled stated in WORDS, not a bare 0/dash
-    # data-driven tabs
-    for c in ("mlb", "nfl", "ufc", "unknown"):
-        assert ">%s<" % c in html
-    # unknown rendered honestly (tier-1 miss badge), NOT hidden
-    assert "pm-badge-unknown" in html
-    # Stage 1: paper basis has no quarantine concept -> all_quarantined=False -> badge NOT rendered
-    # (The 4751346/nfl quarantine-zero is a legacy completed-lane concept, not a paper concept.)
-    assert "quarantined&nbsp;(7)" not in html
-
-
-def test_farm_candidates_no_search_message(tmp_path, monkeypatch):
-    html = _client(tmp_path, monkeypatch).get("/farm").text
-    assert 'data-empty="no-search"' in html
-    assert "No search has run yet" in html
-    assert "no candidates found" not in html.lower()          # the FALSE statement must NOT appear
-
-
-def test_farm_list_partial_200(tmp_path, monkeypatch):
-    r = _client(tmp_path, monkeypatch).get("/farm/list?category=mlb")
-    assert r.status_code == 200
-    assert "0xhasopen"[:10] in r.text and "0xnoneopen"[:10] in r.text
+# (phase 3) The flat-farm PAGE tests were removed: /farm now serves the tile grid and /farm/list is retired.
+# The farm.* data-layer coverage above is unchanged; the hierarchy pages are tested in test_stage2_phase2.py
+# (per-category content) and test_stage2_phase3.py (repoint + retire).

@@ -111,7 +111,7 @@ def test_basis_watchlist_paper_prospects_completed(tmp_path, monkeypatch):
         # CANDIDATE pair: completed 60% / +10% ROI (the ONLY basis a prospect has)
         _pin(conn, WC, "mlb", status="candidate")
         _cstats(conn, WC, "mlb", n_resolved=30, win_rate=0.60, roi=0.10, net=120.0)
-    r = client.get("/farm-league/mlb")
+    r = client.get("/farm/mlb")
     assert r.status_code == 200
     wl, pr = _regions(r.text)
     # WATCHLIST shows the PAPER number, never the completed one
@@ -135,7 +135,7 @@ def test_open_count_shown_performance_honest_empty(tmp_path, monkeypatch):
         _whale(conn, W, "AllOpen")
         _pin(conn, W, "nba", status="pinned")
         _paper_open(conn, W, "nba", "0xopen", n=14)      # 14 live OPEN paper trades, no pcs row (0 closed)
-    r = client.get("/farm-league/nba")
+    r = client.get("/farm/nba")
     assert r.status_code == 200
     wl, _ = _regions(r.text)
     assert ">14</a>" in wl                                # the live open count is displayed (R6)
@@ -152,7 +152,7 @@ def test_n_stale_visible_on_watchlist(tmp_path, monkeypatch):
         _whale(conn, W, "HasStale")
         _pin(conn, W, "ufc", status="pinned")
         _pstats(conn, W, "ufc", n_closed=5, wins=3, losses=2, win_rate=0.6, roi=0.2, n_stale=3, n_open=1)
-    r = client.get("/farm-league/ufc")
+    r = client.get("/farm/ufc")
     wl, _ = _regions(r.text)
     assert 'pm-badge-anom' in wl and '>3</span>' in wl    # 3 stale exits rendered as a visible badge
 
@@ -165,7 +165,7 @@ def test_actions_analyze_wired_demote_promote_disabled(tmp_path, monkeypatch):
         _whale(conn, WP, "P"); _whale(conn, WC, "C")
         _pin(conn, WP, "mlb", status="pinned"); _pstats(conn, WP, "mlb", n_closed=1, n_open=1)
         _pin(conn, WC, "mlb", status="candidate"); _cstats(conn, WC, "mlb", n_resolved=30, roi=0.1, win_rate=0.6)
-    body = client.get("/farm-league/mlb").text
+    body = client.get("/farm/mlb").text
     wl, pr = _regions(body)
     # Analyze is WIRED (HTMX POST to the existing analyze route), never disabled
     assert ('hx-post="/farm/analyze/%s/mlb"' % WP) in wl
@@ -182,7 +182,7 @@ def test_prospects_empty_when_no_candidates(tmp_path, monkeypatch):
     W = "0x" + "e" * 38 + "05"
     with db.connect(p) as conn:
         _whale(conn, W); _pin(conn, W, "mlb", status="pinned"); _pstats(conn, W, "mlb", n_open=1)
-    body = client.get("/farm-league/mlb").text
+    body = client.get("/farm/mlb").text
     _, pr = _regions(body)
     assert "No prospects yet" in pr                       # honest-empty, not fabricated rows
     assert 'data-empty-nosearch="1"' in pr
@@ -202,7 +202,7 @@ def test_prospects_active_gate_excludes_deactivated_candidate(tmp_path, monkeypa
         _cstats(conn, LIVE, "mlb", n_resolved=30, roi=0.1, win_rate=0.6)
         _pin(conn, DEAD, "mlb", status="candidate", active=0)
         _cstats(conn, DEAD, "mlb", n_resolved=30, roi=0.2, win_rate=0.7)
-    _, pr = _regions(client.get("/farm-league/mlb").text)
+    _, pr = _regions(client.get("/farm/mlb").text)
     assert LIVE in pr                                     # the active candidate ranks and shows
     assert DEAD not in pr                                 # the deactivated candidate shows NOWHERE
 
@@ -265,15 +265,11 @@ def test_vocab_no_internal_words_leak(tmp_path, monkeypatch):
         _whale(conn, WP); _whale(conn, WC)
         _pin(conn, WP, "mlb", status="pinned"); _pstats(conn, WP, "mlb", n_closed=1, n_open=1)
         _pin(conn, WC, "mlb", status="candidate"); _cstats(conn, WC, "mlb", n_resolved=30, roi=0.1, win_rate=0.6)
-    cat = client.get("/farm-league/mlb").text
+    cat = client.get("/farm/mlb").text
     assert "Watchlist" in cat and "Prospects" in cat                 # screen words present on the category page
     for body in (cat, client.get("/watchlist/%s/mlb" % WP).text):
         assert "pinned" not in body and "candidate" not in body      # internal code words never leak
 
 
-# ── built ALONGSIDE: legacy pages still resolve ───────────────────────────────────────────────────
-
-def test_legacy_pages_still_resolve(tmp_path, monkeypatch):
-    client, _ = _client(monkeypatch, tmp_path)
-    for path in ("/", "/scoreboard", "/farm", "/healthz", "/dashboard", "/farm-league"):
-        assert client.get(path).status_code == 200
+# (phase 3) The legacy alongside-resolves test was removed: /scoreboard + the temporary /dashboard,/farm-league
+# are RETIRED (404); /, /farm now serve the hierarchy. Retirement is asserted in test_stage2_phase3.py.

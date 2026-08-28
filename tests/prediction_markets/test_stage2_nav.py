@@ -1,7 +1,7 @@
 """Stage 2, phase 1 -- navigation skeleton (Dashboard shell -> Farm-League tiles -> per-category page).
 Offline; FastAPI TestClient over a seeded schema-9 PM DB. Encodes the phase-1 bar:
 
-  - the three NEW routes resolve (/dashboard, /farm-league, /farm-league/{category});
+  - the three NEW routes resolve (/dashboard, /farm, /farm/{category});
   - the legacy /, /scoreboard, /farm still resolve (built ALONGSIDE, nothing removed/rewritten);
   - the category TILES are driven by the ACTIVE funnel (never a hardcoded 15) -- a deactivated category
     yields NO tile;
@@ -47,11 +47,11 @@ def test_dashboard_route_resolves(tmp_path, monkeypatch):
     client, p = _client(monkeypatch, tmp_path)
     with db.connect(p) as conn:
         _pin(conn, "0xaaa", "mlb"); _pin(conn, "0xbbb", "nba")
-    r = client.get("/dashboard")
+    r = client.get("/")
     assert r.status_code == 200
     body = r.text
     assert "Farm League" in body
-    assert 'href="/farm-league"' in body                 # the menu option links into the hierarchy
+    assert 'href="/farm"' in body                 # the menu option links into the hierarchy
     # Live sub-divisions are P3 -> present but DISABLED, honest (no fake data)
     assert "Live sub-divisions" in body and "coming in P3" in body
     assert "pm-menu-card-disabled" in body
@@ -59,13 +59,9 @@ def test_dashboard_route_resolves(tmp_path, monkeypatch):
     assert 'pm-region-count">2<' in body
 
 
-def test_legacy_routes_still_resolve(tmp_path, monkeypatch):
-    """Built ALONGSIDE: the old flat pages must keep working until phase 3 retires them."""
-    client, _ = _client(monkeypatch, tmp_path)
-    assert client.get("/").status_code == 200            # scoreboard (legacy)
-    assert client.get("/scoreboard").status_code == 200  # scoreboard fragment (legacy)
-    assert client.get("/farm").status_code == 200        # flat farm (legacy)
-    assert client.get("/healthz").status_code == 200
+# (phase 3) The legacy alongside-resolves test was removed: the flat scoreboard + farm pages are RETIRED.
+# Their retirement (/, /farm now serve the hierarchy; /scoreboard + the temp paths 404) is asserted in
+# test_stage2_phase3.py.
 
 
 # ── tiles are driven by the ACTIVE data, never a hardcoded list ───────────────────────────────────
@@ -76,16 +72,16 @@ def test_farm_league_tiles_are_data_driven(tmp_path, monkeypatch):
         _pin(conn, "0xa", "mlb"); _pin(conn, "0xb", "nba"); _pin(conn, "0xc", "ufc")
         _pin(conn, "0xd", "cbb", active=0)               # DEACTIVATED -> no tile
         _pin(conn, "0xe", "unknown", active=0)           # DEACTIVATED -> no tile
-    r = client.get("/farm-league")
+    r = client.get("/farm")
     assert r.status_code == 200
     body = r.text
     # exactly the 3 ACTIVE categories render as tiles ...
-    assert 'href="/farm-league/mlb"' in body
-    assert 'href="/farm-league/nba"' in body
-    assert 'href="/farm-league/ufc"' in body
+    assert 'href="/farm/mlb"' in body
+    assert 'href="/farm/nba"' in body
+    assert 'href="/farm/ufc"' in body
     # ... and the deactivated ones are ABSENT (a hardcoded 15 would silently show them)
-    assert 'href="/farm-league/cbb"' not in body
-    assert 'href="/farm-league/unknown"' not in body
+    assert 'href="/farm/cbb"' not in body
+    assert 'href="/farm/unknown"' not in body
     # header count reflects the active set (3), not a hardcoded number
     assert "<strong>3</strong>" in body
     # category NAMES render UPPERCASE for display; the URL in the href stays lowercase
@@ -99,11 +95,11 @@ def test_category_page_knows_its_category(tmp_path, monkeypatch):
     client, p = _client(monkeypatch, tmp_path)
     with db.connect(p) as conn:
         _pin(conn, "0xa", "mlb")
-    r = client.get("/farm-league/mlb")
+    r = client.get("/farm/mlb")
     assert r.status_code == 200
     body = r.text
     assert '<h1 class="pm-h1">MLB</h1>' in body               # heading IS the category, UPPERCASE
-    assert 'href="/farm-league">Farm League</a>' in body      # breadcrumb back up the hierarchy
+    assert 'href="/farm">Farm League</a>' in body      # breadcrumb back up the hierarchy
     # consistent casing: the category NAME renders UPPERCASE in every DISPLAY context (h1 / breadcrumb / title).
     # The lowercase slug appears ONLY inside URL paths (/watchlist/.../mlb, /whale/.../mlb) now that phase 2
     # renders rows -- assert every lowercase 'mlb' is a URL path segment (preceded by '/'), never display text.
@@ -121,12 +117,12 @@ def test_deactivated_category_not_reachable_by_url(tmp_path, monkeypatch):
         _pin(conn, "0xa", "mlb")                         # active
         _pin(conn, "0xd", "cbb", active=0)               # DEACTIVATED (Stage-0 removed)
     # a deactivated category MUST NOT render a page, even by typing its URL
-    assert client.get("/farm-league/cbb").status_code == 404
+    assert client.get("/farm/cbb").status_code == 404
     # an unknown / nonexistent category also 404s (not a fabricated page)
-    assert client.get("/farm-league/banana").status_code == 404
+    assert client.get("/farm/banana").status_code == 404
     # and the active one IS reachable (case-insensitive on the path segment)
-    assert client.get("/farm-league/mlb").status_code == 200
-    assert client.get("/farm-league/MLB").status_code == 200
+    assert client.get("/farm/mlb").status_code == 200
+    assert client.get("/farm/MLB").status_code == 200
 
 
 # ── the two regions read SEPARATE bases (BASIS test) ──────────────────────────────────────────────
@@ -144,7 +140,7 @@ def test_watchlist_and_prospects_read_separate_bases(tmp_path, monkeypatch):
         _pin(conn, "0xc1", "mlb", status="candidate")    # Prospects -> completed basis
         conn.execute("INSERT INTO pm_category_stats (wallet, category, n_resolved, roi, win_rate, updated_ts) "
                      "VALUES (?,?,?,?,?,?)", ("0xc1", "mlb", 20, 0.10, 0.55, NOW))
-    r = client.get("/farm-league/mlb")
+    r = client.get("/farm/mlb")
     assert r.status_code == 200
     body = r.text
     wl = re.search(r'id="pm-region-watchlist"\s+data-basis="([^"]+)"\s+data-count="(\d+)"', body)

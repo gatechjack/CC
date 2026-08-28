@@ -2,7 +2,7 @@
 {% block title %}Farm League &middot; Prediction Markets{% endblock %}
 {% block content %}
 <section>
-  <nav class="pm-crumb"><a href="/dashboard">Dashboard</a> &rsaquo; Farm League</nav>
+  <nav class="pm-crumb"><a href="/">Dashboard</a> &rsaquo; Farm League</nav>
   <div class="pm-section-head">
     <h1 class="pm-h1">Farm League</h1>
     <p class="pm-sub">The <strong>{{ categories|length }}</strong> Kalshi-copyable categories &mdash; driven by
@@ -12,7 +12,7 @@
   {% if categories %}
   <div class="pm-tilegrid">
     {% for c in categories %}
-      <a class="pm-tile" href="/farm-league/{{ c }}">
+      <a class="pm-tile" href="/farm/{{ c }}">
         <span class="pm-tile-name">{{ c|upper }}</span>
         <span class="pm-tile-hint">Watchlist &middot; Prospects</span>
       </a>
