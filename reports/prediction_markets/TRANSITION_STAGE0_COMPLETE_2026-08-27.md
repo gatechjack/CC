@@ -1,3 +1,7 @@
+> ⛔ **SUPERSEDED 2026-08-28 by `TRANSITION_STAGE2_COMPLETE_2026-08-28.md` — that is the current canonical handoff.**
+> This doc describes the post-Stage-0 state (before Stage 1 paper-lane and Stage 2 Farm-League hierarchy shipped) and
+> is kept for lineage only. Read the newer doc first; treat anything here that conflicts with it as historical.
+
 # Prediction Markets — TRANSITION: Stage 0 COMPLETE → next code agent (2026-08-27)
 
 > **First line, per the anti-drift rule — restate the THREE LISTS and their THREE BASES from memory before touching code:**
