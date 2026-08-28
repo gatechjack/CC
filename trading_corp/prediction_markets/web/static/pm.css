@@ -266,3 +266,37 @@ th.pm-primary{color:var(--mono)}
   padding-top:.6rem; border-top:1px solid var(--edge); font-size:.76rem}
 .pm-analyze-cost strong{color:var(--mono)}
 .pm-analyze-prov{margin-left:auto}
+
+/* ── Stage 2 phase 1: navigation skeleton (dashboard shell -> farm-league tiles -> per-category shell) ──
+   ADDITIVE ONLY. These classes are referenced solely by the new pm_shell hierarchy (pm_dashboard.html,
+   pm_farm_league.html, pm_farm_category.html, pm_category_404.html). The legacy pages (pm_scoreboard.html,
+   pm_farm.html) do NOT use them, so appending this block leaves their rendering byte-for-byte unchanged.
+   Retired together with those templates when phase 3 repoints /dashboard->/ and /farm-league->/farm. */
+
+/* dashboard menu cards (Live sub-divisions [P3, disabled] + Farm League) */
+.pm-menu{display:grid; grid-template-columns:repeat(auto-fill,minmax(18rem,1fr)); gap:1rem; margin:1.25rem 0}
+.pm-menu-card{display:block; background:var(--pane); border:1px solid var(--edge); border-radius:.7rem;
+  padding:1.1rem 1.2rem; transition:border-color .12s,background .12s}
+.pm-menu-card:hover{border-color:var(--edge2); background:var(--pane2)}
+.pm-menu-card-disabled{opacity:.55; cursor:not-allowed}
+.pm-menu-card-disabled:hover{border-color:var(--edge); background:var(--pane)}
+.pm-menu-title{font-size:1.05rem; font-weight:650; display:flex; align-items:center; gap:.5rem; margin-bottom:.35rem}
+.pm-menu-sub{color:var(--muted); font-size:.82rem; line-height:1.5; margin:0}
+.pm-p3{font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:.1rem .45rem;
+  border-radius:.3rem; background:rgba(148,163,184,.14); color:var(--muted); border:1px solid var(--edge2)}
+
+/* farm-league category tiles (the active, data-driven set) */
+.pm-tilegrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(9rem,1fr)); gap:.75rem; margin:1rem 0}
+.pm-tile{display:flex; flex-direction:column; gap:.25rem; background:var(--pane); border:1px solid var(--edge);
+  border-radius:.6rem; padding:.9rem 1rem; transition:border-color .12s,background .12s}
+.pm-tile:hover{border-color:var(--accent); background:var(--pane2)}
+.pm-tile-name{font-size:1rem; font-weight:650; letter-spacing:.02em}   /* casing driven by the template (|upper), one source of truth */
+.pm-tile-hint{font-size:.72rem; color:var(--muted)}
+
+/* per-category page: two structurally distinct stacked regions (Watchlist=paper, Prospects=completed) */
+.pm-region{margin:1rem 0}
+.pm-region-basis{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:400}
+.pm-region-count{font-weight:700; color:var(--mono)}
+.pm-phase2{border:1px dashed var(--edge2); background:rgba(59,130,246,.05); color:var(--muted);
+  padding:.8rem 1rem; border-radius:.5rem; font-size:.82rem; line-height:1.5; margin-top:.6rem}
+.pm-phase2 strong{color:var(--mono)}

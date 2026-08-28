@@ -1,0 +1,41 @@
+{% extends "pm_shell.html" %}
+{% block title %}{{ category|upper }} &middot; Farm League &middot; Prediction Markets{% endblock %}
+{% block content %}
+<section>
+  <nav class="pm-crumb"><a href="/dashboard">Dashboard</a> &rsaquo;
+    <a href="/farm-league">Farm League</a> &rsaquo; {{ category|upper }}</nav>
+  <div class="pm-section-head">
+    <h1 class="pm-h1">{{ category|upper }}</h1>
+    <p class="pm-sub">Watchlist (our paper trades) on top, Prospects (completed-trade screening) below.
+      This is the Phase-1 skeleton &mdash; per-whale stats and actions arrive in later phases.</p>
+  </div>
+
+  {# TOP region = screen word "Watchlist" = code status='pinned' = PAPER basis (pm_paper_category_stats,
+     read via farm.farm_rows(status=PINNED)). data-basis/data-count expose the basis + roster size for the
+     BASIS test; per-whale performance is deliberately NOT rendered here (phase 2). #}
+  <div class="pm-panel pm-region" id="pm-region-watchlist" data-basis="paper" data-count="{{ watchlist|length }}">
+    <h2 class="pm-h2">Watchlist
+      <span class="pm-region-basis">our paper trades &middot;
+        <span class="pm-region-count">{{ watchlist|length }}</span> whale(s)</span>
+    </h2>
+    <div class="pm-phase2">Per-whale paper performance and the Demote / Promote / Analyze actions arrive in a
+      later phase. This region reads the <strong>paper</strong> basis.</div>
+  </div>
+
+  {# BOTTOM region = screen word "Prospects" = code status='candidate' = COMPLETED basis (pm_category_stats,
+     read via farm.farm_rows(status=CANDIDATE)). A SEPARATE data path from the Watchlist above -- never shared. #}
+  <div class="pm-panel pm-region" id="pm-region-prospects" data-basis="completed" data-count="{{ prospects|length }}">
+    <h2 class="pm-h2">Prospects
+      <span class="pm-region-basis">completed-trade screening &middot;
+        <span class="pm-region-count">{{ prospects|length }}</span> prospect(s)</span>
+    </h2>
+    {% if prospects %}
+    <div class="pm-phase2">Prospect ranking and the Promote-to-Watchlist action arrive in a later phase.
+      This region reads the <strong>completed</strong> basis.</div>
+    {% else %}
+    <div class="pm-empty-nosearch">No prospects yet &mdash; the Prospects list is populated by Search (a later
+      stage). This region reads the <strong>completed</strong> basis, kept separate from the Watchlist.</div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
