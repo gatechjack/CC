@@ -207,6 +207,31 @@ def test_prospects_active_gate_excludes_deactivated_candidate(tmp_path, monkeypa
     assert DEAD not in pr                                 # the deactivated candidate shows NOWHERE
 
 
+def test_prospects_inner_gate_composes_with_outer_candidate_filter(tmp_path, monkeypatch):
+    """DEFENSE-IN-DEPTH / COMPOSITION: the active gate lives INSIDE query_scoreboard (the ranker); the candidate
+    scoping is a loader-level filter OUTSIDE it. A DEACTIVATED (active=0) pair must be dropped by the INNER gate,
+    so even if the OUTER candidate filter admitted its wallet (worst case), the pair can NEVER reach Prospects.
+    The Prospects list is EMPTY today, so this defect would stay invisible until Search populates candidates in
+    Stage 4 -- hence the explicit test now."""
+    from trading_corp.prediction_markets import stats
+    client, p = _client(monkeypatch, tmp_path)
+    DEAD = "0x" + "9" * 38 + "10"
+    with db.connect(p) as conn:
+        _whale(conn, DEAD)
+        # a DEACTIVATED candidate that otherwise looks highly rankable (well above the ranker floor)
+        _pin(conn, DEAD, "mlb", status="candidate", active=0)
+        _cstats(conn, DEAD, "mlb", n_resolved=99, roi=0.5, win_rate=0.9)
+        board = stats.query_scoreboard(conn, category="mlb")
+    # (1) the INNER gate (query_scoreboard's WHERE active<>0) drops the deactivated pair from the ranked board
+    assert not any(r["wallet"] == DEAD for r in board), "inner active gate must exclude the deactivated pair"
+    # (2) COMPOSITION: even a permissive/buggy OUTER filter that ADMITS this wallet cannot resurface it -- the
+    #     loader selects `[r for r in board if r.wallet in cand]` FROM `board`, which the inner gate already
+    #     emptied of the deactivated pair. So it never reaches Prospects, no matter what the outer filter does.
+    outer_admits_the_dead_wallet = {DEAD}
+    prospects = [r for r in board if r["wallet"] in outer_admits_the_dead_wallet]
+    assert prospects == [], "deactivated pair must not reach Prospects even if the outer filter admits its wallet"
+
+
 # ── the pinned-whale PAPER detail (paper basis, NOT completed) ────────────────────────────────────
 
 def test_paper_detail_shows_paper_trades_not_completed(tmp_path, monkeypatch):

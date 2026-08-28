@@ -40,8 +40,8 @@ to the completed `/whale` detail would be the exact basis violation this stage g
 | `d304fbe0e2c161bce7d8cd9155e1f3d32000475bfb36c7a4742d92c9d7edbbb1` | `web/app.py` | MODIFIED (ranked prospects + paper-detail route) |
 | `16e30c73fa835e6648432cfdaf872c0310e7d46438522ccdd7e3f4d099b54ae1` | `web/templates/pm_farm_category.html` | MODIFIED (skeleton → filled) |
 | `7191f8d4d6499cd19d1cddbdf4e371bca794b3217a2597b05c1390cc5c5355aa` | `web/static/pm.css` | MODIFIED (+phase-2 block) |
-| `88201a5ed564595014c8fc3ea35cf133856dcbf8a94651b03a5eb895262027ab` | `web/templates/pm_watchlist_whale.html` | NEW |
-| `8a52cb7ef7248e576e999adb350cc6ee409561a26a53287ff5da26d81b487789` | `web/templates/partials/pm_watchlist_rows.html` | NEW |
+| `d51e95484298dd03343a886459ab938442e6d7efd6ce713399ac6e813c432d75` | `web/templates/pm_watchlist_whale.html` | NEW |
+| `5da06df696100c71dac087beb33428dac2b1ba38dceb88064b70eee529dc701d` | `web/templates/partials/pm_watchlist_rows.html` | NEW |
 | `a589ad9401be4157d3300e9151adbbb7fdebd3f0871f74d33c6febb89b4cc98a` | `web/templates/partials/pm_prospects_rows.html` | NEW |
 | `2c6f136bd062acb809b285186722ba77d1a751ea53e0c3062fc77ad16e55f89b` | `web/templates/partials/pm_paper_trade_rows.html` | NEW |
 
@@ -98,7 +98,15 @@ is a count of active PAIRS, not trades. **No defect — the active gate is worki
   suite incl. `test_stage2_phase2.py` + the updated `test_stage2_nav.py`); **§2 reconciliation** query on a
   `.backup` copy of live (confirms A=B+C+D and the pair-vs-trade populations); **§3 render smoke** vs the copy
   (a real category page + a real paper detail, vocab-leak check, legacy pages still 200). Live DB byte-untouched;
-  engine/pm_web PIDs asserted unchanged. **STOP if any test fails.** *(Status: PENDING Jack's run — no local Python.)*
+  engine/pm_web PIDs asserted unchanged. **STOP if any test fails.**
+  *(★ Run 1, 2026-08-28 01:35Z: caught a real vocab leak — the paper-detail subtitle said "this **pinned** whale's"
+  ("pinned" is a code word) — now FIXED (→ "this whale's"); also fixed the latent same-leak in the watchlist
+  empty-state. §2 reconciliation CONFIRMED on live: A=114 open = B(20 active) + C(94 deactivated) + D(0 orphan);
+  92 active pairs / 92 polled / 3 with-open — the pair-vs-trade populations reconcile exactly. §3 render smoke:
+  `/farm-league/fed` 200 (10471 B, both sections, prospects honest-empty, no leak), a real paper detail 200
+  (8869 B, paper-basis chip), all legacy/nav 200; engine 676 / pm_web 38491 unchanged, live schema 9. Added the
+  active-gate COMPOSITION test (`test_prospects_inner_gate_composes_with_outer_candidate_filter`). Re-run PENDING
+  after these fixes.)*
 - **Rung 1 — deploy the 8 code files + restart pm_web** (the phase-1 four-step shape: PRE-baseline → deploy
   (custody + backup + forced-644 + re-hash gate; NO restart) → root `az` restart → POST). **Modified-vs-new custody
   split (computed at deploy against the box = phase-1 state `7ca932a`):** 4 MODIFIED (`positions.py`, `web/app.py`,
