@@ -129,8 +129,8 @@
         <!-- P1 (2026-07-31): 45s live-pricing tick — re-prices all tiles (RH-only, NO
              LLM, market-hours-gated server-side) and swaps each pricing chip via
              hx-swap-oob. Hidden; fires only the fetch (hx-swap="none"). -->
-        <div hx-get="/division/{{ view.division.slug }}/pmcc-pricing"
-             hx-trigger="every 45s" hx-swap="none"
+        <div hx-get="/division/{{ view.division.slug }}/pmcc-pricing?syms={{ view.pmcc_pairs|map(attribute='underlying')|join(',') }}"
+             hx-trigger="load, every 45s" hx-swap="none"
              class="hidden" aria-hidden="true"></div>
         {% endif %}
       </section>

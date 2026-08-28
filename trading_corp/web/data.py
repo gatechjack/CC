@@ -3513,28 +3513,27 @@ async def build_division_view(deps, slug: str) -> DivisionViewSnapshot | None:
         if _agent is not None:
             _ts_cfg = (getattr(_agent, "_cfg", {}) or {}).get("tile_status", {}) or {}
         _ts_now = datetime.now(timezone.utc)
-        # P1 (2026-07-31): live pricing for ALL tiles — RH-only, NO LLM. Serve the
-        # display cache (< TTL) else price (staggered, market-hours-gated inside
-        # refresh_division → no pull pre/after-hours). Never blocks the page on a
-        # pricing failure; a failure leaves _p.pricing = None (tile shows nothing new).
-        # Runs BEFORE the unified status below so the effective-status gate can read the
-        # CURRENT-load buildability from the just-refreshed pricing cache.
+        # Render-then-stream (2026-08-28): the initial render is CACHE-ONLY — no
+        # synchronous broker pricing. Tiles paint immediately from judgment + earnings +
+        # the LAST-CACHED pricing; live pricing then streams in via the 45s OOB refresh
+        # (/division/{slug}/pmcc-pricing). A cold cache leaves _p.pricing None (buildable
+        # None → the effective-status gate below reads "pending", NOT a false CAN'T PRICE),
+        # and the OOB tick refines both the pricing chip and the badge within seconds. This
+        # removed the ~27s inline serial all-tile pricing loop from the blocking render
+        # (profile: reports/2026-08-28_pmcc_pageload_profile.md).
         for _p in pmcc_pairs:
             _p.pricing = None
         if _agent is not None and broker is not None:
             try:
                 from trading_corp.web import pmcc_pricing
-                await pmcc_pricing.refresh_division(
-                    _agent, broker, slug,
-                    [_p.underlying for _p in pmcc_pairs], deps.db_url,
-                )
                 for _p in pmcc_pairs:
                     _p.pricing = pmcc_pricing.tile_pricing_view(
                         pmcc_pricing.cached(slug, _p.underlying))
             except Exception as e:      # noqa: BLE001 — pricing must never break the page
-                log.warning("pmcc tile pricing failed for %s: %s", slug, e)
-        # Unified EFFECTIVE status (post-gate) — reads the just-refreshed pricing cache +
-        # the cheap earnings gate so the tile can never disagree with the Expert panel.
+                log.warning("pmcc tile pricing read failed for %s: %s", slug, e)
+        # Unified EFFECTIVE status (post-gate) — reads the CACHED pricing buildability (as
+        # streamed by the OOB refresh) + the cheap earnings gate so the tile can never
+        # disagree with the Expert panel. Cold cache → buildable None → "pending".
         for _p in pmcc_pairs:
             _p.unified_status = _build_pmcc_tile_status(
                 _p.underlying, db_url=deps.db_url, now=_ts_now, cfg=_ts_cfg,

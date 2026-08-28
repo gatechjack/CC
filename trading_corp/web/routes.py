@@ -45,6 +45,15 @@ _LLM_CACHE_TTL_SEC = 300
 _LLM_CACHE: dict[str, tuple[str, float]] = {}     # slug → (html, fetched_at)
 _LLM_LOCK = Lock()
 
+# Render-then-stream (2026-08-28): coalesce guard for the 45s PMCC OOB pricing refresh.
+# The /pmcc-pricing tick can take longer than its own 45s trigger; without this, a new tick
+# would STACK a second serial broker fan-out on the in-flight one. A slug present here means
+# a refresh is running → a concurrent tick renders from cache and returns fast. A set is safe
+# without a lock on the single asyncio loop: the check-then-add has no await between them, so
+# no other coroutine can interleave; discard() lives in a finally so a raising refresh can
+# never wedge the endpoint.
+_PMCC_REFRESH_INFLIGHT: set[str] = set()
+
 # P1 (2026-07-31): max adverse credit drift (per-share net) tolerated between the
 # APPROVED snapshot and the dispatch reprice before the division dispatch aborts +
 # re-surfaces (shown == fired). A hair above the reprice give_up (0.02) so normal
@@ -534,9 +543,13 @@ def register(app: FastAPI) -> None:
         )
         if view is None:
             raise HTTPException(status_code=404, detail=f"Unknown division: {slug}")
+        # market_open gates the tiles' "pricing… refreshing" first-paint state (render-then-
+        # stream 2026-08-28) — shown during RTH while the OOB tick prices, nothing off-hours.
+        from trading_corp.web import pmcc_pricing
         return templates.TemplateResponse(
             request, "division.html",
-            {"snap": cmd_snap, "view": view},
+            {"snap": cmd_snap, "view": view,
+             "market_open": pmcc_pricing.market_regular_open()},
         )
 
     @app.get("/division/{slug}/llm-analysis", response_class=HTMLResponse)
@@ -1089,37 +1102,71 @@ def register(app: FastAPI) -> None:
         return HTMLResponse(html + _pmcc_tile_badge_oob(templates, deps, sym))
 
     @app.get("/division/{slug}/pmcc-pricing", response_class=HTMLResponse)
-    async def division_pmcc_pricing(slug: str):
-        """45s interval pricing refresh (P1) — re-price all cached PMCC tiles (RH-only,
-        NO LLM, market-hours-gated inside refresh_division → no pull off-hours) and
-        rewrite their stashes, returning per-symbol hx-swap-oob spans that update each
-        tile's pricing chip in place. Empty response when off-hours-idle or nothing is
-        cached (nothing to swap; the interval keeps firing cheaply)."""
+    async def division_pmcc_pricing(slug: str, request: Request):
+        """45s interval pricing refresh (P1; render-then-stream 2026-08-28) — reprice the
+        PMCC tiles CURRENTLY ON THE PAGE (?syms=A,B,...) and return per-symbol hx-swap-oob
+        spans that swap each tile's pricing CHIP and status BADGE in place (RH-only, NO LLM,
+        market-hours-gated inside refresh_division → no pull off-hours). Scoped to the page's
+        tiles (not the whole accumulated cache) and coalesced so a new 45s tick can't stack a
+        second broker fan-out on an in-flight one. Empty response when off-hours-idle or
+        nothing is cached (nothing to swap; the interval keeps firing cheaply)."""
         if slug != "robinhood_pmcc" or deps.pmcc_agent is None:
             return HTMLResponse("")
         broker = deps.data_exec.brokers.get(slug) if deps.data_exec else None
         if broker is None:
             return HTMLResponse("")
         from trading_corp.web import pmcc_pricing
-        syms = pmcc_pricing.symbols_for(slug)
+        # Scope to the tiles ON THE PAGE (Fix #2): the client passes ?syms=A,B,...; only
+        # those are repriced. Fall back to the full accumulated cache ONLY for an old page
+        # that predates the syms param (symbols_for can be unbounded → the >150s pathology).
+        raw_syms = request.query_params.get("syms")
+        if raw_syms:
+            _seen: set[str] = set()
+            syms: list[str] = []
+            for _s in raw_syms.split(","):
+                _s = _s.strip().upper()
+                if _s and _s not in _seen:
+                    _seen.add(_s)
+                    syms.append(_s)
+        else:
+            syms = pmcc_pricing.symbols_for(slug)
         if not syms:
             return HTMLResponse("")
+        market_open = pmcc_pricing.market_regular_open()
+
+        def _render_oob() -> HTMLResponse:
+            # Render from the CURRENT cache — chip + badge OOB spans per symbol. Used both
+            # after a refresh and (on a coalesced tick) without one.
+            parts: list[str] = []
+            for s in syms:
+                try:
+                    pricing = pmcc_pricing.tile_pricing_view(pmcc_pricing.cached(slug, s))
+                    inner = templates.get_template("partials/_pmcc_pricing.html").render(
+                        pricing=pricing, market_open=market_open)
+                    parts.append(
+                        f'<span id="pmcc-pricing-{s}" hx-swap-oob="true" class="contents">'
+                        f'{inner}</span>')
+                    # Refine the tile BADGE too (not just the chip): pending → actionable /
+                    # can't-price as the just-refreshed buildability lands. Same helper +
+                    # partial the row uses, so the tile and Expert panel can never drift.
+                    parts.append(_pmcc_tile_badge_oob(templates, deps, s))
+                except Exception as e:  # noqa: BLE001
+                    log.warning("division_pmcc_pricing(%s) render %s failed: %s", slug, s, e)
+            return HTMLResponse("".join(parts))
+
+        # Coalesce: if a refresh for this slug is already in flight, do NOT start a second
+        # serial broker fan-out — render from the current cache and return fast.
+        if slug in _PMCC_REFRESH_INFLIGHT:
+            return _render_oob()
+        _PMCC_REFRESH_INFLIGHT.add(slug)          # right after the check — NO await between
         try:
             await pmcc_pricing.refresh_division(
                 deps.pmcc_agent, broker, slug, syms, deps.db_url)
         except Exception as e:      # noqa: BLE001 — an OOB refresh must never 500
             log.warning("division_pmcc_pricing(%s) refresh failed: %s", slug, e)
-        parts = []
-        for s in syms:
-            try:
-                pricing = pmcc_pricing.tile_pricing_view(pmcc_pricing.cached(slug, s))
-                inner = templates.get_template("partials/_pmcc_pricing.html").render(pricing=pricing)
-                parts.append(
-                    f'<span id="pmcc-pricing-{s}" hx-swap-oob="true" class="contents">'
-                    f'{inner}</span>')
-            except Exception as e:  # noqa: BLE001
-                log.warning("division_pmcc_pricing(%s) render %s failed: %s", slug, s, e)
-        return HTMLResponse("".join(parts))
+        finally:
+            _PMCC_REFRESH_INFLIGHT.discard(slug)  # in finally — a raising refresh must not wedge the endpoint
+        return _render_oob()
 
     @app.post("/division/{slug}/pair/{symbol}/defer", response_class=HTMLResponse)
     async def defer_pair(slug: str, symbol: str):

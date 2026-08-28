@@ -2,7 +2,9 @@
    row (pmcc_pair.html, wrapped in #pmcc-pricing-{SYMBOL}) and the 45s interval OOB
    refresh (routes.py division_pmcc_pricing). Pure render.
    Context: `pricing` = pair.pricing dict
-     {state, label, net_abs, direction, strike, buildable, market_closed} or None.
+     {state, label, net_abs, direction, strike, buildable, market_closed} or None;
+     `market_open` = bool (regular options session) — gates the "refreshing" pending state
+     so a not-yet-priced tile shows "refreshing" during RTH, nothing off-hours.
    The PRICING clock: green < TTL, amber < 2×TTL, red beyond, or "market closed".
    The number reprices at Approve — this is a live heads-up, not the consent record. #}
 {% if pricing and pricing.buildable %}
@@ -23,4 +25,9 @@
 {% elif pricing and pricing.state != 'none' %}
   <span class="hidden md:inline-block text-[10px] font-mono text-muted/40"
         title="Roll can't be priced right now (illiquid / sparse chain).">— can't price</span>
+{% elif market_open and (pricing is none or pricing.state == 'none') %}
+  {# Not yet priced (cold cache, market open) — pending/refreshing, NOT can't-price.
+     The load+45s OOB tick prices it and swaps this chip in place within seconds. #}
+  <span class="hidden md:inline-block text-[10px] font-mono text-muted/40 italic"
+        title="Live roll pricing is refreshing — streams in on the 45s tick.">pricing… refreshing</span>
 {% endif %}
