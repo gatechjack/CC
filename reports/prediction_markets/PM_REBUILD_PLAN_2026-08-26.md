@@ -10,6 +10,32 @@
 
 ---
 
+## ★★ STANDING BOX QUIRKS (recurring environment gotchas — filed here so they are NOT rediscovered per-phase)
+
+Each of these was found the hard way once. Filed under one phase's notes, a quirk gets rediscovered; filed here,
+it does not. Every box-scratch / deploy runner must account for all of them.
+
+1. **`pytest_ethereum` plugin is broken in the box venv** — always run box-scratch pytest with `-p no:pytest_ethereum`
+   (omitting it errors the collection). Also copy `pyproject.toml` + `tests/conftest.py` into the scratch (the
+   `asyncio_mode=auto` config + shared conftest are REQUIRED, else the async suite false-fails).
+2. **`az vm run-command` SERIALIZES and TRUNCATES** — a transient `run command in progress` means another session is
+   mid-command: wait and retry. Its stdout truncates + serializes, so keep the invoked script's output minimal (do
+   the heavy read-only checks over SSH, not through `az`). Root restarts go through `az` because azureuser `sudo -n`
+   FAILS (no NOPASSWD).
+3. **tar deploys land 664, not 644** — `git archive` on the deploy host emits regular files as `-rw-rw-r--` (664),
+   so any extract-from-tar placement lands 664 while the box baseline is 644. This is a PROPERTY OF THE MECHANISM,
+   not an incident: always `chmod 644` after placement and make the re-hash gate assert `perms == 644`.
+4. **`ssh`/`scp` "not recognized" — the runner may be a 32-bit PowerShell process (found 2026-08-28, phase-3 box-
+   scratch).** `powershell -ep bypass -f` sometimes launches the **32-bit** PowerShell; in a 32-bit process
+   `C:\Windows\System32` silently redirects to `SysWOW64`, which has **no OpenSSH**, so bare `ssh`/`scp` (and even
+   `System32\OpenSSH\ssh.exe`) are "not found." **Fix (bake into every runner):** resolve `ssh`/`scp` via PATH →
+   `C:\Windows\System32\OpenSSH` → **`C:\Windows\Sysnative\OpenSSH`** (the 32-bit escape hatch to the real System32)
+   → Git-for-Windows `usr\bin`, then invoke via the resolved full path (`& $ssh …`). Alternatively launch the runner
+   from a 64-bit shell (`%windir%\System32\WindowsPowerShell\v1.0\powershell.exe`). Same family as 1-3: a property of
+   the environment, handled in code, not rediscovered.
+
+---
+
 ## §A. THE TARGET (Jack's requirements, verbatim — the spec)
 
 > "There is a main Predictions Market Dashboard. This is where all the subdivisions (Account-Category) have pinned whales. Clicking on the Account-Category tile, takes me to the detailed (Account-Category) dashboard that shows live trades and stats for the live sub-division.
