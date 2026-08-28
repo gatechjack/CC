@@ -5,7 +5,13 @@ imports. Subcommands: g0-validate, backfill, refresh, rollup, repair-categories,
 Run on the box (existing venv), from the repo root:
   PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py <cmd> [opts]
 
-Spec: reports/prediction_markets/P1_PLAN.md §5, §8, §10.
+MONEY-LAYER NOTE (Stage 3 R5): the `live-arm` / `live-disarm` / `live-status` subcommands operate the
+kill-switch. They still import ONLY `trading_corp.prediction_markets` (the `arm` module) -- the arm STATE
+lives in the legacy agent_state, and `arm.py` is the ONE deliberate, documented bridge that reaches it
+(READ mode=ro; WRITE via the engine's set_agent_state, lazily). This CLI is the disarm path that WORKS
+WHEN pm_web IS DOWN -- a standalone script hitting the persisted state directly, never an in-memory flag.
+
+Spec: reports/prediction_markets/P1_PLAN.md §5, §8, §10; STAGE3_PLAN_2026-08-28.md R5.
 """
 from __future__ import annotations
 
@@ -15,7 +21,7 @@ import json
 import sys
 import time
 
-from trading_corp.prediction_markets import analyze, category, db, ingest, names, paper, rosters, stats
+from trading_corp.prediction_markets import analyze, arm, category, db, ingest, names, paper, rosters, stats
 
 
 def _now() -> int:
@@ -208,6 +214,50 @@ def _cmd_analyze(args) -> int:
     return 0
 
 
+def _cmd_live_status(args) -> int:
+    """READ-ONLY snapshot of the arm/kill state (global master + a sub-division's effective verdict).
+    Never writes; works when pm_web is down. Absent state reads as DISARMED (the fail-safe default)."""
+    st = arm.read_status(getattr(args, "account", None), getattr(args, "category", None),
+                         legacy_db_path=args.legacy_db)
+    print(json.dumps(st, indent=2, default=str))
+    return 0
+
+
+def _cmd_live_arm(args) -> int:
+    """ARM a scope (global master with --global, else a sub-division). REFUSES to arm a LATCHED
+    auto-disarm without --clear-latch, so the operator must SEE the trigger before re-arming."""
+    if not args.global_ and not (args.account and args.category):
+        print("live-arm: --account and --category are required (or use --global)", file=sys.stderr)
+        return 2
+    row = arm.current_row(args.account, args.category, global_=args.global_, legacy_db_path=args.legacy_db)
+    if isinstance(row, dict) and row.get("latched") and not args.clear_latch:
+        print(json.dumps({"refused": "latched_auto_disarm", "auto_trigger": row.get("auto_trigger"),
+                          "reason": row.get("reason"), "manual_exit_required": bool(row.get("manual_exit_required")),
+                          "hint": "re-run with --clear-latch to acknowledge the trigger and arm"},
+                         indent=2), file=sys.stderr)
+        return 3
+    # pass the ack through to the STRUCTURAL guard in arm.arm() (the CLI pre-check above is just a friendly
+    # message; arm.arm() itself refuses a latched row without this flag, so no caller can silently re-arm).
+    arm.arm(args.account, args.category, by=args.by, global_=args.global_,
+            require_latch_clear=bool(args.clear_latch), legacy_db_path=args.legacy_db)
+    print(json.dumps(arm.read_status(args.account, args.category, legacy_db_path=args.legacy_db),
+                     indent=2, default=str))
+    return 0
+
+
+def _cmd_live_disarm(args) -> int:
+    """DISARM a scope (a MANUAL, non-latching kill -- a human can re-arm freely). Sets the PERSISTED
+    state; the next order and every order after is blocked, across restarts."""
+    if not args.global_ and not (args.account and args.category):
+        print("live-disarm: --account and --category are required (or use --global)", file=sys.stderr)
+        return 2
+    arm.disarm(args.account, args.category, reason=args.reason, by=args.by, global_=args.global_,
+               legacy_db_path=args.legacy_db)
+    print(json.dumps(arm.read_status(args.account, args.category, legacy_db_path=args.legacy_db),
+                     indent=2, default=str))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm_cli", description="Prediction Markets P1 CLI")
     p.add_argument("--db", default=db.pm_db_path(), help="PM DB path (default: PM_DB_PATH or data/prediction_markets.db)")
@@ -276,6 +326,28 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--no-llm", action="store_true", dest="no_llm",
                     help="skip narration (disabled_by_flag reasoned-null); deterministic report only")
     an.set_defaults(func=_cmd_analyze, is_async=False)
+
+    # ── R5 money-layer arm/kill-switch (writes the legacy agent_state via the arm bridge) ──
+    for _name, _help in (("live-status", "show arm/kill state (global + a sub-division's effective verdict); read-only"),
+                         ("live-arm", "ARM a scope (--global or --account/--category); refuses a latched auto-disarm without --clear-latch"),
+                         ("live-disarm", "DISARM a scope (manual kill; sets persisted state, blocks the next order + all after)")):
+        lv = sub.add_parser(_name, help=_help)
+        lv.add_argument("--account", default=None, help="sub-division account_id (e.g. 'kalshi_jack')")
+        lv.add_argument("--category", default=None, help="sub-division category (e.g. 'mlb')")
+        lv.add_argument("--global", dest="global_", action="store_true", help="target the GLOBAL master scope")
+        lv.add_argument("--legacy-db", dest="legacy_db", default=rosters.LEGACY_DB_DEFAULT,
+                        help="legacy DB holding the agent_state arm rows (default: data/trading_corp.db)")
+        if _name == "live-arm":
+            lv.add_argument("--by", default=None, help="operator identity recorded on the arm row")
+            lv.add_argument("--clear-latch", dest="clear_latch", action="store_true",
+                            help="acknowledge + clear a LATCHED auto-disarm when arming")
+            lv.set_defaults(func=_cmd_live_arm, is_async=False)
+        elif _name == "live-disarm":
+            lv.add_argument("--by", default=None, help="operator identity recorded on the disarm row")
+            lv.add_argument("--reason", default="operator_disarm", help="why (recorded on the row)")
+            lv.set_defaults(func=_cmd_live_disarm, is_async=False)
+        else:
+            lv.set_defaults(func=_cmd_live_status, is_async=False)
     return p
 
 

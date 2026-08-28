@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from ..brokers.kalshi_live import (build_v2_event_order, client_order_id as _kalshi_coid,
                                    usd_to_contracts, v2_side_and_price)
 from ..data import mlb_poly_kalshi_match as M
+from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 # Config DEFAULTS live in CODE (Jack ruled: config values in code, not migrations; a DDL-NULL cap falls back here).
 CONFIG_DEFAULTS = {
@@ -159,16 +160,14 @@ def _utc_day_start(now_ts: int) -> int:
     return calendar.timegm((g.tm_year, g.tm_mon, g.tm_mday, 0, 0, 0, 0, 0, 0))
 
 
-def is_armed(conn, account_id: str, category: str) -> bool:
-    """The disarm CHECK: ABSENT or UNREADABLE arm state means DISARMED (fail-safe). The arm SOURCE + flip are R5 --
-    R4 wires only this check. Reads the PM DB (PM never writes agent_state -- the isolation guarantee -- so the arm
-    state cannot live there); until R5 adds the source, none exists -> disarmed."""
-    try:
-        r = conn.execute("SELECT armed FROM pm_subdivision WHERE account_id=? AND category=?",
-                         (account_id, category)).fetchone()
-        return bool(r["armed"]) if r is not None else False
-    except Exception:
-        return False        # column absent (pre-R5) / read error -> DISARMED
+def is_armed(conn, account_id: str, category: str, *, legacy_db_path=None) -> bool:
+    """The disarm CHECK -- R5 makes it REAL. ARMED only if BOTH the global master AND this sub-division's
+    row are armed; ABSENT or UNREADABLE arm state means DISARMED (fail-safe OFF, the money-gate default,
+    inverted from the engine's strategy-halt default). Arm state lives in the LEGACY agent_state
+    (`arm.read_arm_verdict`, mode=ro -- the rosters read-only precedent), NOT in the PM DB, so `conn` (the
+    PM connection) is unused here and kept only for call-site stability. See arm.py for why this bridge
+    does not collapse PM-DB isolation."""
+    return arm.is_armed(account_id, category, legacy_db_path=legacy_db_path)
 
 
 def _leg_ask(market: dict, leg: str):
@@ -201,7 +200,13 @@ class Journal:
         if _table_exists(conn, "pm_subdivision_order"):
             for aid in set(account_ids):
                 for r in conn.execute(
-                    "SELECT category, COUNT(*) n, COALESCE(SUM(submitted_count*submitted_price),0) usd "
+                    # ★ LEG-AWARE seed (the $163.84 lens, applied to the RESTART path): the committed cash of
+                    # a NO leg is count*(1 - yes_side_price), NOT count*price. submitted_price stores the
+                    # yes-side limit; a NO row must seed at (1 - submitted_price) so the daily/open counters
+                    # re-seed at the SAME basis commit_would_place uses at runtime (else NO-leg exposure
+                    # under-seeds on restart -> a money-gate bypass -- the R4 caps bug, in the seed query).
+                    "SELECT category, COUNT(*) n, COALESCE(SUM(CASE WHEN outcome_leg='yes' "
+                    "  THEN submitted_count*submitted_price ELSE submitted_count*(1.0-submitted_price) END),0) usd "
                     "FROM pm_subdivision_order "
                     "WHERE account_id=? AND dry_run=0 AND outcome_status='filled' AND response_ts>=? "
                     "GROUP BY category", (aid, self._day0)).fetchall():
@@ -227,11 +232,13 @@ class Journal:
 
 
 # ── THE CHOKEPOINT ──────────────────────────────────────────────────────────
-def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int) -> Decision:
+def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,
+             *, legacy_db_path=None) -> Decision:
     """One copy signal through the 8 gates in order. DRY-RUN: COMPUTES the exact V2 body if gates pass and RECORDS
-    the disarm verdict; it NEVER places (this module holds no broker). A reject at any gate returns early."""
+    the disarm verdict; it NEVER places (this module holds no broker). A reject at any gate returns early. The
+    disarm verdict is a PREVIEW here -- the LIVE placement gate on `armed` lives in `run_arm_gated_cycle` (R5)."""
     sid = signal.signal_id
-    armed = is_armed(conn, sub.account_id, sub.category)                              # gate 1 (recorded)
+    armed = is_armed(conn, sub.account_id, sub.category, legacy_db_path=legacy_db_path)   # gate 1 (recorded)
     copy_usd = float(sub.fixed_stake_usd)
 
     if copy_usd > sub.per_order_usd_cap + 1e-9:                                       # gate 2a (config sanity)
@@ -350,4 +357,82 @@ def detect_exit_signals(activity_sells, position_reductions, *, window_sec: int)
             condition_id=a["condition_id"], outcome_index=a["outcome_index"],
             signal_id=stable_signal_id(a["wallet"], a["condition_id"], a["outcome_index"], a.get("tx_hash") or a["ts"]),
             is_exit=True))
+    return out
+
+
+# ── R5: the ARM-GATED live cycle -- the ONE seam through which a real order can ever leave ────────────
+def run_arm_gated_cycle(conn, sub: SubConfig, signals, ctx: MarketContext, now_ts: int, *,
+                        place_fn=None, legacy_db_path=None) -> dict:
+    """Run every signal through the chokepoint, then place a gate-passing order ONLY IF ARMED -- by calling
+    the CALLER-INJECTED `place_fn(decision)`. This is the whole point of R5: the mechanism that gates the
+    R7 first live order.
+
+      * The arm state is RE-READ immediately before EACH placement (`arm.read_arm_verdict`), so a mid-cycle
+        kill stops the very NEXT order (the residual is one order wide -- see below).
+      * DISARM blocks EVERYTHING -- entries AND exits (off is off). The exit-EXEMPT budget gates (5/6/8)
+        answer a DIFFERENT question ("may a daily cap strand an exit?" -> no); the OFF switch is not a
+        budget -- when disarmed, the human flattens open positions by hand on Kalshi (the auth-failure
+        latch already mandates that manual-exit path). A future 'entries_only' soft-disarm is a deferred,
+        rulable SEAM -- NOT built here (one behaviour, fully tested).
+      * `place_fn` is INJECTED by the caller (R7 wraps `kalshi_live.place_order`); this module imports NO
+        broker, so the structural "cannot place" guarantee is intact -- the ONLY way an order leaves is a
+        caller-supplied callable that this arm gate guards. `place_fn=None` -> pure dry-run preview
+        (identical to R4: computes + logs the body, never reaches a placement). R5 proves the mechanism
+        with a STUB place_fn (counts calls, posts nothing); no real POST occurs in R5.
+
+    RESIDUAL (Jack's point 6, stated honestly): a kill landing AFTER this re-read but BEFORE the caller's
+    POST is ONE order wide. R7's actual POST site should do a SECOND arm re-check immediately before
+    place_order to shrink it to near-zero; the remainder is irreducible without a broker-side pre-commit.
+
+    Returns a summary: n_would_place (gate-passing), placements_attempted (place_fn calls), n_disarm_blocked
+    (gate-passing but disarmed), n_skip, n_reject, posts_sent (ALWAYS 0 here -- no broker exists)."""
+    signals = list(signals)
+    journal = Journal(conn, [sub.account_id], now_ts)
+    decisions = []
+    n_would = n_skip = n_reject = placements = disarm_blocked = 0
+    for s in signals:
+        d = evaluate(s, sub, ctx, journal, conn, now_ts, legacy_db_path=legacy_db_path)
+        decisions.append(d)
+        if d.status == "dry_run_would_place":
+            n_would += 1
+            # RE-READ armed right before placing -> honours a mid-cycle kill for the NEXT order.
+            armed_now = arm.read_arm_verdict(sub.account_id, sub.category, legacy_db_path=legacy_db_path).armed
+            if not armed_now:
+                disarm_blocked += 1            # DISARMED -> nothing leaves, entries AND exits (off is off)
+            elif place_fn is not None:
+                place_fn(d)                    # armed + the ONE seam; R7 supplies the real (arm-guarded) placer
+                placements += 1
+            # else: armed but no placer -> pure dry-run PREVIEW (neither placed nor disarm-blocked)
+        elif d.status.startswith("skip:"):
+            n_skip += 1
+        else:
+            n_reject += 1
+    return {"account_id": sub.account_id, "category": sub.category, "n_signals": len(signals),
+            "n_would_place": n_would, "placements_attempted": placements, "n_disarm_blocked": disarm_blocked,
+            "n_skip": n_skip, "n_reject": n_reject, "posts_sent": 0, "decisions": decisions}
+
+
+# ── R5: the manual-exit FLAG surface (the auth-failure latch's companion) ────────────────────────────
+def open_positions_needing_manual_exit(conn) -> list:
+    """PM-DB read (read-only): real (dry_run=0) FILLED entry legs whose filled EXIT count does not yet
+    cover them -> net-open. On a 401/403 auth failure the account is auto-disarmed (`arm.latch_auth_failure`)
+    and these must be flattened BY HAND on Kalshi -- the engine can no longer place the reduce_only exit.
+    This is the FLAG surface (a pm_web display / operator read); it is NOT the position source of truth --
+    that is boot-reconcile against Kalshi's portfolio (its own pre-R7 rung). Returns [] when no live order
+    has ever been placed (R5: always [])."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return []
+    rows = conn.execute(
+        "SELECT account_id, category, ticker, outcome_leg, "
+        "  SUM(CASE WHEN is_exit=0 THEN COALESCE(fill_count,0) ELSE 0 END) AS entered, "
+        "  SUM(CASE WHEN is_exit=1 THEN COALESCE(fill_count,0) ELSE 0 END) AS exited "
+        "FROM pm_subdivision_order "
+        "WHERE dry_run=0 AND outcome_status='filled' AND ticker IS NOT NULL "
+        "GROUP BY account_id, category, ticker, outcome_leg").fetchall()
+    out = []
+    for r in rows:
+        net = float(r["entered"] or 0) - float(r["exited"] or 0)
+        if net > 1e-9:
+            out.append({"account_id": r["account_id"], "category": r["category"], "ticker": r["ticker"],
+                        "outcome_leg": r["outcome_leg"], "net_open_contracts": net})
     return out
