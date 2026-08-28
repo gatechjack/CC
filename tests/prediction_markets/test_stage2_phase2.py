@@ -157,9 +157,9 @@ def test_n_stale_visible_on_watchlist(tmp_path, monkeypatch):
     assert 'pm-badge-anom' in wl and '>3</span>' in wl    # 3 stale exits rendered as a visible badge
 
 
-# ── actions: Analyze WIRED; Demote / Promote / Promote-to-watchlist DISABLED ───────────────────────
+# ── actions: Analyze WIRED; Demote / Promote / Promote-to-watchlist WIRED (Stage 3 R6, no longer disabled) ──
 
-def test_actions_analyze_wired_demote_promote_disabled(tmp_path, monkeypatch):
+def test_actions_analyze_and_r6_farm_actions_wired(tmp_path, monkeypatch):
     client, p = _client(monkeypatch, tmp_path)
     with db.connect(p) as conn:
         _whale(conn, WP, "P"); _whale(conn, WC, "C")
@@ -169,10 +169,14 @@ def test_actions_analyze_wired_demote_promote_disabled(tmp_path, monkeypatch):
     wl, pr = _regions(body)
     # Analyze is WIRED (HTMX POST to the existing analyze route), never disabled
     assert ('hx-post="/farm/analyze/%s/mlb"' % WP) in wl
-    # Demote + Promote are rendered but DISABLED (Stage 3)
-    assert 'disabled title="Demote' in wl and 'disabled title="Promote' in wl
-    # Prospects: Promote-to-watchlist rendered but DISABLED (Stage 3)
-    assert 'disabled title="Promote to Watchlist' in pr
+    # R6: Demote is now a WIRED POST form; the old disabled buttons are gone
+    assert ('action="/farm/mlb/demote/%s"' % WP) in wl
+    assert 'disabled title="Demote' not in wl and 'disabled title="Promote' not in wl
+    # R6: Promote-to-live -- no live sub-division seeded here -> the honest inert note renders (never "broken")
+    assert "no live" in wl.lower()
+    # R6: Prospects Promote-to-watchlist is now a WIRED POST form (no longer disabled)
+    assert ('action="/farm/mlb/promote/%s"' % WC) in pr
+    assert 'disabled title="Promote to Watchlist' not in pr
 
 
 # ── Prospects: honest-empty today, active gate holds, ranked-candidates only ──────────────────────

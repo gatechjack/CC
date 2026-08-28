@@ -52,3 +52,31 @@ def get_subdivision(conn, account_id: str, category: str) -> dict | None:
         "FROM pm_subdivision s LEFT JOIN pm_account a ON a.account_id = s.account_id "
         "WHERE s.account_id = ? AND s.category = ? AND s.active = 1", (account_id, category)).fetchone()
     return dict(r) if r is not None else None
+
+
+# ── R6 attachment reads (which whales a sub-division copies) -- READ-ONLY; defensive if the R6 table is absent ─
+def subdivisions_for_category(conn, category: str) -> list[dict]:
+    """The ACTIVE sub-divisions whose category matches `category` -- the valid promote-to-LIVE targets for a
+    pinned pair in that category (the category-join, surfaced to the UI). Empty if the tables are absent
+    (pre-migration-010) or none match. Read-only."""
+    if not _ready(conn):
+        return []
+    rows = conn.execute(
+        "SELECT s.account_id, s.category, COALESCE(a.label, s.account_id) AS account_label "
+        "FROM pm_subdivision s LEFT JOIN pm_account a ON a.account_id = s.account_id "
+        "WHERE s.category = ? AND s.active = 1 ORDER BY account_label", (category,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def attached_whales(conn, account_id: str, category: str) -> list[dict]:
+    """The ACTIVE whales a sub-division copies (its attachments), joined to their display name -- the read-only
+    'copies these whales' list on the sub-division page. Empty if the R6 attachment table is absent
+    (pre-migration-011) or none attached -> honest-empty, never a 500. Places/arms/reaches NOTHING."""
+    if not _table_exists(conn, "pm_subdivision_attachment"):
+        return []
+    rows = conn.execute(
+        "SELECT at.wallet, at.category, at.added_ts, w.user_name "
+        "FROM pm_subdivision_attachment at LEFT JOIN pm_whale w ON w.wallet = at.wallet "
+        "WHERE at.account_id = ? AND at.category = ? AND at.active = 1 "
+        "ORDER BY (w.user_name IS NULL), w.user_name COLLATE NOCASE, at.wallet", (account_id, category)).fetchall()
+    return [dict(r) for r in rows]

@@ -16,6 +16,21 @@
     <li>Created: {{ sub.created_ts|utcdate }}</li>
   </ul>
 
+  {# COPIES THESE WHALES (R6): the ACTIVE attachments -- which pinned whales this sub-division copies. READ-ONLY
+     (no form, no detach button here -- /live stays read-only; detach is a CLI action). Honest-empty until a
+     whale is promoted to this sub-division. #}
+  <div class="pm-section-head"><h2 class="pm-h2">Copies these whales</h2></div>
+  {% if attached %}
+  <ul class="pm-sub pm-kv">
+    {% for a in attached %}
+    <li><a href="/watchlist/{{ a.wallet }}/{{ a.category }}">{{ a.user_name or a.wallet }}</a>
+        {% if a.user_name %}<span class="pm-muted">&middot; {{ a.wallet[:10] }}…</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="pm-empty">No whales attached yet. Promote a pinned whale to this sub-division from its Watchlist row.</div>
+  {% endif %}
+
   <div class="pm-section-head"><h2 class="pm-h2">Live trades</h2></div>
   <div class="pm-empty">Created &middot; no live trades yet. Live copies arrive with the execution engine.</div>
 </section>

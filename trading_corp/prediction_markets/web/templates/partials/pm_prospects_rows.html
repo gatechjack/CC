@@ -23,7 +23,7 @@
       <th class="pm-num" title="Net realized PnL over scoreable rows.">net&nbsp;pnl</th>
       <th class="pm-num" title="Ranking score. Blank =&gt; below min / not ranked.">score</th>
       <th title="Data-quality + status flags -- same tokens as the CLI report.">flags</th>
-      <th title="Promote to Watchlist (begin paper-trading) -- Stage 3 (disabled).">action</th>
+      <th title="Promote to Watchlist: begin paper-trading this whale (moves it to the paper lane).">action</th>
     </tr>
   </thead>
   <tbody>
@@ -40,7 +40,14 @@
       <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
       <td class="pm-num">{% if r.score is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}" title="why ranked here">{{ '%.3f'|format(r.score) }}</a>{% else %}<span class="pm-na">not ranked</span>{% endif %}</td>
       <td class="pm-flags">{{ flag_badges(r.flags) }}</td>
-      <td class="pm-actioncell"><button class="pm-btn pm-btn-sm" disabled title="Promote to Watchlist (begin paper-trading) -- Stage 3 (not built yet)">Promote to watchlist</button></td>
+      <td class="pm-actioncell">
+        {# PROMOTE-TO-WATCHLIST (R6): candidate -> pinned. POST form (never a GET -- a crawler must not promote);
+           idempotent server-side; PRG 303 back to this page so the whale appears under Watchlist. #}
+        <form method="post" action="/farm/{{ r.category }}/promote/{{ r.wallet }}" class="pm-inline-form">
+          <button class="pm-btn pm-btn-sm" type="submit"
+             title="Promote to Watchlist: begin paper-trading this whale (moves it to the Watchlist / paper lane).">Promote to watchlist</button>
+        </form>
+      </td>
     </tr>
   {% endfor %}
   </tbody>

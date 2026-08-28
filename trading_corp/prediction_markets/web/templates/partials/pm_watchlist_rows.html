@@ -19,7 +19,7 @@
       <th class="pm-num pm-primary" title="Paper cost-based ROI over CLOSED trades -- THE paper metric.">roi&nbsp;(cost)</th>
       <th class="pm-num" title="Net paper PnL over CLOSED trades.">net&nbsp;pnl</th>
       <th class="pm-num pm-muted" title="Paper cost basis (CLOSED).">cost</th>
-      <th title="Operator actions. Analyze is LIVE; Demote / Promote are Stage 3 (disabled).">actions</th>
+      <th title="Operator actions. Analyze narrates; Demote returns this whale to Prospects (paper kept); Promote attaches it to a live sub-division.">actions</th>
     </tr>
   </thead>
   <tbody>
@@ -43,8 +43,24 @@
            title="Analyze {{ r.category|upper }}: LLM narration over this whale's RESOLVED positions (deterministic report always renders; the verdict needs the Anthropic key, not wired yet)."
            hx-post="/farm/analyze/{{ r.wallet }}/{{ r.category }}" hx-target="#pm-analyze-panel" hx-swap="innerHTML"
            hx-disabled-elt="this">Analyze</button>
-        <button class="pm-btn pm-btn-sm" disabled title="Demote to Prospect -- Stage 3 (not built yet)">Demote</button>
-        <button class="pm-btn pm-btn-sm" disabled title="Promote to a live sub-division -- P3 (not built yet)">Promote</button>
+        {# DEMOTE (R6): pinned -> candidate. Paper history is PRESERVED (F-5) -- only the display basis flips back
+           to completed. POST form (no GET mutation); idempotent; PRG 303. #}
+        <form method="post" action="/farm/{{ r.category }}/demote/{{ r.wallet }}" class="pm-inline-form">
+          <button class="pm-btn pm-btn-sm" type="submit"
+             title="Demote to Prospect: stop paper-trading (paper history is kept; display basis flips back to completed).">Demote</button>
+        </form>
+        {# PROMOTE-TO-LIVE (R6): attach this pinned whale to a live sub-division of THIS category (join ON CATEGORY).
+           One button per available sub-division (chosen 1/some/all). Inert + honest when none exists yet. #}
+        {% if live_subdivisions %}
+          {% for sd in live_subdivisions %}
+          <form method="post" action="/live/{{ sd.account_id }}/{{ r.category }}/attach/{{ r.wallet }}" class="pm-inline-form">
+            <button class="pm-btn pm-btn-sm" type="submit"
+               title="Promote to LIVE: attach this whale to the {{ sd.account_label }} · {{ r.category|upper }} sub-division (creates a copy attachment -- does NOT place an order).">Promote &rsaquo; {{ sd.account_label }}</button>
+          </form>
+          {% endfor %}
+        {% else %}
+          <span class="pm-muted pm-btn-sm" title="No live {{ r.category|upper }} sub-division exists yet -- provision one before promoting to live.">Promote &middot; no live {{ r.category|upper }} sub-division</span>
+        {% endif %}
       </td>
     </tr>
   {% endfor %}

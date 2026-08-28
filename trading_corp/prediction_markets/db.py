@@ -681,6 +681,39 @@ MIGRATION_010: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_subord_wallet ON pm_subdivision_order(wallet, condition_id)",
 ]
 
+# migration 011 (2026-08-28, Stage 3 R6): the WHALE->SUB-DIVISION attachment -- the farm->money bridge.
+# Promote-to-LIVE attaches a PINNED (wallet, category) farm pair to a (account, category) sub-division,
+# JOINED ON CATEGORY (a ufc whale-category can NEVER attach to an mlb sub-division; the category is shared).
+# The SAME (wallet, category) may attach to MULTIPLE sub-divisions independently (distinct account_id) -> the
+# PK is (account_id, category, wallet), which allows N whales per sub-division AND M sub-divisions per whale.
+# NUMBERED ON LANDING (next after 010).
+# ** PURE DDL ONLY (Jack RULED, mirroring 009/010). ** No config/data writes. Created EMPTY, read by NO live
+# code path until an attachment is written (R6 promote-to-live) -> behaviour-neutral deploy.
+#
+# PURE INDEX, no config: the attachment is ownership/linkage ONLY. A sub-division's sizing/risk config lives
+# on pm_subdivision and governs EVERY attached whale (ruling #1: FIXED stake); an attachment NEVER overrides
+# it. `active` (DEFAULT 1) makes DETACH reversible WITHOUT deleting the row (mirrors migration-008): detach =
+# active=0 + removed_ts; re-attach reactivates (active=1) with the record intact. No FK (app-layer validates
+# the sub-division exists + the pair is pinned before INSERT) -- keeps the migration a lightweight, idempotent
+# CREATE on any deploy tier. Writing an attachment CANNOT reach pm_subdivision_order (the order journal is
+# written only by the execution engine at placement time) -- promote-to-live creates a mapping, not an order.
+MIGRATION_011: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_subdivision_attachment (
+        account_id   TEXT NOT NULL,               -- the sub-division's account (pm_subdivision.account_id)
+        category     TEXT NOT NULL,               -- == the sub-division category AND the pinned pair's category (JOIN ON CATEGORY)
+        wallet       TEXT NOT NULL,               -- the pinned whale this sub-division copies (the attachment)
+        active       INTEGER NOT NULL DEFAULT 1,  -- detach = active=0 (reversible, mirrors migration-008); re-attach reactivates
+        source       TEXT,                        -- provenance (e.g. 'promote_to_live')
+        added_ts     INTEGER,
+        removed_ts   INTEGER,                     -- when active last flipped to 0 (detach)
+        PRIMARY KEY (account_id, category, wallet)  -- one attachment per (sub-division, whale); a whale-category may attach to MANY sub-divisions
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_subattach_subdiv ON pm_subdivision_attachment(account_id, category, active)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_subattach_wallet ON pm_subdivision_attachment(wallet, category, active)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -692,6 +725,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (8, MIGRATION_008),
     (9, MIGRATION_009),
     (10, MIGRATION_010),
+    (11, MIGRATION_011),
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

@@ -21,7 +21,8 @@ import json
 import sys
 import time
 
-from trading_corp.prediction_markets import analyze, arm, category, db, ingest, names, paper, rosters, stats
+from trading_corp.prediction_markets import (analyze, arm, category, db, farm_actions, ingest, names, paper,
+                                             rosters, stats)
 
 
 def _now() -> int:
@@ -258,6 +259,28 @@ def _cmd_live_disarm(args) -> int:
     return 0
 
 
+def _cmd_live_attach(args) -> int:
+    """PROMOTE-TO-LIVE from the CLI: attach a PINNED (wallet, category) to the (account, category) sub-division
+    (joined ON CATEGORY). Idempotent. The same action as the Watchlist 'Promote' button; here so it works when
+    pm_web is down. Writes ONLY the PM DB attachment table; never an order."""
+    db.init_db(args.db)
+    with db.connect(args.db) as conn:
+        res = farm_actions.promote_to_live(conn, args.account, args.category, args.wallet, _now())
+    print(json.dumps(res, indent=2, default=str))
+    return 0 if res.get("ok") else 1
+
+
+def _cmd_live_detach(args) -> int:
+    """DETACH (promote-to-live's inverse): remove a whale from a sub-division. REVERSIBLE (active=0; the row
+    survives, re-attach restores it). The back-out for a wrong promote-to-live -- CLI-only, so it works when
+    pm_web is down. Writes ONLY the PM DB attachment table."""
+    db.init_db(args.db)
+    with db.connect(args.db) as conn:
+        res = farm_actions.detach_from_live(conn, args.account, args.category, args.wallet, _now())
+    print(json.dumps(res, indent=2, default=str))
+    return 0 if res.get("ok") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pm_cli", description="Prediction Markets P1 CLI")
     p.add_argument("--db", default=db.pm_db_path(), help="PM DB path (default: PM_DB_PATH or data/prediction_markets.db)")
@@ -348,6 +371,16 @@ def build_parser() -> argparse.ArgumentParser:
             lv.set_defaults(func=_cmd_live_disarm, is_async=False)
         else:
             lv.set_defaults(func=_cmd_live_status, is_async=False)
+
+    # ── R6 promote-to-live / detach (attachment ops; PM DB only, works when pm_web is down) ──
+    for _name, _help, _fn in (
+            ("live-attach", "PROMOTE-TO-LIVE: attach a pinned (wallet,category) to a sub-division (joined ON CATEGORY)", _cmd_live_attach),
+            ("live-detach", "DETACH (promote-to-live's inverse): remove a whale from a sub-division (reversible active=0)", _cmd_live_detach)):
+        at = sub.add_parser(_name, help=_help)
+        at.add_argument("--account", required=True, help="sub-division account_id (e.g. 'kalshi_jack')")
+        at.add_argument("--category", required=True, help="sub-division category (e.g. 'mlb')")
+        at.add_argument("--wallet", required=True, help="the whale wallet to attach/detach")
+        at.set_defaults(func=_fn, is_async=False)
     return p
 
 
