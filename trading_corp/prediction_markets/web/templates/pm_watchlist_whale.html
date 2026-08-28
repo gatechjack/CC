@@ -3,9 +3,9 @@
 {% block title %}{{ (whale.user_name if whale and whale.user_name else wallet) }} &middot; {{ category|upper }} paper &middot; Prediction Markets{% endblock %}
 {% block content %}
 <section>
-  <nav class="pm-crumb"><a href="/dashboard">Dashboard</a> &rsaquo;
-    <a href="/farm-league">Farm League</a> &rsaquo;
-    <a href="/farm-league/{{ category }}">{{ category|upper }}</a> &rsaquo; watchlist whale</nav>
+  <nav class="pm-crumb"><a href="/">Dashboard</a> &rsaquo;
+    <a href="/farm">Farm League</a> &rsaquo;
+    <a href="/farm/{{ category }}">{{ category|upper }}</a> &rsaquo; watchlist whale</nav>
 
   <div class="pm-whale-head">
     <div class="pm-whale-title">
