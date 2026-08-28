@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names, farm, analyze
+from .. import stats, positions, names, farm, analyze, subdivision
 from ..category import NON_SINGLE_GAME_CATEGORIES
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -201,11 +201,13 @@ async def farm_analyze(request: Request, wallet: str, category: str, force: str 
 # query_scoreboard over pm_category_stats (completed). The three-lists / three-bases invariant holds on one page.
 
 def _load_dashboard() -> dict:
-    """Dashboard read. Only the active Farm-League category COUNT (data-driven, never hardcoded) so the menu card
-    is honest; the Live sub-division section is P3 and carries no data. OFF the loop, PM DB only."""
+    """Dashboard read: the active Farm-League category COUNT + the LIVE sub-division COUNT (both data-driven,
+    honest-empty; 0 sub-divisions pre-migration-010 since the tables are absent -> honest, not an error). The Live
+    section carries NO live-trade data (P3). OFF the loop, PM DB only."""
     with connect() as conn:
         n_categories = len(farm.farm_categories(conn, farm.PINNED))
-    return {"n_categories": n_categories}
+        n_subdivisions = len(subdivision.list_subdivisions(conn))
+    return {"n_categories": n_categories, "n_subdivisions": n_subdivisions}
 
 
 def _load_farm_league() -> dict:
@@ -269,6 +271,49 @@ async def farm_league_category(request: Request, category: str):
         return templates.TemplateResponse(
             request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)
     return templates.TemplateResponse(request, "pm_farm_category.html", {"request": request, **data})
+
+
+# ── LIVE sub-divisions (Stage 3 R3) -- the top-of-hierarchy Account-Category tiles. READ-ONLY: renders tiles +
+# sub-division config + an honest-empty live list. Places NOTHING, arms NOTHING, reaches NO order path (execution
+# is R4+; pm_web imports no broker). DEFENSIVE: subdivision.* tolerate pm_account/pm_subdivision being absent
+# (pre-migration-010) -> honest-empty, so /live deploys on a pm_web restart independent of the migration-010 deploy.
+
+def _load_live_list() -> dict:
+    """LIVE list read: the ACTIVE sub-divisions as tiles (tile-on-CREATE -- a tile the moment the sub-division
+    exists, before it trades). No live-trade data (P3). OFF the loop, read-only."""
+    with connect() as conn:
+        subdivisions = subdivision.list_subdivisions(conn)
+    return {"subdivisions": subdivisions}
+
+
+def _load_live_subdivision(account_id: str, category: str) -> dict | None:
+    """Per-sub-division read: its config, or None -> 404. LIVE trades/stats are P3 (not built) -> the page renders
+    an honest-empty live list ('created, never traded'). Read-only."""
+    with connect() as conn:
+        sub = subdivision.get_subdivision(conn, account_id, category)
+    return {"sub": sub} if sub is not None else None
+
+
+@app.get("/live", response_class=HTMLResponse)
+async def live_list_page(request: Request):
+    """The LIVE sub-division tiles (top of the hierarchy). Honest-empty until a sub-division is created AND
+    migration 010 is live. READ-ONLY -- no order path."""
+    data = await asyncio.to_thread(_load_live_list)
+    return templates.TemplateResponse(request, "pm_live_list.html", {"request": request, **data})
+
+
+@app.get("/live/{account_id}/{category}", response_class=HTMLResponse)
+async def live_subdivision_page(request: Request, account_id: str, category: str):
+    """One Account-Category sub-division: its config + an honest-empty live list ('created, never traded'; live
+    copies arrive with the execution engine, R4). A sub-division that doesn't exist -> 404. READ-ONLY."""
+    account_id = (account_id or "").strip()
+    category = (category or "").strip().lower()
+    data = await asyncio.to_thread(_load_live_subdivision, account_id, category)
+    if data is None:
+        return templates.TemplateResponse(
+            request, "pm_live_404.html",
+            {"request": request, "account_id": account_id, "category": category}, status_code=404)
+    return templates.TemplateResponse(request, "pm_live_subdivision.html", {"request": request, **data})
 
 
 # ── Watchlist whale detail (Stage 2, phase 2) -- a PINNED whale's PAPER trades + paper stats ──────

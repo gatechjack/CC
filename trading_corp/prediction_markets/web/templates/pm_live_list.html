@@ -1,0 +1,25 @@
+{% extends "pm_shell.html" %}
+{% block title %}Live sub-divisions &middot; Prediction Markets{% endblock %}
+{% block content %}
+<section>
+  <nav class="pm-crumb"><a href="/">Dashboard</a> &rsaquo; Live sub-divisions</nav>
+  <div class="pm-section-head">
+    <h1 class="pm-h1">Live sub-divisions</h1>
+    <p class="pm-sub">Account-Category sub-divisions that place live Kalshi copies. Read-only view &mdash; a tile
+      appears the moment a sub-division is created, before it ever trades.</p>
+  </div>
+
+  {% if subdivisions %}
+  <div class="pm-tilegrid">
+    {% for s in subdivisions %}
+      <a class="pm-tile" href="/live/{{ s.account_id }}/{{ s.category }}">
+        <span class="pm-tile-name">{{ s.account_label }} &middot; {{ s.category|upper }}</span>
+        <span class="pm-tile-hint">created &middot; no live trades yet</span>
+      </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="pm-empty">No live sub-divisions yet. One appears here the moment it is created.</div>
+  {% endif %}
+</section>
+{% endblock %}

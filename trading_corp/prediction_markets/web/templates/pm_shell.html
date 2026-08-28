@@ -18,13 +18,13 @@
         <span class="pm-logo">PM</span>
         <span class="pm-brand-txt">Prediction Markets<span class="pm-brand-sub">dashboard</span></span>
       </a>
-      {# THE navigation hierarchy (Stage 2 phase 3: the good URLs; Dashboard=/, Farm League=/farm). Live
-         sub-divisions are P3 (not built) -> a visibly disabled span, never a fake link. #}
+      {# THE navigation hierarchy (Dashboard=/, Farm League=/farm, Live sub-divisions=/live). Stage 3 R3 enabled
+         the Live link (read-only list); it is honest-empty until a sub-division is created. #}
       <nav class="pm-nav">
         {% set path = request.url.path %}
         <a href="/" class="pm-nav-link {% if path == '/' %}pm-nav-active{% endif %}">Dashboard</a>
         <a href="/farm" class="pm-nav-link {% if path.startswith('/farm') %}pm-nav-active{% endif %}">Farm League</a>
-        <span class="pm-nav-link pm-nav-disabled" title="Live sub-divisions -- coming in P3">Live sub-divisions</span>
+        <a href="/live" class="pm-nav-link {% if path.startswith('/live') %}pm-nav-active{% endif %}">Live sub-divisions</a>
       </nav>
       <div class="pm-header-right">{% block header_extras %}{% endblock %}</div>
     </div>

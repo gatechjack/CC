@@ -9,12 +9,13 @@
   </div>
 
   <div class="pm-menu">
-    {# Live sub-divisions -- P3, NOT built. Visibly DISABLED, no fabricated data (operator's ruling). #}
-    <div class="pm-menu-card pm-menu-card-disabled" aria-disabled="true">
-      <div class="pm-menu-title">Live sub-divisions <span class="pm-p3">coming in P3</span></div>
-      <p class="pm-menu-sub">Account-Category tiles with live trades and stats. Not built yet &mdash; this
-        section activates once live sub-divisions exist (Phase 3).</p>
-    </div>
+    {# Live sub-divisions (Stage 3 R3) -- read-only list of Account-Category sub-divisions. The count is
+       data-driven (0 until a sub-division is created); tile-on-create, honest-empty, no fabricated data. #}
+    <a href="/live" class="pm-menu-card">
+      <div class="pm-menu-title">Live sub-divisions &rarr;</div>
+      <p class="pm-menu-sub"><span class="pm-region-count">{{ n_subdivisions }}</span> Account-Category
+        sub-divisions. Read-only &mdash; a tile appears the moment a sub-division is created.</p>
+    </a>
 
     {# Farm League -- active. The category count is data-driven (never hardcoded). #}
     <a href="/farm" class="pm-menu-card">

@@ -1,0 +1,8 @@
+{% extends "pm_shell.html" %}
+{% block title %}Not found &middot; Live{% endblock %}
+{% block content %}
+<section>
+  <nav class="pm-crumb"><a href="/">Dashboard</a> &rsaquo; <a href="/live">Live sub-divisions</a></nav>
+  <div class="pm-empty">No live sub-division for {{ account_id }} &middot; {{ category|upper }}.</div>
+</section>
+{% endblock %}
