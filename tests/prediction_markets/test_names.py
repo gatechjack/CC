@@ -120,7 +120,7 @@ def test_records_last_run_and_schema_unbumped_by_pm_meta(tmp_path):
         schema_v = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert rec is not None and rec["last_run_ts"] == NOW and rec["n_set"] == 1
-    assert schema_v == 10                                    # pm_meta is OUTSIDE the migration chain -> schema stays at the head (001-010)
+    assert schema_v == db.SCHEMA_HEAD                        # pm_meta is OUTSIDE the migration chain -> schema stays at the head (is-at-head -> db.SCHEMA_HEAD)
     assert "pm_meta" in tables
 
 

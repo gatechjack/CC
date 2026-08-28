@@ -694,6 +694,13 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (10, MIGRATION_010),
 ]
 
+# The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"
+# check (tests, /healthz) so a new migration bumps ONE place instead of a manual sweep. Migration-SPECIFIC
+# guards stay explicit (they assert behaviour at a fixed version, e.g. the migration-008 partial-DB test);
+# ONLY is-at-head checks track this constant. (Earned 2026-08-28 after three migrations of manual head-pin
+# sweeps -- Stage 3 R2.)
+SCHEMA_HEAD: int = max(v for v, _ in MIGRATIONS)
+
 
 def _current_version(conn: sqlite3.Connection) -> int:
     # version is PRIMARY KEY: prevents duplicate/accumulating rows so MAX(version) is

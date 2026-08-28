@@ -50,8 +50,8 @@ def test_migrations_idempotent(tmp_path):
     with db.connect(p) as conn:
         count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-    assert count == 10  # migrations 001..010 recorded exactly once each (009 Stage-1 paper stats, 010 Stage-3 money layer)
-    assert maxv == 10
+    assert count == len(db.MIGRATIONS)   # every migration recorded exactly once
+    assert maxv == db.SCHEMA_HEAD        # is-at-head tracks the constant (a bump touches ONE place, not six)
 
 
 def test_pk_includes_outcome_index(tmp_path):
@@ -224,3 +224,17 @@ def test_migration_010_is_pure_ddl():
     for stmt in db.MIGRATION_010:
         head = stmt.strip().split()[0].upper()
         assert head == "CREATE", "migration 010 must be PURE DDL; got a non-CREATE statement: %r" % stmt[:60]
+
+
+def test_schema_head_tracks_migrations(tmp_path):
+    """db.SCHEMA_HEAD is the single source of truth for 'is the DB fully migrated?' (Stage 3 R2). It equals the
+    highest migration version; the numbered chain is contiguous 1..HEAD; and a fresh init_db lands exactly at it.
+    Because every is-at-head check references db.SCHEMA_HEAD, adding a migration bumps ONE place, not six test
+    files -- this test is what guarantees that property (a bump that forgot to wire SCHEMA_HEAD fails HERE)."""
+    assert db.SCHEMA_HEAD == max(v for v, _ in db.MIGRATIONS)
+    assert [v for v, _ in db.MIGRATIONS] == list(range(1, db.SCHEMA_HEAD + 1))  # contiguous, no gaps
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+    assert maxv == db.SCHEMA_HEAD

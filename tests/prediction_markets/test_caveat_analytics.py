@@ -147,7 +147,7 @@ def test_migration_004_schema(tmp_path):
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         cs = {r[1] for r in conn.execute("PRAGMA table_info(pm_category_stats)")}
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert maxv == 10                                       # head of the migration chain (001-010 incl. 009 Stage-1 paper stats, 010 Stage-3 money layer)
+    assert maxv == db.SCHEMA_HEAD                           # head of the migration chain (is-at-head -> db.SCHEMA_HEAD)
     assert {"n_condition_ids", "n_two_sided", "two_sided_pct", "n_single_game", "n_futures_like",
             "single_game_pct", "market_type_source"} <= cs
     assert "pm_category_onesided_stats" in tables
@@ -174,6 +174,6 @@ def test_migration_004_idempotent_on_p1_shaped_db(tmp_path, monkeypatch):
         rows = conn.execute("SELECT COUNT(*) FROM pm_closed_position").fetchone()[0]
         stats.rollup(conn, now_ts=NOW)                         # rollup must populate the new columns
         r = conn.execute("SELECT two_sided_pct FROM pm_category_stats WHERE category='ufc'").fetchone()
-    assert v_before == 3 and v_after == 10 and cnt == 10
+    assert v_before == 3 and v_after == db.SCHEMA_HEAD and cnt == len(db.MIGRATIONS)
     assert rows == 1                                            # existing P1 row intact
     assert r is not None                                       # rollup ran cleanly on the upgraded DB

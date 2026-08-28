@@ -31,7 +31,7 @@ Kalshi convention (empirical, live KXMLBGAME)
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from trading_corp.data.sports_team_mapping import MLB_TEAMS
 
@@ -42,6 +42,15 @@ _POLY_SLUG_RE = re.compile(
     r"^mlb-(?P<away>[a-z0-9]+)-(?P<home>[a-z0-9]+)-"
     r"(?P<date>\d{4}-\d{2}-\d{2})(?P<suffix>.*)$"
 )
+# Stage 3 R2 -- non-moneyline suffix parsers (established from live PM-DB slugs 2026-08-28):
+#   total  suffix: -total-{W}pt{F}               -> line W.F (e.g. -total-8pt5 -> 8.5)
+#   spread suffix: -spread-{home|away}-{W}pt{F}  -> anchor side + run-line W.F (all 161 observed = 1pt5)
+_POLY_TOTAL_RE  = re.compile(r"^-total-(?P<w>\d+)pt(?P<f>\d+)$")
+_POLY_SPREAD_RE = re.compile(r"^-spread-(?P<anchor>home|away)-(?P<w>\d+)pt(?P<f>\d+)$")
+
+
+def _poly_line(w: str, f: str) -> float:
+    return float("%s.%s" % (w, f))
 
 _MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
            "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
@@ -114,10 +123,14 @@ class ParsedPolyBet:
     home_code: str | None
     away_name: str | None     # canonical full name (via MLB_TEAMS)
     home_name: str | None
-    side: str | None          # away | home (the club the whale bet), ML only
+    side: str | None          # away | home (the club the whale bet); ML + spread (the outcome team)
     side_name: str | None
     fail_reason: str | None = None   # set when market_type in {non_mlb, unparseable} or team unresolved
     raw: dict = field(default_factory=dict)
+    # Stage 3 R2 (total/spread): the strike + the Kalshi leg to BUY, established from live data.
+    line: float | None = None        # total line (e.g. 8.5) or spread run-line (1.5); None for moneyline/prop
+    leg: str | None = None           # 'yes' | 'no' -- the Kalshi leg (total: Over->yes; spread: outcome==anchor->yes)
+    anchor_side: str | None = None   # spread only: 'home'|'away' -- the -line ANCHOR team (the Kalshi market's team)
 
 
 def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str = "") -> ParsedPolyBet:
@@ -143,14 +156,41 @@ def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str
     home_name = MLB_TEAMS.get(home_code)
 
     if suffix:
-        # non-moneyline market. Label by suffix family.
+        # non-moneyline market. Label by suffix family; extract line + Kalshi leg where the suffix parses.
         if suffix.startswith("-total"):
-            mt = "total"
-        elif suffix.startswith("-spread"):
-            mt = "spread"
-        else:
-            mt = "prop"
-        return ParsedPolyBet(mt, date_iso, away_code, home_code, away_name, home_name,
+            tm = _POLY_TOTAL_RE.match(suffix)
+            if tm is None:
+                return ParsedPolyBet("total", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"unparseable_total_suffix:{suffix!r}", raw=raw)
+            line = _poly_line(tm.group("w"), tm.group("f"))
+            o = (outcome or "").strip().lower()
+            leg = "yes" if o == "over" else "no" if o == "under" else None   # Kalshi KXMLBTOTAL YES = Over
+            fr = None if leg else f"total_outcome_not_over_under:{outcome!r}"
+            return ParsedPolyBet("total", date_iso, away_code, home_code, away_name, home_name,
+                                 None, None, fail_reason=fr, raw=raw, line=line, leg=leg)
+        if suffix.startswith("-spread"):
+            sm = _POLY_SPREAD_RE.match(suffix)
+            if sm is None:
+                return ParsedPolyBet("spread", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"unparseable_spread_suffix:{suffix!r}", raw=raw)
+            if away_name is None or home_name is None:
+                miss = [c for c, n in ((away_code, away_name), (home_code, home_name)) if n is None]
+                return ParsedPolyBet("spread", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"unrecognized_team_code:{miss}", raw=raw)
+            line = _poly_line(sm.group("w"), sm.group("f"))
+            anchor_side = sm.group("anchor")                       # 'home'|'away' == the -line ANCHOR team
+            out_side = resolve_side(outcome, away_name, home_name)  # which club the whale actually bet
+            if out_side is None:
+                return ParsedPolyBet("spread", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"spread_outcome_unresolved:{outcome!r}",
+                                     raw=raw, line=line, anchor_side=anchor_side)
+            # outcome==anchor -> "anchor -line" -> KXMLBSPREAD {anchor} YES; else "other +line" -> {anchor} NO.
+            leg = "yes" if out_side == anchor_side else "no"
+            return ParsedPolyBet("spread", date_iso, away_code, home_code, away_name, home_name,
+                                 out_side, (away_name if out_side == "away" else home_name),
+                                 raw=raw, line=line, leg=leg, anchor_side=anchor_side)
+        # prop / unknown suffix -> labelled non-moneyline (NEVER silently moneyline).
+        return ParsedPolyBet("prop", date_iso, away_code, home_code, away_name, home_name,
                              None, None, raw=raw)
 
     # moneyline
@@ -253,6 +293,7 @@ class KalshiGame:
     team_a_name: str
     team_b_name: str
     ticker_by_side_code: dict  # {team_code: full KXMLBGAME ticker for that YES side}
+    stem: str = ""             # {YYMONDD}{HHMM}{TEAMBLOB}[G{n}] -- shared verbatim with KXMLBTOTAL/KXMLBSPREAD (R2 join key)
 
 
 def _game_key(date_iso: str, name1: str, name2: str):
@@ -277,7 +318,8 @@ def build_kalshi_game_index(tickers) -> dict:
         gk = (date_iso, p.date_str, p.time_str, p.game_no,
               frozenset({p.yes_name, p.other_name}))
         by_game.setdefault(gk, {"codes": {p.yes_code: p.yes_name, p.other_code: p.other_name},
-                               "tickers": {}})
+                               "tickers": {},
+                               "stem": (t.split("-")[1] if t.count("-") >= 2 else "")})
         by_game[gk]["tickers"][p.yes_code] = t
 
     index: dict = {}
@@ -290,6 +332,7 @@ def build_kalshi_game_index(tickers) -> dict:
             team_a_code=a_code, team_b_code=b_code,
             team_a_name=codes[a_code], team_b_name=codes[b_code],
             ticker_by_side_code=dict(info["tickers"]),
+            stem=info.get("stem", ""),
         )
         index.setdefault(_game_key(date_iso, game.team_a_name, game.team_b_name), []).append(game)
     return index
@@ -304,6 +347,10 @@ class MatchResult:
     kalshi_ticker: str | None = None
     kalshi_candidates: tuple = ()   # >1 => doubleheader candidates (side tickers)
     reason: str | None = None
+    # Stage 3 R2 -- carried so the executor never re-derives the leg (the $163.84-class risk):
+    leg: str | None = None          # 'yes' | 'no' -- the Kalshi leg to BUY (moneyline via match_bet -> 'yes')
+    strike: float | None = None     # total/spread line on a matched total/spread
+    market_type: str | None = None  # moneyline | total | spread (echoed for logging/routing)
 
 
 def _side_ticker(game: KalshiGame, parsed: ParsedPolyBet) -> str | None:
@@ -360,3 +407,179 @@ def match_poly_to_kalshi(parsed: ParsedPolyBet, kalshi_index: dict,
     # side was resolved by nickname/substring rather than exact full-name equality.
     conf = 1.0 if _norm(parsed.raw.get("outcome", "")) in (_norm(parsed.away_name), _norm(parsed.home_name)) else 0.97
     return MatchResult("matched", conf, kalshi_ticker=ticker, reason="unique_game_side_resolved")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 3 R2 (2026-08-28): THREE-DIMENSION extension -- (game, market_type, line).
+# Moneyline above is UNCHANGED (the first-live path; the legacy poly_kalshi copy-trader consumes
+# match_poly_to_kalshi directly -- its signature and behaviour are untouched). This section ADDS TOTALS
+# (KXMLBTOTAL) and SPREADS (KXMLBSPREAD) with an EXACT-STRIKE-ONLY guard, all pure + fundless.
+#
+# Formats ESTABLISHED FROM LIVE DATA (2026-08-28 data-gather), NOT assumed:
+#   Kalshi total : KXMLBTOTAL-{stem}-{N}          YES = Over.   floor_strike = N - 0.5.
+#   Kalshi spread: KXMLBSPREAD-{stem}-{TEAM}{N}   YES = "{TEAM} wins by over (N-0.5)". per-team, per-strike.
+#   `stem` = {YYMONDD}{HHMM}{TEAMBLOB}[G{n}] is SHARED verbatim across KXMLBGAME/KXMLBTOTAL/KXMLBSPREAD for one
+#   game -- so we resolve the game via the moneyline index (date+teams) and JOIN totals/spreads by stem.
+# ══════════════════════════════════════════════════════════════════════════════
+
+COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread")
+
+_KALSHI_TOTAL_RE  = re.compile(r"^KXMLBTOTAL-(?P<stem>[A-Z0-9]+)-(?P<n>\d+)$")
+_KALSHI_SPREAD_RE = re.compile(r"^KXMLBSPREAD-(?P<stem>[A-Z0-9]+)-(?P<team>[A-Z]+)(?P<n>\d+)$")
+
+
+def _strike_from_n(n: str) -> float:
+    """The trailing integer N in a KXMLBTOTAL/KXMLBSPREAD ticker encodes strike = N - 0.5 (verified live:
+    KXMLBTOTAL '-9' -> floor_strike 8.5; KXMLBSPREAD '-TOR2' -> floor_strike 1.5). Half-run ladder only; a
+    Poly half-integer line therefore matches an EXACT Kalshi strike or nothing (never a rounded neighbour)."""
+    return int(n) - 0.5
+
+
+def parse_kalshi_total_ticker(ticker: str):
+    """(stem, strike) for a KXMLBTOTAL ticker, else None."""
+    m = _KALSHI_TOTAL_RE.match(ticker or "")
+    if not m:
+        return None
+    return m.group("stem"), _strike_from_n(m.group("n"))
+
+
+def parse_kalshi_spread_ticker(ticker: str):
+    """(stem, team_code, strike) for a KXMLBSPREAD ticker, else None. team_code = the YES team (wins by over)."""
+    m = _KALSHI_SPREAD_RE.match(ticker or "")
+    if not m:
+        return None
+    return m.group("stem"), m.group("team"), _strike_from_n(m.group("n"))
+
+
+def build_kalshi_total_index(total_tickers) -> dict:
+    """{stem: {strike: ticker}} for KXMLBTOTAL tickers. Joined to a game via the moneyline index's stem."""
+    idx: dict = {}
+    for t in total_tickers:
+        p = parse_kalshi_total_ticker(t)
+        if p is None:
+            continue
+        stem, strike = p
+        idx.setdefault(stem, {})[strike] = t
+    return idx
+
+
+def build_kalshi_spread_index(spread_tickers) -> dict:
+    """{stem: {(team_code, strike): ticker}} for KXMLBSPREAD tickers (per-team, per-strike)."""
+    idx: dict = {}
+    for t in spread_tickers:
+        p = parse_kalshi_spread_ticker(t)
+        if p is None:
+            continue
+        stem, team, strike = p
+        idx.setdefault(stem, {})[(team, strike)] = t
+    return idx
+
+
+def _resolve_unique_game(parsed: ParsedPolyBet, moneyline_index: dict, kalshi_dates: frozenset):
+    """Resolve a total/spread bet's GAME via the moneyline index (same (date, teams) key). Returns
+    (KalshiGame, None) on a unique game, else (None, MatchResult) mirroring the moneyline miss states."""
+    if parsed.away_name is None or parsed.home_name is None:
+        return None, MatchResult("fail", 0.0, reason=parsed.fail_reason or "unrecognized_team",
+                                 market_type=parsed.market_type)
+    if parsed.date_iso is None:
+        return None, MatchResult("fail", 0.0, reason="no_date", market_type=parsed.market_type)
+    games = moneyline_index.get(_game_key(parsed.date_iso, parsed.away_name, parsed.home_name), [])
+    if not games:
+        if parsed.date_iso not in kalshi_dates:
+            return None, MatchResult("out_of_window", 0.0, reason="game_date_outside_kalshi_fetch_window",
+                                     market_type=parsed.market_type)
+        return None, MatchResult("no_kalshi_contract", 0.0, reason="no_kxmlbgame_for_teams_on_date",
+                                 market_type=parsed.market_type)
+    if len(games) > 1:
+        return None, MatchResult("doubleheader_ambiguous", 0.50,
+                                 reason=f"{len(games)}_games_same_teams_same_date",
+                                 market_type=parsed.market_type)
+    return games[0], None
+
+
+def _match_total(parsed, moneyline_index, total_index, kalshi_dates) -> MatchResult:
+    if parsed.line is None or parsed.leg is None:
+        return MatchResult("fail", 0.0, reason=parsed.fail_reason or "total_line_or_leg_missing",
+                           market_type="total")
+    game, miss = _resolve_unique_game(parsed, moneyline_index, kalshi_dates)
+    if miss is not None:
+        return miss
+    ticker = total_index.get(game.stem, {}).get(parsed.line)
+    if ticker is None:
+        # EXACT STRIKE ONLY -- never round to a neighbour (the far-tail case). Labelled skip.
+        return MatchResult("no_kalshi_strike", 0.0, reason=f"no_total_strike_{parsed.line}",
+                           strike=parsed.line, market_type="total")
+    return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line,
+                       market_type="total", reason="exact_total_strike")
+
+
+def _match_spread(parsed, moneyline_index, spread_index, kalshi_dates) -> MatchResult:
+    if parsed.line is None or parsed.leg is None or parsed.anchor_side is None:
+        return MatchResult("fail", 0.0, reason=parsed.fail_reason or "spread_line_leg_or_anchor_missing",
+                           market_type="spread")
+    game, miss = _resolve_unique_game(parsed, moneyline_index, kalshi_dates)
+    if miss is not None:
+        return miss
+    anchor_name = parsed.away_name if parsed.anchor_side == "away" else parsed.home_name
+    anchor_code = None
+    for code, name in ((game.team_a_code, game.team_a_name), (game.team_b_code, game.team_b_name)):
+        if name == anchor_name:
+            anchor_code = code
+            break
+    if anchor_code is None:
+        return MatchResult("fail", 0.0, reason=f"anchor_team_not_in_kalshi_game:{anchor_name!r}",
+                           market_type="spread")
+    ticker = spread_index.get(game.stem, {}).get((anchor_code, parsed.line))
+    if ticker is None:
+        return MatchResult("no_kalshi_strike", 0.0, reason=f"no_spread_strike_{anchor_code}_{parsed.line}",
+                           strike=parsed.line, market_type="spread")
+    return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line,
+                       market_type="spread", reason="exact_spread_strike")
+
+
+def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, spread_index: dict,
+              kalshi_dates: frozenset,
+              allowed_market_types=COPYABLE_MARKET_TYPES) -> MatchResult:
+    """Unified 3-dimension match. `allowed_market_types` = the sub-division's `market_types` (R1) -- a copyable
+    type NOT in it is a LABELLED SKIP (`skip_market_type_excluded`), never an error; a non-copyable type
+    (prop / futures / non-mlb) is `skip_non_ml` / `skip_non_game`. Moneyline DELEGATES to the unchanged
+    match_poly_to_kalshi (leg forced 'yes' -- a moneyline copy BUYS YES on the bet team's KXMLBGAME ticker).
+    Totals/spreads are EXACT-STRIKE-ONLY and carry the Kalshi `leg` so the executor never re-derives it."""
+    mt = parsed.market_type
+    if mt not in COPYABLE_MARKET_TYPES:
+        return MatchResult("skip_non_ml" if mt == "prop" else "skip_non_game", 0.0,
+                           reason=parsed.fail_reason or mt, market_type=mt)
+    if mt not in allowed_market_types:
+        return MatchResult("skip_market_type_excluded", 0.0,
+                           reason=f"{mt}_not_in_subdivision_market_types", market_type=mt)
+    if mt == "moneyline":
+        # UNCHANGED legacy path (poly_kalshi consumes match_poly_to_kalshi directly -- kept BYTE-IDENTICAL).
+        # A clean moneyline match BUYS YES on the bet team's KXMLBGAME ticker; stamp leg/market_type HERE so the
+        # legacy function's return stays untouched (leg only when a single ticker resolved).
+        r = match_poly_to_kalshi(parsed, moneyline_index, kalshi_dates)
+        leg = "yes" if (r.status == "matched" and r.kalshi_ticker is not None) else None
+        return replace(r, leg=leg, market_type="moneyline")
+    if mt == "total":
+        return _match_total(parsed, moneyline_index, total_index, kalshi_dates)
+    return _match_spread(parsed, moneyline_index, spread_index, kalshi_dates)
+
+
+def liquidity_ok(market: dict, min_liquidity_usd: float = 20.0, max_spread_cents: int = 5) -> bool:
+    """PURE liquidity-floor gate applied AT MATCH TIME (guard K4). The pure matcher has only tickers, so the
+    executor passes the resolved Kalshi market dict here after match_bet returns a ticker. Reads
+    `liquidity_dollars` + `yes_bid_dollars`/`yes_ask_dollars`; rejects a thin or one-sided book. Defaults are
+    conservative placeholders -- the sub-division config drives the real floor.
+    ★ MUST BE RE-CHECKED AT EXIT: a strike liquid at entry can be thin at exit (K4)."""
+    if not isinstance(market, dict):
+        return False
+    try:
+        liq = float(market.get("liquidity_dollars") or 0.0)
+        bid = float(market.get("yes_bid_dollars") or 0.0)
+        ask = float(market.get("yes_ask_dollars") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if liq < float(min_liquidity_usd):
+        return False
+    if bid <= 0.0 or ask <= 0.0:
+        return False                                  # not two-sided -> untradeable
+    return 0 <= round((ask - bid) * 100) <= int(max_spread_cents)

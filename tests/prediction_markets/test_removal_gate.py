@@ -84,7 +84,7 @@ def test_migration_008_adds_columns_index_head_8(tmp_path):
         maxv = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     assert {"active", "removal_reason", "removal_ts"} <= cols
     assert "ix_pm_watchlist_active" in idx
-    assert maxv == 10  # full-init head is now 10 (migration 010 Stage-3 money layer); test name '..._head_8' is stale -- see SCHEMA_HEAD proposal
+    assert maxv == db.SCHEMA_HEAD  # full-init head (is-at-head -> db.SCHEMA_HEAD, built 2026-08-28); test name '..._head_8' is stale
 
 
 def test_fresh_insert_defaults_active_1(tmp_path):

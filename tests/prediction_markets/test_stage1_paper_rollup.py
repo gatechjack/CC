@@ -268,7 +268,7 @@ def test_migration_009_creates_table_and_index(tmp_path):
     }
     assert expected_cols <= cols, "Missing columns: %s" % (expected_cols - cols)
     assert "ix_pm_pcs_category_roi" in idx
-    assert maxv == 10
+    assert maxv == db.SCHEMA_HEAD   # is-at-head tracks the constant (a bump touches ONE place)
 
 
 # ---- paper_rollup ROI math --------------------------------------------------------------
