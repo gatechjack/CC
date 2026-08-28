@@ -109,6 +109,26 @@ splitting would leave a pointless transient schema-10 window. Ship `db.py` once;
 
 ## E. ★ THE MACE BOX-AHEAD SITUATION (do NOT "reconcile"; verify it is confined)
 
+> **★ CORRECTION (2026-08-28, rung-1 DEPLOY agent — SUPERSEDES the "exactly 8 MACE files" framing below; Jack
+> acknowledged the under-count and retired the confinement STOP criterion).** A full-tree git-tracked-blob compare
+> of the box against `origin/prod-live` (`166b5ab`) shows the box is ahead for **far more than 8 files** — `166b5ab`
+> is a **PMCC-only** fast-forward off `7220e32` and therefore **lags every division's direct-to-box deploys**, not
+> just MACE's. Measured box-vs-prod-live drift (git-tracked files): **9 MACE-namespace** (`mace/broker_port.py`,
+> `mace/config.py`, `mace/domain.py`, `mace/execution.py`, `mace/manager.py`, `mace/rh_broker.py`, `mace/strategy.py`,
+> `web/mace_view.py`, **+ `web/templates/mace_live.html`** — the last one escaped a naive `web/mace_*` glob, the
+> KXMLBRUNLINE-class miss) **AND ~10 non-MACE package files**, every one tracing to a documented deploy: PEAD
+> (`agents/strategies/pead_strategy.py` / `pead_signal.py` / `pead_backtest_driver.py` — the 2026-08-26 ISSC→IA +
+> Part-3 rename-defense), shared `brokers/robinhood.py` (box `e90af223`), `brokers/kalshi_live.py`, `brokers/base.py`,
+> `brokers/tastytrade.py`, `main.py`, `persistence/db.py`, `agents/divisions/_observer_test.py` — plus
+> operationally-edited config/data (`config/nasdaq_composite.txt` = the ISSC→IA universe edit, `config/mace.yaml`,
+> `data/research_starter_universes/large_mid_cap.json`). **None is unexplained; none is PM's to reconcile.**
+> **What IS clean and confined:** the ENTIRE `trading_corp/prediction_markets/` package AND the rung-2/3 shared files
+> (`data/mlb_poly_kalshi_match.py`, `utils/secrets.py`) match `166b5ab` **byte-for-byte** — so PM's Gate-A is a
+> **per-file** check against prod-live (done at rung-1 deploy: box `db.py` `106e2b03` == prod-live before overwrite),
+> and the broad box-ahead is other divisions' unpushed work. **The `MISSING=946` in that compare is the box being a
+> deployed SUBSET** (tests/reports/deploy-archives/scripts/runbooks never ship to the box), not a gap. Runner:
+> `cc\pm_r1_drift_ro.*` (read-only full-tree blob compare).
+
 MACE deployed (wing-pricing + exit-disposition) and restarted the shared engine at ~21:30Z (PID 49441 → **53046**,
 stable). **MACE PUSHED NOTHING: `origin/prod-live` is still `166b5ab`, `origin/main` untouched.** MACE's changes are
 **BOX-AHEAD AND LOCAL-ONLY**, folding into a deferred prod-live advance AFTER predictions ships.
@@ -121,7 +141,9 @@ stable). **MACE PUSHED NOTHING: `origin/prod-live` is still `166b5ab`, `origin/m
   `e90af223`, PEAD hook intact) **or `persistence/db.py`** (box md5 `d6395badc3b9b21e13175950d6162949`, baseline —
   Gate-A this at deploy). Shared broker + shared DB are byte-unchanged.
 - **★ LEDGER-ACCURACY CAVEAT (subtle, load-bearing):** if PM advances `prod-live` after deploying, that ledger
-  commit records PM's artifacts **on top of `166b5ab`** — it will **NOT** contain MACE's 8 box-only files. So
+  commit records PM's artifacts **on top of `166b5ab`** — it will **NOT** contain the box-only files that lead it:
+  per the §E CORRECTION that is **~9 MACE-namespace + ~10 non-MACE package files (PEAD / brokers / main.py /
+  persistence/db.py)**, NOT merely "8 MACE files". So
   immediately after a PM prod-live advance, **`prod-live` will NOT fully describe the box** (MACE folds theirs in
   afterward). That is by design — but **the PM ledger commit message MUST SAY SO** ("prod-live advanced to <sha>;
   box additionally carries 8 MACE-only files [mace/*.py, web/mace_*] not yet in prod-live, MACE to fold in") rather
