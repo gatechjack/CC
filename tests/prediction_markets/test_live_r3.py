@@ -109,14 +109,16 @@ def test_subdivision_reads_are_defensive(tmp_path):
 
 def test_assert_live_ready_kalshi_fails_loud(monkeypatch):
     """Credential presence: assert_live_ready RAISES loud on a missing KALSHI key, passes when present. Tested
-    WITHOUT going live (no broker call)."""
+    WITHOUT going live (no broker call). assert_live_ready gates on ANTHROPIC_API_KEY FIRST (unconditional), so we
+    set it in both cases and match the KALSHI-specific message -- proving the KALSHI branch is what gates here."""
     from trading_corp.utils import secrets as S
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-real")   # pass the unconditional anthropic gate
     for k in ("KALSHI_API_KEY_ID", "KALSHI_PRIVATE_KEY_PEM", "KEY_VAULT_URI"):
         monkeypatch.delenv(k, raising=False)
     s_missing = S.load_secrets()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="KALSHI"):
         S.assert_live_ready(s_missing, ("kalshi",))
     monkeypatch.setenv("KALSHI_API_KEY_ID", "id-not-a-real-key")
     monkeypatch.setenv("KALSHI_PRIVATE_KEY_PEM", "-----BEGIN PRIVATE KEY-----\nnot-real\n-----END PRIVATE KEY-----")
     s_present = S.load_secrets()
-    S.assert_live_ready(s_present, ("kalshi",))     # must NOT raise
+    S.assert_live_ready(s_present, ("kalshi",))     # anthropic set + kalshi present -> must NOT raise

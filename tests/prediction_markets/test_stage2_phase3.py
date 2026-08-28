@@ -44,7 +44,7 @@ def test_root_serves_dashboard(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.text
     assert "pm-menu-card" in body                          # the DASHBOARD menu (not the retired scoreboard table)
-    assert "Live sub-divisions" in body and "coming in P3" in body
+    assert "Live sub-divisions" in body and 'href="/live"' in body   # Stage 3 R3 enabled the LIVE card
     assert 'href="/farm"' in body                          # the Farm League menu option links to the tiles
     assert 'pm-region-count">2<' in body                   # data-driven category count (2 seeded)
 

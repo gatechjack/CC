@@ -52,9 +52,8 @@ def test_dashboard_route_resolves(tmp_path, monkeypatch):
     body = r.text
     assert "Farm League" in body
     assert 'href="/farm"' in body                 # the menu option links into the hierarchy
-    # Live sub-divisions are P3 -> present but DISABLED, honest (no fake data)
-    assert "Live sub-divisions" in body and "coming in P3" in body
-    assert "pm-menu-card-disabled" in body
+    # Live sub-divisions -> Stage 3 R3 ENABLED the read-only card + nav link (was disabled 'coming in P3')
+    assert "Live sub-divisions" in body and 'href="/live"' in body
     # data-driven category count = 2 (the two seeded active categories), not a hardcoded number
     assert 'pm-region-count">2<' in body
 
