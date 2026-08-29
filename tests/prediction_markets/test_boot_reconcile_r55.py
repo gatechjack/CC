@@ -4,7 +4,10 @@ comparison. The seed half (R4 Journal) and the LATCH (R5 arm.py) already exist a
 Rulings under test (Jack, 2026-08-29): EXACT K=0 (R-a); journal-only + kalshi-only both mismatch (R-b, R-c);
 FULL-ACCOUNT kalshi-only (R-c); latch on any mismatch -> forces DISARM until a human clears it; SIGNED-net
 compare so a YES/NO SIDE-FLIP is caught (the 5th NO-leg-lens instance); COUNT-ONLY, latch the reconciled
-(account, category) (R-f); FAIL-SAFE on a portfolio-read failure. Structural: injected fetcher, NO broker.
+(account, category) (R-f); FAIL-SAFE on a portfolio-read failure. Plus the adversarial-review hardening:
+a negative per-leg net is SURFACED (not dropped -> false match), ticker case is normalised, a non-integer
+position_fp latches (not silently rounded), a missing journal table RAISES, and the production entry point has
+NO latch-off switch. Structural: injected fetcher, NO broker.
 
 Offline; tmp DBs. Arm state lives in a temp LEGACY agent_state DB; NOTHING real is placed (no broker exists)."""
 import inspect
@@ -43,15 +46,14 @@ def _kpos(ticker, position_fp):
     return {"ticker": ticker, "position_fp": position_fp}
 
 
-def _reconcile(tmp_path, seed_fn, kalshi, *, arm_first=False, latch=True):
+def _reconcile(tmp_path, seed_fn, kalshi, *, arm_first=False):
     leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
     if arm_first:
         arm.arm(global_=True, require_latch_clear=True, legacy_db_path=leg)
         arm.arm(ACCT, CAT, require_latch_clear=True, legacy_db_path=leg)
     with db.connect(p) as conn:
         seed_fn(conn); conn.commit()
-        res = br.reconcile_account(conn, ACCT, CAT, fetch_positions=lambda: kalshi,
-                                   legacy_db_path=leg, latch_on_mismatch=latch)
+        res = br.reconcile_account(conn, ACCT, CAT, fetch_positions=lambda: kalshi, legacy_db_path=leg)
     return res, leg
 
 
@@ -104,8 +106,7 @@ def test_journal_only_is_mismatch_R_b(tmp_path):
 
 # ── R-c kalshi-only (journal flat) -> mismatch, FULL ACCOUNT (a ticker PM never touched) ──
 def test_kalshi_only_is_mismatch_full_account_R_c(tmp_path):
-    # journal is EMPTY; Kalshi shows a position on a ticker the PM journal has never seen -> mismatch anyway
-    res, _ = _reconcile(tmp_path, lambda c: None, [_kpos("KXMLBGAME-99DEC010000XXXYYY-XXX", 2)])
+    res, _ = _reconcile(tmp_path, lambda c: None, [_kpos("KXMLBGAME-99DEC010000XXXYYY-XXX", 2)])  # journal EMPTY
     assert res.reconciled is False and res.latched is True
     assert len(res.diffs) == 1 and res.diffs[0].classification == br.KALSHI_ONLY
     assert res.diffs[0].journal_signed == 0 and res.diffs[0].kalshi_signed == 2
@@ -133,6 +134,46 @@ def test_journal_net_is_entries_minus_exits(tmp_path):
     res, _ = _reconcile(tmp_path, lambda c: (_seed(c, T_TOR, "yes", 5),
                                              _seed(c, T_TOR, "yes", 2, is_exit=1)), [_kpos(T_TOR, 3)])
     assert res.reconciled is True and res.diffs == ()
+
+
+# ── ADVERSARIAL FIX 1: an OVER-EXITED leg (net < 0) is SURFACED, not dropped into a false MATCH ──
+def test_over_exit_negative_signed_net_is_surfaced_not_a_false_match(tmp_path):
+    """A leg over-exited in the journal (net < 0, a booking anomaly) must be SURFACED, not silently dropped.
+    The old reuse of open_positions_needing_manual_exit (its net>0 per-leg filter) would DROP it -> the journal
+    reads flat -> a false MATCH against a flat Kalshi. The direct signed-net query KEEPS the -2 so it latches."""
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        _seed(conn, T_TOR, "yes", 3)                 # entered 3
+        _seed(conn, T_TOR, "yes", 5, is_exit=1)      # exited 5 -> net -2 (anomaly the reconcile must catch)
+        conn.commit()
+        j = br.journal_signed_positions(conn, ACCT)
+    assert j == {T_TOR: -2}                           # KEPT (a net>0 filter would have dropped it to {})
+    diffs = br.compare(j, {})                          # vs a flat Kalshi
+    assert len(diffs) == 1 and diffs[0].classification == br.JOURNAL_ONLY and diffs[0].journal_signed == -2
+
+
+# ── ADVERSARIAL FIX 2: ticker case is normalised on BOTH sides ───────────────
+def test_ticker_case_normalised_both_sides_still_reconciles(tmp_path):
+    """The order path sends str(ticker).upper() to Kalshi; the journal may store any case. Reconcile UPPER-cases
+    both sides so a pure case divergence does NOT spuriously double-latch (journal_only + kalshi_only)."""
+    res, _ = _reconcile(tmp_path, lambda c: _seed(c, "kxmlbgame-scratch-tor", "yes", 3),
+                        [_kpos("KXMLBGAME-SCRATCH-TOR", 3)])
+    assert res.reconciled is True and res.diffs == () and res.latched is False
+
+
+# ── ADVERSARIAL FIX 3: a non-integer position_fp is REFUSED -> fail-safe latch (not rounded to 0, dropped) ──
+def test_fractional_kalshi_position_fails_safe_latches(tmp_path):
+    res, leg = _reconcile(tmp_path, lambda c: None, [_kpos("KXMLBGAME-FRACTION-XYZ", "0.4")])  # would round->0->drop
+    assert res.reconciled is False and res.latched is True and res.read_error is not None
+    assert arm.current_row(ACCT, CAT, legacy_db_path=leg)["auto_trigger"] == arm.AUTO_BOOT_RECONCILE
+
+
+# ── ADVERSARIAL FIX 4: a MISSING journal table RAISES (our own DB; never a silent 'flat') ──
+def test_missing_journal_table_raises_loudly_not_silent_flat():
+    conn = sqlite3.connect(":memory:")                # a bare DB with NO pm_subdivision_order table
+    with pytest.raises(Exception):
+        br.journal_signed_positions(conn, ACCT)
+    conn.close()
 
 
 # ── FULL-ACCOUNT journal side: positions aggregate across categories on the account ──
@@ -184,8 +225,7 @@ def test_clean_reconcile_writes_nothing_and_never_arms(tmp_path):
     assert res.reconciled is True and res.latched is False
     assert arm.current_row(ACCT, CAT, legacy_db_path=leg) is None             # NOTHING written by a clean pass
     assert arm.current_row(None, None, global_=True, legacy_db_path=leg) is None
-    # a clean pass leaves the scope FREELY armable (no latch -> no ack needed)
-    arm.arm(ACCT, CAT, legacy_db_path=leg)
+    arm.arm(ACCT, CAT, legacy_db_path=leg)                                    # freely armable (no latch)
     assert arm.current_row(ACCT, CAT, legacy_db_path=leg)["armed"] is True
 
 
@@ -208,11 +248,13 @@ def test_malformed_kalshi_record_fails_safe_latches(tmp_path):
     assert res.reconciled is False and res.latched is True and res.read_error is not None
 
 
-# ── latch_on_mismatch=False runs the pure comparison with NO side effect ─────
-def test_latch_off_runs_pure_comparison_no_write(tmp_path):
-    res, leg = _reconcile(tmp_path, lambda c: _seed(c, T_TOR, "yes", 3), [], latch=False)
-    assert res.reconciled is False and res.latched is False and len(res.diffs) == 1
-    assert arm.current_row(ACCT, CAT, legacy_db_path=leg) is None             # nothing latched
+# ── compare() is PURE (the only latch-free path; there is NO latch-off switch on reconcile_account) ──
+def test_compare_is_pure_no_side_effect(tmp_path):
+    diffs = br.compare({T_TOR: 3}, {T_TOR: 5})
+    assert len(diffs) == 1 and diffs[0].classification == br.COUNT_MISMATCH
+    leg = _legacy(tmp_path)
+    br.compare({T_TOR: 3}, {})                                    # calling compare touches no arm state
+    assert arm.current_row(ACCT, CAT, legacy_db_path=leg) is None
 
 
 # ── a mixed portfolio: match + journal_only + kalshi_only + count_mismatch at once ──
@@ -231,11 +273,12 @@ def test_mixed_portfolio_classifies_each_ticker(tmp_path):
     assert res.reconciled is False and res.latched is True and len(res.diffs) == 3
 
 
-# ── STRUCTURAL: injected fetcher, this module holds NO broker and cannot place/cancel ──
-def test_structural_no_broker_injected_fetcher():
+# ── STRUCTURAL: injected fetcher, NO latch-off switch, this module holds NO broker ──
+def test_structural_no_broker_no_latch_off_switch():
     sig = inspect.signature(br.reconcile_account).parameters
     assert "fetch_positions" in sig                              # the read seam is INJECTED
     assert "broker" not in sig and "place_fn" not in sig         # no broker object, no placer
+    assert "latch_on_mismatch" not in sig                        # NO latch-off footgun on the production entry point
     for banned in ("KalshiLiveBroker", "KalshiBroker", "place_order", "cancel_order",
                    "httpx", "requests", "asyncio", "pykalshi"):
         assert banned not in dir(br), banned                     # none of them in this module's namespace
