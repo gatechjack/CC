@@ -58,7 +58,10 @@ def _eval(tmp_path, sub, sig, markets):
 
 # ── the schema column exists (migration 012) ──
 def test_migration_012_adds_liquidity_ratio_and_schema_head_is_12(tmp_path):
-    assert db.SCHEMA_HEAD == 12
+    # 012 landed (proven by presence in the chain + the column below). SCHEMA_HEAD is NO LONGER pinned to
+    # a literal here: Stage 4 added migration 013, so the head advanced past 12 -- track the chain, not a
+    # number (the codebase's is-at-head discipline; the '..._is_12' name is now stale, kept for git history).
+    assert (12, db.MIGRATION_012) in db.MIGRATIONS
     p = str(tmp_path / "pm.db"); db.init_db(p)
     with db.connect(p) as conn:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(pm_subdivision)")]
