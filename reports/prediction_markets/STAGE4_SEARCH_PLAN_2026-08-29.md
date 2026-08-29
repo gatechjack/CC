@@ -383,14 +383,21 @@ false statement in deployed code, not a ranking-quality nicety. Built (commit `6
 with the active gate (both AND-ed on distinct LEFT-JOINed tables; active NULL permissive, completeness NULL
 restrictive; neither defeats the other) -- proven by `test_removal_gate::test_scoreboard_completeness_and_active_gates_compose`
 (complete-but-inactive AND active-but-partial BOTH absent) + `::test_scoreboard_excludes_stats_without_pm_whale_row`.
-**★ A nuance surfaced during the fix:** the show-flagged behaviour was DELIBERATE + TESTED --
-`test_stats::test_partial_wallet_excluded_from_ranking` had a name saying "excluded" but a BODY asserting the
-partial whale SURFACES flagged. Option (a) reverses that tested contract (Jack anticipated "makes the flag
-dead"); the test was rewritten to the new excluded contract. Fixture fallout was 3 files (test_removal_gate
+**★★ RECORDED AS A DELIBERATE REVERSAL (Jack ruled, not a bug fix -- so a future reader does not wonder why a
+tested behaviour changed under them):** `test_stats::test_partial_wallet_excluded_from_ranking` had a NAME
+saying "excluded" but a BODY asserting the partial whale SURFACES flagged (INCOMPLETE-NOT-RANKED). So showing
+partial whales WITH A FLAG was a DELIBERATE, TESTED CONTRACT at some point -- option (a) REVERSES it, it does
+not merely correct a bug. Jack is comfortable with the reversal, on this reasoning: the flag was a dead
+backstop, the comment ("excluded from ranking") was FALSE, and ranking on TRUNCATED data is precisely the
+failure that keeps biting this platform. The test was rewritten to the new excluded contract to match. Fixture fallout was 3 files (test_removal_gate
 `_cstats` now seeds a complete pm_whale; test_stage2_nav 0xc1; test_stats), NOT the ~6 estimated (the other
 consumers already seed complete whales). The INCOMPLETE-NOT-RANKED flag is now a dead defensive backstop.
-**★★ SHARED DEPLOYED FILE (stats.py; read live by `pm_cli report` + `web/app.py`) -> its OWN DEPLOY RUNG, a
-SEPARATE authorization (deploy manifest = stats.py, the single changed prod file). Build+box-scratch only here.**
+**★★ SHARED DEPLOYED FILE (stats.py; read live by `pm_cli report` + `web/app.py`). DEPLOY: RIDES WITH R3's
+DEPLOY RUNG (Jack ruled 2026-08-29) -- build-proven, and the false comment is NO LONGER FALSE on the branch, so
+there is no urgency to ship it alone; it is also logically COUPLED to R3 (R3 writes candidates, and R4 ranks
+them via this exact query_scoreboard, which must exclude incomplete whales for the prospects path to be correct
+end-to-end). NOT its own rung. Deploy manifest when R3 ships = stats.py + the R3 prod files (explicit, Gate-A
+incl. transitive imports). Build+box-scratch only here.**
 
 *Planning pass 2026-08-29 (§0-§9). Rulings + ladder + RUNG 1 (§8A/§9A/§9B/§9C) + Rulings 1&2 + RUNG 2
 (§9D/§9E) + query_scoreboard fix (§9F) 2026-08-29. Independent of R7 (order path untouched -- verified via AST on search.py + search_run.py).
