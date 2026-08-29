@@ -136,8 +136,11 @@ async def _noop_sleep(_s):
 
 
 async def test_partial_wallet_excluded_from_ranking(tmp_path):
-    # §13A(k): a PARTIAL backfill (cap-hit -> backfill_complete=0) is NOT scored and is flagged
-    # INCOMPLETE-NOT-RANKED in the report; a COMPLETE wallet alongside it IS scored.
+    # §13A(k) + the completeness gate (2026-08-29, Jack ruled option a): a PARTIAL backfill (cap-hit ->
+    # backfill_complete=0) is NOT scored (compute_scores) AND is now EXCLUDED from query_scoreboard entirely
+    # (the WHERE gate). A COMPLETE wallet alongside it IS scored + ranked. [Was previously show-flagged
+    # INCOMPLETE-NOT-RANKED in the board -- but that surfaced partial-data numbers, and the ranker's own comment
+    # already claimed "excluded from ranking"; the gate makes the claim true. The flag is now a dead backstop.]
     p = str(tmp_path / "pm.db")
     db.init_db(p)
     with db.connect(p) as conn:
@@ -148,8 +151,11 @@ async def test_partial_wallet_excluded_from_ranking(tmp_path):
         stats.compute_scores(conn, now_ts=NOW, min_resolved=1)
         ok_snaps = conn.execute("SELECT COUNT(1) FROM pm_score_snapshot WHERE wallet='0xtestwhale'").fetchone()[0]
         part_snaps = conn.execute("SELECT COUNT(1) FROM pm_score_snapshot WHERE wallet='0xpart'").fetchone()[0]
+        part_complete = conn.execute("SELECT backfill_complete FROM pm_whale WHERE wallet='0xpart'").fetchone()[0]
         board = stats.query_scoreboard(conn, min_resolved=1)
     assert ok_snaps > 0 and part_snaps == 0                          # PARTIAL wallet not scored
-    part = [r for r in board if r["wallet"] == "0xpart"]
-    assert part and all(r["backfill_complete"] == 0 for r in part)   # surfaced, flagged incomplete
-    assert "INCOMPLETE-NOT-RANKED" in stats.format_report(board)
+    assert part_complete == 0                                        # cap-hit -> backfill_complete=0
+    wallets = {r["wallet"] for r in board}
+    assert "0xtestwhale" in wallets                                  # COMPLETE wallet ranked
+    assert "0xpart" not in wallets                                   # PARTIAL wallet EXCLUDED (completeness gate)
+    assert "INCOMPLETE-NOT-RANKED" not in stats.format_report(board) # no incomplete row surfaces -> flag absent

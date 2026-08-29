@@ -52,11 +52,16 @@ def _paper(conn, wallet, category, cid):
                  "entry_observed_ts, opened_ts) VALUES (?,?,?,0,?,?)", (wallet, category, cid, NOW, NOW))
 
 
-def _cstats(conn, wallet, category, *, n_resolved=50, roi=0.1, awp=0.6):
+def _cstats(conn, wallet, category, *, n_resolved=50, roi=0.1, awp=0.6, backfill_complete=1):
     """A completed-lane stats row (pm_category_stats) -- the basis query_scoreboard ranks. Unset NOT NULL
-    caveat columns fall back to their DEFAULT 0."""
+    caveat columns fall back to their DEFAULT 0. ALSO seeds the whale's pm_whale row (INSERT OR IGNORE,
+    default backfill_complete=1): query_scoreboard's completeness gate (2026-08-29) ranks ONLY complete
+    whales, so a prospect expected to surface needs a complete pm_whale row. Pass backfill_complete=0 to
+    model a PARTIAL whale (excluded by the completeness gate)."""
     conn.execute("INSERT INTO pm_category_stats (wallet, category, n_resolved, roi, avg_win_price, updated_ts) "
                  "VALUES (?,?,?,?,?,?)", (wallet, category, n_resolved, roi, awp, NOW))
+    conn.execute("INSERT OR IGNORE INTO pm_whale (wallet, backfill_complete) VALUES (?, ?)",
+                 (wallet, backfill_complete))
 
 
 class _RecordingClient:
@@ -280,3 +285,35 @@ def test_query_scoreboard_join_is_pair_grain_no_fanout(tmp_path):
         board = stats.query_scoreboard(conn, min_resolved=1)
     assert len(board) == 1                                 # fan-out + over-inclusion check (wallet-grain gives 2)
     assert board[0]["wallet"] == "0xmulti" and board[0]["category"] == "nba"   # the ACTIVE pair, never dropped
+
+
+def test_scoreboard_completeness_and_active_gates_compose(tmp_path):
+    """Jack ruled (2026-08-29): query_scoreboard now carries the COMPLETENESS gate AND the active gate. Prove
+    they COMPOSE and neither is defeated by the other -- the same two-gate question asked when the candidate
+    filter sat outside the active gate. complete-but-INACTIVE and active-but-PARTIAL must BOTH be absent."""
+    with db.connect(_fresh(tmp_path)) as conn:
+        _cstats(conn, "0xcompinact", "mlb", backfill_complete=1)    # COMPLETE ...
+        _pin(conn, "0xcompinact", "mlb", active=1)
+        _remove(conn, "0xcompinact", "mlb", "structural")           # ... but INACTIVE (active=0)
+        _cstats(conn, "0xactpart", "mlb", backfill_complete=0)      # PARTIAL ...
+        _pin(conn, "0xactpart", "mlb", active=1)                    # ... but ACTIVE
+        _cstats(conn, "0xgood", "mlb", backfill_complete=1)         # complete + active (control -> shown)
+        _pin(conn, "0xgood", "mlb", active=1)
+        _cstats(conn, "0xpureprospect", "mlb", backfill_complete=1) # complete + NOT on the watchlist (active NULL)
+        conn.commit()
+        board = {r["wallet"] for r in stats.query_scoreboard(conn, min_resolved=1)}
+    assert "0xcompinact" not in board       # active=0 excludes DESPITE backfill_complete=1 (active gate holds)
+    assert "0xactpart" not in board         # backfill_complete=0 excludes DESPITE active=1 (completeness gate holds)
+    assert "0xgood" in board                # complete + active -> ranked
+    assert "0xpureprospect" in board        # complete + active-NULL (LEFT JOIN permissive) -> still ranked
+
+
+def test_scoreboard_excludes_stats_without_pm_whale_row(tmp_path):
+    """The completeness gate is RESTRICTIVE on NULL: a pm_category_stats row with NO pm_whale row (unknown
+    completeness -- rollup keys off pm_closed_position, not pm_whale) must NOT rank. COALESCE(...,0)=1."""
+    with db.connect(_fresh(tmp_path)) as conn:
+        conn.execute("INSERT INTO pm_category_stats (wallet, category, n_resolved, roi, updated_ts) "
+                     "VALUES ('0xorphan','mlb',50,0.2,?)", (NOW,))      # stats only, NO pm_whale row
+        conn.commit()
+        board = {r["wallet"] for r in stats.query_scoreboard(conn, min_resolved=1)}
+    assert "0xorphan" not in board

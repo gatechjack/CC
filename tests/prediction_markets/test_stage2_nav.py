@@ -139,6 +139,8 @@ def test_watchlist_and_prospects_read_separate_bases(tmp_path, monkeypatch):
         _pin(conn, "0xc1", "mlb", status="candidate")    # Prospects -> completed basis
         conn.execute("INSERT INTO pm_category_stats (wallet, category, n_resolved, roi, win_rate, updated_ts) "
                      "VALUES (?,?,?,?,?,?)", ("0xc1", "mlb", 20, 0.10, 0.55, NOW))
+        # completeness gate (2026-08-29): query_scoreboard now ranks ONLY backfill_complete=1 whales
+        conn.execute("INSERT INTO pm_whale (wallet, backfill_complete) VALUES ('0xc1', 1)")
     r = client.get("/farm/mlb")
     assert r.status_code == 200
     body = r.text
