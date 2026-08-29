@@ -362,6 +362,12 @@ class KalshiLiveBroker(Broker):
             tif=_TIF[self._order_type], client_order_id=coid,
         )
 
+        # NOTE (PM Stage 3 R7.c, 2026-08-29): this POST try/except is DUPLICATED in
+        # prediction_markets/live_driver.py:make_place_fn -- the PM live driver POSTs the chokepoint's pre-built body
+        # DIRECTLY (Jack's option (b)), not through place_order, so the approved body+coid are placed verbatim. A fix
+        # to the benign-FOK-vs-loud split below has TWO homes; update both. (live_driver's copy ALSO maps a raw
+        # transport error -> OrderPlacementError -- a deliberate divergence: the PM path treats a lost POST as
+        # possibly-placed and journals it pending-first; this legacy path leaves that to its caller.)
         try:
             resp = await self._client().post(_V2_ORDERS_PATH, body)
         except KalshiError as e:
