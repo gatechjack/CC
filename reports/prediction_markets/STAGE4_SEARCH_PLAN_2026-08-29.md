@@ -223,13 +223,17 @@ state, execution.py, or pm_subdivision\*.**
   Pure/offline, unit-tested (`tests/prediction_markets/test_search_r1.py`), 3-agent adversarial review (watermark +
   selection + migration) findings folded in. **NO candidate write, NO leaderboard/backfill run, NO deploy; LIVE
   STAYS SCHEMA 12.**
-- **RUNG 2 (discovery + incremental backfill orchestration; Jack-run one-shot).** The I/O shell:
-  `fetch_leaderboard` -> pool (Q5: accept ~50/bucket) -> per-wallet incremental backfill using R1's `page_new_rows`
-  (thread `prev_min_ts` across seams; catch `OutOfOrderPage` -> full-page fallback SAME RUN) -> writes
-  `pm_closed_position` (existing table) + a `pm_search_run` row. **★ BUILD-VERIFY (R2): confirm `/closed-positions`
-  is newest-first ACROSS offset (not just page 0), else always full-page.** Sanity-bound the derived watermark
-  (`MAX(resolved_ts)`, gated by `pm_whale.backfill_complete`) `<= now`. Ingest stays ALL-categories (R5). Q3: NO
-  cadence -- a `pm_cli search` command.
+- **★ RUNG 2 (BUILT; discovery + ON-DEMAND first-sight backfill + the run record).** `prediction_markets/
+  search_run.py` (NEW): `discover_wallets` (`fetch_leaderboard` -> a de-duped pool, Q5 ~50/bucket) ->
+  `ensure_backfilled` (Ruling 1: a whale WITH a complete backfill is read from the DB and NEVER auto-re-pulled;
+  never-seen/partial gets ONE full-page `ingest.backfill_wallet`) -> `run_search` records a `pm_search_run` row
+  with per-verdict counts. `refresh_one` = the refresh button's backend (ad-hoc full re-pull, R4 wires it).
+  **Reshaped by Ruling 1 + the R2 probe: backfill is FULL-PAGE only (`/closed-positions` is neither sorted nor
+  date-filterable -- §9C/§9D), so `page_new_rows` is NOT called; incremental is dead.** Writes
+  `pm_closed_position` (via backfill) + `pm_search_run`; NO candidate write (R3). Ingest stays ALL-categories
+  (R5). Injectable client/conn/clock -> offline tests. **The R3 CONTRACT (load-bearing): a partial/failed whale
+  is stamped `backfill_complete=0`; R3 MUST gate the candidate write on `backfill_complete=1` so it is never a
+  candidate nor ranked.**
 - **RUNG 3 (candidate write).** Run R1's `select_candidates` over `pm_category_stats` (+ the open-position recency
   signal) -> write `pm_watchlist(status='candidate', active=1, source='search', search_run_id)` + `pm_roster`. The
   Q4 allowlist gate lives in SELECTION (already in R1); provenance stamped. Respects three-bases + the `active=1`
@@ -323,6 +327,56 @@ full fetch client-side by resolved_ts (still a full fetch, no API saving), or fi
 (`/activity` carries placed-time but truncates at 5k -- a Stage-5 dep). NONE of this changes rung 1; it is recorded
 so rung 2 is built to the evidence, not the assumption.
 
-*Planning pass 2026-08-29 (§0-§9). Rulings + ladder + RUNG 1 build + box-scratch GREEN + build-verify
-2026-08-29 (§8A/§9A/§9B/§9C). Independent of R7 (order path untouched -- verified structurally). Read-only data
-from `cc\pm_stage4_datagather_ro.*` 2026-08-29T21:17Z; box-scratch `cc\pm_stage4_r1_boxscratch.*` 2026-08-29T22:34Z.*
+## 9D. RULINGS 1 & 2 (2026-08-29) + the R2 API probe result. These reshape rung 2.
+- **RULING 1 -- BACKFILL IS ON-DEMAND, not per-run.** A whale ALREADY IN THE DB (complete backfill) is added to
+  results FROM the DB, NO pull ("last updated" = `pm_whale.last_refresh_ts`, VISIBLE not silent). A NEVER-SEEN
+  whale gets ONE first-sight backfill on discovery (unavoidable -- no stats else). A REFRESH BUTTON does an
+  ad-hoc full one-whale pull on demand. NO staleness threshold, NO forced refresh -- Jack's call always. Read
+  as: backfill until COMPLETE once, then never automatically again (a prior partial/failed is re-attempted; a
+  complete whale never is). This dissolves the full-page cost -- API calls only for genuinely new/incomplete
+  wallets, and the ~30-call full page is paid once, on purpose.
+- **★ THE R2 API PROBE (`cc\pm_stage4_r2_apiprobe.*`, 2026-08-29T22:58Z, read-only):** does `/closed-positions`
+  honor a date/since param? **NO.** All 21 candidate param names (12 lower-bound `startTs/start/from/since/...`
+  + 9 upper-bound `endTs/end/to/before/...`) returned the baseline 50 rows UNCHANGED. So `/closed-positions` has
+  NO server-side time filter. Combined with §9C (not newest-first), incremental-at-source is impossible ->
+  **FULL-PAGE backfill is the only path, CONFIRMED not assumed.** (Engine 76416 untouched.)
+- **RULING 2 -- COLUMN SORT, not a fixed ranking (an R4 concern; recorded here).** The prospects table is
+  column-sortable; default order = **cost-ROI desc, thin-sample flagged**. The sort data (roi, n_resolved,
+  last-updated, thin_sample) already lives in `pm_category_stats`+`pm_whale`. **win% decision (recommended):
+  do NOT make win% a sortable column** -- it is ROI-denominator-ruled-out for ranking AND loss-omission-
+  optimistic, so a sortable win% invites the exact mislead F-1 guards; the F-1 caveat stays page-level
+  regardless. Build in R4.
+
+## 9E. RUNG 2 BUILD RECORD (2026-08-29). Build + box-scratch only; live untouched.
+- **Files:** `trading_corp/prediction_markets/search_run.py` (NEW), `tests/prediction_markets/test_search_run_r2.py`
+  (NEW). Reuses `ingest.backfill_wallet`/`refresh_wallet` (which already carry the `backfill_complete`
+  completeness verdict) + `client.fetch_leaderboard` + the `pm_search_run` table (013). Imports NO order path.
+- **Adversarial review (2 agents: silent-gap + orchestration) -- R2 WRITE SIDE AIRTIGHT:** a partial/failed
+  backfill can NEVER stamp `backfill_complete=1` (verdict requires short-page AND pulled==stored); a
+  mid-pagination hard-failure RAISES before any upsert/stamp (nothing half-written); per-wallet isolation; run
+  accounting total; run row ALWAYS closed (added a `try/finally`). Folded in: refresh-on-never-seen test,
+  refresh cap-truncate downgrade (1->0) test, refresh-raises-keeps-1 test, mid-pagination-raise test,
+  partial-relisted-across-runs test.
+- **★★ CRITICAL FINDING -> A DECISION FOR JACK (NOT fixed unilaterally):** the review found the SHARED, DEPLOYED
+  ranker `stats.query_scoreboard` selects `backfill_complete` as a DISPLAY column but does NOT filter on it, so
+  it RANKS partial-backfill whales on truncated `pm_category_stats` data (live via `pm_cli report`). Its own
+  `scoreboard_flags` comment says partial backfill is "excluded from ranking" -- but the WHERE never excludes
+  it (`compute_scores` DOES gate; `query_scoreboard` does NOT). This is an internal INCONSISTENCY in a shared
+  Stage-1/2 subsystem used by 6 test files, and fixing it is a genuine design fork -- so it is NOT a
+  build-rung-2 change. **Options for Jack:** (a) add `AND COALESCE(w.backfill_complete,0)=1` to
+  query_scoreboard's WHERE (matches the stated intent + the `active`-gate pattern + `compute_scores`; makes the
+  INCOMPLETE-NOT-RANKED flag dead; needs ~6 fixture files updated to seed a complete `pm_whale`); (b) keep
+  show-flagged but BLANK the roi/win%/net columns for incomplete rows (preserves visibility, removes the
+  misleading numbers); (c) leave as-is (the flag is deemed sufficient). **Recommend (a)** -- it makes code match
+  its own comment and no caller can forget the gate. **Stage-4 is protected regardless:** the R3 candidate write
+  gates `backfill_complete=1`, so a partial whale never becomes a prospect; the query_scoreboard gap's live
+  exposure is the GENERAL `pm_cli report` board, a pre-existing Stage-1/2 concern R2 merely makes more likely.
+- **§H (three-bases):** RUNG 2 writes to the COMPLETED-trade basis ONLY -- `pm_closed_position` (via backfill,
+  the same table ingest always wrote) + a `pm_search_run` provenance row. It writes NOTHING to the paper
+  (`pm_paper_*`, status='pinned') or live (`pm_subdivision*`) bases, and NO `pm_watchlist` candidate row (that
+  is R3). The three lists stay separate; R2 only refreshes/extends the completed-trade evidence + records a run.
+
+*Planning pass 2026-08-29 (§0-§9). Rulings + ladder + RUNG 1 (§8A/§9A/§9B/§9C) + Rulings 1&2 + RUNG 2
+(§9D/§9E) 2026-08-29. Independent of R7 (order path untouched -- verified via AST on search.py + search_run.py).
+Runners: `cc\pm_stage4_datagather_ro.*` (21:17Z) / `pm_stage4_r1_boxscratch.*` (22:34Z) / `pm_stage4_r2_apiprobe.*`
+(22:58Z) / `pm_stage4_r2_boxscratch.*`.*
