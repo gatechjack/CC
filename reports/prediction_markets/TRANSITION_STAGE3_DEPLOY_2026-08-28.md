@@ -1,5 +1,12 @@
 # TRANSITION — Stage 3 (Money Layer) BUILT, UNSHIPPED → DEPLOY handoff (2026-08-28)
 
+> **★★ SUPERSEDED 2026-08-29 by `TRANSITION_STAGE3_POSTDEPLOY_2026-08-29.md` — read THAT for current state.** The
+> deploy this doc handed off is DONE: all 4 rungs shipped, `origin/prod-live` advanced `166b5ab`→`c88beea`, the first
+> account (`kalshi_jack`) and sub-division (`kalshi_jack, mlb` ← SDTrading) are LIVE, `execution.py`/`arm.py` are INERT,
+> arm is DISARMED (0 `pm_live` rows), and NO order path is reachable. This doc is retained as the pre-deploy record;
+> the §B ladder here has been corrected (pm_cli.py → rung 4; §G quirks 5–6) — the POSTDEPLOY doc carries the final
+> picture, R5.5/R7/R8 order, and R7's go-live gate.
+
 **SUPERSEDES `TRANSITION_STAGE2_COMPLETE_2026-08-28.md`.** That doc described Stage 2 (live). This one is the
 handoff for the **fresh agent who will DEPLOY the built-but-unshipped Stage 3 stack under Jack's per-rung
 authorization.** Read this FIRST, then `STAGE3_PLAN_2026-08-28.md` (the full plan + §12–§18 execution records).
