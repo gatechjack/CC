@@ -56,6 +56,10 @@ CONFIG_DEFAULTS = {
     "max_open_usd": 100.0,
     "max_orders_per_day": 25,
     "max_slippage_cents": 2,
+    # ★ gate-3 liquidity floor = liquidity_ratio * THIS order's notional (Jack RULED 2026-08-29). THE SINGLE SOURCE
+    # of the 0.75 default: a NULL `liquidity_ratio` column (migration 012) reads as 0.75 here. Operators change the
+    # live floor by editing the pm_subdivision.liquidity_ratio NUMBER (read per cycle -- NO restart), NOT this code.
+    "liquidity_ratio": 0.75,
 }
 _ENTRY_TIF = "immediate_or_cancel"   # marketable copy (IOC); exits use the same TIF + reduce_only
 
@@ -84,6 +88,11 @@ class SubConfig:
     max_open_usd: float
     max_orders_per_day: int
     max_slippage_cents: int
+    # gate-3 liquidity floor multiplier: required book depth = liquidity_ratio * THIS order's notional (config, per
+    # sub-division, read per cycle). The dataclass default MIRRORS CONFIG_DEFAULTS['liquidity_ratio'] and exists ONLY
+    # for direct construction (tests); PRODUCTION always sets it explicitly via sub_config_from_row (DB value or the
+    # CONFIG_DEFAULTS fallback), so the two 0.75s never diverge on the live path.
+    liquidity_ratio: float = 0.75
 
     @property
     def division(self) -> str:
@@ -144,6 +153,7 @@ def sub_config_from_row(row) -> SubConfig:
         fixed_stake_usd=float(cap("fixed_stake_usd")), per_order_usd_cap=float(cap("per_order_usd_cap")),
         daily_usd_cap=float(cap("daily_usd_cap")), max_open_usd=float(cap("max_open_usd")),
         max_orders_per_day=int(cap("max_orders_per_day")), max_slippage_cents=int(cap("max_slippage_cents")),
+        liquidity_ratio=float(cap("liquidity_ratio")),   # NULL column -> CONFIG_DEFAULTS 0.75; read PER CYCLE
     )
 
 
@@ -257,18 +267,30 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     if base_price is None:
         return Decision("skip:no_quote", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
                         reason="no_two_sided_quote_for_leg", is_exit=signal.is_exit, disarm_armed=armed)
-    if not M.liquidity_ok(market, min_liquidity_usd=sub.per_order_usd_cap,          # gate 3 (liquid) -- floor tracks the sub cap
-                          max_spread_cents=max(1, sub.max_slippage_cents * 2)):
-        return Decision("skip:illiquid", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
-                        reason="liquidity_floor", is_exit=signal.is_exit, disarm_armed=armed)
-
+    # ★ Compute THIS order's own notional BEFORE the liquidity gate: the gate-3 floor is a RATIO of it (Jack RULED
+    # 2026-08-29), so the depth required scales with the order actually being placed, not a fixed $. (Moved up from
+    # below the liquidity gate; the caps that follow reuse the same values -- pure reordering, no double-compute.)
     count = usd_to_contracts(copy_usd, base_price)
     _side, limit_price = v2_side_and_price(outcome=leg, is_buy=(not signal.is_exit),
                                            base_price=base_price, max_slippage_cents=sub.max_slippage_cents)
-    # ★ OUTCOME-LEG committed cash per contract (the $163.84 fix): a NO leg costs (1 - yes_side_price), NOT the
-    # yes-side price. EVERY USD cap gates on this, so the caps measure the money the account actually commits.
+    # ★ OUTCOME-LEG committed cash per contract (the $163.84 fix / the NO-leg lens -- bitten 6x): a NO leg costs
+    # (1 - yes_side_price), NOT the yes-side price. EVERY USD gate -- the caps AND now the liquidity floor -- gates
+    # on THIS, the money the account actually commits on THIS leg.
     leg_cost = limit_price if leg == "yes" else (1.0 - limit_price)
     notional = count * leg_cost
+    # gate 3 (liquid): required book depth = liquidity_ratio * THIS order's notional (config, per sub-division, READ
+    # PER CYCLE; NOT a fixed $, NOT per_order_usd_cap -- decoupled: the cap limits what we SPEND, the floor checks the
+    # book can SERVE it). ** CONSEQUENCE (Jack ruled knowingly): at ratio < 1.0 the book may not FULLY fill the order
+    # -- a partial fill / walking to the next price level is possible. At 1 contract that is fill-or-nothing
+    # (meaningless); at larger sizes the residual price movement is bounded SEPARATELY by the slippage cap (gate 7,
+    # clamped inside build_v2_event_order). This floor is a "can the book serve most of it" check, NOT a full-fill
+    # guarantee. ** notional is leg-correct (above), so a NO-leg floor scales with (1-yes_price), never the yes side.
+    required_depth = sub.liquidity_ratio * notional
+    if not M.liquidity_ok(market, min_liquidity_usd=required_depth,                   # gate 3 (liquid) -- ratio x notional
+                          max_spread_cents=max(1, sub.max_slippage_cents * 2)):
+        return Decision("skip:illiquid", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                        count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
+                        reason="liquidity_floor:need_%.4f=ratio_%.2f*notional_%.4f" % (required_depth, sub.liquidity_ratio, notional))
     if notional > sub.per_order_usd_cap + 1e-9:                                       # gate 2b (per-order USD ceiling)
         return Decision("reject:per_order_cap", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
                         count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,

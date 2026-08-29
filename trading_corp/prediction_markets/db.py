@@ -714,6 +714,19 @@ MIGRATION_011: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_subattach_wallet ON pm_subdivision_attachment(wallet, category, active)",
 ]
 
+# migration 012 (2026-08-29, Stage 3 R7.f-prep): per-sub-division LIQUIDITY RATIO.
+# Jack RULED (2026-08-29): the gate-3 liquidity floor is a RATIO of THE ORDER'S OWN notional (default 0.75x),
+# NOT a fixed $ and NOT bound to per_order_usd_cap. A 1-contract ~$0.50 order was demanding $25 of depth (50x its
+# own size) and skipping every real match. The ratio is CONFIG (per sub-division, so different subs can differ),
+# READ PER CYCLE (execution.sub_config_from_row -> a value change takes effect with NO engine restart, exactly like
+# fixed_stake_usd), and DEFAULTED IN CODE (execution.CONFIG_DEFAULTS['liquidity_ratio']=0.75 so a NULL column reads
+# as 0.75, never zero-depth-required). ** PURE DDL. ** Behaviour-neutral: existing rows get NULL -> code default;
+# read by NO path until the new gate-3 code deploys. NUMBERED ON LANDING (next after 011). Idempotent via the
+# schema_version guard (init_db runs a version's SQL exactly once; ADD COLUMN is not IF-NOT-EXISTS-able in SQLite).
+MIGRATION_012: list[str] = [
+    "ALTER TABLE pm_subdivision ADD COLUMN liquidity_ratio REAL",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -726,6 +739,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (9, MIGRATION_009),
     (10, MIGRATION_010),
     (11, MIGRATION_011),
+    (12, MIGRATION_012),
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"
