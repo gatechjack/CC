@@ -1,0 +1,229 @@
+# STAGE 4 — SEARCH (whale discovery -> prospects): PLANNING PASS (2026-08-29)
+
+**STATUS: PLANNING ONLY. No code / migration / deploy / write authorized. Read-only.** This plan answers Jack's
+Stage-4 brief on his rulings, grounded in real data pulled read-only from the box (runner
+`cc\pm_stage4_datagather_ro.*`, 2026-08-29T21:17Z) and the existing code (cited file:line). It ends with a RANKED
+list of decisions that are Jack's. **Independent of R7** — Search is a different code path (discovery/ingest) and a
+different data path (`pm_closed_position` / `pm_category_stats` / `pm_watchlist`), touching NOTHING on the order
+path (the driver, arm state, `execution.py`, `pm_subdivision*`).
+
+## 0. ORIENT (verified read-only, 2026-08-29)
+- **Branch** `prediction-markets-stage3-r55-2026-08-29` @ `8dd308c` (local==origin, fetched+verified). **`origin/prod-live`**
+  `c88beea` (verified; **diverged** from my branch -- my branch predates prod-live's advance, as documented -- so Stage 4,
+  when it builds, deploys by EXPLICIT MANIFEST).
+- **Live PM DB schema = 12** (NOT 11; migration 012 `pm_subdivision.liquidity_ratio` deployed at R7.f step 1). So the
+  Stage-4 migration is **013** (Jack's number is correct; the rebuild-plan's "010 pm_search_run" is STALE).
+- Prospects list is **empty by construction today** -- NO code writes `status='candidate'` (this is the gap Search fills).
+
+---
+
+## 1. THE TWO-PASS SHAPE (Jack ruling #3) -- forced by the endpoint reality (item a)
+
+**A REAL `/v1/leaderboard` response** (`fetch_leaderboard`, `polymarket_data_api_client.py:424`, `GET
+https://data-api.polymarket.com/v1/leaderboard`), Sports bucket, first rows:
+```
+rank=1 wallet=0xf031...c80c  name=BreakTheBank  vol=$1,584,511  pnl=$535,328
+rank=5 wallet=0x5268...135d  name=HomeRunHazard vol=$2,364,485  pnl=$250,290
+rank=6 wallet=0x2005...75ea  name=RN1           vol=$6,019,359  pnl=$245,763
+```
+**The ONLY fields returned:** `rank, proxy_wallet, user_name, x_username, verified_badge, vol, pnl`. There is **NO fine
+category, NO recency/timestamp, NO resolved-market count.** Categories are 5 COARSE buckets only
+(`Politics, Sports, Crypto, Tech, Mentions`, `client.py:68`); the finer PM categories (mlb/nba/...) return empty.
+`timeframe` is silently ignored -- **all-time data only.**
+
+**-> Which of Jack's two filters can be applied BEFORE backfill? NEITHER.**
+- **Category count (N>=50):** NO -- category is derived by slug-parsing positions we must fetch; the leaderboard's
+  "Sports" is one undivided bucket.
+- **Recency:** NO -- **and this corrects the brief's "recency may be available":** the leaderboard carries no
+  timestamp and ignores `timeframe`; all-time `vol`/`pnl` cannot distinguish a whale active this week from one dormant
+  since 2023.
+
+So the shape is unavoidable and matches ruling #3: **Pass 1 = leaderboard discovers a POOL of wallets** (Sports bucket
++ optionally global; a crude all-time-pnl seed, no Jack-filter applicable). **Pass 2 = backfill each wallet -> derive
+`n_resolved` per (wallet,category) + `resolved_ts` -> apply BOTH filters -> rank -> write candidates.**
+
+---
+
+## 2. THE SELECTION FILTER (Jack ruling #1): N>=50 resolved-in-category + recent activity
+
+### 2a. N >= 50 -- checked against our OWN data FIRST (item d). It CUTS HARD.
+`pm_category_stats.n_resolved` (the count of scoreable resolved markets per (wallet,category); `stats.py:78`,
+`db.py:147`) across the existing **114 pairs**:
+
+| stat | value |
+|---|---|
+| min / p25 / **median** / p75 / p90 / max | 0 / 3 / **12** / 135 / 463 / 6782 |
+| mean | 256.5 |
+| **>= 50** | **46 pairs (40%)** |
+| < 50 | 68 pairs (60%) |
+| >= 25 | 51 (45%) &nbsp;&nbsp; >= 100 | 37 (32%) |
+
+**The median is 12 -- so N>=50 is well above the middle and cuts ~60% of pairs.** It selects the high-volume tail.
+Of the 92 active watchlist pairs, only **37 reach 50**. **Per-category the impact is UNEVEN:**
+```
+ufc 10/9   mlb 10/4   nfl 9/4   nba 8/3   atp 8/2   soccer 8/3   epl 6/1   ucl 6/1
+nhl 6/2    fed 4/2    tennis 4/2  wnba 4/1  wta 4/1  cs2 2/2   golf 3/0   cbb 3/0
+                                                                (total / >=50)
+```
+**-> A GLOBAL N>=50 yields ZERO prospects in golf, cbb (and is very thin in epl/ucl/wnba/wta).** These are
+low-per-whale-volume categories. **Decision for Jack (evidence-backed):** keep 50 as a selective floor (accepting
+golf/epl/ucl start empty until a high-volume whale appears), OR use a lower floor for niche categories (e.g. 25 ->
+45% survive), OR a per-category N. 50 is defensible for the sports where whales concentrate (ufc/mlb/nfl/nba); it is
+too high for the thin ones. **This is Jack's to rule with the numbers above.**
+
+### 2b. RECENCY -- "placed OR settled" (item e). The SETTLED half is easy; the PLACED half has a real gap.
+What we store (verified columns):
+- **SETTLED: precise + available.** `pm_closed_position.resolved_ts` (unix settlement time; `db.py:127`, indexed
+  `ix_pm_cp_wallet_resolved`). "settled in last N days" = `resolved_ts >= now - N*86400`. (Live: 30d window = 1,433
+  rows across 10 wallets -- the legacy set is small.)
+- **PLACED: NOT stored.** `pm_closed_position` has NO entry/placed timestamp (only `resolved_ts`, `end_date`,
+  `ingested_ts`). `/positions` -> `pm_open_position` has only `refreshed_ts` (when WE polled), no fill time, and is
+  **0 rows right now** (transient; the paper poller repopulates it). True placement time lives ONLY in `/activity`
+  (`ActivityRow.timestamp`), which the PM package **does not persist** (and which truncates at 5,000 rows).
+
+So Jack's "entered heavily two weeks ago, nothing resolved yet = ACTIVE" (PLACED) is **not computable from stored
+data**. Two ways to honour it (Jack chooses):
+- **(A) Open-position proxy -- cheap, no new ingest.** Search's pass-2 backfill already can pull `/positions`
+  (`ingest.refresh_open_positions`, `ingest.py:301`) into `pm_open_position` for each discovered wallet. Then
+  recency = `resolved_ts >= now-N*86400` **OR** `has >= 1 open position in the category`. This captures Jack's case
+  (open positions = active now) but is NOT time-bounded (a 6-month-old open position also counts as "active").
+- **(B) `/activity` ingest -- precise, more work.** Persist `/activity` (placed timestamps) -> "placed in last N
+  days" exactly. Cost: a new pull + table + the 5,000-row truncation caveat for large whales (BetMechanic/nba has
+  6,782 resolved alone). This is what Stage 5 also needs for loss-grounding, so it may be worth building once.
+
+**Recommend (A)** for Stage-4 selection (open = active is the operative case; precise placed-time is a refinement),
+and note (B) is the Stage-5 dependency anyway. **The window N (7 / 14 / 30d) is Jack's** -- from the data, 7d catches
+10 wallets, 30d catches 10, 90d catches 11 (our set is small + concentrated, so the window barely changes the count
+here; it will matter on the ~50 discovered wallets).
+
+---
+
+## 3. THE CIRCULARITY -> INCREMENTAL BACKFILL (Jack ruling #2). HOW BIG IS THE PROBLEM? (item c) -- SMALL.
+- **Pool per run: ~50 wallets.** The leaderboard is **capped at ~50 entries per bucket** (asked limit=250, got 50).
+  Sports + global overlap heavily (sbsigner/nigiri99/RN1 appear in both), so the unique discovery universe is **~50-90
+  wallets per run**, not thousands. (Verify: whether `offset` pages past 50 -- if so the pool can be widened; if not,
+  50 is the ceiling.)
+- **Backfill cost per wallet:** `/closed-positions` returns 50 rows/call (`client.py:534`), a whale caps at ~1,500
+  rows (offset ~2000 empty), so a **FULL backfill = ~30 calls (~1-2 min with 429 backoff)**. A first full run of 50
+  wallets = ~1,500 calls, ~15-40 min.
+- **Incremental makes re-runs cheap (ruling #2, confirmed):** the same wallets recur across runs, so after the
+  one-time full backfill each run fetches ONLY new trades. **BUT `/closed-positions` has NO time filter** (only
+  `limit`/`offset`) -- so "incremental" is NOT a since-T API call; it is **page newest-first and STOP at the wallet's
+  last-seen `resolved_ts`**. This works ONLY IF `/closed-positions` returns newest-first. **★ VERIFY THIS ON THE BOX
+  before building** -- if it is not recency-sorted, stop-at-watermark fails and every run full-pages (still ~30
+  calls/wallet, still affordable, but not "incremental"). Today `ingest.backfill_wallet` always full-pages from
+  offset 0 (`ingest.py:226`); there is NO incremental path -- Stage 4 adds the stop-at-watermark.
+
+**-> Order of magnitude: ~50 wallets/run, ~30 API calls each on first sight, a few calls each thereafter. Affordable
+per ruling #2. This is a small problem.**
+
+---
+
+## 4. THE WATERMARK REGISTRY (item b). `pm_search_run` alone is NOT sufficient.
+Two distinct things are needed:
+- **RUN-level: `pm_search_run` (migration 013).** Records each run: `run_id` PK, `started_ts`, `finished_ts`,
+  `category` (or 'all'), `leaderboard_limit`, `n_discovered`, `n_backfilled`, `n_candidates_written`, params (N,
+  window), a status/summary. `pm_watchlist.search_run_id` is the RESERVED FK to it (`db.py:465`). This answers "what
+  did each run do," and stamps every candidate with its provenance run.
+- **WALLET-level watermark: needed for incremental, and `pm_search_run` does NOT carry it.** A run must know, per
+  wallet, the newest trade it already has -- to page-until-watermark. `pm_whale` today has `last_backfill_ts /
+  last_refresh_ts / backfill_complete / last_pulled / last_stored` (verified columns) -- these are OUR-run
+  provenance stamps, **NOT** the wallet's newest `resolved_ts`. Options: **(i) derive** the watermark on the fly as
+  `SELECT MAX(resolved_ts) FROM pm_closed_position WHERE wallet=?` (no new column; `backfill_complete` on `pm_whale`
+  gates whether the first full backfill is done); or **(ii) add** `pm_whale.last_resolved_watermark_ts` for O(1)
+  reads. **Recommend (i)** (derive) -- one indexed MAX query, no schema change beyond 013, and it cannot drift from
+  the actual stored data. So **migration 013 = `pm_search_run` only**; the wallet watermark is derived + gated by the
+  existing `pm_whale.backfill_complete`.
+
+---
+
+## 5. WHERE PROSPECTS LAND (item f). Respects the three-bases + the active gate; NO auto-promotion.
+- **The write:** Search inserts `pm_watchlist (wallet, category, status='candidate', active=1, source='search',
+  search_run_id=<run>, added_ts, updated_ts)` + the paired `pm_roster` row (mirrors the pinned-seed precedent
+  `paper.py:540-543`, but status='candidate' not 'pinned'). This is the ONE new write path -- nothing writes
+  'candidate' today.
+- **The three bases stay separate (the load-bearing invariant):** a candidate renders the **completed-trade basis**
+  (`pm_category_stats` <- `pm_closed_position`), NOT paper (`pm_paper_category_stats`), NOT live (P3). Every
+  `pm_watchlist` consumer already gates `AND active=1` (verified: `farm.py:53/91/123/166`, `paper.py:142/497/562`,
+  `stats.py:290`, `farm_actions.py`).
+- **NO auto-promotion, NO auto-paper:** a discovered wallet lands as `status='candidate'` (Prospect) only. It is NOT
+  pinned (paper-trading is pinned-only, `paper.poll_pinned` gates `status='pinned'`) and NOT attached to a live
+  sub-division. **Promotion (candidate -> pinned) stays the manual board action** (`farm_actions.promote_to_watchlist`,
+  the /farm button). Search populates; the human promotes.
+- **★ R2 -- the category-level exclusion (a NEW selection gate, mechanism to choose).** `active` is per-ROW; Jack's
+  exclusion is per-CATEGORY (cbb/fifwc/unknown show nowhere). Search discovering a whale in an excluded category would
+  insert `active=1` and surface it -- a row flag cannot stop a pair that did not exist when the 22 were deactivated
+  (PM_REQUIREMENTS R2). So Search's SELECTION must filter categories to the **15 ruled-in** set
+  (`mlb, nba, nfl, nhl, wnba, epl, ucl, soccer, atp, wta, tennis, cs2, golf, ufc, fed`) BEFORE writing candidates --
+  a discovered position in cbb/fifwc/unknown is backfilled (R5: ingest stays all-categories) but NOT written as a
+  candidate. Mechanism options (Jack rules): a code constant set of allowed categories in the selection query, OR a
+  `pm_category_status` table. **Recommend the code constant** (the 15 are already RULED and stable; a table is
+  over-engineering for a 15-item allowlist) -- but flag that `cbb` re-admits after its probe, so the constant must be
+  a single edit point.
+- **R5 honoured:** the PULL/backfill stays ALL-categories (so cbb/fifwc/unknown keep accumulating evidence for later
+  analysis); exclusion is ONLY at candidate SELECTION, never at ingest.
+
+---
+
+## 6. THE LOSS-OMISSION (item g). Rank on cost-ROI, never win%, and LABEL the bias on screen.
+Everything Search ranks on comes from `pm_closed_position`, which **systematically under-reports held losses**
+(measured: evanng 89 held losses -> 33 captured, 63% dropped; shows 77% WR vs ~52% true). The candidate basis
+(`pm_category_stats`) has this baked in.
+- **Ranking key: cost-ROI, NEVER win%** (the rebuild-plan BASIS test + the chalk lesson). Note even cost-ROI is
+  biased UP (dropped losses inflate net pnl), but **Jack's two FILTERS are bias-ROBUST**: `n_resolved` is a COUNT
+  (unaffected by which rows are losses) and `resolved_ts` is a timestamp. So the SELECTION (who surfaces) is not
+  loss-biased; only the within-list ORDER (cost-ROI) is, and it is a screen, not the promotion decision.
+- **★ The label is currently MISSING.** The prospect screen today has no explicit loss-omission caveat -- only an
+  indirect "rough screen; Analyze is the judge" and a global "bias down, never up" footer. **Stage 4 must add an
+  explicit, on-list caveat** naming the bias ("win rates over-stated: the completed-trades API under-reports held
+  losses, wallet-dependently; this list is a SCREEN, Analyze is the promotion judge") so a ranked list does not imply
+  precision it lacks (PM_REQUIREMENTS F-1 / R4 basis discipline). Analyze (Stage 5) is where the loss set is
+  re-grounded per pair; Search only screens.
+
+---
+
+## 7. THE SOURCES NOTE (Jack's flag). No third-party leaderboard tool is used or trusted.
+Jack flagged an outside suggestion of third-party tools (polycopy.app, Polyintel, FrenFlow, Merlin, Poly Syncer)
+with specific figures. **I did NOT evaluate or build on any of them** -- every filter Jack ruled (N>=50,
+placed/settled recency, cost-ROI rank) is computable from data we already ingest via the public Polymarket
+`/v1/leaderboard` + `/closed-positions` + `/positions` endpoints (verified above with a real response). I observed no
+evidence these third-party tools exist or expose an auditable score; the plan uses only the first-party endpoints and
+our own `pm_category_stats`. If Jack wants any external source evaluated, that is a separate, explicit read-only probe
+(verify-it-exists-first), not a dependency of this plan.
+
+---
+
+## 8. THE BUILD SHAPE (for context only -- NOT authorized)
+Fork the legacy scout (`seed_polymarket_watchlist_deep.py` / `refresh_polymarket_whales.py`) into the PM package
+(never edit/import legacy, per rule); REUSE `PolymarketDataAPIClient.fetch_leaderboard` + `ingest` (backfill, + the
+new stop-at-watermark) + `stats.rollup`/`query_scoreboard` (rank). Migration 013 = `pm_search_run`. A `pm_cli
+search` subcommand (one-shot, like the paper cadence) that Jack runs; NO auto-cron until proven. Rungs, each its own
+authorization: (R0) migration 013 pure-DDL; (R1) discovery pass read-only (leaderboard -> pool, no writes); (R2)
+backfill + incremental watermark (writes pm_closed_position, the existing table); (R3) rank + candidate write (the
+new status='candidate' path + the R2 category gate + the F-1 label); (R4) the /farm prospects screen renders the
+populated list. Box-scratch each; deploy by explicit manifest with Gate-A incl. transitive imports.
+
+---
+
+## 9. RANKED LIST -- what I need from Jack (decisions, not code)
+1. **N>=50 -- confirm or set per-category.** Evidence (item d): global 50 cuts 60% of pairs and yields ZERO prospects
+   in golf/cbb/epl-thin categories (whales there have <50 resolved). Keep 50 (selective; niche categories start
+   empty), lower to 25 (45% survive), or a per-category floor? **[Q1 -- has real numbers to decide on.]**
+2. **The recency WINDOW + the PLACED source.** Window 7 / 14 / 30 days? And PLACED recency = the cheap open-position
+   proxy (recommended; "has an open position" = active, no new ingest) OR `/activity` ingest (precise placed-time,
+   more work, 5k-row truncation, also a Stage-5 dependency)? **[Q2]**
+3. **Run CADENCE + how many prospects per category** Jack wants to SEE (a top-K per category after ranking, or all
+   that pass the filter?). One-shot `pm_cli search` he runs, or an installed cadence? **[Q3]**
+4. **The R2 category-exclusion MECHANISM:** a code constant (the 15 ruled-in allowlist -- recommended) vs a
+   `pm_category_status` table. **[Q4]**
+5. **Leaderboard breadth:** the pool caps at ~50/bucket -- accept 50 Sports whales/run, or verify+use `offset` to
+   page deeper, or add the global bucket + other buckets? **[Q5]**
+6. **Verify-then-decide (I will confirm read-only before building, not assume):** is `/closed-positions` newest-first
+   (determines whether incremental stop-at-watermark is possible)? This is a build-time verify, flagged so it is not
+   assumed. **[not a Jack decision -- a build precondition I will prove.]**
+
+**HALT. No build authorized.** When Jack rules Q1-Q5, the plan converts to a rung ladder (section 8), each rung its
+own authorization, build -> box-scratch -> HALT, never chained.
+
+*Planning pass, 2026-08-29. Independent of R7 (untouched). Read-only data from `cc\pm_stage4_datagather_ro.*`
+2026-08-29T21:17Z; engine PID 76416 unchanged.*
