@@ -1,6 +1,10 @@
-# STAGE 4 — SEARCH (whale discovery -> prospects): PLANNING PASS (2026-08-29)
+# STAGE 4 — SEARCH (whale discovery -> prospects): PLAN + RUNG LADDER (2026-08-29)
 
-**STATUS: PLANNING ONLY. No code / migration / deploy / write authorized. Read-only.** This plan answers Jack's
+**STATUS (2026-08-29, post-ruling): ALL FIVE Q's RULED (§9A). §8 converted to the RUNG LADDER (§8A). RUNG 1
+BUILT (build + box-scratch only; live untouched at schema 12; NOTHING deployed). Rungs R2-R4 UNAUTHORIZED.
+R7 is SEPARATE + UNTOUCHED (order path not referenced; verified structurally). HALT after rung 1.**
+
+The planning pass below is preserved as the grounding record. This plan answers Jack's
 Stage-4 brief on his rulings, grounded in real data pulled read-only from the box (runner
 `cc\pm_stage4_datagather_ro.*`, 2026-08-29T21:17Z) and the existing code (cited file:line). It ends with a RANKED
 list of decisions that are Jack's. **Independent of R7** — Search is a different code path (discovery/ingest) and a
@@ -193,15 +197,45 @@ our own `pm_category_stats`. If Jack wants any external source evaluated, that i
 
 ---
 
-## 8. THE BUILD SHAPE (for context only -- NOT authorized)
+## 8. THE BUILD SHAPE (superseded by §8A once rulings landed -- kept for context)
 Fork the legacy scout (`seed_polymarket_watchlist_deep.py` / `refresh_polymarket_whales.py`) into the PM package
 (never edit/import legacy, per rule); REUSE `PolymarketDataAPIClient.fetch_leaderboard` + `ingest` (backfill, + the
-new stop-at-watermark) + `stats.rollup`/`query_scoreboard` (rank). Migration 013 = `pm_search_run`. A `pm_cli
-search` subcommand (one-shot, like the paper cadence) that Jack runs; NO auto-cron until proven. Rungs, each its own
-authorization: (R0) migration 013 pure-DDL; (R1) discovery pass read-only (leaderboard -> pool, no writes); (R2)
-backfill + incremental watermark (writes pm_closed_position, the existing table); (R3) rank + candidate write (the
-new status='candidate' path + the R2 category gate + the F-1 label); (R4) the /farm prospects screen renders the
-populated list. Box-scratch each; deploy by explicit manifest with Gate-A incl. transitive imports.
+new stop-at-watermark) + `stats` (rank). Migration 013 = `pm_search_run`. A `pm_cli search` subcommand (one-shot,
+like the paper cadence) that Jack runs; NO auto-cron until proven.
+
+---
+
+## 8A. THE RUNG LADDER (post-ruling, AUTHORIZED per-rung). Build -> box-scratch -> HALT, never chained.
+Each rung forks legacy scout PATTERNS (never import/edit legacy, per rule) and deploys by EXPLICIT MANIFEST with
+Gate-A incl. TRANSITIVE imports. **R7 is a different code path entirely -- Stage 4 never touches the driver, arm
+state, execution.py, or pm_subdivision\*.**
+
+- **★ RUNG 1 (THIS RUNG -- BUILT; the PURE CORE + migration 013).** `db.py` migration **013 = `pm_search_run`**
+  (pure DDL; run-level provenance + the ruled knobs; SCHEMA_HEAD -> 13) + **`prediction_markets/search.py`**:
+    - the **category ALLOWLIST** constant (Q4) -- the 15 ruled-in categories, single edit point;
+    - the incremental-backfill **WATERMARK** decision `page_new_rows` -- asserts newest-first INTRA-page AND the
+      inter-page SEAM (threaded `prev_min_ts`), re-includes unreadable-ts rows (never silently drops), raises
+      `OutOfOrderPage` on any violation so an early stop can never skip a trade (the worst failure class);
+    - the candidate **SELECTION + RANK** `select_candidates` -- N>=50 with the **<10-qualifier top-10 THIN-SAMPLE
+      fallback** (Q1), **30d recency via the open-position proxy as a GATE** the fallback still respects (Q2),
+      **cost-ROI rank NEVER win%** (F-1), and COMPLETE exclusion accounting (every dropped row counted);
+    - `LOSS_OMISSION_CAVEAT` -- the exact on-screen F-1 label string (the web layer imports it in R4).
+  Pure/offline, unit-tested (`tests/prediction_markets/test_search_r1.py`), 3-agent adversarial review (watermark +
+  selection + migration) findings folded in. **NO candidate write, NO leaderboard/backfill run, NO deploy; LIVE
+  STAYS SCHEMA 12.**
+- **RUNG 2 (discovery + incremental backfill orchestration; Jack-run one-shot).** The I/O shell:
+  `fetch_leaderboard` -> pool (Q5: accept ~50/bucket) -> per-wallet incremental backfill using R1's `page_new_rows`
+  (thread `prev_min_ts` across seams; catch `OutOfOrderPage` -> full-page fallback SAME RUN) -> writes
+  `pm_closed_position` (existing table) + a `pm_search_run` row. **★ BUILD-VERIFY (R2): confirm `/closed-positions`
+  is newest-first ACROSS offset (not just page 0), else always full-page.** Sanity-bound the derived watermark
+  (`MAX(resolved_ts)`, gated by `pm_whale.backfill_complete`) `<= now`. Ingest stays ALL-categories (R5). Q3: NO
+  cadence -- a `pm_cli search` command.
+- **RUNG 3 (candidate write).** Run R1's `select_candidates` over `pm_category_stats` (+ the open-position recency
+  signal) -> write `pm_watchlist(status='candidate', active=1, source='search', search_run_id)` + `pm_roster`. The
+  Q4 allowlist gate lives in SELECTION (already in R1); provenance stamped. Respects three-bases + the `active=1`
+  gate; NO auto-pin/paper -- promotion (candidate -> pinned) stays the manual /farm board action.
+- **RUNG 4 (the /farm prospects screen).** Renders the populated candidate list with the VISIBLE `LOSS_OMISSION_CAVEAT`
+  (F-1) + the THIN-SAMPLE flags. pm_web-restart-only activation.
 
 ---
 
@@ -222,8 +256,55 @@ populated list. Box-scratch each; deploy by explicit manifest with Gate-A incl. 
    (determines whether incremental stop-at-watermark is possible)? This is a build-time verify, flagged so it is not
    assumed. **[not a Jack decision -- a build precondition I will prove.]**
 
-**HALT. No build authorized.** When Jack rules Q1-Q5, the plan converts to a rung ladder (section 8), each rung its
+**HALT. No build authorized.** When Jack rules Q1-Q5, the plan converts to a rung ladder (section 8A), each rung its
 own authorization, build -> box-scratch -> HALT, never chained.
 
-*Planning pass, 2026-08-29. Independent of R7 (untouched). Read-only data from `cc\pm_stage4_datagather_ro.*`
-2026-08-29T21:17Z; engine PID 76416 unchanged.*
+---
+
+## 9A. JACK'S RULINGS (2026-08-29) -- all five settled; the ladder (§8A) and RUNG 1 are built to these.
+- **Q1 -- N>=50 STANDS, WITH A FALLBACK.** When a category yields FEWER THAN 10 qualifiers, take the **TOP 10** in
+  that category regardless of the floor, flagged **THIN-SAMPLE** on screen. (`search.select_candidates`:
+  `len(qualifiers) < thin_sample_target(10)` -> `pool[:10]`; each `n_resolved < 50` row `thin_sample=True`.)
+- **Q2 -- RECENCY: 30 DAYS, via the OPEN-POSITION PROXY.** `/activity` ingest (precise placed-time) is a Stage-5
+  dependency and **must NOT be pulled forward into Stage 4.** (`_is_recent`: `has_open_position` OR
+  `last_resolved_ts >= now - 30d`; a GATE the fallback respects -- a dormant whale never surfaces.)
+- **Q3 -- CADENCE: NONE.** Search is a ONE-SHOT `pm_cli` command (R2). Return **ALL that pass** (with the top-10
+  fallback), not a top-K cap. (Normal category returns every qualifier; only a fallback category caps at 10.)
+- **Q4 -- R2 EXCLUSION: an ALLOWLIST CONSTANT.** (`search.CATEGORY_ALLOWLIST` -- the 15 ruled-in categories, one
+  edit point; cbb re-admits here after its probe. Ingest stays all-categories, R5.)
+- **Q5 -- LEADERBOARD BREADTH: accept ~50/bucket.** (R2 discovery pool; no offset-paging / extra buckets required.)
+- **Build-verify (not a Jack decision):** `/closed-positions` newest-first is UNVERIFIED (the endpoint has no `sort`
+  param -- confirmed at `fetch_closed_positions`). RUNG 1 does NOT assume it: `page_new_rows` ASSERTS it (intra-page
+  + inter-page seam) and RAISES on violation. The live cross-offset confirmation is a **RUNG 2** precondition.
+
+## 9B. RUNG 1 BUILD RECORD (2026-08-29). Build + box-scratch only; live untouched.
+- **Files:** `trading_corp/prediction_markets/db.py` (migration 013 `pm_search_run` + `MIGRATIONS`/`SCHEMA_HEAD`->13),
+  `trading_corp/prediction_markets/search.py` (NEW), `tests/prediction_markets/test_search_r1.py` (NEW).
+- **Adversarial review (3 agents: watermark / selection / migration+tests) findings ALL folded in:**
+  - **HIGH (would have failed box-scratch):** the R7-isolation test used a substring scan -- `"arm" in src`
+    false-matches "farm" (search.py mentions "the /farm screen"). FIXED: the test now parses imports via AST and
+    matches whole module names.
+  - **CRITICAL (design):** `_assert_descending` checked only INTRA-page order, but an early stop is safe only under
+    GLOBAL (across-page) descending order -- a stream descending within each 50-row page but inverted AT A PAGE SEAM
+    would stop early and skip newer trades on a later page. FIXED in the pure layer: `page_new_rows` takes an optional
+    `prev_min_ts` and asserts the seam; the residual (the stop halts before the next unfetched seam) is documented as
+    a RUNG 2 obligation (proven-global-sort OR a confirm-horizon page). 
+  - **MEDIUM:** an "unreadable ts" (None/0) row was silently DROPPED from `new_rows` in incremental mode (violates
+    "prefer re-fetch over skip"). FIXED: unreadable-ts rows are re-included (idempotent upsert), and only a REAL
+    `0 < ts < wm` row triggers the stop.
+  - **MEDIUM:** missing migration round-trip tests (run_id autoincrement, counter defaults, `started_ts` NOT NULL).
+    ADDED.
+  - **LOW:** a NaN/inf `roi` bypassed the `None` guard and would scramble the sort. FIXED: `not math.isfinite(roi)`
+    is excluded like `None`. Duplicate-`(wallet,category)` input documented as a SQL-source precondition.
+  - Selection verdict: **no CRITICAL/HIGH** -- obeys all five rulings exactly; only the LOW robustness gaps above.
+- **§H (the three-bases exit question -- which list did this change touch, did it keep completed/paper/live separate):**
+  RUNG 1 writes **NOTHING** to any of the three bases. `search.py` is pure functions; migration 013 creates ONE empty
+  provenance table (`pm_search_run`), which is none of the three bases (Prospect=`pm_category_stats`<-`pm_closed_position`
+  `status='candidate'`; Watchlist=paper=`pm_paper_category_stats` `status='pinned'`; Live=P3 `pm_subdivision*`). No
+  `pm_watchlist`/`pm_roster`/`pm_paper_*`/`pm_subdivision*` row is created or read. The candidate WRITE (into the
+  completed-trade basis, `status='candidate'`, `active=1`) is RUNG 3, and it will keep the three separate exactly as
+  every existing consumer does (the `AND active=1` gate; no auto-pin, no auto-attach). So RUNG 1's answer: it touched
+  none of the three lists; separation is trivially preserved (build-only, empty new table).
+
+*Planning pass 2026-08-29 (§0-§9). Rulings + ladder + RUNG 1 build 2026-08-29 (§8A/§9A/§9B). Independent of R7
+(order path untouched -- verified structurally). Read-only data from `cc\pm_stage4_datagather_ro.*` 2026-08-29T21:17Z.*
