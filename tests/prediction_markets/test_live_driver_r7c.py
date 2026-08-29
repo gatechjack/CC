@@ -174,10 +174,11 @@ async def test_place_fn_error_mapping_reuses_the_split(tmp_path):
 # ── case 5: signal conversion (/positions -> entry CopySignals) ──
 def test_signal_conversion_filters_and_maps_stable():
     rows = [FakePos("0xopen", 0, "Toronto Blue Jays", cur=0.5),                 # genuinely open -> kept
+            FakePos("0xopen", 0, "Toronto Blue Jays", cur=0.5),                 # DUPLICATE (cid,oidx) -> deduped in-book
             FakePos("0xredeem", 0, "Seattle Mariners", cur=0.5, redeemable=True),  # redeemable -> excluded
             FakePos("0xsettled", 1, "Over", cur=1.0)]                           # curPrice>=1 -> excluded
     sigs = L.positions_to_entry_signals(rows, "0xWHALE")
-    assert len(sigs) == 1
+    assert len(sigs) == 1                                                       # the duplicate did NOT emit a 2nd signal
     s = sigs[0]
     assert s.wallet == "0xWHALE" and s.condition_id == "0xopen" and s.outcome == "Toronto Blue Jays"
     assert s.outcome_index == 0 and s.is_exit is False and s.slug == SLUG
@@ -349,3 +350,62 @@ def test_structural_no_broker_object_no_rebuild():
     assert "client" in sig                                                     # the POST client is injected
     sig2 = inspect.signature(L.scheduled_pm_live_loop).parameters
     assert "positions_client" in sig2                                          # the /positions client is injected (no global)
+
+
+# ── adversarial-review FIX (HIGH): a transport error (httpx timeout/connect) -> OrderPlacementError, not an escape ──
+@pytest.mark.asyncio
+async def test_transport_error_maps_to_OrderPlacementError_and_latches(tmp_path):
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        d = _would_place_decision(conn)
+    class _Boom(Exception):                                                    # a NON-KalshiError transport failure
+        pass
+    with pytest.raises(L.OrderPlacementError):                                 # make_place_fn wraps it (possibly-placed)
+        await L.make_place_fn(FakeKalshiClient(post_raise=_Boom("read timeout")))(d)
+    # in the cycle a transport error counts toward the consecutive-error latch (never escapes to the never-die loop)
+    _arm_both(leg)
+    async def timeout(dd):
+        raise L.OrderPlacementError("kalshi V2 POST TRANSPORT error -- POSSIBLY PLACED: ReadTimeout()")
+    with db.connect(p) as conn:
+        j = ex.Journal(conn, [ACCT], NOW)
+        summ = await L.run_live_arm_gated_cycle(conn, _sub(), [_sig("Toronto Blue Jays", "m%d" % i) for i in range(4)],
+                                                _ctx(), j, NOW, place_fn=timeout, legacy_db_path=leg)
+    assert summ["errors"] == 3 and summ["placed"] == 0
+    assert arm.current_row(ACCT, CAT, legacy_db_path=leg)["auto_trigger"] == arm.AUTO_CONSECUTIVE_ERRORS
+
+
+# ── adversarial-review FIX (HIGH): PENDING-first journals the coid BEFORE the POST -> a failure cannot RE-DRIVE it ──
+@pytest.mark.asyncio
+async def test_pending_row_journaled_pre_post_prevents_redrive(tmp_path):
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)
+    async def loud(dd):
+        raise L.OrderPlacementError("kalshi V2 POST rejected: bad_request 400")
+    with db.connect(p) as conn:
+        j = ex.Journal(conn, [ACCT], NOW)
+        await L.run_live_arm_gated_cycle(conn, _sub(), [_sig("Toronto Blue Jays", "m1")], _ctx(), j, NOW,
+                                         place_fn=loud, legacy_db_path=leg)
+        rows = conn.execute("SELECT client_order_id, outcome_status, dry_run FROM pm_subdivision_order").fetchall()
+        assert len(rows) == 1 and rows[0]["dry_run"] == 0 and rows[0]["outcome_status"] == "error"  # coid JOURNALED despite the fail
+        j2 = ex.Journal(conn, [ACCT], NOW)                                      # a fresh Journal ('restart') sees the coid
+        assert j2.already_placed(rows[0]["client_order_id"]) is True            # -> gate-4 dedup: the same signal will NOT re-POST
+
+
+# ── adversarial-review FIX (MEDIUM): a boot-reconcile RAISE (our own DB fault) FORCE-latches -> loop cannot place armed ──
+@pytest.mark.asyncio
+async def test_boot_reconcile_raise_force_latches(tmp_path):
+    import time
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)                                                              # ARM, to prove the fault DISARMS it
+    with db.connect(p) as conn:
+        conn.execute("INSERT OR IGNORE INTO pm_account(account_id,venue,secret_ref,label,active,created_ts) "
+                     "VALUES(?, 'kalshi','KALSHI','Jack',1,?)", (ACCT, int(time.time())))
+        conn.execute("INSERT OR IGNORE INTO pm_subdivision(account_id,category,market_types,sizing_mode,"
+                     "fixed_stake_usd,active,created_ts) VALUES(?,?,'moneyline','fixed',5.0,1,?)", (ACCT, CAT, int(time.time())))
+        conn.execute("DROP TABLE pm_subdivision_order"); conn.commit()         # induce a JOURNAL-read fault at boot-reconcile
+    fake = FakeKalshiClient(positions=[], game_markets=[FakeMarket(T_TOR)])
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(FakeBook([])),
+                                   account_id=ACCT, category=CAT, poll_sec=0, legacy_db_path=leg, _max_cycles=1)
+    row = arm.current_row(ACCT, CAT, legacy_db_path=leg)                        # the fault force-latched -> the armed sub is DISARMED
+    assert row["latched"] is True and row["auto_trigger"] == arm.AUTO_BOOT_RECONCILE
+    assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is False and fake.posts == []

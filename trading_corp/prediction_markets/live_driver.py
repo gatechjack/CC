@@ -11,40 +11,40 @@ through the chokepoint, and (d) FOR AN ARMED sub-division only, POSTs the gate-a
    gated OFF and lands in the R7.e deploy manifest). Box-scratch injects a STUB broker + runs DISARMED -> ZERO
    real POSTs. The first real order is R7.f, its own authorization, after the combined exclusivity+driver restart. **
 
-THE PLACEMENT SEAM (Jack RULED option (b), 2026-08-29): the `place_fn` POSTs the chokepoint's GATE-APPROVED body
-VERBATIM -- `decision.body` + `decision.client_order_id` -- NOT via `KalshiLiveBroker.place_order` (which would
-REBUILD the body from an order object). The chokepoint's guarantees (dry-run parity, the journal record, the
-idempotency key) are ABOUT THE BODY IT APPROVED; a rebuild that differs by a cent still places AN order -- just not
-the approved one -- a silent 7th home for the NO-leg lens. Posting the approved body makes every guarantee exact,
-no reconstruction. This is also the PRECEDENT: `agents/strategies/poly_kalshi_executor.py` (the proven live path)
-POSTs a pre-built body, not through `place_order`. We REUSE the pure `fill_event_from_v2_response` + the
-`KalshiNoFill`/`OrderPlacementError` split; the ONLY duplication is the ~15-line POST try/except wrapper (a note
-is left in `kalshi_live.py` so a future fix to that error handling knows it has two homes).
+THE PLACEMENT SEAM (Jack RULED option (b)): the `place_fn` POSTs the chokepoint's GATE-APPROVED body VERBATIM --
+`decision.body` + `decision.client_order_id` -- NOT via `KalshiLiveBroker.place_order` (which would REBUILD the
+body). The chokepoint's guarantees are ABOUT THE BODY IT APPROVED; a rebuild that differs by a cent still places
+AN order -- just not the approved one -- a silent NO-leg-lens home. This is also the PRECEDENT
+(`poly_kalshi_executor` POSTs a pre-built body). We REUSE the pure `fill_event_from_v2_response` + the
+`KalshiNoFill`/`OrderPlacementError` split; the ONLY duplication is the POST try/except wrapper (noted in kalshi_live.py).
 
-TWO FORCED DUPLICATIONS, both rooted in async (recorded so they are not mistaken for drift):
-  1. The POST wrapper (above) -- `run_arm_gated_cycle`'s injected `place_fn` is SYNC, but the Kalshi client POST is
-     async; and place_order rebuilds rather than posts the approved body.
-  2. The arm-gated LOOP (`run_live_arm_gated_cycle` below) mirrors `execution.run_arm_gated_cycle` but is ASYNC (to
-     await the POST). It REUSES `execution.evaluate` (the 8 gates) + `arm.read_arm_verdict` (the per-order re-read)
-     VERBATIM -- only the loop shell is re-homed. The sync `run_arm_gated_cycle` stays as the dry-run/box-scratch seam.
+** PENDING-FIRST idempotency (R7.c adversarial-review fix): the coid is journaled (dry_run=0, outcome_status
+   'submitting') BEFORE the POST, then finalized (filled/no_fill/error) after. So a POST/response/journal-write
+   failure -- OR a network timeout -- CANNOT re-drive the same order next cycle (gate-4 dedup already sees the coid).
+   The K9 window (order live at Kalshi, response/write lost) is thereby BOUNDED to boot-reconcile adjudicating an
+   ambiguous 'submitting' row, NOT re-fired every ~poll_sec. Every downstream consumer filters outcome_status=
+   'filled', so a 'submitting' row counts as NO position + NO budget (correct) but DOES register the coid for dedup
+   (gate-4 filters dry_run=0 + coid, no status). ** A network transport error (httpx timeout/connect) is mapped to
+   OrderPlacementError (LOUD, possibly-placed) so it feeds the consecutive-error kill-switch + gets a journal row --
+   never escaping to the never-die loop un-latched (an adversarial-review HIGH).
 
-SAFETY carried from R5 (all still enforced HERE):
-  * DISARM blocks EVERYTHING -- the cycle re-reads `arm.read_arm_verdict` immediately BEFORE EVERY order (not once
-    per cycle), so a mid-cycle kill stops the very next POST (residual one order wide).
-  * BOOT-RECONCILE runs at boot against the AUTHENTICATED portfolio; a mismatch latches `boot_reconcile_mismatch`
-    (fail-safe DISARMED until a human clears it) -- the driver comes up latched-if-mismatch.
-  * A loud `OrderPlacementError` increments a consecutive-error latch; a 401/403 latches the whole account
-    (auth-failure) and flags open positions for MANUAL exit (`arm.latch_*`).
-  * ENTRIES ONLY for the first order (R7.f is a moneyline ENTRY). Option-D whale EXIT detection is a LATER rung.
+SAFETY carried from R5 (all enforced HERE):
+  * DISARM blocks EVERYTHING -- the cycle re-reads `arm.read_arm_verdict` immediately BEFORE EVERY order.
+  * BOOT-RECONCILE runs at boot against the AUTHENTICATED portfolio; a mismatch latches boot_reconcile_mismatch, and
+    a boot-reconcile RAISE (our own DB fault) ALSO force-latches (do not proceed armed on a system fault).
+  * A loud `OrderPlacementError` (incl. a wrapped transport timeout) increments a consecutive-error latch; a 401/403
+    latches the whole account (auth-failure) + flags open positions for MANUAL exit.
+  * ENTRIES ONLY for the first order (Option-D whale EXIT detection is a LATER rung).
 
-R7.e VERIFY (read-only, documented like the sign convention): the pykalshi `get_markets` market-object quote field
-names mapped into `MarketContext.markets` (yes_ask/no_ask/liquidity). A wrong guess makes a ticker UNQUOTED ->
-`evaluate` skips it (`skip:no_quote`) -> NO order (safe). Confirm the real field names on a live `get_markets`.
+R7.e VERIFY (read-only): the pykalshi `get_markets` market-object quote field names mapped into
+`MarketContext.markets` (yes_ask/no_ask/liquidity). A miss leaves a ticker UNQUOTED -> evaluate skip:no_quote (safe).
+And confirm Kalshi's `client_order_id` idempotency on a real duplicate (the pending-first design bounds the risk).
 
 Spec: reports/prediction_markets/STAGE3_PLAN_2026-08-28.md sec 8/16 + R7_PLAN_2026-08-29.md.
 """
 from __future__ import annotations
 
+import logging
 import time as _time
 
 from . import arm, boot_reconcile, db, execution, paper
@@ -53,9 +53,9 @@ from ..data import mlb_poly_kalshi_match as M
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
 
-# The three MLB series the sub-division copies (Jack's scope ruling: moneyline+total+spread).
-SERIES = ("KXMLBGAME", "KXMLBTOTAL", "KXMLBSPREAD")
-_SETTLED_LOOKBACK_SEC = 160 * 86400   # match the poly loop's settled-window for the index
+_LOG = logging.getLogger(__name__)
+SERIES = ("KXMLBGAME", "KXMLBTOTAL", "KXMLBSPREAD")   # Jack's scope ruling: moneyline+total+spread
+_SETTLED_LOOKBACK_SEC = 160 * 86400
 
 
 # ── market context: fetch the live Kalshi catalog + build the 3-dim index ─────────────────────────────
@@ -98,32 +98,33 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     game_idx = M.build_kalshi_game_index(game_t)
     total_idx = M.build_kalshi_total_index(total_t)
     spread_idx = M.build_kalshi_spread_index(spread_t)
-    # kalshi_dates: the game index keys carry the stem/date; reuse the game index's date set if the matcher
-    # exposes one, else derive from the tickers (the matcher's exact-strike gate is the real guard).
-    for tk in game_t:
+    for tk in game_t:               # the matcher's exact-strike gate is the real guard; carry the game tickers
         dates.add(tk)
     return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets)
 
 
 # ── signal source: attached whales' /positions -> entry CopySignals (chokepoint dedups already-placed) ───
 def _stable_entry_key(condition_id: str, outcome_index) -> str:
-    """A restart-STABLE entry key for a /positions row, which carries NO fill tx_hash/ts. The whale's holding of
-    a specific (condition_id, outcome_index) IS the stable identity -> one copy per position (the durable-journal
-    dedup then never re-copies it). LIMITATION (noted, acceptable for the path-proving first order): a
-    close-then-re-open of the SAME (condition_id, outcome_index) reuses the key -> the re-entry is not re-copied.
-    A later refinement keys on the pm_paper_trade entry_observed_ts or an /activity tx_hash to distinguish re-entries."""
+    """A restart-STABLE entry key for a /positions row, which carries NO fill tx_hash/ts. The whale's holding of a
+    specific (condition_id, outcome_index) IS the stable identity -> one copy per position. LIMITATION (noted,
+    acceptable for the path-proving first order): a close-then-re-open of the SAME (condition_id, outcome_index)
+    reuses the key -> the re-entry is not re-copied. A later refinement keys on an /activity tx_hash."""
     return "pos:%s:%s" % (condition_id or "", outcome_index)
 
 
 def positions_to_entry_signals(rows, wallet: str) -> list:
     """Genuinely-open /positions rows for one whale -> entry CopySignals (is_exit=False). Reuses
-    paper.is_genuinely_open (the D1 open-filter) + paper.pos_outcome_index. EXITS are a later rung (Option D)."""
-    out = []
+    paper.is_genuinely_open + paper.pos_outcome_index. DEDUPES within the book on (condition_id, outcome_index) so a
+    duplicate /positions row cannot emit two identical signals in one cycle (adversarial-review obs). EXITS later."""
+    out, seen = [], set()
     for p in rows:
         if not paper.is_genuinely_open(p):
             continue
         cid = str(getattr(p, "condition_id", "") or "")
         oidx = paper.pos_outcome_index(p)
+        if (cid, oidx) in seen:
+            continue
+        seen.add((cid, oidx))
         out.append(execution.CopySignal(
             wallet=wallet, slug=str(getattr(p, "slug", "") or ""),
             outcome=str(getattr(p, "outcome", "") or ""), condition_id=cid, outcome_index=oidx,
@@ -134,34 +135,54 @@ def positions_to_entry_signals(rows, wallet: str) -> list:
 
 # ── the placement seam (option b): POST the gate-approved body VERBATIM ────────────────────────────────
 def make_place_fn(client):
-    """Return an async `place_fn(decision) -> FillEvent` that POSTs the chokepoint's APPROVED `decision.body`
-    (with `decision.client_order_id`) verbatim and maps the response with the REUSED pure mapper. Raises
-    KalshiNoFill (benign 0-fill / FOK-kill) or OrderPlacementError (loud reject) -- the SAME split place_order
-    uses. ** The ~15-line try/except below is the ONE duplication of place_order's POST wrapper (see the note in
-    kalshi_live.py). ** Injected by the caller so this module holds no broker object and never rebuilds a body."""
+    """Return an async `place_fn(decision) -> FillEvent` that POSTs the APPROVED `decision.body` verbatim and maps
+    the response with the REUSED pure mapper. Raises KalshiNoFill (benign 0-fill / FOK-kill) or OrderPlacementError
+    (loud). ** A KalshiError maps benign-vs-loud (the reused split); ANY OTHER transport exception (httpx
+    timeout/connect -- NOT a KalshiError) maps to OrderPlacementError so a network failure feeds the latch path +
+    gets a journal row, never escaping the never-die loop un-latched (adversarial-review HIGH). ** A timeout is
+    POSSIBLY-PLACED; the pending-first row keeps its coid so it is not silently re-driven. fill_event_from_v2_response
+    is OUTSIDE the try (a mapper bug raises loudly, not masked as a rejection). The POST try/except is the ONE
+    duplication of place_order's wrapper (see the note in kalshi_live.py)."""
     async def place_fn(decision):
         from pykalshi.exceptions import KalshiError
         try:
-            resp = await client.post(_V2_ORDERS_PATH, decision.body)      # POST the APPROVED body verbatim
+            resp = await client.post(_V2_ORDERS_PATH, decision.body)          # POST the APPROVED body verbatim
         except KalshiError as e:
-            if _is_benign_fok_nofill(e):                                   # benign FOK-kill -> no fill (reuse split)
+            if _is_benign_fok_nofill(e):
                 raise KalshiNoFill("kalshi FOK order %s did not fill (insufficient resting volume)"
                                    % decision.client_order_id) from e
             raise OrderPlacementError("kalshi V2 POST rejected for %s (%s x%s): %s"
                                       % (decision.kalshi_ticker, decision.leg, decision.count, e)) from e
-        return fill_event_from_v2_response(                               # REUSE the pure response mapper
+        except Exception as e:                                                # noqa: BLE001 -- transport error -> LOUD, possibly-placed
+            raise OrderPlacementError("kalshi V2 POST TRANSPORT error for %s (%s x%s) -- POSSIBLY PLACED: %r"
+                                      % (decision.kalshi_ticker, decision.leg, decision.count, e)) from e
+        return fill_event_from_v2_response(
             resp, symbol="%s:%s" % (decision.kalshi_ticker, decision.leg),
             side=("sell" if decision.is_exit else "buy"),
             fallback_price=decision.price, fallback_order_id=decision.client_order_id, outcome=decision.leg)
     return place_fn
 
 
-# ── the durable live-order journal write (dry_run=0; the fill facts) ───────────────────────────────────
+def _is_auth_failure(e) -> bool:
+    """A 401/403 on the order path. Checks BOTH the structured status (status_code/code) AND the string, on the
+    exception AND its wrapped cause -- robust to how pykalshi surfaces auth failures (adversarial-review hardening)."""
+    for x in (e, getattr(e, "__cause__", None)):
+        if x is None:
+            continue
+        code = str(getattr(x, "status_code", "") or getattr(x, "code", "") or getattr(x, "error_code", "") or "")
+        if code in ("401", "403"):
+            return True
+        t = str(x).lower()
+        if "401" in t or "403" in t or "unauthor" in t or "forbidden" in t:
+            return True
+    return False
+
+
+# ── the durable live-order journal (dry_run=0): PENDING insert (pre-POST) + finalize (post-POST) ───────
 def _record_order(conn, sub, signal, decision, *, outcome_status, fill=None, error_detail=None, now_ts):
-    """Append the REAL (dry_run=0) live-order row to pm_subdivision_order -- the durable journal boot-reconcile +
-    the idempotency dedup read. `fill_price` is the OUTCOME-LEG per-contract price (FillEvent.price is already
-    leg-corrected: 1-yes for a NO leg). Written AFTER the POST with the outcome; a crash in the POST->write window
-    is the K9 case that boot-reconcile catches at next boot."""
+    """INSERT the live-order row (dry_run=0). Called PRE-POST with outcome_status='submitting' (no fill) so the coid
+    is journaled BEFORE the POST -- gate-4 dedup then prevents a re-drive on any failure. `fill_price` is the
+    OUTCOME-LEG per-contract price (FillEvent.price is leg-corrected: 1-yes for a NO leg)."""
     conn.execute(
         "INSERT INTO pm_subdivision_order (account_id, category, wallet, condition_id, outcome_index, signal_id, "
         " client_order_id, ticker, order_side, outcome_leg, is_exit, submitted_count, submitted_price, "
@@ -177,13 +198,29 @@ def _record_order(conn, sub, signal, decision, *, outcome_status, fill=None, err
         conn.commit()
 
 
-# ── the ASYNC arm-gated cycle (dup #2: async twin of run_arm_gated_cycle; reuses evaluate + read_arm_verdict) ──
-async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, place_fn, legacy_db_path=None):
+def _finalize_order(conn, coid, outcome_status, *, fill=None, error_detail=None, now_ts):
+    """UPDATE the PENDING row (by coid) with the POST outcome + fill facts. The pending row was INSERTed pre-POST for
+    idempotency; this stamps the result (filled/no_fill/error). A finalize FAILURE leaves the row 'submitting' -- the
+    coid stays journaled (no re-drive) and boot-reconcile adjudicates it (the bounded K9 residual)."""
+    conn.execute(
+        "UPDATE pm_subdivision_order SET outcome_status=?, broker_order_id=?, fill_count=?, fill_price=?, fee=?, "
+        " error_detail=?, response_ts=? WHERE client_order_id=? AND dry_run=0",
+        (outcome_status, (getattr(fill, "order_id", None) if fill else None),
+         (float(getattr(fill, "qty", 0.0)) if fill else None), (float(getattr(fill, "price", 0.0)) if fill else None),
+         (float(getattr(fill, "fee", 0.0)) if fill else None), error_detail, int(now_ts), coid))
+    if hasattr(conn, "commit"):
+        conn.commit()
+
+
+# ── the ASYNC arm-gated cycle (async twin of run_arm_gated_cycle; reuses evaluate + read_arm_verdict) ──
+async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, place_fn, legacy_db_path=None, log=None):
     """Every signal through the chokepoint's 8 gates (`execution.evaluate`), then -- for a gate-passing order and
-    ONLY IF ARMED (re-read `arm.read_arm_verdict` immediately before EACH order) -- await `place_fn` (the POST) and
-    record the outcome. DISARMED blocks everything (entries AND exits). A loud error latches (consecutive-errors;
-    401/403 -> whole-account auth-failure + manual-exit flag). Returns a summary; `posts_sent` counts REAL POSTs
-    (0 in box-scratch: place_fn is a stub / the cycle is disarmed)."""
+    ONLY IF ARMED (re-read `arm.read_arm_verdict` immediately before EACH order) -- journal a PENDING row, await
+    `place_fn` (the POST), and finalize the outcome. DISARMED blocks everything. A loud error (incl. a wrapped
+    transport timeout) records + latches (consecutive; 401/403 -> whole-account auth-failure + manual-exit). NB:
+    evaluate() already committed the entry budget to the Journal counters at would-place time (execution.py:298-299);
+    the cycle does NOT re-commit (that would double-count the daily/open USD caps)."""
+    log = log or _LOG
     signals = list(signals)
     n_would = n_skip = n_reject = placed = disarm_blocked = errors = 0
     consec_err = 0
@@ -199,37 +236,34 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
         if not arm.read_arm_verdict(sub.account_id, sub.category, legacy_db_path=legacy_db_path).armed:  # RE-READ per order
             disarm_blocked += 1
             continue                                                    # off is off (entries AND exits)
+        _record_order(conn, sub, s, d, outcome_status="submitting", now_ts=now_ts)   # ★ PENDING-first: coid journaled PRE-POST
         try:
             fill = await place_fn(d)                                    # the ONE seam: POST the approved body
-            # NB: evaluate() ALREADY committed this entry's budget to the Journal counters at would-place time
-            # (execution.py:298-299); the cycle must NOT re-commit or the daily/open USD caps DOUBLE-COUNT. (A
-            # would-place that then no-fills/errors thus consumes in-cycle budget until the next cycle's fresh
-            # Journal re-seeds from actual filled rows -- conservative + self-healing, not a leak.)
-            _record_order(conn, sub, s, d, outcome_status="filled", fill=fill, now_ts=now_ts)
-            placed += 1
-            consec_err = 0
-        except KalshiNoFill:                                            # benign 0-fill -> record, no latch, retry next signal
-            _record_order(conn, sub, s, d, outcome_status="no_fill", now_ts=now_ts)
-        except OrderPlacementError as e:                               # LOUD -> record + latch
-            errors += 1
-            consec_err += 1
-            detail = repr(e)[:400]
-            _record_order(conn, sub, s, d, outcome_status="error", error_detail=detail, now_ts=now_ts)
+        except KalshiNoFill:                                            # benign 0-fill -> finalize, no latch (coid stays journaled)
+            _finalize_order(conn, d.client_order_id, "no_fill", now_ts=now_ts)
+            continue
+        except OrderPlacementError as e:                               # LOUD (incl. a wrapped transport timeout) -> finalize + latch
+            errors += 1; consec_err += 1
+            _finalize_order(conn, d.client_order_id, "error", error_detail=repr(e)[:400], now_ts=now_ts)
             if _is_auth_failure(e):
-                arm.latch_auth_failure(sub.account_id, [sub.category], detail="order-path auth failure: %s" % detail,
-                                       legacy_db_path=legacy_db_path)
+                arm.latch_auth_failure(sub.account_id, [sub.category],
+                                       detail="order-path auth failure: %s" % repr(e)[:200], legacy_db_path=legacy_db_path)
                 break                                                   # account disarmed; stop the cycle
             if consec_err >= 3:
                 arm.latch_consecutive_errors(sub.account_id, sub.category, n=consec_err, legacy_db_path=legacy_db_path)
                 break
+            continue
+        try:
+            _finalize_order(conn, d.client_order_id, "filled", fill=fill, now_ts=now_ts)
+        except Exception as e:                                         # noqa: BLE001 -- the bounded K9 residual: order LIVE, row stays 'submitting'
+            log.error("pm_live_driver K9: order PLACED at Kalshi but the 'filled' journal update FAILED for coid=%s "
+                      "(row stays 'submitting'; coid journaled -> NOT re-driven; boot-reconcile adjudicates): %s",
+                      d.client_order_id, e)
+        placed += 1
+        consec_err = 0
     return {"account_id": sub.account_id, "category": sub.category, "n_signals": len(signals),
             "n_would_place": n_would, "placed": placed, "n_disarm_blocked": disarm_blocked, "errors": errors,
             "n_skip": n_skip, "n_reject": n_reject, "posts_sent": placed}
-
-
-def _is_auth_failure(e) -> bool:
-    t = str(e).lower()
-    return "401" in t or "403" in t or "unauthor" in t or "forbidden" in t
 
 
 # ── boot-reconcile against the AUTHENTICATED portfolio (async fetch -> sync reconcile with a lambda) ────
@@ -242,11 +276,11 @@ def _raiser(exc):
 
 
 async def run_boot_reconcile(conn, sub, client, *, legacy_db_path=None):
-    """Fetch the account's ACTUAL Kalshi positions (authenticated) and reconcile them against the journal. The
-    async fetch happens HERE; `boot_reconcile.reconcile_account` is SYNC and gets a plain lambda returning the
-    already-fetched list, so nothing in boot_reconcile.py changes. A mismatch latches boot_reconcile_mismatch
-    (fail-safe DISARMED until a human clears it). A FETCH FAILURE hands reconcile_account a raising fetcher
-    (`_raiser`) so its own fail-safe latch fires -- one code path, no duplicated latch."""
+    """Fetch the account's ACTUAL Kalshi positions (authenticated) and reconcile them against the journal. The async
+    fetch happens HERE; `boot_reconcile.reconcile_account` is SYNC and gets a plain lambda returning the fetched
+    list. A mismatch latches boot_reconcile_mismatch. A FETCH FAILURE hands reconcile_account a raising fetcher
+    (`_raiser`) so its own fail-safe latch fires. (A JOURNAL-read fault raises OUT of here -- the caller
+    force-latches; see scheduled_pm_live_loop.)"""
     async def _fetch():
         return list(await client.portfolio.get_positions(fetch_all=True))
     try:
@@ -262,17 +296,15 @@ async def run_boot_reconcile(conn, sub, client, *, legacy_db_path=None):
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
 async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, account_id, category, poll_sec=7.0,
                                  index_refresh_sec=900.0, legacy_db_path=None, log=None, _max_cycles=None):
-    """The engine-side driver task. `positions_client` is the polymarket client (`fetch_positions_book`, the SAME
-    read the paper poller uses) -- INJECTED by the caller (the R7.e main.py block passes the real one; box-scratch a
-    fake) so this module wires no client itself. BOOT: build the index + boot-reconcile (comes up latched-if-mismatch).
-    STEADY: refresh the index when stale, read each attached whale's /positions, run the async arm-gated cycle, sleep.
-    A bad cycle is logged and NEVER kills the loop. `_max_cycles` bounds the loop for box-scratch (None = forever)."""
-    import logging
-    log = log or logging.getLogger(__name__)
+    """The engine-side driver task. `positions_client` (fetch_positions_book, the paper poller's read) is INJECTED by
+    the caller (the R7.e main.py block passes the real one; box-scratch a fake). BOOT: build the index + boot-reconcile
+    (comes up latched-if-mismatch; a boot-reconcile RAISE ALSO force-latches). STEADY: refresh the index when stale,
+    read each attached whale's /positions, run the async arm-gated cycle, sleep. A bad cycle is logged and NEVER kills
+    the loop. `_max_cycles` bounds the loop for box-scratch (None = forever)."""
+    log = log or _LOG
     client = broker._read._client
     ctx = None
     last_idx = 0.0
-    # BOOT: index + reconcile (best-effort index; reconcile is fail-safe).
     try:
         ctx = await fetch_market_context(client, int(_time.time())); last_idx = _time.time()
     except Exception as e:  # noqa: BLE001
@@ -283,8 +315,14 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
         try:
             res = await run_boot_reconcile(conn, sub, client, legacy_db_path=legacy_db_path)
             log.info("pm_live_driver: boot-reconcile reconciled=%s latched=%s", res.reconciled, res.latched)
-        except Exception as e:  # noqa: BLE001 -- our own DB read raising is a system fault; log loud, stay disarmed
-            log.error("pm_live_driver: boot-reconcile FAILED (staying disarmed): %s", e)
+        except Exception as e:  # noqa: BLE001 -- our own DB read faulting is a SYSTEM FAULT: FORCE-LATCH (do NOT proceed armed)
+            log.error("pm_live_driver: boot-reconcile FAULTED (system fault) -- force-latching to DISARM: %s", e)
+            try:
+                arm.latch_boot_reconcile_mismatch(account_id, category, detail="boot-reconcile system fault: %r" % e,
+                                                  legacy_db_path=legacy_db_path)
+            except Exception as e2:  # noqa: BLE001
+                log.critical("pm_live_driver: could NOT latch after a boot-reconcile fault (%s) -- STILL disarmed by "
+                             "the R5 absent->DISARMED default unless someone armed: %s", e, e2)
     cycles = 0
     while _max_cycles is None or cycles < _max_cycles:
         cycles += 1
@@ -310,7 +348,7 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                     signals += positions_to_entry_signals(book.rows, w)
                 place_fn = make_place_fn(client)
                 summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts,
-                                                      place_fn=place_fn, legacy_db_path=legacy_db_path)
+                                                      place_fn=place_fn, legacy_db_path=legacy_db_path, log=log)
                 if summ["placed"] or summ["errors"]:
                     log.info("pm_live_driver cycle: %s", summ)
         except Exception as e:  # noqa: BLE001 -- a bad cycle must never kill the loop
