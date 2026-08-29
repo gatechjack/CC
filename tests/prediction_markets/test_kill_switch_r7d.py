@@ -402,6 +402,40 @@ async def test_r7d_cli_disarm_works_when_pm_web_is_down(tmp_path):
     assert rc2 == 0 and arm.read_status(ACCT, CAT, legacy_db_path=leg)["global_armed"] is False
 
 
+# ════════════════════════════════════════════════════════════════════════════════
+# 10. ADVERSARIAL-REVIEW FIX (MEDIUM): the latch-clear guard FAILS SAFE on an UNREADABLE row.
+#     A transient/corrupt read must NOT let a killed (latched) account re-arm without the ack, and a manual
+#     disarm over an unreadable row must NOT silently drop a latch. (The old guard read _load_row and skipped
+#     on None -- but None also means an INDETERMINATE read, so a read race could re-arm a killed account.)
+# ════════════════════════════════════════════════════════════════════════════════
+def test_r7d_latch_guard_fails_safe_on_unreadable_row(tmp_path):
+    leg = _legacy(tmp_path)
+    # a definitively-ABSENT scope STILL arms without the flag (cold start must not be blocked by the fix):
+    arm.arm(ACCT, CAT, legacy_db_path=leg)
+    assert arm.current_row(ACCT, CAT, legacy_db_path=leg)["armed"] is True
+    arm.disarm(ACCT, CAT, legacy_db_path=leg)
+    # CORRUPT the sub row so the latch state is INDETERMINATE (json that will not parse):
+    c = sqlite3.connect(leg)
+    c.execute("INSERT OR REPLACE INTO agent_state(agent,key,value_json,updated_ts) VALUES('pm_live',?,?,?)",
+              (arm.sub_key(ACCT, CAT), "CORRUPT{{not json", "2026-08-29T00:00:00Z"))
+    c.commit(); c.close()
+    # the READ/verdict path still degrades to DISARMED on the unreadable row (unchanged fail-safe):
+    assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is False
+    # arm() WITHOUT the ack must REFUSE (unreadable latch state -> treat as latched, do NOT re-arm a kill):
+    with pytest.raises(arm.LatchedError):
+        arm.arm(ACCT, CAT, by="engine_bug", legacy_db_path=leg)
+    # disarm() over the unreadable row must PRESERVE a latch (never silently drop it -> never skip the ack):
+    arm.disarm(ACCT, CAT, reason="kill_over_unreadable", legacy_db_path=leg)
+    row = arm.current_row(ACCT, CAT, legacy_db_path=leg)
+    assert row["armed"] is False and row["latched"] is True
+    with pytest.raises(arm.LatchedError):                           # a later arm STILL needs the ack
+        arm.arm(ACCT, CAT, legacy_db_path=leg)
+    # the human ack (the CLI's --clear-latch) is the ONLY path that clears it:
+    arm.arm(ACCT, CAT, require_latch_clear=True, legacy_db_path=leg)
+    r2 = arm.current_row(ACCT, CAT, legacy_db_path=leg)
+    assert r2["armed"] is True and r2["latched"] is False
+
+
 # ── structural: R7.d added NO broker/rebuild surface and the cycle still reports ceiling_latched ──
 def test_r7d_structural_no_broker_and_ceiling_flag_present():
     for banned in ("KalshiLiveBroker", "KalshiBroker", "place_order", "build_v2_event_order"):
