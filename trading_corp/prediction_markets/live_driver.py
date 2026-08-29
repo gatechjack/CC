@@ -224,6 +224,7 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
     signals = list(signals)
     n_would = n_skip = n_reject = placed = disarm_blocked = errors = 0
     consec_err = 0
+    ceiling_latched = False
     for s in signals:
         d = execution.evaluate(s, sub, ctx, journal, conn, now_ts, legacy_db_path=legacy_db_path)   # the 8 gates (reused)
         if d.status != "dry_run_would_place":
@@ -231,6 +232,24 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
                 n_skip += 1
             else:
                 n_reject += 1
+                # ★ R7.d: the 4TH latching trigger, WIRED HERE. It was DEAD CODE -- arm.latch_count_ceiling
+                # existed since R5 but NO caller ever fired it (neither this async cycle nor the R5 sync
+                # run_arm_gated_cycle). The orders/day ceiling (gate 8) is a LATCHING circuit-breaker on Jack's
+                # R5 list: on the reject, DISARM + require a human --clear-latch. WITHOUT it a runaway -- e.g.
+                # the K9 re-drive class the R7.c review fixed -- would REJECT at gate 8 every ~poll_sec forever
+                # while the arm state still read ARMED (silently ceiling-blocked, never surfaced). Gate on
+                # ARMED: if already disarmed the ceiling is moot (off is off, and the count is phantom
+                # would-place accounting); an armed account AT its ceiling latches so the NEXT order is blocked
+                # and a human must acknowledge. Gate 8 is entry-only, so this NEVER fires for a reduce_only exit.
+                if d.status == "reject:count_ceiling" and arm.read_arm_verdict(
+                        sub.account_id, sub.category, legacy_db_path=legacy_db_path).armed:
+                    arm.latch_count_ceiling(sub.account_id, sub.category,
+                                            count=journal.orders_today(sub.account_id, sub.category),
+                                            cap=sub.max_orders_per_day, legacy_db_path=legacy_db_path)
+                    log.warning("pm_live_driver: orders/day ceiling -> LATCHED count_ceiling (account DISARMED "
+                                "until a human --clear-latch): %s", d.reason)
+                    ceiling_latched = True
+                    break                                                   # disarmed; stop the cycle
             continue
         n_would += 1
         if not arm.read_arm_verdict(sub.account_id, sub.category, legacy_db_path=legacy_db_path).armed:  # RE-READ per order
@@ -263,7 +282,7 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
         consec_err = 0
     return {"account_id": sub.account_id, "category": sub.category, "n_signals": len(signals),
             "n_would_place": n_would, "placed": placed, "n_disarm_blocked": disarm_blocked, "errors": errors,
-            "n_skip": n_skip, "n_reject": n_reject, "posts_sent": placed}
+            "n_skip": n_skip, "n_reject": n_reject, "posts_sent": placed, "ceiling_latched": ceiling_latched}
 
 
 # ── boot-reconcile against the AUTHENTICATED portfolio (async fetch -> sync reconcile with a lambda) ────
