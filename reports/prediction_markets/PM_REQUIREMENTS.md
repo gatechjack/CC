@@ -94,6 +94,20 @@ Jack raised scoping the whale-activity PULL to tracked categories only. **RULED 
 **Why it matters:** once the cadence is installed, `/farm` is the page Jack watches daily. A screen that can't tell "captured 14" from "ran nothing" hides the very signal the cadence exists to produce — and hides a silently-broken poller. This is the presentation analogue of the completeness gap T1 just fixed at the data layer.
 **Requirement:** Stage-2 screens (the Farm-League hierarchy) must display **open-position counts per pair/category** (and ideally last-poll freshness) as a first-class number, distinct from the closed-trade performance stats. The three-state poll token already exists (`farm.poll_state`) but the landing must render the COUNT, not just the status word. **Reasoning kept so it isn't re-lost:** rolled-up stats are closed-trade performance (correctly), so they are stale/empty for a lane that is mostly open trades — the open count is what shows the lane is alive. Do NOT build now; this is a Stage-2 screen requirement.
 
+### R7 — The per-account EXPOSURE CAP sums PM's JOURNAL, not the venue book.  *(recorded 2026-08-29, Stage 3 R5.5)*
+**The property:** PM's per-account open-exposure cap (the Stage-3 execution chokepoint's gate 6, `execution.py`)
+is an O(1) counter seeded and accumulated from PM's OWN journal (`pm_subdivision_order`). It does NOT read
+Kalshi's actual book. So any position on that Kalshi account PM did not place -- a manual trade, or another
+division sharing the same Kalshi keypair -- is INVISIBLE to the cap: PM sizes as though the account held less
+than it does, and can over-commit against the real balance.
+**Why it is filed (it OUTLIVES any one shutdown):** it is harmless while the account is PM-EXCLUSIVE (the R7
+go-live precondition -- no co-tenant division, no manual trading on the KALSHI account). But a FUTURE agent who
+adds a SECOND tenant to any PM account (a second division on the same keypair, or returns the account to manual
+use) re-introduces the blind spot. Boot-reconcile (R5.5) DETECTS a divergence at boot and latches, but it does
+NOT continuously correct the cap -- it is not a fix for this. If a PM account ever becomes shared again, the
+exposure cap must be re-based on the venue book (or the sharing refused). Do NOT inherit PM-exclusivity as
+permanent. (Raised by the R5.5 co-tenant investigation + Jack's ruling, STAGE3_PLAN sec 19e.)
+
 ---
 
 ## 5. CATEGORY STATUS (as of 2026-08-26)
