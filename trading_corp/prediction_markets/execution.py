@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+import logging
 import time
 from dataclasses import dataclass
 
@@ -47,6 +48,8 @@ from ..brokers.kalshi_live import (build_v2_event_order, client_order_id as _kal
                                    usd_to_contracts, v2_side_and_price)
 from ..data import mlb_poly_kalshi_match as M
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
+
+_LOG = logging.getLogger(__name__)
 
 # Config DEFAULTS live in CODE (Jack ruled: config values in code, not migrations; a DDL-NULL cap falls back here).
 CONFIG_DEFAULTS = {
@@ -139,9 +142,35 @@ def _row_get(row, key):
     return v
 
 
+def _safe_liquidity_ratio(row) -> float:
+    """The gate-3 liquidity ratio, FAIL-SAFE + LOUD (Jack ruled 2026-08-29). A liquidity floor whose ratio is
+    <= 0 or NaN would SILENTLY STOP GATING (required_depth <= 0 -> any book passes, no skip:illiquid surfaced)
+    -- the same 'present, wired, doing nothing' failure the R7.d dead latch_count_ceiling had. So: a NULL falls
+    back to the code default (0.75, the ruling); a PRESENT non-positive-or-NaN value is CLAMPED to the default
+    AND LOGGED at WARNING (NEVER clamp silently -- a deliberate 0 must learn it was overridden, not discover it
+    later from behaviour). A valid positive ratio passes through unchanged."""
+    default = float(CONFIG_DEFAULTS["liquidity_ratio"])
+    v = _row_get(row, "liquidity_ratio")
+    if v is None:
+        return default                                   # NULL column -> code default (the R7.f NULL ruling)
+    try:
+        r = float(v)
+    except (TypeError, ValueError):
+        _LOG.warning("pm liquidity_ratio: UNPARSEABLE value %r -> CLAMPED to default %.4f (a bad liquidity floor "
+                     "would silently stop gating -- any book would pass)", v, default)
+        return default
+    if not (r > 0.0):                                    # catches <= 0 AND NaN (NaN > 0.0 is False)
+        _LOG.warning("pm liquidity_ratio: INVALID %r (non-positive or NaN) -> CLAMPED to default %.4f. A ratio "
+                     "<= 0 makes required_depth <= 0 so the gate-3 depth floor SILENTLY STOPS GATING (any book "
+                     "passes). If this was deliberate it was OVERRIDDEN -- set a positive ratio.", r, default)
+        return default
+    return r
+
+
 def sub_config_from_row(row) -> SubConfig:
     """Build a SubConfig from a pm_subdivision row, falling back to CONFIG_DEFAULTS for any NULL cap (Jack: config
-    values in code, DDL-NULL -> code default; no config WRITE)."""
+    values in code, DDL-NULL -> code default; no config WRITE). liquidity_ratio additionally FAIL-SAFE-clamps a
+    present non-positive/NaN value to the default + LOGS it (a bad floor silently stops gating -- see below)."""
     def cap(k):
         v = _row_get(row, k)
         return v if v is not None else CONFIG_DEFAULTS[k]
@@ -153,7 +182,7 @@ def sub_config_from_row(row) -> SubConfig:
         fixed_stake_usd=float(cap("fixed_stake_usd")), per_order_usd_cap=float(cap("per_order_usd_cap")),
         daily_usd_cap=float(cap("daily_usd_cap")), max_open_usd=float(cap("max_open_usd")),
         max_orders_per_day=int(cap("max_orders_per_day")), max_slippage_cents=int(cap("max_slippage_cents")),
-        liquidity_ratio=float(cap("liquidity_ratio")),   # NULL column -> CONFIG_DEFAULTS 0.75; read PER CYCLE
+        liquidity_ratio=_safe_liquidity_ratio(row),   # NULL -> 0.75; non-positive/NaN -> CLAMPED to 0.75 + LOUD log; read PER CYCLE
     )
 
 

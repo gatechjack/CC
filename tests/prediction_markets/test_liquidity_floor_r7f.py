@@ -119,3 +119,40 @@ def test_liquidity_floor_uses_the_no_leg_notional_not_the_yes_side(tmp_path):
     yes_side_floor = 0.75 * d.count * 0.82
     if yes_side_floor - 0.02 > floor_no:
         assert _eval(tmp_path, _sub(), _sig(TOT_SLUG, "Under", sid="tot"), _mk(liq_tot=yes_side_floor - 0.02)).status == "dry_run_would_place"
+
+
+# ── (6) ★ THE GUARD (Jack ruled 2026-08-29): a present 0/negative/NaN ratio CLAMPS to 0.75 + LOGS LOUDLY ──
+def test_liquidity_ratio_clamps_invalid_to_default_and_logs(caplog):
+    default = ex.CONFIG_DEFAULTS["liquidity_ratio"]
+    for bad in (0.0, -1.0, float("nan")):
+        row = {"account_id": ACCT, "category": CAT, "market_types": "moneyline", "sizing_mode": "fixed",
+               "fixed_stake_usd": 0.01, "liquidity_ratio": bad}
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            sub = ex.sub_config_from_row(row)
+        assert sub.liquidity_ratio == default                                   # clamped to the code default
+        assert any("liquidity_ratio" in rec.getMessage() for rec in caplog.records), "no LOUD log for %r" % bad
+    # a VALID positive ratio passes through unchanged (no clamp, no spurious log):
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        ok = ex.sub_config_from_row({"account_id": ACCT, "category": CAT, "market_types": "moneyline",
+                                     "sizing_mode": "fixed", "fixed_stake_usd": 0.01, "liquidity_ratio": 1.5})
+    assert ok.liquidity_ratio == 1.5 and not any("liquidity_ratio" in r.getMessage() for r in caplog.records)
+
+
+def test_clamped_ratio_skips_a_book_that_would_pass_at_ratio_zero(tmp_path):
+    thin = _mk(liq_tor=0.05)                                                     # a $0.05 near-empty book
+    # UNGUARDED ratio 0 (direct SubConfig, bypasses the config guard) -> floor 0 -> the book PASSES (the footgun):
+    assert _eval(tmp_path, _sub(liquidity_ratio=0.0), _sig(ML_SLUG, "Toronto Blue Jays"), thin).status == "dry_run_would_place"
+    # but a DB liquidity_ratio of 0 is CLAMPED to 0.75 by sub_config_from_row -> the SAME book now SKIPS:
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        conn.execute("INSERT INTO pm_subdivision(account_id,category,market_types,sizing_mode,fixed_stake_usd,"
+                     "liquidity_ratio,active,created_ts) VALUES(?,?,?,?,?,?,1,?)",
+                     (ACCT, CAT, "moneyline,total,spread", "fixed", 0.01, 0.0, NOW))   # ratio 0 ON DISK
+        conn.commit()
+        sub = ex.sub_config_from_row(conn.execute("SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (ACCT, CAT)).fetchone())
+        assert sub.liquidity_ratio == 0.75                                      # the on-disk 0 was clamped
+        d = ex.evaluate(_sig(ML_SLUG, "Toronto Blue Jays"), sub, _ctx(thin), ex.Journal(conn, [ACCT], NOW),
+                        conn, NOW, legacy_db_path=str(tmp_path / "noleg.db"))
+    assert d.status == "skip:illiquid"                                          # clamp restored the gate
