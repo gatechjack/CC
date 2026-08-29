@@ -80,7 +80,15 @@ reboot but UNVERIFIED.**
    who can MANAGE THE UNIT.** `sudo` is forbidden + has no NOPASSWD. Read the unit file
    (`systemctl show -p FragmentPath`), don't assume ssh can restart.
 
-## F. ★ THE TWO DEPLOY RULES THAT COST US TONIGHT (do NOT rediscover them)
+## F. ★ THE THREE DEPLOY RULES THAT COST US (do NOT rediscover them)
+- **★ GATE-A MUST CHECK TRANSITIVE IMPORTS, not just "which files changed" (R7.e, 2026-08-29).** A manifest of
+  changed files is INSUFFICIENT the moment a deployed file imports one that was never deployed. R7.e shipped
+  `live_driver.py` (new) but missed `boot_reconcile.py` (built in R5.5, AFTER the Stage-3 deploy, never shipped);
+  `live_driver` does `from . import ... boot_reconcile ...`, so the engine's PM-driver wiring import FAILED at boot
+  (the `try/except` contained it — the SAFETY NET worked, the PROCESS did not). **Rule: for every file in the
+  manifest, resolve its import closure and assert every dependency is already on the box (or in the same manifest).
+  The cheap definitive proof — run `PYTHONPATH=. venv/bin/python -c "from <pkg> import <entrypoint>"` in the service
+  dir BEFORE the restart** — it either resolves the whole chain or names the first missing module.
 - **EXPLICIT MANIFEST, NEVER the raw diff.** The deploy set is ALWAYS an enumerated file list, never "whatever
   `git diff prod-live..branch` shows." The branch was cut BEFORE the PMCC `166b5ab` perf deploy, so the diff lists
   **PMCC's LIVE files** (`web/data.py`, `web/routes.py`, `division.html`, `_pmcc_pricing.html`, config, tests) as
