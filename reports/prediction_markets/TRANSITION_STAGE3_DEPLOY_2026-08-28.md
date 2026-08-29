@@ -59,10 +59,16 @@ carries 010+011), so you ship the **branch-tip (`920b2a1`) version** of each fil
 - **Activation:** pure functions — **INERT** until the engine calls them (R7). No restart.
 - **Post-checks:** legacy copy-trader 35/35; the moneyline path byte-identical. **STOP:** any moneyline regression.
 
-### Rung 3 — WEB (R3 read-only `/live` + R6 farm actions) · **PM-ONLY** · pm_web restart
-- **Files (all PM-ONLY):** `prediction_markets/web/app.py`, `subdivision.py`, `farm_actions.py` (NEW),
-  `pm_cli.py`, templates `pm_dashboard.html`, `pm_shell.html`, `pm_live_{list,subdivision,404}.html`,
-  `partials/pm_prospects_rows.html`, `partials/pm_watchlist_rows.html`.
+### Rung 3 — WEB (R3 read-only `/live` + R6 farm actions) · **PM-ONLY** · pm_web restart · **DEPLOYED LIVE 2026-08-29 (`STAGE3_R3_DEPLOY_2026-08-29.md`)**
+> **★ CORRECTIONS (2026-08-29 deploy):** (1) **`pm_cli.py` is NOT in rung 3 — it MOVED to rung 4.** It
+> module-level-imports `arm` (a rung-4 module) and the LIVE cron runs it every 30 min, so shipping it before `arm.py`
+> ImportErrors the poller (+ refresh/adjudicate/rollup). See the SCHEDULING LESSON in §G. (2) **Activation = pm_web
+> restart via az-root** (QUIRK #6), NOT ssh — pm_web is a root-owned system unit. The FILE deploy is ssh
+> (azureuser-owned); the RESTART is az-root. Ran as a 3-runner split (ssh stage → az-root restart w/ self-rollback →
+> ssh post-check). (3) The deploy set is the **EXPLICIT 10-file manifest**, NEVER `git diff prod-live..branch` (§G rule).
+- **Files (the 10, all PM-ONLY):** `prediction_markets/web/app.py`, `subdivision.py` (NEW), `farm_actions.py` (NEW),
+  templates `pm_dashboard.html`, `pm_shell.html`, `pm_live_{list,subdivision,404}.html`,
+  `partials/pm_prospects_rows.html`, `partials/pm_watchlist_rows.html`. (**`pm_cli.py` → rung 4.**)
 - **Depends on Rung 1** for the money-layer tables (but is **defensive** — honest-empty if absent, so it can even
   precede Rung 1). **Activation: a pm_web restart ONLY** (loads app.py + templates + subdivision + farm_actions).
 - **Backup:** code backup of the touched files + record pm_web PID (currently 42343).
@@ -72,7 +78,11 @@ carries 010+011), so you ship the **branch-tip (`920b2a1`) version** of each fil
   `/live` pages stay **read-only** (no `<form>`); `healthz` schema 11; three-bases held.
 - **STOP:** a POST reaches an order / places anything; a demote DELETES `pm_paper_trade`; a GET mutates; `/live` grows a form.
 
-### Rung 4 — EXECUTION modules (R4 chokepoint + R5 arm) · `prediction_markets/execution.py`, `arm.py` · **PM-ONLY, ENGINE-side, INERT**
+### Rung 4 — EXECUTION modules (R4 chokepoint + R5 arm) · `prediction_markets/execution.py`, `arm.py`, **`scripts/pm_cli.py`** · **PM-ONLY, ENGINE-side, INERT**
+- **★ `scripts/pm_cli.py` DEPLOYS IN THIS RUNG (moved from rung 3, §G scheduling lesson):** the branch `pm_cli.py`
+  module-level-imports `arm`, so it can only ship once `arm.py` is present — deploy `execution.py` + `arm.py` +
+  `pm_cli.py` together. `pm_cli.py` is at `scripts/` (azureuser-owned → ssh-`cp`-deployable) and the live cron runs it,
+  so verify the next `*/30` poll after deploying it. Its new `live-arm`/`live-attach` subcommands are inert until R7.
 - **Deploys** the DRY-RUN chokepoint (R4) + the arm/kill control plane (R5). **Nothing imports `execution` yet**
   (no engine driver — that is R7). So these files deploy **INERT: zero runtime effect, NO engine restart needed.**
 - `arm.py` is reachable via `pm_cli live-arm/disarm/status` (settable post-deploy) but the arm state does NOTHING
@@ -169,7 +179,7 @@ NO-leg lens (§J); R6's were RACE conditions (auto-create/demote), fixed with at
 
 ---
 
-## G. The five STANDING BOX QUIRKS (carry them)
+## G. The six STANDING BOX QUIRKS (carry them)
 1. **Broken `pytest_ethereum`** — always run pytest with **`-p no:pytest_ethereum`**.
 2. **`az run-command` serializes + truncates** — a transient "run in progress" is ANOTHER agent; **retry, do not
    interpret**; stdout may truncate.
@@ -183,6 +193,23 @@ NO-leg lens (§J); R6's were RACE conditions (auto-create/demote), fixed with at
    on RG-SHARED-PROD/tc-prod-vm** (runs as root; keep the file `root:root 644` — do NOT chown-to-azureuser a shared
    legacy file for PM's convenience). The rest of the tree (`prediction_markets/`, `brokers/`, `agents/`, `web/`,
    `persistence/`, `utils/`) IS azureuser-owned and ssh-`cp`-deployable (rungs 1/3/4).
+6. **A pm_web (or engine) RESTART needs az-root — there is NO azureuser path** (found 2026-08-29, rung 3). Both are
+   SYSTEM services (`/etc/systemd/system/*.service`, unit files `root:root`). **`User=azureuser` governs what the
+   PROCESS RUNS AS, NOT who can MANAGE THE UNIT** — restarting a system unit needs root; `sudo` is forbidden + has no
+   NOPASSWD. So a PM file deploy is ssh (files azureuser-owned) but its ACTIVATION restart is `az vm run-command
+   RunShellScript` (root) — same channel as the engine. Read the unit file (`systemctl show -p FragmentPath`), don't
+   assume ssh can restart.
+
+**★ STANDING DEPLOY RULES (carry them):**
+- **EXPLICIT MANIFEST, never the raw diff.** The deploy set is always an enumerated file list, NEVER "whatever
+  `git diff prod-live..branch` shows." The branch was cut before PMCC's `166b5ab`, so the diff lists PMCC's LIVE files
+  (`web/data.py`, `web/routes.py`, `division.html`, `_pmcc_pricing.html`, config, tests) as "changes" — deploying any
+  would REVERT another division's live work. Gate-A + manifest-assert against the explicit list; name-guard the rest out.
+- **★ WHEN SOMETHING BECOMES SCHEDULED, EVERY PLAN THAT TOUCHES IT NEEDS RE-READING.** `pm_cli.py`'s rung placement
+  was wrong not because the file changed but because its RISK CLASS did: before the cadence was installed a broken
+  `pm_cli.py` was harmless (nothing ran it until someone typed a command); after, it runs unattended every 30 min. A
+  file's blast radius can change without the file changing — when a thing becomes cron/timer-driven, re-read every plan
+  that touches it and re-derive its rung by the IMPORT GRAPH, not the file list.
 
 ---
 
