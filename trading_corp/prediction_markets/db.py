@@ -584,6 +584,136 @@ MIGRATION_009: list[str] = [
     # paper.CONFIG_DEFAULTS carries the matching 259200 code default. Migration-005's 172800 seed stays history.
 ]
 
+# migration 010 (2026-08-28, Stage 3 R1): the MONEY-LAYER schema -- pm_account + the sub-division
+# (account, category) entity + a per-sub-division live-order LOG. NUMBERED ON LANDING (next after 009).
+# ** PURE DDL ONLY (Jack RULED, mirroring 009's FIX-2 option ii). ** NO config/data writes here: sizing/risk
+# DEFAULTS are DDL column defaults + code CONFIG_DEFAULTS; any LIVE config value is a SEPARATE authorized
+# write. All three tables are created EMPTY and read by NO live code path at R1 -> the deploy is
+# behaviour-neutral. Every statement is a CREATE (no INSERT/UPDATE) so init_db 9->10 adds no config row.
+#
+# ARMING/KILL is NOT a new table -- it REUSES the platform's persistent agent_state halt row
+# (StrategyState.persist_halt), so nothing arming-related is added here (the plan's ruling #3; do not invent
+# a second mechanism).
+#
+# NO pm_user / pm_role / pm_grant -- identity is Authelia's (allow/deny at the proxy); the app owns ONLY the
+# login->account mapping, carried as pm_account.owner_identity (NULLABLE, empty until family logins arrive;
+# owner-filtering later becomes a WHERE clause on this column -- no new access model). RULED (P2_PLAN §11/§15).
+# secret_ref is a credential REFERENCE (the secrets.py / KeyVault NAME, e.g. 'KALSHI'), NEVER a secret value.
+#
+# ** e5 discipline (load-bearing, mirrors 004/009): pm_subdivision_order is written by the central execution
+#    engine (R4+). It is shaped to what brokers/kalshi_live.py ACTUALLY returns -- the submitted V2 body
+#    (build_v2_event_order: ticker/side/count/price/tif/reduce_only) + the outcome (FillEvent |
+#    KalshiNoFill[benign] | OrderPlacementError[loud]) + fill facts (order_id/fill_count/average_fill_price/
+#    average_fee_paid/remaining_count) -- NOT invented fields. If a later rung needs another persisted field,
+#    add it via a NEW migration; do not INSERT-OR-REPLACE over a partial column set. **
+MIGRATION_010: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_account (
+        account_id      TEXT PRIMARY KEY,             -- stable slug, e.g. 'kalshi_jack' (NOT a secret)
+        venue           TEXT NOT NULL DEFAULT 'kalshi',
+        secret_ref      TEXT,                         -- credential REFERENCE only (secrets.py/KeyVault NAME, e.g. 'KALSHI'); NEVER a value
+        owner_identity  TEXT,                         -- NULLABLE: Authelia login -> account mapping (empty until family logins); owner-filter = later WHERE clause. NO pm_user/role/grant.
+        label           TEXT,
+        active          INTEGER NOT NULL DEFAULT 1,   -- enable/disable the account (structural flag, not config)
+        created_ts      INTEGER,
+        updated_ts      INTEGER
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pm_subdivision (
+        account_id          TEXT NOT NULL,            -- (account, category) = the sub-division
+        category            TEXT NOT NULL,
+        label               TEXT,
+        active              INTEGER NOT NULL DEFAULT 1,   -- created-visible tile (ruling #4: tile on CREATE; armed-state is separate = agent_state)
+        -- MLB market types this sub-division copies (Jack's scope ruling: moneyline + totals + spreads).
+        -- ONE text list expresses any subset/superset WITHOUT a future migration -- so 'spread' is carried
+        -- even while Kalshi may list no MLB run-line (R2's matcher skips unlisted markets at runtime).
+        market_types        TEXT NOT NULL DEFAULT 'moneyline,total,spread',
+        -- SIZING: FIXED for first-live (ruling #1); the column shape carries Kelly later with NO migration.
+        sizing_mode         TEXT NOT NULL DEFAULT 'fixed',   -- 'fixed' | 'kelly' (kelly NOT built)
+        fixed_stake_usd     REAL,                            -- per-copy USD stake when sizing_mode='fixed'
+        kelly_fraction      REAL,                            -- carried for later Kelly; NULL/unused at R1
+        -- RISK caps read by the central chokepoint. DDL default NULL = 'fall back to code CONFIG_DEFAULTS'
+        -- (no config value is WRITTEN here -- PURE DDL):
+        per_order_usd_cap   REAL,
+        daily_usd_cap       REAL,
+        max_open_usd        REAL,
+        max_orders_per_day  INTEGER,
+        max_slippage_cents  INTEGER,
+        created_ts          INTEGER,
+        updated_ts          INTEGER,
+        PRIMARY KEY (account_id, category)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS pm_subdivision_order (
+        id                 INTEGER PRIMARY KEY,        -- rowid alias; append-only live-order journal
+        account_id         TEXT NOT NULL,              -- the sub-division (account_id, category) this order belongs to
+        category           TEXT NOT NULL,
+        wallet             TEXT,                       -- the copied whale
+        condition_id       TEXT,                       -- the Polymarket market copied
+        outcome_index      INTEGER,                    -- the whale's leg
+        signal_id          TEXT,                       -- STABLE idempotency source (e.g. whale tx_hash) -> feeds client_order_id
+        client_order_id    TEXT,                       -- deterministic UUID5 idempotency key sent to Kalshi (kalshi_live.client_order_id); dedupe key
+        -- submitted V2 body identifying fields (kalshi_live.build_v2_event_order):
+        ticker             TEXT,                       -- Kalshi market ticker
+        order_side         TEXT,                       -- V2 'bid' | 'ask' (YES-centric single book)
+        outcome_leg        TEXT,                       -- 'yes' | 'no' (booked leg price = 1 - yes_price for 'no')
+        is_exit            INTEGER NOT NULL DEFAULT 0, -- reduce_only exit vs entry
+        submitted_count    INTEGER,                    -- contracts submitted
+        submitted_price    REAL,                       -- yes-side limit price submitted (4-dec dollars)
+        time_in_force      TEXT,                       -- 'immediate_or_cancel' | 'fill_or_kill' | 'good_till_canceled'
+        -- outcome (kalshi_live: FillEvent | KalshiNoFill[benign] | OrderPlacementError[loud]):
+        outcome_status     TEXT,                       -- 'filled' | 'no_fill' | 'rejected' | 'error'
+        broker_order_id    TEXT,                       -- Kalshi order_id from the create response
+        fill_count         REAL,                       -- contracts actually filled (V2 fill_count)
+        fill_price         REAL,                       -- OUTCOME-leg per-contract fill price (yes, or 1-yes for 'no'), NOT the yes-side quote
+        remaining_count    REAL,                       -- unfilled (IOC/FOK)
+        fee                REAL,                       -- total fee (average_fee_paid * fill_count)
+        error_detail       TEXT,                       -- reject/error message (NULL when filled/no_fill)
+        dry_run            INTEGER NOT NULL DEFAULT 0, -- 1 = R4 logged-not-placed dry-run; 0 = real order
+        submitted_ts       INTEGER,
+        response_ts        INTEGER
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_subord_subdiv ON pm_subdivision_order(account_id, category)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_subord_coid   ON pm_subdivision_order(client_order_id)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_subord_wallet ON pm_subdivision_order(wallet, condition_id)",
+]
+
+# migration 011 (2026-08-28, Stage 3 R6): the WHALE->SUB-DIVISION attachment -- the farm->money bridge.
+# Promote-to-LIVE attaches a PINNED (wallet, category) farm pair to a (account, category) sub-division,
+# JOINED ON CATEGORY (a ufc whale-category can NEVER attach to an mlb sub-division; the category is shared).
+# The SAME (wallet, category) may attach to MULTIPLE sub-divisions independently (distinct account_id) -> the
+# PK is (account_id, category, wallet), which allows N whales per sub-division AND M sub-divisions per whale.
+# NUMBERED ON LANDING (next after 010).
+# ** PURE DDL ONLY (Jack RULED, mirroring 009/010). ** No config/data writes. Created EMPTY, read by NO live
+# code path until an attachment is written (R6 promote-to-live) -> behaviour-neutral deploy.
+#
+# PURE INDEX, no config: the attachment is ownership/linkage ONLY. A sub-division's sizing/risk config lives
+# on pm_subdivision and governs EVERY attached whale (ruling #1: FIXED stake); an attachment NEVER overrides
+# it. `active` (DEFAULT 1) makes DETACH reversible WITHOUT deleting the row (mirrors migration-008): detach =
+# active=0 + removed_ts; re-attach reactivates (active=1) with the record intact. No FK (app-layer validates
+# the sub-division exists + the pair is pinned before INSERT) -- keeps the migration a lightweight, idempotent
+# CREATE on any deploy tier. Writing an attachment CANNOT reach pm_subdivision_order (the order journal is
+# written only by the execution engine at placement time) -- promote-to-live creates a mapping, not an order.
+MIGRATION_011: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_subdivision_attachment (
+        account_id   TEXT NOT NULL,               -- the sub-division's account (pm_subdivision.account_id)
+        category     TEXT NOT NULL,               -- == the sub-division category AND the pinned pair's category (JOIN ON CATEGORY)
+        wallet       TEXT NOT NULL,               -- the pinned whale this sub-division copies (the attachment)
+        active       INTEGER NOT NULL DEFAULT 1,  -- detach = active=0 (reversible, mirrors migration-008); re-attach reactivates
+        source       TEXT,                        -- provenance (e.g. 'promote_to_live')
+        added_ts     INTEGER,
+        removed_ts   INTEGER,                     -- when active last flipped to 0 (detach)
+        PRIMARY KEY (account_id, category, wallet)  -- one attachment per (sub-division, whale); a whale-category may attach to MANY sub-divisions
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_subattach_subdiv ON pm_subdivision_attachment(account_id, category, active)",
+    "CREATE INDEX IF NOT EXISTS ix_pm_subattach_wallet ON pm_subdivision_attachment(wallet, category, active)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -594,7 +724,16 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (7, MIGRATION_007),
     (8, MIGRATION_008),
     (9, MIGRATION_009),
+    (10, MIGRATION_010),
+    (11, MIGRATION_011),
 ]
+
+# The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"
+# check (tests, /healthz) so a new migration bumps ONE place instead of a manual sweep. Migration-SPECIFIC
+# guards stay explicit (they assert behaviour at a fixed version, e.g. the migration-008 partial-DB test);
+# ONLY is-at-head checks track this constant. (Earned 2026-08-28 after three migrations of manual head-pin
+# sweeps -- Stage 3 R2.)
+SCHEMA_HEAD: int = max(v for v, _ in MIGRATIONS)
 
 
 def _current_version(conn: sqlite3.Connection) -> int:

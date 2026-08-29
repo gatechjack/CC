@@ -24,12 +24,12 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names, farm, analyze
+from .. import stats, positions, names, farm, farm_actions, analyze, subdivision
 from ..category import NON_SINGLE_GAME_CATEGORIES
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -201,11 +201,13 @@ async def farm_analyze(request: Request, wallet: str, category: str, force: str 
 # query_scoreboard over pm_category_stats (completed). The three-lists / three-bases invariant holds on one page.
 
 def _load_dashboard() -> dict:
-    """Dashboard read. Only the active Farm-League category COUNT (data-driven, never hardcoded) so the menu card
-    is honest; the Live sub-division section is P3 and carries no data. OFF the loop, PM DB only."""
+    """Dashboard read: the active Farm-League category COUNT + the LIVE sub-division COUNT (both data-driven,
+    honest-empty; 0 sub-divisions pre-migration-010 since the tables are absent -> honest, not an error). The Live
+    section carries NO live-trade data (P3). OFF the loop, PM DB only."""
     with connect() as conn:
         n_categories = len(farm.farm_categories(conn, farm.PINNED))
-    return {"n_categories": n_categories}
+        n_subdivisions = len(subdivision.list_subdivisions(conn))
+    return {"n_categories": n_categories, "n_subdivisions": n_subdivisions}
 
 
 def _load_farm_league() -> dict:
@@ -237,7 +239,12 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
         for r in prospects:
             r["flags"] = stats.scoreboard_flags(r)                                      # same tokens as CLI/scoreboard
         refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
-    return {"category": category, "watchlist": watchlist, "prospects": prospects, "refresh": refresh}
+        # R6: the ACTIVE accounts = the promote-to-LIVE targets. Auto-create (ruling 1) makes the (account,
+        # category) sub-division on demand, so a Watchlist row offers "promote to <account>", not a pre-existing
+        # sub-division. Empty until an account is provisioned (credentialed) -> the honest inert note.
+        live_accounts = subdivision.active_accounts(conn)
+    return {"category": category, "watchlist": watchlist, "prospects": prospects, "refresh": refresh,
+            "live_accounts": live_accounts}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -269,6 +276,110 @@ async def farm_league_category(request: Request, category: str):
         return templates.TemplateResponse(
             request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)
     return templates.TemplateResponse(request, "pm_farm_category.html", {"request": request, **data})
+
+
+# ── THE THREE FARM ACTIONS (Stage 3 R6) -- the FIRST mutating POST routes besides Analyze ────────────────────
+# WHAT PROTECTS THESE: Authelia at the reverse proxy (identity); the app has NO authz layer by design (ruling:
+# NO pm_user/pm_role/pm_grant -- Authelia owns identity). WHAT DOES NOT: there is no CSRF token and no per-user
+# permission check in the app -- anyone Authelia lets through can POST. Mitigations that ARE in place: every
+# action is IDEMPOTENT (a double-submit / concurrent click is a no-op, never a duplicate); mutation is POST-ONLY
+# (no GET mutates -- a crawler/prefetch/refresh cannot demote a whale); and NONE of these reaches the execution
+# chokepoint (promote-to-live writes an ATTACHMENT row, never an order; pm_web imports no broker). Pattern =
+# Post/Redirect/Get: the write runs OFF the loop, then a 303 redirect to the GET page (a browser refresh re-GETs,
+# never re-POSTs -> double-submit-safe at the transport layer too).
+
+def _promote_watchlist(wallet: str, category: str, now_ts: int) -> dict:
+    with connect() as conn:
+        return farm_actions.promote_to_watchlist(conn, wallet, category, now_ts)
+
+
+def _demote_prospect(wallet: str, category: str, now_ts: int) -> dict:
+    with connect() as conn:
+        return farm_actions.demote_to_prospect(conn, wallet, category, now_ts)
+
+
+def _promote_live(account_id: str, category: str, wallet: str, now_ts: int) -> dict:
+    with connect() as conn:
+        return farm_actions.promote_to_live(conn, account_id, category, wallet, now_ts)
+
+
+@app.post("/farm/{category}/promote/{wallet}")
+async def promote_watchlist_action(request: Request, category: str, wallet: str):
+    """PROMOTE-TO-WATCHLIST (Prospect -> Watchlist): candidate -> pinned. Idempotent; writes ONLY pm_watchlist.
+    303 back to the category page (PRG)."""
+    category = (category or "").strip().lower()
+    await asyncio.to_thread(_promote_watchlist, (wallet or "").lower(), category, int(time.time()))
+    return RedirectResponse("/farm/%s" % category, status_code=303)
+
+
+@app.post("/farm/{category}/demote/{wallet}")
+async def demote_action(request: Request, category: str, wallet: str):
+    """DEMOTE (Watchlist -> Prospect): pinned -> candidate. Idempotent; writes ONLY pm_watchlist -- pm_paper_trade
+    rows are PRESERVED (F-5). 303 back to the category page."""
+    category = (category or "").strip().lower()
+    await asyncio.to_thread(_demote_prospect, (wallet or "").lower(), category, int(time.time()))
+    return RedirectResponse("/farm/%s" % category, status_code=303)
+
+
+@app.post("/live/{account_id}/{category}/attach/{wallet}")
+async def promote_to_live_action(request: Request, account_id: str, category: str, wallet: str):
+    """PROMOTE-TO-LIVE: attach a pinned pair to the (account_id, category) sub-division (joined ON CATEGORY).
+    Creates the ATTACHMENT and nothing else -- NEVER an order. Idempotent (no duplicate attachment). 303 to the
+    sub-division page so the operator SEES the whale now in its copy list; a bad target is a no-op (honest)."""
+    # account_id is an EXACT-MATCH slug PK (strip-only, NOT lowercased) -- consistent with R3's /live/{account_id}
+    # route; wallet/category are normalized because they are case-insensitive by nature, a slug is not. A mixed-case
+    # account_id simply misses -> honest no_such_subdivision no-op (never a wrong write).
+    account_id = (account_id or "").strip()
+    category = (category or "").strip().lower()
+    await asyncio.to_thread(_promote_live, account_id, category, (wallet or "").lower(), int(time.time()))
+    return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)
+
+
+# ── LIVE sub-divisions (Stage 3 R3) -- the top-of-hierarchy Account-Category tiles. READ-ONLY: renders tiles +
+# sub-division config + an honest-empty live list. Places NOTHING, arms NOTHING, reaches NO order path (execution
+# is R4+; pm_web imports no broker). DEFENSIVE: subdivision.* tolerate pm_account/pm_subdivision being absent
+# (pre-migration-010) -> honest-empty, so /live deploys on a pm_web restart independent of the migration-010 deploy.
+
+def _load_live_list() -> dict:
+    """LIVE list read: the ACTIVE sub-divisions as tiles (tile-on-CREATE -- a tile the moment the sub-division
+    exists, before it trades). No live-trade data (P3). OFF the loop, read-only."""
+    with connect() as conn:
+        subdivisions = subdivision.list_subdivisions(conn)
+    return {"subdivisions": subdivisions}
+
+
+def _load_live_subdivision(account_id: str, category: str) -> dict | None:
+    """Per-sub-division read: its config + the whales it copies (R6 attachments, READ-ONLY list), or None -> 404.
+    LIVE trades/stats are P3 (not built) -> the page renders an honest-empty live list. Read-only -- no form,
+    no order path, no arm control (detach is a CLI action, so /live stays read-only)."""
+    with connect() as conn:
+        sub = subdivision.get_subdivision(conn, account_id, category)
+        if sub is None:
+            return None
+        attached = subdivision.attached_whales(conn, account_id, category)
+    return {"sub": sub, "attached": attached}
+
+
+@app.get("/live", response_class=HTMLResponse)
+async def live_list_page(request: Request):
+    """The LIVE sub-division tiles (top of the hierarchy). Honest-empty until a sub-division is created AND
+    migration 010 is live. READ-ONLY -- no order path."""
+    data = await asyncio.to_thread(_load_live_list)
+    return templates.TemplateResponse(request, "pm_live_list.html", {"request": request, **data})
+
+
+@app.get("/live/{account_id}/{category}", response_class=HTMLResponse)
+async def live_subdivision_page(request: Request, account_id: str, category: str):
+    """One Account-Category sub-division: its config + an honest-empty live list ('created, never traded'; live
+    copies arrive with the execution engine, R4). A sub-division that doesn't exist -> 404. READ-ONLY."""
+    account_id = (account_id or "").strip()
+    category = (category or "").strip().lower()
+    data = await asyncio.to_thread(_load_live_subdivision, account_id, category)
+    if data is None:
+        return templates.TemplateResponse(
+            request, "pm_live_404.html",
+            {"request": request, "account_id": account_id, "category": category}, status_code=404)
+    return templates.TemplateResponse(request, "pm_live_subdivision.html", {"request": request, **data})
 
 
 # ── Watchlist whale detail (Stage 2, phase 2) -- a PINNED whale's PAPER trades + paper stats ──────

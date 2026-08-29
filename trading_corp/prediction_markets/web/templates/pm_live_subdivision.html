@@ -1,0 +1,37 @@
+{% extends "pm_shell.html" %}
+{% block title %}{{ sub.account_label }} &middot; {{ sub.category|upper }} &middot; Live{% endblock %}
+{% block content %}
+<section>
+  <nav class="pm-crumb"><a href="/">Dashboard</a> &rsaquo; <a href="/live">Live sub-divisions</a> &rsaquo;
+    {{ sub.account_label }} &middot; {{ sub.category|upper }}</nav>
+  <div class="pm-section-head">
+    <h1 class="pm-h1">{{ sub.account_label }} &middot; {{ sub.category|upper }}</h1>
+    <p class="pm-sub">A live Account-Category sub-division. Read-only view &mdash; it places nothing here.</p>
+  </div>
+
+  <ul class="pm-sub pm-kv">
+    <li>Venue: {{ sub.venue or 'kalshi' }}</li>
+    <li>Market types: {{ sub.market_types }}</li>
+    <li>Sizing: {{ sub.sizing_mode }}{% if sub.fixed_stake_usd %} &middot; ${{ '%.2f'|format(sub.fixed_stake_usd) }}/copy{% endif %}</li>
+    <li>Created: {{ sub.created_ts|utcdate }}</li>
+  </ul>
+
+  {# COPIES THESE WHALES (R6): the ACTIVE attachments -- which pinned whales this sub-division copies. READ-ONLY
+     (no form, no detach button here -- /live stays read-only; detach is a CLI action). Honest-empty until a
+     whale is promoted to this sub-division. #}
+  <div class="pm-section-head"><h2 class="pm-h2">Copies these whales</h2></div>
+  {% if attached %}
+  <ul class="pm-sub pm-kv">
+    {% for a in attached %}
+    <li><a href="/watchlist/{{ a.wallet }}/{{ a.category }}">{{ a.user_name or a.wallet }}</a>
+        {% if a.user_name %}<span class="pm-muted">&middot; {{ a.wallet[:10] }}…</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="pm-empty">No whales attached yet. Promote a pinned whale to this sub-division from its Watchlist row.</div>
+  {% endif %}
+
+  <div class="pm-section-head"><h2 class="pm-h2">Live trades</h2></div>
+  <div class="pm-empty">Created &middot; no live trades yet. Live copies arrive with the execution engine.</div>
+</section>
+{% endblock %}
