@@ -169,12 +169,20 @@ NO-leg lens (§J); R6's were RACE conditions (auto-create/demote), fixed with at
 
 ---
 
-## G. The four STANDING BOX QUIRKS (carry them)
+## G. The five STANDING BOX QUIRKS (carry them)
 1. **Broken `pytest_ethereum`** — always run pytest with **`-p no:pytest_ethereum`**.
 2. **`az run-command` serializes + truncates** — a transient "run in progress" is ANOTHER agent; **retry, do not
    interpret**; stdout may truncate.
 3. **tar deploys land 664** — force **644** after extract (`find … -type f -exec chmod 644`).
 4. **32-bit PowerShell needs Sysnative OpenSSH** — the runners resolve `ssh`/`scp` via `System32`/`Sysnative`.
+5. **`trading_corp/data/` is NOT azureuser-writable — root-owned files need the `az` root path** (found 2026-08-29,
+   rung 2). The `data/` dir is owned by `197609:197121` (Windows numeric UID/GID — an artefact of a Windows-side `scp`
+   that preserved numeric IDs, NOT PM's to fix) at `755`, and shared legacy files inside it (e.g.
+   `mlb_poly_kalshi_match.py`) are `root:root 644`. azureuser (uid 1000) cannot overwrite them via ssh `cp` (permission
+   denied); `sudo` is forbidden and has no NOPASSWD anyway. Deploy such files via **`az vm run-command RunShellScript`
+   on RG-SHARED-PROD/tc-prod-vm** (runs as root; keep the file `root:root 644` — do NOT chown-to-azureuser a shared
+   legacy file for PM's convenience). The rest of the tree (`prediction_markets/`, `brokers/`, `agents/`, `web/`,
+   `persistence/`, `utils/`) IS azureuser-owned and ssh-`cp`-deployable (rungs 1/3/4).
 
 ---
 
