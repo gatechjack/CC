@@ -1,5 +1,9 @@
 # TRANSITION — Stage 3 DEPLOYED + prod-live ADVANCED + first sub-division LIVE (2026-08-29)
 
+**★★ SUPERSEDED by `TRANSITION_R7C_FIRSTCUT_2026-08-29.md` (2026-08-29). Read THAT first.** R5.5 shipped, R7 is planned,
+R7.a proved the authenticated transport, and R7.c is a FIRST CUT (unproven / unwired / undeployed). This doc's
+"R5.5 NOT built" is now stale. ★★
+
 **★ SUPERSEDES `TRANSITION_STAGE3_DEPLOY_2026-08-28.md` (which was the pre-deploy handoff). Read THIS first.** The
 built R1–R6 stack is now FULLY DEPLOYED across four rungs, `prod-live` is advanced, and the first account + first
 sub-division are live. This doc is the handoff for the agent who picks up **R5.5 → R7 → R8** (none authorized).
