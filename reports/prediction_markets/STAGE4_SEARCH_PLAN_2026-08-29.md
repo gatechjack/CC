@@ -376,7 +376,23 @@ so rung 2 is built to the evidence, not the assumption.
   (`pm_paper_*`, status='pinned') or live (`pm_subdivision*`) bases, and NO `pm_watchlist` candidate row (that
   is R3). The three lists stay separate; R2 only refreshes/extends the completed-trade evidence + records a run.
 
+## 9F. query_scoreboard DECISION -- RESOLVED (2026-08-29): Jack ruled OPTION (a). BUILT + box-scratch GREEN.
+Jack chose (a): add `AND COALESCE(w.backfill_complete,0)=1` to `stats.query_scoreboard`'s WHERE -- the reason
+being that the code's own `scoreboard_flags` comment SAID "excluded from ranking" while the WHERE did not: a
+false statement in deployed code, not a ranking-quality nicety. Built (commit `6296451`): the gate composes
+with the active gate (both AND-ed on distinct LEFT-JOINed tables; active NULL permissive, completeness NULL
+restrictive; neither defeats the other) -- proven by `test_removal_gate::test_scoreboard_completeness_and_active_gates_compose`
+(complete-but-inactive AND active-but-partial BOTH absent) + `::test_scoreboard_excludes_stats_without_pm_whale_row`.
+**★ A nuance surfaced during the fix:** the show-flagged behaviour was DELIBERATE + TESTED --
+`test_stats::test_partial_wallet_excluded_from_ranking` had a name saying "excluded" but a BODY asserting the
+partial whale SURFACES flagged. Option (a) reverses that tested contract (Jack anticipated "makes the flag
+dead"); the test was rewritten to the new excluded contract. Fixture fallout was 3 files (test_removal_gate
+`_cstats` now seeds a complete pm_whale; test_stage2_nav 0xc1; test_stats), NOT the ~6 estimated (the other
+consumers already seed complete whales). The INCOMPLETE-NOT-RANKED flag is now a dead defensive backstop.
+**★★ SHARED DEPLOYED FILE (stats.py; read live by `pm_cli report` + `web/app.py`) -> its OWN DEPLOY RUNG, a
+SEPARATE authorization (deploy manifest = stats.py, the single changed prod file). Build+box-scratch only here.**
+
 *Planning pass 2026-08-29 (§0-§9). Rulings + ladder + RUNG 1 (§8A/§9A/§9B/§9C) + Rulings 1&2 + RUNG 2
-(§9D/§9E) 2026-08-29. Independent of R7 (order path untouched -- verified via AST on search.py + search_run.py).
+(§9D/§9E) + query_scoreboard fix (§9F) 2026-08-29. Independent of R7 (order path untouched -- verified via AST on search.py + search_run.py).
 Runners: `cc\pm_stage4_datagather_ro.*` (21:17Z) / `pm_stage4_r1_boxscratch.*` (22:34Z) / `pm_stage4_r2_apiprobe.*`
 (22:58Z) / `pm_stage4_r2_boxscratch.*`.*
