@@ -306,5 +306,23 @@ own authorization, build -> box-scratch -> HALT, never chained.
   every existing consumer does (the `AND active=1` gate; no auto-pin, no auto-attach). So RUNG 1's answer: it touched
   none of the three lists; separation is trivially preserved (build-only, empty new table).
 
-*Planning pass 2026-08-29 (§0-§9). Rulings + ladder + RUNG 1 build 2026-08-29 (§8A/§9A/§9B). Independent of R7
-(order path untouched -- verified structurally). Read-only data from `cc\pm_stage4_datagather_ro.*` 2026-08-29T21:17Z.*
+## 9C. ★ BUILD-VERIFY RESULT (RUNG 1 box-scratch, 2026-08-29T22:34Z) -- `/closed-positions` is NOT newest-first.
+The read-only probe (whale `0xa6a856a8c8...`, 17,056 stored positions; two live pages) returned:
+`page0 descending=False, page1 descending=False, seam(page1[0]<=page0[-1])=False`. **So `/closed-positions` is
+NOT resolution-time-sorted -- not even WITHIN a single 50-row page.** (The timestamps are populated and non-zero;
+they are simply not in resolution order -- the endpoint sorts by something else.)
+
+**CONSEQUENCE FOR RUNG 2 (decided by this evidence): stop-at-watermark is NOT usable -> RUNG 2 ALWAYS FULL-PAGES**
+each wallet from offset 0 to a short/empty page (the plan-§3 fallback; ~30 calls/wallet, affordable). The rung-1
+`page_new_rows` in INCREMENTAL mode would (correctly) raise `OutOfOrderPage` on the very first page here, so wiring
+it incrementally would just thrash into the full-page fallback -- rung 2 should call it in FULL mode
+(`backfill_complete=False` semantics / `watermark_ts=None`), i.e. keep every row, terminate on the short page. This
+is EXACTLY why the code ASSERTS order rather than assuming it: a naive incremental impl would have silently SKIPPED
+trades on this endpoint (the worst failure class). If a cheaper re-run is wanted later, the options are: sort the
+full fetch client-side by resolved_ts (still a full fetch, no API saving), or find a recency-filtered endpoint
+(`/activity` carries placed-time but truncates at 5k -- a Stage-5 dep). NONE of this changes rung 1; it is recorded
+so rung 2 is built to the evidence, not the assumption.
+
+*Planning pass 2026-08-29 (§0-§9). Rulings + ladder + RUNG 1 build + box-scratch GREEN + build-verify
+2026-08-29 (§8A/§9A/§9B/§9C). Independent of R7 (order path untouched -- verified structurally). Read-only data
+from `cc\pm_stage4_datagather_ro.*` 2026-08-29T21:17Z; box-scratch `cc\pm_stage4_r1_boxscratch.*` 2026-08-29T22:34Z.*
