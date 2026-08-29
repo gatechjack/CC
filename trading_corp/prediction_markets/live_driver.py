@@ -201,8 +201,11 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
             continue                                                    # off is off (entries AND exits)
         try:
             fill = await place_fn(d)                                    # the ONE seam: POST the approved body
+            # NB: evaluate() ALREADY committed this entry's budget to the Journal counters at would-place time
+            # (execution.py:298-299); the cycle must NOT re-commit or the daily/open USD caps DOUBLE-COUNT. (A
+            # would-place that then no-fills/errors thus consumes in-cycle budget until the next cycle's fresh
+            # Journal re-seeds from actual filled rows -- conservative + self-healing, not a leak.)
             _record_order(conn, sub, s, d, outcome_status="filled", fill=fill, now_ts=now_ts)
-            journal.commit_would_place(sub.account_id, sub.category, float(d.notional_usd or 0.0))
             placed += 1
             consec_err = 0
         except KalshiNoFill:                                            # benign 0-fill -> record, no latch, retry next signal
@@ -230,29 +233,40 @@ def _is_auth_failure(e) -> bool:
 
 
 # ── boot-reconcile against the AUTHENTICATED portfolio (async fetch -> sync reconcile with a lambda) ────
+def _raiser(exc):
+    """A zero-arg callable that re-raises `exc`. Used so a FAILED async portfolio fetch flows through
+    reconcile_account's OWN fail-safe latch (a sync fetcher raising -> latch) rather than duplicating the latch."""
+    def _f():
+        raise exc
+    return _f
+
+
 async def run_boot_reconcile(conn, sub, client, *, legacy_db_path=None):
     """Fetch the account's ACTUAL Kalshi positions (authenticated) and reconcile them against the journal. The
-    async fetch happens HERE; `boot_reconcile.reconcile_account` is SYNC and gets a lambda returning the
+    async fetch happens HERE; `boot_reconcile.reconcile_account` is SYNC and gets a plain lambda returning the
     already-fetched list, so nothing in boot_reconcile.py changes. A mismatch latches boot_reconcile_mismatch
-    (fail-safe DISARMED until a human clears it). A fetch failure is fail-safe-latched inside reconcile_account."""
+    (fail-safe DISARMED until a human clears it). A FETCH FAILURE hands reconcile_account a raising fetcher
+    (`_raiser`) so its own fail-safe latch fires -- one code path, no duplicated latch."""
     async def _fetch():
         return list(await client.portfolio.get_positions(fetch_all=True))
     try:
         positions = await _fetch()
     except Exception as e:                                             # noqa: BLE001 -- fail-safe: cannot read -> latch
-        return boot_reconcile.reconcile_account(conn, sub.account_id, sub.category,
-                                                fetch_positions=lambda: (_ for _ in ()).throw(e),
-                                                legacy_db_path=legacy_db_path)
+        fetch = _raiser(e)
+    else:
+        fetch = (lambda: positions)
     return boot_reconcile.reconcile_account(conn, sub.account_id, sub.category,
-                                            fetch_positions=lambda: positions, legacy_db_path=legacy_db_path)
+                                            fetch_positions=fetch, legacy_db_path=legacy_db_path)
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
-async def scheduled_pm_live_loop(pm_db_path, broker, *, account_id, category, poll_sec=7.0,
+async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, account_id, category, poll_sec=7.0,
                                  index_refresh_sec=900.0, legacy_db_path=None, log=None, _max_cycles=None):
-    """The engine-side driver task. BOOT: build the index + boot-reconcile (comes up latched-if-mismatch). STEADY:
-    refresh the index when stale, read each attached whale's /positions, run the async arm-gated cycle, sleep. A
-    bad cycle is logged and NEVER kills the loop. `_max_cycles` bounds the loop for box-scratch (None = forever)."""
+    """The engine-side driver task. `positions_client` is the polymarket client (`fetch_positions_book`, the SAME
+    read the paper poller uses) -- INJECTED by the caller (the R7.e main.py block passes the real one; box-scratch a
+    fake) so this module wires no client itself. BOOT: build the index + boot-reconcile (comes up latched-if-mismatch).
+    STEADY: refresh the index when stale, read each attached whale's /positions, run the async arm-gated cycle, sleep.
+    A bad cycle is logged and NEVER kills the loop. `_max_cycles` bounds the loop for box-scratch (None = forever)."""
     import logging
     log = log or logging.getLogger(__name__)
     client = broker._read._client
@@ -288,7 +302,7 @@ async def scheduled_pm_live_loop(pm_db_path, broker, *, account_id, category, po
                 signals = []
                 for w in wallets:
                     try:
-                        book = await client_fetch_positions_book(broker, w)
+                        book = await positions_client.fetch_positions_book(w)
                     except Exception as e:  # noqa: BLE001 -- per-whale isolation (a fetch error skips that whale)
                         log.warning("pm_live_driver: /positions fetch failed for %s: %s", w[:12], e); continue
                     if not getattr(book, "complete", False):
@@ -302,21 +316,6 @@ async def scheduled_pm_live_loop(pm_db_path, broker, *, account_id, category, po
         except Exception as e:  # noqa: BLE001 -- a bad cycle must never kill the loop
             log.exception("pm_live_driver: cycle failed: %s", e)
         await _sleep(poll_sec)
-
-
-async def client_fetch_positions_book(broker, wallet):
-    """The whale /positions read seam -- the SAME polymarket client read the paper poller uses
-    (paper.poll_pinned -> client.fetch_positions_book). Kept as a small indirection so box-scratch can inject a
-    fake. The polymarket client is constructed by the caller/engine; here we reach it via the broker adapter's
-    hook if present, else the module-level _positions_client (box-scratch sets it)."""
-    cli = _positions_client if _positions_client is not None else getattr(broker, "_pm_positions_client", None)
-    if cli is None:
-        raise RuntimeError("pm_live_driver: no polymarket positions client wired")
-    return await cli.fetch_positions_book(wallet)
-
-
-# box-scratch / R7.e wiring seams (kept module-level so tests inject without touching the engine):
-_positions_client = None
 
 
 async def _sleep(sec):
