@@ -227,3 +227,67 @@ prod-live advance, R7 is mid-ladder — plus MACE and PEAD direct-to-box work. T
 necessarily carries R7.f's migration 012 (the `liquidity_ratio` schema column) as a predecessor of Stage 4's
 migration 013; the SCHEMA is recorded, the R7 order-path CODE that uses it is not. **Do NOT read this advance as
 box == prod-live.**
+
+---
+
+## 8. LEGACY `poly_kalshi_mlb` STOPPED COPYING — ROOT CAUSE: KALSHI EXCHANGE SHARDING (read-only diagnosis, 2026-08-30)
+
+**Symptom (Jack):** SDTrading holds open Polymarket positions; neither the legacy `poly_kalshi_mlb` copy division
+nor the new Jack-MLB sub-division copied them, and legacy recorded four "quantity 0" trades. (Jack-MLB
+structurally CANNOT place: DISARMED, `pm_subdivision_order=0`, R7.f unauthorized — confirmed, not investigated
+further.) Diagnosis was READ-ONLY; nothing was fixed. Legacy routes to whoever owns that division.
+
+**★ ROOT CAUSE (CONFIRMED, not hypothesis): Kalshi EXCHANGE SHARDING.** Kalshi shards balances across exchanges
+(0 Default · 1 Combos · 2 Crypto · **3 Tennis & Baseball**). The MLB markets we match (`KXMLBGAME` / `KXMLBTOTAL`
+/ `KXMLBSPREAD`) are **all on `exchange_index=3`**. Our order body **omits `exchange_index`**, so Kalshi
+auto-routes each order to the market's shard (3) and charges **that shard's** balance — not the total. Per-shard
+balance (raw signed `GET /portfolio/balance`, 2026-08-30 16:26Z): **Karen shard0=$512.97 / shard3=$2.45**;
+**kalshi_jack shard0=$389.46 / shard3=$120.35** (shards 1,2 = $0 both). So legacy fails: MLB routes to shard 3,
+Karen has **$2.45** there (< the ~$5 order) → `insufficient_balance`, while her *total* $515 looks healthy. Last
+real fill 2026-08-28 drained shard 3; nothing refilled.
+
+**★ TWO HYPOTHESES RETIRED (record with their evidence, per Jack):**
+- **The price-units bug is REFUTED, not proven.** Our wire price `"0.7000"` is a fixed-point dollar string =
+  Kalshi's CURRENT documented V2 contract (verified against docs.kalshi.com, not our months-old docstring). **The
+  100×-oversized-order fear is DISSOLVED**; the ~$514 "arithmetic that looked so suspicious" was coincidence — the
+  number is just the balance. (`build_v2_event_order` is shared verbatim by legacy and by PM's execution.py, so
+  had it been wrong it would have bitten both; it is not wrong.)
+- **The four "zero-quantity" trades are a LIQUIDITY MISS, not the units bug and not balance** — Kalshi accepted
+  them (`status=placed`) at the correct ~$5 cost and they filled **zero** on dead in-game books. "08-29 was still
+  priced correctly" — which bounds when the shard starvation began (shard-3 drained *after* 08-28/29).
+
+**★ STANDING OPERATIONAL FACT (not a one-off): shard balances DEPLETE with trading and DO NOT auto-top-up.**
+Both accounts have **`target_balance_allocation = {"allocations": []}`** (none set), so Kalshi's 10-second
+rebalance has no target to restore to — a traded-down shard is not refilled, and deposits default to shard 0.
+**THE TOTAL-BALANCE FIGURE MASKS THE PER-SHARD SPLIT**, and our reader (`bal.balance / 100`, kalshi_live.py:278)
+returns exactly that masked total. A healthy total with an empty market-shard is precisely the state that produced
+this failure.
+
+**★ R7.f IMPACT (the risk picture, corrected twice):** kalshi_jack has **$120.35 on shard 3** → R7.f's ONE
+~$0.50 1-contract order WOULD fund and PLACE (correctly sized — units refuted). So R7.f is **neither
+shard-blocked nor 100×-dangerous** — it would do exactly what it is for: one small, correct, real order. BUT the
+$120.35 is **not** target-maintained → **sustained** copying (R7 steady-state / R8) drains shard 3 and PM then
+hits Karen's exact failure while the total still looks healthy. **Arming Jack-MLB is JACK's call and the NEXT
+session's work, not this one's.**
+
+**★ REVISED PRE-R7.f GATE ITEM (ahead of the dry-run parity item):** *the price-units re-verify is DONE (format
+is correct); it is REPLACED by* — **VERIFY THE TARGET ACCOUNT HAS BALANCE ON THE MARKET'S EXCHANGE SHARD (3 for
+baseball) BEFORE THE FIRST ORDER.** Orders auto-route there and the total masks the split.
+
+**BACKLOG (record, do NOT build):**
+1. **Explicit `exchange_index`** on the order body → deterministic placement instead of relying on implicit
+   auto-route (code note, not a blocker).
+2. **A shard-aware balance read** — per-account exposure logic and any balance display must know the per-shard
+   split, since a healthy total with an empty shard is the failure state.
+3. **A `target_balance_allocation`** (POST `/portfolio/target_balance_allocation`) for sustained copying, so the
+   baseball shard auto-refills instead of depleting to zero.
+
+**WHOSE FIX:** **Legacy (Karen) → its owner, operator-side:** move/allocate her $513 from shard 0 to shard 3.
+**Honestly noted:** it may NOT be trivial — a Kalshi Discord #dev thread (2026-08-30, identical MLB symptom + a
+Kalshi-staffer reply) reports the customer could NOT move existing balance himself (subaccount transfer ≠ shard
+transfer; setting a target accepted the config but did not move EXISTING balance; a fresh deposit still landed on
+shard 0) and got no resolution — so it may need **Kalshi support**. **PM side:** no code fix for correctness; the
+shard-funding pre-check is the gate item above; explicit `exchange_index` is optional hardening.
+
+**Read-only runners (all Jack-authorized):** `cc\pm_legacy_diag.*`, `pm_legacy_units_diag.*`,
+`pm_shard_probe{,2,3}.*`, `pm_shard_alloc.*`. Nothing was written, restarted, or reconfigured. R7 untouched.
