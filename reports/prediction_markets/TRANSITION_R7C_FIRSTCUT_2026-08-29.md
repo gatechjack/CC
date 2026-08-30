@@ -1,5 +1,8 @@
 # TRANSITION — R5.5 SHIPPED · R7 PLANNED · R7.a PROVEN · R7.c FIRST CUT (UNPROVEN) — 2026-08-29
 
+**★★★ SUPERSEDED by `TRANSITION_SESSIONWRAP_2026-08-30.md` (2026-08-30). Read THAT first — it carries the live
+state, R7.f as the only thing before money, the queued rungs, and the prod-live advance. ★★★**
+
 **★★ SUPERSEDES `TRANSITION_STAGE3_POSTDEPLOY_2026-08-29.md`. Read THIS first. ★★** That doc's "R5.5 NOT built" is
 stale — R5.5 shipped, R7 is planned, R7.a ran, R7.c is a first cut. This is the handoff for the agent who PROVES R7.c
 then proceeds R7.d → R7.e → R7.f. Branch `prediction-markets-stage3-r55-2026-08-29` @ **`54ec18a`** (local == origin,
