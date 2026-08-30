@@ -20,9 +20,9 @@ SLUG = "mlb-sea-tor-2026-08-28"
 
 def _markets(tor_shard=3, liq=500.0):
     m = {T_TOR: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "no_bid_dollars": 0.45,
-                 "liquidity_dollars": liq},
+                 "yes_ask_size_fp": "500.00", "yes_bid_size_fp": "500.00"},
          "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55,
-                                             "no_bid_dollars": 0.53, "liquidity_dollars": liq}}
+                                             "no_bid_dollars": 0.53, "yes_ask_size_fp": "500.00", "yes_bid_size_fp": "500.00"}}
     if tor_shard is not None:
         m[T_TOR]["exchange_index"] = tor_shard
         m["KXMLBGAME-26AUG281915SEATOR-SEA"]["exchange_index"] = tor_shard

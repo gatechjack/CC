@@ -13,10 +13,10 @@ GAME_TICKERS = ["KXMLBGAME-26AUG281915SEATOR-SEA", "KXMLBGAME-26AUG281915SEATOR-
 TOTAL_TICKERS = ["KXMLBTOTAL-26AUG281915SEATOR-9", "KXMLBTOTAL-26AUG281915SEATOR-8"]     # 8.5, 7.5
 SPREAD_TICKERS = ["KXMLBSPREAD-26AUG281915SEATOR-TOR2", "KXMLBSPREAD-26AUG281915SEATOR-SEA2"]  # 1.5
 MARKETS = {
-    "KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "liquidity_dollars": 500},
-    "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "liquidity_dollars": 500},
-    "KXMLBTOTAL-26AUG281915SEATOR-9":  {"yes_ask_dollars": 0.52, "yes_bid_dollars": 0.50, "no_ask_dollars": 0.50, "liquidity_dollars": 500},
-    "KXMLBSPREAD-26AUG281915SEATOR-TOR2": {"yes_ask_dollars": 0.40, "yes_bid_dollars": 0.38, "no_ask_dollars": 0.62, "liquidity_dollars": 500},
+    "KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+    "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+    "KXMLBTOTAL-26AUG281915SEATOR-9":  {"yes_ask_dollars": 0.52, "yes_bid_dollars": 0.50, "no_ask_dollars": 0.50, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+    "KXMLBSPREAD-26AUG281915SEATOR-TOR2": {"yes_ask_dollars": 0.40, "yes_bid_dollars": 0.38, "no_ask_dollars": 0.62, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
 }
 
 
@@ -111,7 +111,7 @@ def test_gate2b_notional_on_usd_catches_wrong_low_price(tmp_path):
     AND (via slippage on a tiny price) the committed USD -> rejected. A range check on price alone would miss it."""
     p = str(tmp_path / "pm.db"); db.init_db(p)
     mk = dict(MARKETS)
-    mk["KXMLBGAME-26AUG281915SEATOR-TOR"] = {"yes_ask_dollars": 0.02, "yes_bid_dollars": 0.019, "no_ask_dollars": 0.97, "liquidity_dollars": 500}
+    mk["KXMLBGAME-26AUG281915SEATOR-TOR"] = {"yes_ask_dollars": 0.02, "yes_bid_dollars": 0.019, "no_ask_dollars": 0.97, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"}
     sub = _sub(fixed_stake_usd=20.0, per_order_usd_cap=25.0)
     with db.connect(p) as conn:
         j = ex.Journal(conn, [sub.account_id], 1787900000)
@@ -142,8 +142,8 @@ def test_gate_no_match_and_far_tail_are_skips(tmp_path):
 
 def test_gate_illiquid_and_no_quote_skip(tmp_path):
     p = str(tmp_path / "pm.db"); db.init_db(p)
-    thin = {"KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.20, "no_ask_dollars": 0.47, "liquidity_dollars": 500}}
-    noq = {"KXMLBGAME-26AUG281915SEATOR-TOR": {"liquidity_dollars": 500}}           # no yes_ask -> no quote
+    thin = {"KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.20, "no_ask_dollars": 0.47, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"}}
+    noq = {"KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"}}           # no yes_ask -> no quote
     with db.connect(p) as conn:
         j = ex.Journal(conn, ["kalshi_jack"], 1787900000)
         d_thin = ex.evaluate(_sig("mlb-sea-tor-2026-08-28", "Toronto Blue Jays"), _sub(), _ctx(thin), j, conn, 1787900000)
