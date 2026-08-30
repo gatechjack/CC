@@ -272,10 +272,17 @@ class Journal:
 
 # ── THE CHOKEPOINT ──────────────────────────────────────────────────────────
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,
-             *, legacy_db_path=None) -> Decision:
-    """One copy signal through the 8 gates in order. DRY-RUN: COMPUTES the exact V2 body if gates pass and RECORDS
+             *, shard_balances=None, legacy_db_path=None) -> Decision:
+    """One copy signal through the gates in order. DRY-RUN: COMPUTES the exact V2 body if gates pass and RECORDS
     the disarm verdict; it NEVER places (this module holds no broker). A reject at any gate returns early. The
-    disarm verdict is a PREVIEW here -- the LIVE placement gate on `armed` lives in `run_arm_gated_cycle` (R5)."""
+    disarm verdict is a PREVIEW here -- the LIVE placement gate on `armed` lives in `run_arm_gated_cycle` (R5).
+
+    `shard_balances` (a shard_balance.ShardBalances, or None): the PER-CYCLE per-shard funding read for gate 6b, the
+    pre-flight shard-funding SKIP (Jack RULED 2026-08-30). ★ None DISABLES gate 6b -- ONLY the paper / dry-run / test
+    path may pass None; the LIVE driver ALWAYS passes a ShardBalances (real, or an `has_breakdown=False` UNKNOWN on a
+    balance-fetch failure), so on the live path gate 6b is always active and FAILS CLOSED. The value that makes gate
+    6b pass everything is `shard_balances=None`; it is unreachable on the live path by construction (see
+    live_driver.scheduled_pm_live_loop) -- the standing "a safety check that silently stops checking" guard."""
     sid = signal.signal_id
     armed = is_armed(conn, sub.account_id, sub.category, legacy_db_path=legacy_db_path)   # gate 1 (recorded)
     copy_usd = float(sub.fixed_stake_usd)
@@ -340,6 +347,22 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         if journal.orders_today(sub.account_id, sub.category) + 1 > sub.max_orders_per_day:         # gate 8
             return Decision("reject:count_ceiling", sid, market_type=match.market_type, kalshi_ticker=ticker,
                             leg=leg, reason="orders_per_day", disarm_armed=armed)
+        # gate 6b (PER-MARKET shard funding): Kalshi shards collateral by exchange_index and orders auto-route to the
+        # market's shard, charging THAT shard -- a healthy TOTAL with an empty market-shard is Karen's silent death.
+        # ★ PER MARKET, not per category: live markets never migrate, so an MLB market's shard depends on its creation
+        # date -> read THIS market's exchange_index (not the series/category). This is a SKIP (a funding gap is
+        # FUNDABLE-LATER, not a fault -- it must NOT feed the error-latch), and it FAILS CLOSED: an unknown market
+        # shard (exchange_index None) or an unknown split (has_breakdown False -> can_fund None) or a too-thin shard
+        # (can_fund False) all SKIP. Only can_fund True proceeds. None shard_balances disables the gate (test/paper
+        # opt-out; unreachable on the live path -- see the evaluate docstring).
+        if shard_balances is not None:
+            order_shard = (market or {}).get("exchange_index")
+            fundable = shard_balances.can_fund(order_shard, notional) if order_shard is not None else None
+            if fundable is not True:
+                return Decision("skip:shard_underfunded", sid, market_type=match.market_type, kalshi_ticker=ticker,
+                                leg=leg, count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
+                                reason="shard_%s underfunded for notional_%.4f (fundable=%r; per-market, fail-closed)"
+                                       % (order_shard, notional, fundable))
 
     # all gates pass -> COMPUTE the exact V2 body (gate 7 slippage clamped INSIDE build_v2_event_order). DRY-RUN:
     # log-not-place; an exit is reduce_only (is_buy=False on the SAME leg).

@@ -47,7 +47,7 @@ from __future__ import annotations
 import logging
 import time as _time
 
-from . import arm, boot_reconcile, db, execution, paper
+from . import arm, boot_reconcile, db, execution, paper, shard_balance
 from ..data import mlb_poly_kalshi_match as M
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
@@ -56,6 +56,11 @@ from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event
 _LOG = logging.getLogger(__name__)
 SERIES = ("KXMLBGAME", "KXMLBTOTAL", "KXMLBSPREAD")   # Jack's scope ruling: moneyline+total+spread
 _SETTLED_LOOKBACK_SEC = 160 * 86400
+# ★ SUSTAINED-SHARD-UNDERFUNDING alarm threshold (gate 6b, Jack RULED 2026-08-30: SURFACED, NOT latched). N=3 cycles:
+# Kalshi auto-rebalances every 10s and the driver polls ~7s, so a transient gap while a rebalance is mid-flight lasts
+# ~1-2 cycles; N=3 (~21s at poll=7s) clears that transient with margin, so the alarm fires only on a GENUINE sustained
+# gap (no allocation set, or drained faster than refill) -- fast enough to matter, not so fast it cries on a transient.
+_SHARD_UNDERFUNDED_ALARM_N = 3
 
 
 # ── market context: fetch the live Kalshi catalog + build the 3-dim index ─────────────────────────────
@@ -71,9 +76,15 @@ def _market_quote_dict(m) -> dict:
                 except (TypeError, ValueError):
                     pass
         return None
+    ei = getattr(m, "exchange_index", None)                 # ★ PER-MARKET shard (gate 6b): live markets never migrate,
+    try:                                                    # so a market's shard is a fact of THAT market, not its series.
+        ei = int(ei) if ei is not None else None            # None (missing) -> gate 6b FAILS CLOSED (skip:shard_underfunded).
+    except (TypeError, ValueError):
+        ei = None
     return {"yes_ask_dollars": d("yes_ask_dollars", "yes_ask"),
             "no_ask_dollars": d("no_ask_dollars", "no_ask"),
-            "liquidity_dollars": d("liquidity_dollars", "liquidity")}
+            "liquidity_dollars": d("liquidity_dollars", "liquidity"),
+            "exchange_index": ei}
 
 
 async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
@@ -213,7 +224,8 @@ def _finalize_order(conn, coid, outcome_status, *, fill=None, error_detail=None,
 
 
 # ── the ASYNC arm-gated cycle (async twin of run_arm_gated_cycle; reuses evaluate + read_arm_verdict) ──
-async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, place_fn, legacy_db_path=None, log=None):
+async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, place_fn, shard_balances=None,
+                                   legacy_db_path=None, log=None):
     """Every signal through the chokepoint's 8 gates (`execution.evaluate`), then -- for a gate-passing order and
     ONLY IF ARMED (re-read `arm.read_arm_verdict` immediately before EACH order) -- journal a PENDING row, await
     `place_fn` (the POST), and finalize the outcome. DISARMED blocks everything. A loud error (incl. a wrapped
@@ -222,14 +234,19 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
     the cycle does NOT re-commit (that would double-count the daily/open USD caps)."""
     log = log or _LOG
     signals = list(signals)
-    n_would = n_skip = n_reject = placed = disarm_blocked = errors = 0
+    n_would = n_skip = n_reject = placed = disarm_blocked = errors = n_shard_underfunded = 0
     consec_err = 0
     ceiling_latched = False
     for s in signals:
-        d = execution.evaluate(s, sub, ctx, journal, conn, now_ts, legacy_db_path=legacy_db_path)   # the 8 gates (reused)
+        d = execution.evaluate(s, sub, ctx, journal, conn, now_ts,               # gates + gate 6b (shard funding)
+                               shard_balances=shard_balances, legacy_db_path=legacy_db_path)
         if d.status != "dry_run_would_place":
             if d.status.startswith("skip:"):
                 n_skip += 1
+                if d.status == "skip:shard_underfunded":                         # SURFACED (not latched): a fundable-later gap
+                    n_shard_underfunded += 1
+                    log.warning("pm_live_driver: skip:shard_underfunded (%s x%s) -- funding gap on the market's shard, "
+                                "NOT a fault: %s", d.kalshi_ticker, d.count, d.reason)
             else:
                 n_reject += 1
                 # ★ R7.d: the 4TH latching trigger, WIRED HERE. It was DEAD CODE -- arm.latch_count_ceiling
@@ -282,7 +299,8 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
         consec_err = 0
     return {"account_id": sub.account_id, "category": sub.category, "n_signals": len(signals),
             "n_would_place": n_would, "placed": placed, "n_disarm_blocked": disarm_blocked, "errors": errors,
-            "n_skip": n_skip, "n_reject": n_reject, "posts_sent": placed, "ceiling_latched": ceiling_latched}
+            "n_skip": n_skip, "n_reject": n_reject, "n_shard_underfunded": n_shard_underfunded,
+            "posts_sent": placed, "ceiling_latched": ceiling_latched}
 
 
 # ── boot-reconcile against the AUTHENTICATED portfolio (async fetch -> sync reconcile with a lambda) ────
@@ -343,12 +361,23 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 log.critical("pm_live_driver: could NOT latch after a boot-reconcile fault (%s) -- STILL disarmed by "
                              "the R5 absent->DISARMED default unless someone armed: %s", e, e2)
     cycles = 0
+    consec_underfunded = 0                                  # gate-6b sustained-underfunding alarm counter (cross-cycle)
     while _max_cycles is None or cycles < _max_cycles:
         cycles += 1
         try:
             if ctx is None or (_time.time() - last_idx) > index_refresh_sec:
                 ctx = await fetch_market_context(client, int(_time.time())); last_idx = _time.time()
             now_ts = int(_time.time())
+            # ★ gate 6b input: read the PER-SHARD split FRESH every cycle (balances DEPLETE with trading; the 900s
+            # index cache would be stale). NEVER None on the live path -- a read FAILURE fails CLOSED to an UNKNOWN
+            # ShardBalances (has_breakdown False) so every entry skips rather than places blind. This is the one
+            # construction site that makes evaluate's gate-6b unbypassable on the live path.
+            try:
+                shard_bal = await shard_balance.fetch_shard_balances(client)
+            except Exception as e:  # noqa: BLE001 -- fail-CLOSED: cannot read the split -> UNKNOWN -> all entries skip
+                log.warning("pm_live_driver: shard-balance read FAILED -> UNKNOWN split (all entries skip:"
+                            "shard_underfunded this cycle -- NEVER place blind): %s", e)
+                shard_bal = shard_balance.ShardBalances(total_dollars=0.0, by_shard={}, has_breakdown=False)
             with db.connect(pm_db_path) as conn:
                 sub = execution.sub_config_from_row(conn.execute(
                     "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, category)).fetchone())
@@ -366,10 +395,23 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                         continue                                        # never act on a partial book
                     signals += positions_to_entry_signals(book.rows, w)
                 place_fn = make_place_fn(client)
-                summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts,
-                                                      place_fn=place_fn, legacy_db_path=legacy_db_path, log=log)
+                summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
+                                                      shard_balances=shard_bal, legacy_db_path=legacy_db_path, log=log)
                 if summ["placed"] or summ["errors"]:
                     log.info("pm_live_driver cycle: %s", summ)
+                # ★ SUSTAINED shard-underfunding alarm (SURFACED, not latched): a funding gap persisting across N
+                # cycles with ZERO placements means the auto-rebalancer has not refilled the market's shard -> a human
+                # must move funds or set/adjust target_balance_allocation. Resets the moment anything places or the gap
+                # clears; re-fires every N cycles while sustained so it stays visible.
+                if summ.get("n_shard_underfunded", 0) > 0 and summ["placed"] == 0:
+                    consec_underfunded += 1
+                    if consec_underfunded % _SHARD_UNDERFUNDED_ALARM_N == 0:
+                        log.warning("pm_live_driver: ALARM -- SUSTAINED SHARD UNDERFUNDING: %d consecutive cycles with "
+                                    "a funding gap on the market's shard and ZERO placements (%s/%s). MOVE FUNDS to the "
+                                    "market's shard or set/adjust target_balance_allocation. SURFACED, not latched.",
+                                    consec_underfunded, account_id, category)
+                else:
+                    consec_underfunded = 0
         except Exception as e:  # noqa: BLE001 -- a bad cycle must never kill the loop
             log.exception("pm_live_driver: cycle failed: %s", e)
         await _sleep(poll_sec)
