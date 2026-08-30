@@ -41,8 +41,10 @@ def test_karen_death_the_masked_total_is_not_the_shard():
     assert b.shard(3) == pytest.approx(2.45)                   # the REAL fundable balance for an MLB order
     assert b.total_dollars != b.shard(3)                       # they DIFFER -- the whole point of this rung
     # a ~$5 MLB order routes to shard 3 and CANNOT be funded there, though the total is 100x it:
-    assert b.can_fund(3, 5.0) is False
-    assert b.total_dollars > 5.0                               # ... the masked total would have said "fine"
+    assert b.can_fund(3, 5.0) is False                         # REQUIRED source (shard): NO
+    old_reader_would_place = b.total_dollars >= 5.0            # WRONG source (masked total): would have said YES
+    assert old_reader_would_place is True                      # ... the exact silent-failure the old reader shipped
+    assert b.total_dollars > 5.0
 
 
 def test_can_fund_boundary():
@@ -112,3 +114,68 @@ def test_fetch_async_client():
 def test_fetch_sync_client():
     b = asyncio.run(sb.fetch_shard_balances(_SyncClient(JACK)))
     assert b.shard(3) == pytest.approx(509.8040)
+
+
+# ── review-hardening: fail-loud on corruption; the tri-state safe pattern; subaccount-scoped detection ──
+
+def test_duplicate_exchange_index_raises():
+    # two entries for shard 3 -> silent last-wins would report a WRONG (empty) shard -> must RAISE
+    with pytest.raises(ValueError, match="duplicate"):
+        sb.parse_balance({"balance": 100, "balance_breakdown": [
+            {"exchange_index": 3, "balance": "509.80"}, {"exchange_index": 3, "balance": "0.00"}]})
+
+
+def test_non_integer_exchange_index_raises():
+    # int(3.7)->3 (wrong shard) and "3" (string) are corruption for a load-bearing read -> RAISE, not coerce
+    for bad_idx in (3.7, 3.0, "3", True):
+        with pytest.raises(ValueError):
+            sb.parse_balance({"balance": 100, "balance_breakdown": [{"exchange_index": bad_idx, "balance": "1.0"}]})
+
+
+def test_non_finite_balance_raises():
+    # 'Infinity' would make can_fund True for ANY need; 'NaN' poisons comparisons -> both must RAISE (via None)
+    for bad in ("Infinity", "-Infinity", "NaN", float("inf"), float("nan")):
+        with pytest.raises(ValueError):
+            sb.parse_balance({"balance": 100, "balance_breakdown": [{"exchange_index": 3, "balance": bad}]})
+
+
+def test_non_list_breakdown_raises():
+    # a dict-wrapped breakdown (API schema drift) must be LOUD, not silently has_breakdown=False
+    with pytest.raises(ValueError, match="not a list"):
+        sb.parse_balance({"balance": 100, "balance_breakdown": {"shards": []}})
+
+
+def test_non_dict_response_raises():
+    class _Resp:  # e.g. a raw requests/httpx Response reaching parse by mistake
+        def get(self, *a):
+            return "wrong"
+    with pytest.raises(TypeError):
+        sb.parse_balance(_Resp())
+
+
+def test_can_fund_negative_need_raises_zero_need_is_true():
+    b = sb.parse_balance(JACK)
+    with pytest.raises(ValueError):
+        b.can_fund(3, -0.01)                       # a negative order size is an upstream sign bug -> LOUD
+    assert b.can_fund(3, 0.0) is True              # zero need is degenerate-but-harmless
+
+
+def test_none_from_can_fund_is_falsy_and_is_not_true():
+    # pin the rung-2 safe gate: unknown split -> None; None is falsy AND `is not True` -> never place blind
+    b = sb.parse_balance({"balance": 100})         # no breakdown -> unknown
+    r = b.can_fund(3, 5.0)
+    assert r is None and (not r) and (r is not True)
+
+
+def test_shard_absent_from_known_breakdown_is_zero_not_none():
+    # a shard not listed in a KNOWN breakdown is $0 (Kalshi lists every shard), NOT unknown
+    b = sb.parse_balance({"balance_dollars": "515.42", "balance_breakdown": [{"exchange_index": 0, "balance": "515.42"}]})
+    assert b.has_breakdown is True
+    assert b.shard(3) == 0.0 and b.can_fund(3, 1.0) is False
+
+
+def test_shard_sum_can_diverge_from_total_subaccount_scoped():
+    # a subaccount-scoped read: breakdown shows $10 but the total field says $515 -> the gap is detectable
+    b = sb.parse_balance({"balance_dollars": "515.42", "balance_breakdown": [{"exchange_index": 3, "balance": "10.00"}]})
+    assert b.total_dollars == pytest.approx(515.42) and b.shard_sum() == pytest.approx(10.00)
+    assert abs(b.shard_sum() - b.total_dollars) > 100.0
