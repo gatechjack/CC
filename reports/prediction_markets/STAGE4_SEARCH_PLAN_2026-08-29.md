@@ -492,3 +492,39 @@ fire**; NO restart (cron re-reads on next invocation). **THE POST-CHECK THAT COU
 RUNNING CLEAN (no ImportError) -- reported only AFTER it has fired and been read, never predicted.** On green:
 push (done at build), the deploy record lands here as §11A. Rollback = restore the one per-file backup. **After
 deploy Jack runs `pm_cli search --dry-run` first (sees the split + estimate), then decides on the real run.**
+
+### 11A -- DEPLOY RECORD: `scripts/pm_cli.py` LIVE + POLL-CONFIRMED CLEAN (2026-08-30 ~02:47Z deploy / 03:00:06Z proof)
+
+**DONE. pm_cli.py ONLY; NO restart; order path untouched; the */30 poll ran CLEAN on the new code.** Runners
+`cc\pm_stage4_search_deploy_recon.*` (read-only), `cc\pm_stage4_search_deploy.*` (self-guarded mutation),
+`cc\pm_stage4_search_pollwait_confirm.*` (wait-on-box + read the actual poll) -- all Jack-authorized (autonomous).
+
+**RECON (02:42:58Z, read-only):** exact cron = `*/30 * * * * ... pm_cli.py paper-poll >> ~/pm_poll.log`; daily
+`refresh` 05:00 / `paper-adjudicate` 05:40 / `paper-rollup` 05:50 UTC (the window to avoid). Baseline captured:
+schema 13, 0 pm_live, 0 order, engine 76416 / pm_web 83893 both NRestarts=0, live sha `f813f5c2c0c0ce82`,
+func=_cmd_search=0 (not yet deployed).
+
+**DEPLOY (02:47:33Z, self-guarded):** GUARD passed -- **1052s into the half-hour, 748s before the 03:00 poll**
+(need INTO in [120,1500]), no pm_cli.py process running, clear of the 05:xx daily window. Per-file backup
+`~/pm_cli_search_deploy_backup_20260830T024732Z/pm_cli.py` (sha f813f5c2, the rollback). IN-PLACE overwrite via
+`cat > $LIVE_CLI` (the FILE is azureuser-writable though the scripts DIR is not). Deployed sha **`7ae2f219a1b3d358`**
+(git-archived from committed da2e1b1 -> exact reviewed bytes, LF), **perm 644 asserted**, func=_cmd_search=1,
+`search` listed in `--help`. **GATE-A in the EXACT cron env (`cd $ROOT && PYTHONPATH=. venv/bin/python
+trading_corp/scripts/pm_cli.py [search] --help`): both EXIT 0** -> the full top-level import graph (search,
+search_run, stats, ...) resolves. The runner AUTO-RESTORES the backup if perms!=644, post-sha!=staged, or either
+Gate-A exit!=0 (a broken poller is a live outage, not a deploy blemish) -- not triggered. NOTHING ELSE MOVED
+(schema 13, 0 pm_live, 0 order, engine 76416 / pm_web 83893, NRestarts 0). Marker recorded pm_poll.log size
+(8305570 bytes) so the confirm reads ONLY the next poll.
+
+**POLL CONFIRM (the proof -- read AFTER it fired, never predicted):** the **03:00:06Z** `paper-poll` grew
+pm_poll.log 8305570 -> 8382179 bytes (76609 new bytes = the normal per-pair JSON, every pair `polled:true`).
+**FAILURE-SIGNATURE SCAN (Traceback/ImportError/ModuleNotFound/SyntaxError/NameError/AttributeError/'invalid
+choice' -- 'errors:0' is NOT a match): NONE -> POLL_CLEAN=1.** Because the daily refresh/adjudicate/rollup import
+the SAME module top-level, a clean poll clears all four. Post-poll: live sha still `7ae2f219a1b3d358`,
+func=_cmd_search=1, schema 13, 0 pm_live, 0 order, engine 76416 / pm_web 83893, NRestarts 0.
+
+**STATE:** `pm_cli search` is now INVOKABLE on the box (the §10/§11 gap is fully closed). prod-live `c88beea`
+NOT advanced. Retained on box for rollback/record: the per-file backup dir + `~/pm_cli_search_deploy_marker`.
+**HANDED TO JACK: he runs `pm_cli search --dry-run` first** -- 1 leaderboard call, prints discovered count +
+new-vs-already-complete split + a ~call-count/run-time estimate; NO backfill, NO write -- then decides whether to
+commit to the real run (~20-40 min, writes candidates -> the /farm Prospects screen).
