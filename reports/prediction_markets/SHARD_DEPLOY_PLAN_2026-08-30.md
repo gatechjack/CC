@@ -1,16 +1,23 @@
-# Shard rungs 1-2 + yes_bid fix — DEPLOY PLAN (Option a; Jack authorizes each step, I HALT)
+# Shard rungs 1-2-3 + yes_bid fix — DEPLOY PLAN (Option a; Jack authorizes each step, I HALT)
 
-**Date:** 2026-08-30 · **Branch:** `pm-shard-scope-2026-08-30` @ `8d49910` · Jack ruled **Option (a)**: deploy rungs
-1-2 + the `yes_bid` fix now — smallest change that un-blocks placement, and it lands the shard gate BEFORE any live
-order. **Every step is Jack-authorized; I build + validate the runners and HALT.**
+**Date:** 2026-08-30 · **Branch:** `pm-shard-scope-2026-08-30` (tip includes rungs 1-2-3) · Jack ruled **Option
+(a)**: deploy now — smallest change that un-blocks placement, and it lands the shard gate BEFORE any live order.
+**★ RUNG 3 FOLDED IN (Jack, 2026-08-30):** rung 3 (explicit `exchange_index`) is a CONTENT change to `execution.py`,
+which is ALREADY in the manifest for gate 6b — so folding it costs **no extra file, no Gate-A change, no rollback
+change**, and **saves a second engine restart** (which bounces bitunix, the only 24/7 division on the shared
+engine). The S2 runner archives the branch tip, so it ships rungs 1-2-3 automatically. **Every step is
+Jack-authorized; I build + validate the runners and HALT.**
 
 ## MANIFEST — 3 files, ALL PM-ONLY (no SHARED file changed)
 
 | file | change | SHARED / PM-ONLY | writable-by |
 |---|---|---|---|
 | `trading_corp/prediction_markets/shard_balance.py` | **NEW** (rung 1) | PM-ONLY | azureuser (ssh) |
-| `trading_corp/prediction_markets/execution.py` | gate 6b + `evaluate(shard_balances=…)` | PM-ONLY | azureuser (ssh) |
+| `trading_corp/prediction_markets/execution.py` | gate 6b + `evaluate(shard_balances=…)` **+ rung-3 explicit `exchange_index` on the body** | PM-ONLY | azureuser (ssh) |
 | `trading_corp/prediction_markets/live_driver.py` | exchange_index on market dict, per-cycle shard fetch, alarm, **yes_bid fix** | PM-ONLY | azureuser (ssh) |
+
+*Rung 3 is PM-only (no shared-broker edit — legacy has its own `build_v2_event_order`). File count, Gate-A, and
+rollback are IDENTICAL to the rungs-1-2 plan; only `execution.py`'s content differs (now the rung-3 tip).*
 
 **No SHARED files** (the matcher `mlb_poly_kalshi_match.py` and broker `kalshi_live.py` are UNCHANGED). Files deploy
 via **ssh** (the `prediction_markets/` dir is azureuser-writable) — **no az-root file deploy**.
