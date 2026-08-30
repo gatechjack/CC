@@ -1,10 +1,24 @@
 # Shard Money-Management — SCOPING (Task 1, read-only; Jack rules, I do not pick)
 
 **Date:** 2026-08-30 · **Branch:** `pm-shard-scope-2026-08-30` (off PM tip `63ce899`) · **Status:** scoping only,
-nothing built. Design reasoning below is COMPLETE and doc-cited; two boxes are EMPIRICAL and are filled by the
-read-only probe `pm_shard_scope_probe.ps1` (presented for authorization, not yet run): the per-category
-exchange_index map (§2) and the current `target_balance_allocation` state (§4). This doc will be finalized with
-that output.
+nothing built. Design reasoning is doc-cited; the two empirical boxes are now FILLED from the read-only probe
+`pm_shard_scope_probe.ps1`, run under board authorization at **2026-08-30T17:18:42Z** (per-category exchange_index
+map §2; current `target_balance_allocation` state §4). FINAL.
+
+---
+
+## RULING (2026-08-30, Jack) — (e) DECIDED
+
+**OPTION B — Kalshi-native `target_balance_allocation` as the mover**, with **A as the fallback until B is verified
+with small amounts**. **C (platform-built transfers) DEFERRED** — our code moving real funds is a second money path
+needing its own arm/kill/reconcile, and no observed problem demands it. Backlog **#2 (shard-aware balance read) and
+#1 (explicit exchange_index)** stand. **★ The shard-aware balance read is LOAD-BEARING under all three options and
+is built FIRST, not last** — the masked total with an empty shard is exactly the state that killed Karen's division
+for two days. Of the three failure shapes (§3): only the STRUCTURAL split needs solving now; transient contention
+is a 10s lag we live with; pure capital contention is not a sharding problem. **Two caveats to carry (both hold):**
+"sweepable balance" is undefined in the docs, and a target percentage is ALSO A CAP — neither blocks B, both mean
+**verify B with small amounts, do not trust from documentation.** The probe changed nothing in this ruling; it
+confirmed the clean shard-0↔shard-3 split and that both accounts have no allocation set.
 
 ---
 
@@ -57,28 +71,33 @@ names (task requirement). The probe (§8) does this. **The PM package wires only
 (`live_driver.py:57` = `KXMLBGAME/KXMLBTOTAL/KXMLBSPREAD`); the other 14 categories have NO Kalshi series mapping
 in PM (legacy arb/copy agents carry ticker prefixes, out of scope to edit). So this map is NEW knowledge.
 
-| category | expected shard (docs default) | series probed | empirical exchange_index |
-|---|---|---|---|
-| mlb | **3** (Baseball) | KXMLBGAME | _pending probe_ |
-| atp | **3** (Tennis) | KXATP* | _pending_ |
-| wta | **3** (Tennis) | KXWTA* | _pending_ |
-| tennis | **3** (Tennis) | KXATP/KXWTA/KXITF | _pending_ |
-| nba | 0 (Default) | KXNBAGAME | _pending_ |
-| nfl | 0 | KXNFLGAME | _pending_ |
-| nhl | 0 | KXNHLGAME | _pending_ |
-| wnba | 0 | KXWNBA* | _pending_ |
-| epl | 0 | KXEPL/KXPREMIERLEAGUE | _pending_ |
-| ucl | 0 | KXUCL* | _pending_ |
-| soccer | 0 | KXMLS/KXLALIGA/KXUEL | _pending_ |
-| cs2 | 0 | KXCS2* | _pending_ |
-| golf | 0 | KXPGA/KXGOLF | _pending_ |
-| ufc | 0 | KXUFC* | _pending_ |
-| fed | 0 (Economics) | KXFED* | _pending_ |
+**EMPIRICAL RESULT (probe 17:18:42Z; `exchange_index` read from `GET /series/{ticker}`; all 15 resolved, 0 MISS):**
 
-**Preliminary structure (docs):** our allowlist splits across **two shards — 3 (mlb/atp/wta/tennis) and 0
-(everything else)**; crypto (shard 2) is not in our allowlist. So the money-management problem is fundamentally a
-**shard-0 ↔ shard-3 split on any account that runs both baseball/tennis AND another category.** (Probe confirms
-the exact split and flags any category the docs' default gets wrong.)
+| category | series read | **exchange_index** | series title |
+|---|---|---|---|
+| mlb | KXMLBGAME | **3** | Professional Baseball Game |
+| atp | KXATPMATCH | **3** | ATP Tennis Match |
+| wta | KXWTAMATCH | **3** | WTA Tennis Match |
+| tennis | KXATP | **3** | Men's Tournament Winner |
+| nba | KXNBAGAME | **0** | Pro Basketball Game |
+| nfl | KXNFLGAME | **0** | Professional Football Game |
+| nhl | KXNHLGAME | **0** | NHL Game |
+| wnba | KXWNBAGAME | **0** | Women's Pro Basketball Game |
+| epl | KXEPLGAME | **0** | English Premier League Game |
+| ucl | KXUCLGAME | **0** | UEFA Champions League Game |
+| soccer | KXMLSGAME | **0** | Major League Soccer Game |
+| cs2 | KXCS2 | **0** | CS2 Tournament Winner |
+| golf | KXPGA | **0** | PGA Championship |
+| ufc | KXUFCFIGHT | **0** | UFC Fight |
+| fed | KXFED | **0** | Fed funds rate |
+
+**CONFIRMED structure — a clean TWO-shard split:** **4 categories on shard 3** (mlb, atp, wta, tennis =
+baseball+tennis) and **11 categories on shard 0** (nba, nfl, nhl, wnba, epl, ucl, soccer, cs2, golf, ufc, fed).
+NONE of our categories touch shard 1 (Combos) or shard 2 (Crypto). So money management is exactly a **shard-0 ↔
+shard-3 problem** on any single account that runs both baseball/tennis AND any of the other 11. A two-entry
+`target_balance_allocation` (`[{0:X},{3:Y}]`) is sufficient to declare the split. *Caveat from docs: shard-3
+membership applies to events created after 2026-08-24 — the series-level read shows 3 today, but always confirm
+`exchange_index` on the specific market at order time.*
 
 ---
 
@@ -103,8 +122,9 @@ cash is split between shard 3 and shard 0. Neither sub can spend the OTHER shard
 ## 4. (c) DOES `target_balance_allocation` SOLVE IT?
 
 **Endpoints:** `GET`/`POST /portfolio/target_balance_allocation`; body `{"allocations":[{"exchange_index":N,
-"percent":P}]}` (added 2026-08-20). Current state on both accounts: `{"allocations": []}` (none set) — _probe
-re-confirms live._
+"percent":P}]}` (added 2026-08-20). **Current state (probe 17:18Z): both accounts `{"allocations": []}` — none
+set.** And `GET /portfolio/balance` DOES return `balance_breakdown` per shard by default (probe confirms:
+kalshi_jack shard3=$509.80/shard0=$0.008; kalshi_karen shard3=$491.68/shard0=$0.006) — our reader just ignores it.
 
 **★ What it does (direct doc quote, https://docs.kalshi.com/getting_started/exchange_sharding):**
 > "Users may opt in to automatic rebalancing between exchange shards by supplying a target balance allocation as a
@@ -168,8 +188,8 @@ both run; it adds a new authenticated WRITE path (transfer) that must be armed /
 like the order path (a whole second money path to prove out); heavier reconciliation. *Cost:* high build + high
 risk; *benefit:* only over B if we hit a real fast-drain or per-shard-cap wall B can't cover.
 
-**My recommendation (Jack rules):** **B as the mover + items #1 (explicit exchange_index) and #2 (shard-aware
-balance read) as prerequisites; A as the fallback until B is verified with small amounts; defer C.** Rationale: the
+**RULED (Jack, 2026-08-30):** **B as the mover; #2 (shard-aware balance read) FIRST and load-bearing; #1 (explicit
+exchange_index) alongside; A as the fallback until B is verified with small amounts; C DEFERRED.** Rationale: the
 shard-aware read is the load-bearing safety piece for ALL options (you must be able to SEE the per-shard split
 before you trust any auto-mover or operator action); B lets Kalshi — not our unproven code — custody the transfers;
 C's risk (our code moving real funds) is only justified by a contention we have not yet observed. **A structural
@@ -180,15 +200,20 @@ change.
 
 ---
 
-## 7. WHAT THE READ-ONLY PROBE CONFIRMS (before this doc is finalized)
+## 7. PROBE RESULT (read-only, 2026-08-30T17:18:42Z, board-authorized)
 
-`pm_shard_scope_probe.ps1` (presented; awaiting board authorization) — read-only, no orders/transfers/writes:
-- **Part A box state** (schema, all counts incl candidates, arm DISARMED, `pm_subdivision_order=0`, sub-division +
-  attachments, PIDs, cron, /healthz//farm//farm/atp//live) — for the Part A report.
-- **Per-shard `balance_breakdown`** for kalshi_jack + kalshi_karen (the numbers that matter for the R7.f arm-time
-  gate) + current `target_balance_allocation` on both.
-- **§2 category→exchange_index** for all 15 categories via `/series/{ticker}` (empirical; MISS-labeled where a
-  candidate ticker is wrong, to refine in a tiny follow-up).
+`pm_shard_scope_probe.ps1` ran clean — no orders/transfers/writes. Key observations:
+- **Balances:** kalshi_jack shard3=**$509.80** (shard0 $0.008, s1/s2 $0); kalshi_karen shard3=**$491.68** (shard0
+  $0.006). Both `target_balance_allocation = {"allocations": []}`. R7.f's ~$0.50 MLB order funds + places on shard 3.
+- **§2 map:** all 15 categories resolved; 4 on shard 3, 11 on shard 0 (table above).
+- **Box state (Part A):** engine 76416 / pm_web 89704 (NRestarts 0), schema 13, arm DISARMED (0 pm_live rows),
+  `pm_subdivision_order=0` (no order ever placed), sub-division `kalshi_jack/mlb` active, active attachment =
+  SDTrading only (xifutloong3 detached, active=0), 4 cron entries present, all HTTP 200.
+- **★ FLAGGED FOR TASK 2 (not a Task-1 concern):** the `kalshi_jack/mlb` sub-division has **NULL caps** —
+  `max_open_usd`, `per_order_usd_cap`, `daily_usd_cap`, `max_orders_per_day`, `max_slippage_cents`, `liquidity_ratio`
+  are all NULL (only `fixed_stake_usd=0.01` + `market_types` set). `liquidity_ratio` NULL→0.75 by the R7.f floor,
+  but gate-6 (`execution.py:337`) does `sub.max_open_usd + 1e-9` — a NULL there must be verified to coerce safely
+  (default vs TypeError) BEFORE arming. Pre-arm code check, surfaced not resolved.
 
 *Backlog cross-ref: shard items #1 (explicit exchange_index), #2 (shard-aware balance read), #3
 (target_balance_allocation) in [[prediction-markets-backlog]]. This doc scopes #3's design question.*
