@@ -86,6 +86,10 @@ def _market_quote_dict(m) -> dict:
     # one-sided -> evaluate skip:illiquid for every signal -> the driver could never place. Exposed by the rung-2
     # end-to-end driver test (the first to run the placement path); never caught before because the driver ran
     # DISARMED. no_bid is carried too for the exit-side re-check (K4).
+    # ★ UNITS: the `*_dollars` fields are authoritative and are what KXMLB (a FRACTIONAL series) always populates, so
+    # the `d(...)` fallback to the bare `yes_bid`/`no_bid` names is dead for MLB. NOTE (backlog, inert for MLB): those
+    # bare names are INTEGER CENTS on a NON-fractional series; if a non-fractional series is ever added, the fallback
+    # arm must /100 to match `brokers/kalshi.kalshi_quote_dollars`. Same pre-existing shape as yes_ask/no_ask above.
     return {"yes_ask_dollars": d("yes_ask_dollars", "yes_ask"),
             "no_ask_dollars": d("no_ask_dollars", "no_ask"),
             "yes_bid_dollars": d("yes_bid_dollars", "yes_bid"),
@@ -371,6 +375,10 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
     consec_underfunded = 0                                  # gate-6b sustained-underfunding alarm counter (cross-cycle)
     while _max_cycles is None or cycles < _max_cycles:
         cycles += 1
+        # ★ fail-closed default, BOUND before anything can raise: even if a future refactor moved the placement call
+        # out of the fetch's protection, gate 6b would see an UNKNOWN split (skip), never None/stale (adversarial
+        # review, defensive). The per-cycle fetch below overwrites this on both success and failure.
+        shard_bal = shard_balance.ShardBalances(total_dollars=0.0, by_shard={}, has_breakdown=False)
         try:
             if ctx is None or (_time.time() - last_idx) > index_refresh_sec:
                 ctx = await fetch_market_context(client, int(_time.time())); last_idx = _time.time()

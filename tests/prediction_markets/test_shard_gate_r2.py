@@ -101,6 +101,13 @@ def test_gate6b_per_market_not_per_category(tmp_path):
     assert d3.status == "skip:shard_underfunded"                         # shard 3 empty -- same everything else
 
 
+def test_gate6b_shard0_market_funds_and_places(tmp_path):
+    # shard 0 is a VALID shard (11 of our 15 categories live there) and exchange_index=0 is FALSY -- the guard must
+    # treat 0 as KNOWN (is not None), not as a missing shard. A shard-0 market with shard 0 funded MUST place.
+    d = _eval(tmp_path, _sub(), _sig(), _ctx(_markets(tor_shard=0)), _bal({0: 500.0, 3: 0.0}))
+    assert d.status == "dry_run_would_place"
+
+
 def test_gate6b_exit_is_not_shard_gated(tmp_path):
     # a reduce_only EXIT reduces risk -> gate 6b (entry-only) must NEVER skip it, even on an empty shard
     d = _eval(tmp_path, _sub(), _sig(is_exit=True, sid="ex"), _ctx(_markets(tor_shard=3)), _bal({3: 0.0}))
