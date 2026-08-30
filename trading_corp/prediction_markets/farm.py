@@ -16,7 +16,7 @@ not ambiguous across three genuinely different states, which MUST stay visually 
 """
 from __future__ import annotations
 
-from . import stats
+from . import search, stats
 
 PINNED = "pinned"
 CANDIDATE = "candidate"
@@ -44,11 +44,35 @@ def poll_state(last_polled_ts, n_open) -> str:
     return POLL_HAS_OPEN if (n_open or 0) > 0 else POLL_NONE_OPEN
 
 
+def league_categories() -> list[str]:
+    """THE Farm-League category set -- the categories that EXIST as a tile AND a reachable page. Jack's RULING
+    (2026-08-30, the tile-vanish defect fix): a category EXISTS iff it is in the 15-category ALLOWLIST and is not
+    deactivated. Category-grain deactivation IS the allowlist constant (`search.CATEGORY_ALLOWLIST`; cbb / fifwc /
+    nascar / unknown are excluded by omission -> no tile, 404 by URL). This is DELIBERATELY NOT
+    `farm_categories(PINNED)`: a category's existence must NEVER depend on it having pinned whales. An EMPTY
+    WATCHLIST is a legitimate state (screen a category through Prospects without paper-trading anyone), mirroring
+    sub-division permanence (a sub-division persists when its last whale is demoted; a category must too). The
+    pair-grain `pm_watchlist.active` flag is ORTHOGONAL -- it governs which WHALE shows in a category's
+    Watchlist/Prospects lists, never whether the category tile renders. Sorted for stable tile order; no DB read
+    (the allowlist is a code constant, the SINGLE edit point for admitting/retiring a category)."""
+    return sorted(search.CATEGORY_ALLOWLIST)
+
+
+def is_league_category(category: str) -> bool:
+    """True iff `category` is a live Farm-League category (in the allowlist -> renders a tile + a reachable page).
+    A deactivated / unknown / nonexistent category (NOT in the allowlist) is False -> no tile, 404 by URL. The
+    URL-existence guard (Stage 2 phase 1) reads THIS, not pinned rows -- so an allowlist category with an empty
+    watchlist stays reachable, while cbb / fifwc / nascar / unknown stay unreachable regardless of any row."""
+    return (category or "").strip().lower() in search.CATEGORY_ALLOWLIST
+
+
 def farm_categories(conn, status: str = PINNED) -> list[str]:
-    """Categories with >=1 pair at this farm status -- DRIVES THE TABS (data-driven, never a hardcoded 4;
-    MLB/UFC/NBA/Fed being the 'live' set is a P3 account-attachment concern, not this page's tabs)."""
-    # Stage-0 funnel gate (008): active=1 -> a removed category (all its pairs off-funnel) yields NO tile.
-    # This read IS the tile/tab set: miss the gate and a tile renders for a category outside the ruled set.
+    """Categories that HAVE >=1 pair at this farm status (active=1). A DATA-PRESENCE summary query -- e.g.
+    `farm_summary`'s pinned_categories / candidate_categories ("which categories are we paper-trading / screening")
+    -- NOT the tile/page set (that is `league_categories`, the allowlist; Jack 2026-08-30). Kept because "which
+    categories have pinned/candidate data" is a real, different question; a removed pair (active=0) drops out here
+    without affecting whether the category's tile renders."""
+    # Stage-0 funnel gate (008): active=1 -> a removed pair is off-funnel and not counted at this status.
     return [r["category"] for r in conn.execute(
         "SELECT DISTINCT category FROM pm_watchlist WHERE status=? AND active=1 AND category IS NOT NULL "
         "ORDER BY category",

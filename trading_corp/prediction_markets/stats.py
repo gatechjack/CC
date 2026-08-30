@@ -270,7 +270,7 @@ def query_scoreboard(conn, *, category: str | None = None, routine: str = "net_r
         # user_name -- ingest NEVER populates it (/closed-positions carries no name); names.sync_user_names
         # copies roster labels in. On NULL the page renders the WALLET, never a blank/fabricated name.
         # Wallet stays the identity; the name is display-only (never keyed on).
-        "w.user_name AS user_name, "
+        "w.user_name AS user_name, w.last_refresh_ts AS last_refresh_ts, "
         # migration-004 one-sided directional slice (P2 CP2 render contract, deferred from CP1). LEFT JOIN
         # so a whale with NO one-sided slice still ranks -- the fields come back NULL and the page renders
         # honest-empty ("--"), never a fabricated 0. is_upper_bound is ALWAYS 1: the figure excludes hedged
@@ -288,7 +288,19 @@ def query_scoreboard(conn, *, category: str | None = None, routine: str = "net_r
         # the category page (RULED 2026-08-26). LEFT JOIN so a pair ABSENT from pm_watchlist (a pure prospect)
         # still ranks (wl.active IS NULL); ONLY active=0 is excluded. Selects NO wl columns -> shape unchanged.
         "LEFT JOIN pm_watchlist wl ON cs.wallet=wl.wallet AND cs.category=wl.category "
-        "WHERE cs.n_resolved >= ? AND (wl.active IS NULL OR wl.active = 1)"
+        # COMPLETENESS gate (2026-08-29, Jack ruled): a PARTIAL/FAILED-backfill whale (backfill_complete != 1)
+        # is ranked on TRUNCATED history and MUST be excluded. compute_scores already benches it (no
+        # pm_score_snapshot) and scoreboard_flags has long CLAIMED "excluded from ranking" -- but this WHERE did
+        # NOT enforce it (a FALSE statement in deployed code, read live by `pm_cli report`). Enforce it HERE, in
+        # the ranker, so no caller can forget it -- mirroring the active gate. TWO GATES, INDEPENDENT + COMPOSED:
+        #   active  (pm_watchlist LEFT JOIN): NULL => PERMISSIVE (a pure prospect not on the watchlist RANKS);
+        #   complete(pm_whale     LEFT JOIN): NULL => RESTRICTIVE via COALESCE(...,0)=1 -- a stats row with NO
+        #     pm_whale row (rollup keys off pm_closed_position) has UNKNOWN completeness and must NOT rank.
+        # The asymmetry is intentional; both are AND-ed on DISTINCT joined tables, so neither gate defeats the
+        # other and no NULL bypasses the OTHER gate. complete-but-inactive AND active-but-partial are BOTH
+        # excluded (test_removal_gate::test_scoreboard_completeness_and_active_gates_compose).
+        "WHERE cs.n_resolved >= ? AND (wl.active IS NULL OR wl.active = 1) "
+        "AND COALESCE(w.backfill_complete, 0) = 1"
     )
     params: list = [routine, min_resolved]
     if category:
@@ -353,7 +365,10 @@ def scoreboard_flags(row: dict) -> list[str]:
     CONTAMINATED(cnt%/$%) (§3A data_quality), ANOM:n (§3A clause-a count)."""
     flags: list[str] = []
     if not row.get("backfill_complete"):
-        flags.append("INCOMPLETE-NOT-RANKED")   # §13A(k): PARTIAL/FAILED backfill -> excluded from ranking
+        # §13A(k): PARTIAL/FAILED backfill IS excluded from ranking -- now ENFORCED in query_scoreboard's WHERE
+        # (2026-08-29). This flag is a DEFENSIVE BACKSTOP: a gated read never surfaces an incomplete row here,
+        # but if a caller ever passes un-gated rows to scoreboard_flags, it is still marked (never silently ranked).
+        flags.append("INCOMPLETE-NOT-RANKED")
     if row.get("chalk"):
         flags.append("CHALK")
     if row.get("contested"):

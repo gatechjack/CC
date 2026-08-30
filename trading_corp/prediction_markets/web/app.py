@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names, farm, farm_actions, analyze, subdivision
+from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search
 from ..category import NON_SINGLE_GAME_CATEGORIES
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -44,6 +44,11 @@ templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 # Expose the non-single-game category set so the template can render single_game_pct as "n/a" (NOT 0%) for
 # fed/unknown -- the whole reason OQ-2 was ruled NULL. Truth stays in category.py; the template only reads it.
 templates.env.globals["non_single_game_categories"] = sorted(NON_SINGLE_GAME_CATEGORIES)
+# R4: the F-1 loss-omission caveat has ONE definition (search.LOSS_OMISSION_CAVEAT) so the prospects screen
+# and any report word the bias identically. The thin-sample FLOOR (candidates below it came via the <10-qualifier
+# fallback) is likewise the ruled constant -- a candidate with n_resolved < floor is thin-sample by construction.
+templates.env.globals["loss_omission_caveat"] = search.LOSS_OMISSION_CAVEAT
+templates.env.globals["thin_sample_floor"] = search.DEFAULT_MIN_RESOLVED_FLOOR
 
 
 def _utcdate(ts) -> str:
@@ -204,23 +209,31 @@ def _load_dashboard() -> dict:
     """Dashboard read: the active Farm-League category COUNT + the LIVE sub-division COUNT (both data-driven,
     honest-empty; 0 sub-divisions pre-migration-010 since the tables are absent -> honest, not an error). The Live
     section carries NO live-trade data (P3). OFF the loop, PM DB only."""
+    # n_categories = the LEAGUE category set (the ruled allowlist), so the dashboard count matches the /farm tile
+    # count (both labelled "Kalshi-copyable categories"). NOT the pinned-data count -- a category exists by allowlist
+    # membership, not by having pinned whales (Jack 2026-08-30, the tile-vanish fix).
+    n_categories = len(farm.league_categories())
     with connect() as conn:
-        n_categories = len(farm.farm_categories(conn, farm.PINNED))
         n_subdivisions = len(subdivision.list_subdivisions(conn))
     return {"n_categories": n_categories, "n_subdivisions": n_subdivisions}
 
 
 def _load_farm_league() -> dict:
-    """Farm-League tile read. Tiles = the ACTIVE pinned categories (farm.farm_categories gates active=1), so a
-    removed category yields NO tile and a re-admitted one reappears with no code change. OFF the loop, read-only."""
-    with connect() as conn:
-        categories = farm.farm_categories(conn, farm.PINNED)
-    return {"categories": categories}
+    """Farm-League tile read. Tiles = `farm.league_categories()` = the RULED 15-category allowlist (Jack
+    2026-08-30, the tile-vanish fix). A category EXISTS iff it is in the allowlist and not deactivated (deactivated
+    = not in the allowlist). NOT driven by pinned rows: an empty watchlist is legitimate, so a category with
+    prospects-but-no-pinned (or with neither) STILL renders its tile -- data stranded behind a missing tile is the
+    class of defect this closes. The pair-grain active flag governs list membership, not tile existence. The
+    allowlist is a constant -> no DB read. OFF the loop."""
+    return {"categories": farm.league_categories()}
 
 
 def _load_farm_category(category: str, now_ts: int) -> dict | None:
-    """Per-category read. Returns None when `category` is not an ACTIVE tile (removed / unknown / nonexistent)
-    so the route can 404 -- a deactivated category must not be reachable by URL.
+    """Per-category read. Returns None when `category` is NOT a league category (not in the allowlist: deactivated
+    / unknown / nonexistent) so the route can 404 -- a deactivated category must not be reachable by URL. Existence
+    is `farm.is_league_category` = allowlist membership (Jack 2026-08-30), NOT pinned rows: an allowlist category
+    with an EMPTY WATCHLIST renders normally (Watchlist honest-empty, Prospects populated -- the two sections read
+    different bases, and Prospects does not depend on the watchlist at all), so its prospects are never stranded.
 
     THE BASIS SEPARATION IS THE POINT (three lists / three bases):
     - WATCHLIST (pinned) -> `farm.farm_rows(status=PINNED)` -> pm_paper_category_stats (PAPER basis).
@@ -228,16 +241,25 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
       (COMPLETED basis), SCOPED to this category's candidate set. query_scoreboard already active-gates,
       category-scopes and ranks; we filter its board to the candidate wallets so the section shows candidates
       ONLY (never pinned). The two sections never share a query or a table."""
+    if not farm.is_league_category(category):   # existence = allowlist membership, NOT pinned rows (Jack 2026-08-30)
+        return None
     with connect() as conn:
-        if category not in farm.farm_categories(conn, farm.PINNED):
-            return None
-        watchlist = farm.farm_rows(conn, status=farm.PINNED, category=category)        # PAPER basis (pinned)
+        watchlist = farm.farm_rows(conn, status=farm.PINNED, category=category)        # PAPER basis (pinned) -- [] when empty
         cand_wallets = {r["wallet"] for r in
                         farm.farm_rows(conn, status=farm.CANDIDATE, category=category)}   # candidate SET (active-gated)
         board = stats.query_scoreboard(conn, category=category)                         # completed-basis ranker (F-4)
         prospects = [r for r in board if r["wallet"] in cand_wallets]                   # ranked, candidates only
+        # R4 DEFAULT ORDER = cost-ROI DESCENDING (Jack ruled): the first view is what gets looked at most. The
+        # ranker's own ORDER BY leads with score; here the SCREEN's default axis is cost-ROI (roi-None sorts last).
+        # The client-side column sort re-orders on demand; this only sets the LOAD order.
+        prospects.sort(key=lambda r: (r.get("roi") is None, -(r.get("roi") or 0.0)))
         for r in prospects:
             r["flags"] = stats.scoreboard_flags(r)                                      # same tokens as CLI/scoreboard
+            # THIN-SAMPLE (visible, not inferable): a candidate BELOW the N floor came in via the <10-qualifier
+            # top-10 fallback (the normal path needs n>=floor), so n_resolved<floor IS thin-sample -- no new column.
+            r["thin_sample"] = (r.get("n_resolved") or 0) < search.DEFAULT_MIN_RESOLVED_FLOOR
+            # LAST-UPDATED per whale (on-demand ruling): staleness VISIBLE per-whale, never silent.
+            r["last_refresh"] = stats.refresh_band_state(r.get("last_refresh_ts"), now_ts)
         refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
         # R6: the ACTIVE accounts = the promote-to-LIVE targets. Auto-create (ruling 1) makes the (account,
         # category) sub-division on demand, so a Watchlist row offers "promote to <account>", not a pre-existing
@@ -318,6 +340,60 @@ async def demote_action(request: Request, category: str, wallet: str):
     rows are PRESERVED (F-5). 303 back to the category page."""
     category = (category or "").strip().lower()
     await asyncio.to_thread(_demote_prospect, (wallet or "").lower(), category, int(time.time()))
+    return RedirectResponse("/farm/%s" % category, status_code=303)
+
+
+async def _refresh_whale(wallet: str, now_ts: int) -> str:
+    """The REFRESH BUTTON's work (Jack's on-demand ruling): a FULL ad-hoc re-pull of ONE whale's completed history
+    (search_run.refresh_one -> ingest.refresh_wallet), then a rollup so the re-pulled data reflects in the
+    completed-basis stats the Prospects table shows. NETWORK + SLOW (~30 calls). Returns the OUTCOME
+    ('complete' | 'partial' | 'failed') so the caller can tell the operator WHY a whale changed/vanished.
+    ★ SAFE ON FAILURE: a RAISED pull leaves the whale's prior complete data + backfill_complete=1 UNTOUCHED (it
+    stays shown, unchanged); a CAP-TRUNCATED pull marks it partial (backfill_complete=0) -> the completeness gate
+    drops it from the ranker (visibly), never half-populated-and-ranked. The pull runs ON the loop (its network
+    yields); the blocking rollup runs OFF the loop (asyncio.to_thread) -- pm_web's loop is never stalled by the
+    aggregate (this file's off-loop discipline). Lazy imports keep the client (data layer) + search_run off the
+    module import surface (the standalone-imports guard)."""
+    from ..search_run import refresh_one
+    from ...data.polymarket_data_api_client import PolymarketDataAPIClient
+    outcome = "failed"
+    with connect() as conn:
+        try:
+            async with PolymarketDataAPIClient() as client:
+                res = await refresh_one(conn, wallet, client=client, now_ts=now_ts)
+            outcome = (res or {}).get("verdict") or "complete"   # 'complete' | 'partial'
+        except Exception:
+            outcome = "failed"   # a raised refresh -> the whale is UNCHANGED (safe); still rollup + re-render honest state
+        await asyncio.to_thread(stats.rollup, conn, now_ts=now_ts)   # reflect the re-pull; OFF the loop (blocking aggregate)
+    return outcome
+
+
+# The operator-facing notice for a refresh that did NOT cleanly complete -- so a whale that DROPS off the ranked
+# list (partial) or stays unchanged (failed) is EXPLAINED, never a silent vanish (staleness/incompleteness visible).
+_REFRESH_NOTICE = {
+    "partial": "Refresh came back INCOMPLETE (the pull truncated) -- this whale is now marked partial and DROPPED "
+               "from the ranked list until a clean refresh. It is never ranked on partial data.",
+    "failed":  "Refresh FAILED (network) -- this whale is UNCHANGED; its prior complete data is intact.",
+}
+
+
+@app.post("/farm/{category}/refresh/{wallet}")
+async def refresh_action(request: Request, category: str, wallet: str):
+    """REFRESH one prospect whale (POST-only -- no GET mutates, R6 discipline). Re-pulls its full completed history
+    on demand + rolls up, then re-renders the Prospects section. SLOW (~30 calls, up to ~1 min): htmx shows the
+    button disabled while it runs (hx-disabled-elt) so the operator sees it working and cannot double-fire; JS-off
+    blocks on the browser's native load, then a 303 back to the page. A failed/partial refresh is SAFE (see
+    _refresh_whale) -- the whale is never left half-populated or ranked on incomplete data, and a NOTICE explains a
+    partial/failed outcome so a dropped whale is never a silent vanish."""
+    category = (category or "").strip().lower()
+    outcome = await _refresh_whale((wallet or "").lower(), int(time.time()))
+    if request.headers.get("HX-Request"):
+        data = await asyncio.to_thread(_load_farm_category, category, int(time.time()))
+        if data is None:
+            return templates.TemplateResponse(
+                request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)
+        return templates.TemplateResponse(request, "partials/pm_prospects_rows.html",
+                                          {"request": request, "refresh_notice": _REFRESH_NOTICE.get(outcome), **data})
     return RedirectResponse("/farm/%s" % category, status_code=303)
 
 

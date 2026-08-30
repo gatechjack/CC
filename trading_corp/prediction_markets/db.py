@@ -714,6 +714,59 @@ MIGRATION_011: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_subattach_wallet ON pm_subdivision_attachment(wallet, category, active)",
 ]
 
+# migration 012 (2026-08-29, Stage 3 R7.f-prep): per-sub-division LIQUIDITY RATIO.
+# Jack RULED (2026-08-29): the gate-3 liquidity floor is a RATIO of THE ORDER'S OWN notional (default 0.75x),
+# NOT a fixed $ and NOT bound to per_order_usd_cap. A 1-contract ~$0.50 order was demanding $25 of depth (50x its
+# own size) and skipping every real match. The ratio is CONFIG (per sub-division, so different subs can differ),
+# READ PER CYCLE (execution.sub_config_from_row -> a value change takes effect with NO engine restart, exactly like
+# fixed_stake_usd), and DEFAULTED IN CODE (execution.CONFIG_DEFAULTS['liquidity_ratio']=0.75 so a NULL column reads
+# as 0.75, never zero-depth-required). ** PURE DDL. ** Behaviour-neutral: existing rows get NULL -> code default;
+# read by NO path until the new gate-3 code deploys. NUMBERED ON LANDING (next after 011). Idempotent via the
+# schema_version guard (init_db runs a version's SQL exactly once; ADD COLUMN is not IF-NOT-EXISTS-able in SQLite).
+MIGRATION_012: list[str] = [
+    "ALTER TABLE pm_subdivision ADD COLUMN liquidity_ratio REAL",
+]
+
+# migration 013 (2026-08-29, Stage 4 R1): the SEARCH RUN registry -- one row per `pm_cli search`
+# invocation. NUMBERED ON LANDING (next after 012; live is at schema 12 -- the liquidity_ratio
+# migration is deployed). ** PURE DDL ONLY (Jack RULED, mirroring 009/010/011/012). ** Created EMPTY,
+# read/written by NO live code path at R1 (the discovery/backfill/candidate-write rungs land later, each
+# its own authorization) -> behaviour-neutral. No config/data writes.
+#
+# WHY A RUN-LEVEL TABLE (not just a per-wallet watermark column): search's provenance is per-RUN --
+# "run 7 discovered 52 wallets, backfilled 48, wrote 31 candidates with N>=50 / 30d / thin-target 10".
+# pm_watchlist.search_run_id (the nullable FK reserved back in migration 006, db.py:465) points HERE, so
+# every candidate carries the run that surfaced it. This table does NOT carry the incremental-backfill
+# watermark: that is DERIVED per wallet as MAX(resolved_ts) FROM pm_closed_position (no new column; a run
+# is complete-gated by the existing pm_whale.backfill_complete) -- STAGE4_SEARCH_PLAN §4. Storing a
+# separate watermark column would risk drifting from the actual stored rows; deriving it cannot.
+#
+# The knob columns (min_resolved / recency_window_days / thin_sample_target) record the RULED selection
+# params IN EFFECT for that run (Jack: N>=50 w/ top-10 thin-sample fallback; 30d recency via open-position
+# proxy) so a candidate list is reproducible + auditable from its run row. params_json is a non-load-bearing
+# extensibility seam (a future knob lands there without a migration, exactly as pm_score_snapshot.params_json).
+MIGRATION_013: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS pm_search_run (
+        run_id                INTEGER PRIMARY KEY,          -- rowid alias; one row per `pm_cli search` invocation
+        started_ts            INTEGER NOT NULL,
+        finished_ts           INTEGER,                      -- NULL until the run completes (or errors)
+        leaderboard_category  TEXT,                         -- coarse bucket queried ('Sports' | 'all' | ...)  (Q5 breadth)
+        leaderboard_limit     INTEGER,                      -- requested leaderboard size (~50/bucket ceiling)
+        min_resolved          INTEGER,                      -- N>=50 selection floor in effect (Q1)
+        recency_window_days   INTEGER,                      -- recency window in effect (Q2: 30, open-position proxy)
+        thin_sample_target    INTEGER,                      -- top-N fallback size (Q1: 10) applied when a category has < target qualifiers
+        n_discovered          INTEGER NOT NULL DEFAULT 0,   -- wallets returned by the leaderboard pass
+        n_backfilled          INTEGER NOT NULL DEFAULT 0,   -- wallets whose /closed-positions were (incrementally) pulled
+        n_candidates_written  INTEGER NOT NULL DEFAULT 0,   -- pm_watchlist status='candidate' rows written this run
+        status                TEXT,                         -- 'running' | 'ok' | 'error'
+        summary               TEXT,                         -- human/JSON run summary or error detail
+        params_json           TEXT                          -- extensibility seam (never load-bearing)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_pm_search_run_started ON pm_search_run(started_ts DESC)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -726,6 +779,8 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (9, MIGRATION_009),
     (10, MIGRATION_010),
     (11, MIGRATION_011),
+    (12, MIGRATION_012),
+    (13, MIGRATION_013),
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

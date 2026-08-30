@@ -30,11 +30,21 @@
         <span class="pm-region-count">{{ prospects|length }}</span> prospect(s)</span>
     </h2>
     {{ refresh_band(refresh) }}
-    {% include "partials/pm_prospects_rows.html" %}
+    {# #pm-prospects-rows is the REFRESH swap target: a per-whale Refresh re-renders ONLY this fragment (the
+       caveat banner + the table), so the rest of the page (and the Analyze panel) is never blown away. #}
+    <div id="pm-prospects-rows">
+      {% include "partials/pm_prospects_rows.html" %}
+    </div>
   </div>
 
   {# The [Analyze] result (from a Watchlist row's Analyze button) swaps in HERE -- outside the sections so a
      future partial refresh cannot blow it away. Empty until the operator analyzes a whale. #}
   <div id="pm-analyze-panel" class="pm-analyze-panel" aria-live="polite"></div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+{# Client-side column SORT (progressive enhancement): JS-off keeps the server's default cost-ROI-desc order.
+   Re-binds after every htmx swap (a Refresh re-renders the table), so sorting survives a refresh. #}
+<script src="/static/pm_sort.js" defer></script>
 {% endblock %}

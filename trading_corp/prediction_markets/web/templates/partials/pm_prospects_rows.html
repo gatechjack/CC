@@ -1,51 +1,76 @@
 {% from "pm_macros.html" import whale_label, flag_badges %}
 {# PROSPECTS rows -- COMPLETED basis (pm_category_stats via the F-4 repurposed query_scoreboard ranker, filtered
-   to this category's candidates). Ranked by cost-ROI. Mirrors the scoreboard columns so the caveats travel with
-   the number, and every aggregate drills through to its rows via the EXISTING completed /whale detail (which
-   reuses pm_position_rows.html). Today this list is EMPTY -- Search has never run -- so the honest "no search
-   yet" state renders, never fabricated rows. #}
+   to this category's candidates). DEFAULT ORDER cost-ROI desc; columns sortable (client-side, progressive
+   enhancement -- JS-off keeps the default order). Every aggregate drills through to its rows via the EXISTING
+   completed /whale detail. Empty until Search runs -> honest "no search yet", never fabricated rows. #}
+
+{# ★ F-1 LOSS-OMISSION CAVEAT -- VISIBLE at the TOP of the section (not buried in a footnote). Everything here
+   comes from /closed-positions, which UNDER-REPORTS held losses wallet-dependently -> a ranked table implies a
+   precision this data does not have. ONE definition (search.LOSS_OMISSION_CAVEAT), shown before the numbers. #}
+<div class="pm-caveat pm-caveat-loss" role="note" data-caveat="loss-omission">
+  <span class="pm-caveat-tag">SCREEN ONLY</span>{{ loss_omission_caveat }}</div>
+
+{# A partial/failed REFRESH outcome, so a whale that DROPPED (partial) or stayed put (failed) is EXPLAINED, never
+   a silent vanish. Only set on a refresh re-render (refresh_notice); absent on the initial page load. #}
+{% if refresh_notice %}<div class="pm-refresh-notice" role="status" data-refresh-notice="1">{{ refresh_notice }}</div>{% endif %}
+
 {% if not prospects %}
   <div class="pm-empty-nosearch" data-empty-nosearch="1">No prospects yet &mdash; the Prospects list is populated
-    by <strong>Search</strong> (a later stage). This section reads the <strong>completed-trade</strong> basis
-    (kept separate from the Watchlist), ranked by cost-ROI.</div>
+    by <strong>Search</strong>. This section reads the <strong>completed-trade</strong> basis (kept separate from
+    the Watchlist), ranked by cost-ROI.</div>
 {% else %}
 <div class="pm-table-scroll">
-<table class="pm-table pm-farm-table">
+<table class="pm-table pm-farm-table pm-sortable-table" id="pm-prospects-table">
   <thead>
     <tr>
       <th>whale</th>
-      <th class="pm-num" title="Scoreable resolved (completed) rows.">n</th>
-      <th class="pm-num pm-muted" title="Win rate -- CHALK indicator, NOT the rank key.">win%<sup>*</sup></th>
-      <th class="pm-num pm-primary" title="Cost-based ROI = net / cost_basis -- THE ranked metric.">roi&nbsp;(cost)</th>
+      <th class="pm-num pm-sortable" data-sort="num" title="Scoreable resolved (completed) rows. Click to sort.">n</th>
+      {# WIN% is NOT sortable (never the rank key -- ROI-denominator ruling) and the caveat rides ON THE HEADER,
+         so it cannot be sorted-on to mislead. #}
+      <th class="pm-num pm-muted pm-nosort" title="Win rate = a CHALK indicator, NOT the rank key and NOT sortable. The completed-trade API under-reports held losses, so win% is OPTIMISTIC.">win%<sup>*</sup> <span class="pm-th-caveat">(optimistic, not the rank)</span></th>
+      <th class="pm-num pm-primary pm-sortable pm-sort-default" data-sort="num" title="Cost-based ROI = net / cost_basis -- THE ranked metric + the default sort. Click to sort.">roi&nbsp;(cost)</th>
+      <th class="pm-num pm-sortable" data-sort="num" title="Net realized PnL over scoreable rows. Click to sort.">net&nbsp;pnl</th>
+      <th class="pm-sortable" data-sort="num" title="How fresh THIS whale's data is (last on-demand refresh). Click to sort by staleness.">last&nbsp;updated</th>
+      <th class="pm-sortable" data-sort="num" title="THIN-SAMPLE = surfaced via the fewer-than-10 top-10 fallback (n below the N&ge;50 floor), NOT a full-sample qualifier. Click to sort.">sample</th>
       <th class="pm-num" title="two-sided condition_ids / condition_ids. GRAIN = per (wallet, category).">two-sided%</th>
       <th class="pm-num" title="single-game rows / all rows. HEURISTIC; n/a for non-sports (fed) -- never 0%.">single-game%</th>
       <th class="pm-num" title="Average winning price. CHALK &ge; 0.85 (favorites); CONTESTED &lt; 0.70.">avg&nbsp;win&nbsp;px</th>
-      <th class="pm-num" title="Net realized PnL over scoreable rows.">net&nbsp;pnl</th>
-      <th class="pm-num" title="Ranking score. Blank =&gt; below min / not ranked.">score</th>
       <th title="Data-quality + status flags -- same tokens as the CLI report.">flags</th>
-      <th title="Promote to Watchlist: begin paper-trading this whale (moves it to the paper lane).">action</th>
+      <th title="Promote to Watchlist (begin paper-trading) or Refresh (re-pull this whale's history on demand).">action</th>
     </tr>
   </thead>
   <tbody>
   {% for r in prospects %}
-    <tr class="{% if not r.backfill_complete %}pm-row-unranked{% endif %}">
-      {# name for recognition, wallet for truth; links to the COMPLETED whale detail (a prospect shows CLOSED trades) #}
+    <tr>
       <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
-      <td class="pm-num">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num" data-sort-value="{{ r.n_resolved or 0 }}">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
       <td class="pm-num pm-muted">{% if r.win_rate is not none %}{{ '%.0f'|format(r.win_rate * 100) }}%{% else %}&mdash;{% endif %}</td>
-      <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}" data-sort-value="{{ r.roi if r.roi is not none else -999 }}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}" data-sort-value="{{ r.net_realized_pnl if r.net_realized_pnl is not none else -1000000000000 }}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
+      {# LAST-UPDATED per whale: band + age; a NULL ts is RED "never" -- staleness visible, never silent. sort by ts. #}
+      <td data-sort-value="{{ r.last_refresh.ts or 0 }}">
+        <span class="pm-freshdot pm-band-{{ r.last_refresh.band }}" title="{% if r.last_refresh.iso %}last refresh {{ r.last_refresh.iso }} ({{ '%.1f'|format(r.last_refresh.age_days) }}d old){% else %}{{ r.last_refresh.note }}{% endif %}">{% if r.last_refresh.ts %}{{ '%.0f'|format(r.last_refresh.age_days) }}d{% else %}never{% endif %}</span></td>
+      {# THIN-SAMPLE flag: VISIBLE badge (not inferable), sort by the 0/1. #}
+      <td data-sort-value="{{ 1 if r.thin_sample else 0 }}">{% if r.thin_sample %}<span class="pm-badge pm-badge-thin" data-flag="THIN-SAMPLE" title="Surfaced via the fewer-than-10 top-10 fallback -- n_resolved is below the N&ge;{{ thin_sample_floor }} floor. Under-evidenced; Analyze is the judge.">THIN</span>{% else %}<span class="pm-na" title="Full-sample qualifier (n &ge; the floor).">full</span>{% endif %}</td>
       <td class="pm-num">{% if r.n_condition_ids and r.n_condition_ids > 0 %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=two_sided">{{ '%.0f'|format(r.two_sided_pct * 100) }}%</a>{% else %}&mdash;{% endif %}</td>
       <td class="pm-num">{% if r.category in non_single_game_categories %}<span class="pm-na" title="Not applicable for this category (no single-game notion).">n/a</span>{% elif r.single_game_pct is none %}&mdash;{% else %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=single_game">{{ '%.0f'|format(r.single_game_pct * 100) }}%</a>{% endif %}</td>
       <td class="pm-num">{% if r.avg_win_price is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=won">{{ '%.2f'|format(r.avg_win_price) }}</a>{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}&mdash;{% endif %}</td>
-      <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
-      <td class="pm-num">{% if r.score is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}" title="why ranked here">{{ '%.3f'|format(r.score) }}</a>{% else %}<span class="pm-na">not ranked</span>{% endif %}</td>
       <td class="pm-flags">{{ flag_badges(r.flags) }}</td>
       <td class="pm-actioncell">
-        {# PROMOTE-TO-WATCHLIST (R6): candidate -> pinned. POST form (never a GET -- a crawler must not promote);
-           idempotent server-side; PRG 303 back to this page so the whale appears under Watchlist. #}
+        {# PROMOTE-TO-WATCHLIST (R6): candidate -> pinned. POST form (never GET -- a crawler must not promote);
+           idempotent server-side; PRG 303 back to this page so the whale appears under Watchlist. Does NOT
+           auto-paper-trade -- the poller seeds paper on pinned rows on its own cadence. #}
         <form method="post" action="/farm/{{ r.category }}/promote/{{ r.wallet }}" class="pm-inline-form">
           <button class="pm-btn pm-btn-sm" type="submit"
-             title="Promote to Watchlist: begin paper-trading this whale (moves it to the Watchlist / paper lane).">Promote to watchlist</button>
+             title="Promote to Watchlist: begin paper-trading this whale (moves it to the Watchlist / paper lane).">Promote</button>
+        </form>
+        {# REFRESH (R4): re-pull this whale's FULL history on demand. POST-only. htmx swaps the section + disables
+           the button while it runs (~1 min); JS-off does a native POST -> 303. A failed/partial refresh is SAFE. #}
+        <form method="post" action="/farm/{{ r.category }}/refresh/{{ r.wallet }}" class="pm-inline-form"
+              hx-post="/farm/{{ r.category }}/refresh/{{ r.wallet }}" hx-target="#pm-prospects-rows"
+              hx-swap="innerHTML" hx-disabled-elt="find button">
+          <button class="pm-btn pm-btn-sm pm-btn-refresh" type="submit"
+             title="Refresh: re-pull this whale's FULL completed history on demand (~30 calls, up to a minute). While it runs the button disables; on failure the whale is left unchanged, and if it comes back incomplete it drops off (never ranked on partial data).">Refresh</button>
         </form>
       </td>
     </tr>
@@ -53,7 +78,7 @@
   </tbody>
 </table>
 </div>
-<p class="pm-legend"><sup>*</sup> win% is a chalk indicator, <strong>not</strong> the rank key &mdash; ranked
-  metric is <strong>cost-based ROI</strong>. Prospect stats are a rough screen (completed-trade API); <strong>Analyze</strong>
-  is the promotion judge.</p>
+<p class="pm-legend"><sup>*</sup> win% is a chalk indicator, <strong>not</strong> the rank key and not sortable
+  &mdash; the ranked metric is <strong>cost-based ROI</strong>. Prospect stats are a rough <strong>screen</strong>
+  (completed-trade API, held losses under-reported); <strong>Analyze</strong> is the promotion judge.</p>
 {% endif %}
