@@ -1,5 +1,11 @@
 # PREDICTION MARKETS — SESSION-WRAP TRANSITION (2026-08-30)
 
+> **⛔ SUPERSEDED BY `TRANSITION_SESSIONWRAP2_2026-08-30.md` (2026-08-30T16:51Z) — READ THAT FIRST.** This doc is
+> retained for its fuller narrative of the Stage-4 / pm_cli / tile-fix deploys, the prod-live advance, and the
+> §8 legacy sharding diagnosis. The successor carries the CURRENT live state, the sharding finding NOW RESOLVED
+> operator-side, the open shard money-management design question, what the next agent is for, and the R7.f gate as
+> it now stands. Where the two disagree, the successor wins.
+
 > **★ THIS SUPERSEDES `TRANSITION_STAGE3_POSTDEPLOY_2026-08-29.md` AND `TRANSITION_R7C_FIRSTCUT_2026-08-29.md`.**
 > Read this first. It carries the live state, the one thing left before money (R7.f), the queued small rungs,
 > the standing lessons, and everything a fresh agent needs (box quirks, rules, settled rulings, the NO-LEG lens).
