@@ -209,23 +209,31 @@ def _load_dashboard() -> dict:
     """Dashboard read: the active Farm-League category COUNT + the LIVE sub-division COUNT (both data-driven,
     honest-empty; 0 sub-divisions pre-migration-010 since the tables are absent -> honest, not an error). The Live
     section carries NO live-trade data (P3). OFF the loop, PM DB only."""
+    # n_categories = the LEAGUE category set (the ruled allowlist), so the dashboard count matches the /farm tile
+    # count (both labelled "Kalshi-copyable categories"). NOT the pinned-data count -- a category exists by allowlist
+    # membership, not by having pinned whales (Jack 2026-08-30, the tile-vanish fix).
+    n_categories = len(farm.league_categories())
     with connect() as conn:
-        n_categories = len(farm.farm_categories(conn, farm.PINNED))
         n_subdivisions = len(subdivision.list_subdivisions(conn))
     return {"n_categories": n_categories, "n_subdivisions": n_subdivisions}
 
 
 def _load_farm_league() -> dict:
-    """Farm-League tile read. Tiles = the ACTIVE pinned categories (farm.farm_categories gates active=1), so a
-    removed category yields NO tile and a re-admitted one reappears with no code change. OFF the loop, read-only."""
-    with connect() as conn:
-        categories = farm.farm_categories(conn, farm.PINNED)
-    return {"categories": categories}
+    """Farm-League tile read. Tiles = `farm.league_categories()` = the RULED 15-category allowlist (Jack
+    2026-08-30, the tile-vanish fix). A category EXISTS iff it is in the allowlist and not deactivated (deactivated
+    = not in the allowlist). NOT driven by pinned rows: an empty watchlist is legitimate, so a category with
+    prospects-but-no-pinned (or with neither) STILL renders its tile -- data stranded behind a missing tile is the
+    class of defect this closes. The pair-grain active flag governs list membership, not tile existence. The
+    allowlist is a constant -> no DB read. OFF the loop."""
+    return {"categories": farm.league_categories()}
 
 
 def _load_farm_category(category: str, now_ts: int) -> dict | None:
-    """Per-category read. Returns None when `category` is not an ACTIVE tile (removed / unknown / nonexistent)
-    so the route can 404 -- a deactivated category must not be reachable by URL.
+    """Per-category read. Returns None when `category` is NOT a league category (not in the allowlist: deactivated
+    / unknown / nonexistent) so the route can 404 -- a deactivated category must not be reachable by URL. Existence
+    is `farm.is_league_category` = allowlist membership (Jack 2026-08-30), NOT pinned rows: an allowlist category
+    with an EMPTY WATCHLIST renders normally (Watchlist honest-empty, Prospects populated -- the two sections read
+    different bases, and Prospects does not depend on the watchlist at all), so its prospects are never stranded.
 
     THE BASIS SEPARATION IS THE POINT (three lists / three bases):
     - WATCHLIST (pinned) -> `farm.farm_rows(status=PINNED)` -> pm_paper_category_stats (PAPER basis).
@@ -233,10 +241,10 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
       (COMPLETED basis), SCOPED to this category's candidate set. query_scoreboard already active-gates,
       category-scopes and ranks; we filter its board to the candidate wallets so the section shows candidates
       ONLY (never pinned). The two sections never share a query or a table."""
+    if not farm.is_league_category(category):   # existence = allowlist membership, NOT pinned rows (Jack 2026-08-30)
+        return None
     with connect() as conn:
-        if category not in farm.farm_categories(conn, farm.PINNED):
-            return None
-        watchlist = farm.farm_rows(conn, status=farm.PINNED, category=category)        # PAPER basis (pinned)
+        watchlist = farm.farm_rows(conn, status=farm.PINNED, category=category)        # PAPER basis (pinned) -- [] when empty
         cand_wallets = {r["wallet"] for r in
                         farm.farm_rows(conn, status=farm.CANDIDATE, category=category)}   # candidate SET (active-gated)
         board = stats.query_scoreboard(conn, category=category)                         # completed-basis ranker (F-4)

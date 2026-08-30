@@ -3,8 +3,9 @@ Offline; FastAPI TestClient over a seeded schema-9 PM DB. Encodes the phase-1 ba
 
   - the three NEW routes resolve (/dashboard, /farm, /farm/{category});
   - the legacy /, /scoreboard, /farm still resolve (built ALONGSIDE, nothing removed/rewritten);
-  - the category TILES are driven by the ACTIVE funnel (never a hardcoded 15) -- a deactivated category
-    yields NO tile;
+  - the category TILES are the ruled 15-category ALLOWLIST (Jack 2026-08-30, the tile-vanish fix): a category
+    EXISTS by allowlist membership, NOT by having pinned whales -- so an empty watchlist still renders its tile,
+    while a NON-allowlist category (cbb/fifwc/nascar/unknown) yields NO tile and 404s;
   - the per-category page KNOWS its category (heading/breadcrumb);
   - a DEACTIVATED (or unknown / nonexistent) category is NOT reachable by URL -> 404 (the specific test
     Part B asked for);
@@ -54,8 +55,9 @@ def test_dashboard_route_resolves(tmp_path, monkeypatch):
     assert 'href="/farm"' in body                 # the menu option links into the hierarchy
     # Live sub-divisions -> Stage 3 R3 ENABLED the read-only card + nav link (was disabled 'coming in P3')
     assert "Live sub-divisions" in body and 'href="/live"' in body
-    # data-driven category count = 2 (the two seeded active categories), not a hardcoded number
-    assert 'pm-region-count">2<' in body
+    # DELIBERATE REVERSAL (Jack 2026-08-30): the dashboard category count = the LEAGUE allowlist (15), matching the
+    # /farm tile count -- NOT the pinned-driven count (pre-fix this asserted 2, the two seeded pinned categories).
+    assert 'pm-region-count">15<' in body
 
 
 # (phase 3) The legacy alongside-resolves test was removed: the flat scoreboard + farm pages are RETIRED.
@@ -63,29 +65,63 @@ def test_dashboard_route_resolves(tmp_path, monkeypatch):
 # test_stage2_phase3.py.
 
 
-# ── tiles are driven by the ACTIVE data, never a hardcoded list ───────────────────────────────────
+# ── tiles are the ruled ALLOWLIST (Jack 2026-08-30) -- NOT driven by pinned rows ───────────────────
 
-def test_farm_league_tiles_are_data_driven(tmp_path, monkeypatch):
+def test_farm_league_tiles_are_the_allowlist(tmp_path, monkeypatch):
+    """DELIBERATE REVERSAL (Jack 2026-08-30, the tile-vanish defect). Pre-fix the tiles were driven by ACTIVE
+    PINNED rows -- so emptying a category's watchlist vanished its tile AND 404'd its page, STRANDING its
+    prospects (the exact bug: promote 3 into ATP, demote them all, ATP disappears). The RULE now: a category
+    EXISTS iff it is in the 15-category allowlist. So ALL 15 render as tiles regardless of pinned data (an empty
+    watchlist is legitimate); a NON-allowlist category never renders, even with an active pinned whale."""
+    from trading_corp.prediction_markets import search
     client, p = _client(monkeypatch, tmp_path)
     with db.connect(p) as conn:
-        _pin(conn, "0xa", "mlb"); _pin(conn, "0xb", "nba"); _pin(conn, "0xc", "ufc")
-        _pin(conn, "0xd", "cbb", active=0)               # DEACTIVATED -> no tile
-        _pin(conn, "0xe", "unknown", active=0)           # DEACTIVATED -> no tile
+        _pin(conn, "0xa", "mlb")                             # a category WITH a pinned whale
+        _pin(conn, "0xc", "ufc", status="candidate")         # a category with ONLY a candidate (empty watchlist)
+        _pin(conn, "0xd", "cbb", active=0)                   # NON-allowlist + deactivated -> no tile
+        _pin(conn, "0xe", "unknown")                         # NON-allowlist WITH an active pin -> STILL no tile
+        _pin(conn, "0xf", "nascar")                          # NON-allowlist -> no tile
+        # nhl / wnba / epl / ... have NO rows at all, yet must STILL render (allowlist membership, not data)
     r = client.get("/farm")
     assert r.status_code == 200
     body = r.text
-    # exactly the 3 ACTIVE categories render as tiles ...
-    assert 'href="/farm/mlb"' in body
-    assert 'href="/farm/nba"' in body
-    assert 'href="/farm/ufc"' in body
-    # ... and the deactivated ones are ABSENT (a hardcoded 15 would silently show them)
-    assert 'href="/farm/cbb"' not in body
-    assert 'href="/farm/unknown"' not in body
-    # header count reflects the active set (3), not a hardcoded number
-    assert "<strong>3</strong>" in body
+    # EVERY allowlist category renders a tile -- incl. ones with no pinned, only-candidate, or NO rows at all
+    for c in search.CATEGORY_ALLOWLIST:
+        assert ('href="/farm/%s"' % c) in body, "allowlist category %s must render a tile" % c
+    # non-allowlist categories NEVER render (deactivated by omission), regardless of any pm_watchlist row
+    for c in ("cbb", "unknown", "nascar", "fifwc"):
+        assert ('href="/farm/%s"' % c) not in body
+    # header count = the FULL allowlist (15), not the pinned-driven number
+    assert "<strong>15</strong>" in body
     # category NAMES render UPPERCASE for display; the URL in the href stays lowercase
     assert 'pm-tile-name">MLB<' in body
-    assert 'pm-tile-name">NBA<' in body
+
+
+def test_empty_watchlist_category_renders_tile_and_page(tmp_path, monkeypatch):
+    """THE defect made explicit (Jack 2026-08-30): a category with PROSPECTS and an EMPTY WATCHLIST must still
+    render its tile AND its page -- Watchlist honest-empty, Prospects populated -- so the prospects are never
+    stranded behind a missing tile. Models ATP after every pinned whale was demoted: 0 pinned, candidates intact.
+    A naive 'tiles render' test would pass while this case broke, so the empty-watchlist case is asserted head-on."""
+    client, p = _client(monkeypatch, tmp_path)
+    with db.connect(p) as conn:
+        # atp: one candidate with completed stats (ranks into Prospects) + ZERO pinned atp (empty Watchlist)
+        _pin(conn, "0xcand", "atp", status="candidate", active=1)
+        conn.execute("INSERT INTO pm_category_stats (wallet, category, n_resolved, roi, win_rate, updated_ts) "
+                     "VALUES (?,?,?,?,?,?)", ("0xcand", "atp", 60, 0.20, 0.55, NOW))
+        conn.execute("INSERT INTO pm_whale (wallet, backfill_complete) VALUES ('0xcand', 1)")   # completeness gate
+    # the tile renders on the league page (allowlist), despite 0 pinned atp
+    assert 'href="/farm/atp"' in client.get("/farm").text
+    # the page renders (was a 404 pre-fix) ...
+    r = client.get("/farm/atp")
+    assert r.status_code == 200
+    body = r.text
+    # ... Watchlist honest-empty (0), Prospects populated (>=1) -- the two sections read separate bases and
+    # Prospects does not depend on the watchlist at all.
+    wl = re.search(r'id="pm-region-watchlist"\s+data-basis="([^"]+)"\s+data-count="(\d+)"', body)
+    pr = re.search(r'id="pm-region-prospects"\s+data-basis="([^"]+)"\s+data-count="(\d+)"', body)
+    assert wl and pr, "both regions must render with an explicit basis + count"
+    assert wl.group(1) == "paper" and wl.group(2) == "0"       # empty watchlist -> honest-empty, NOT a missing page
+    assert pr.group(1) == "completed" and int(pr.group(2)) >= 1  # prospects reachable
 
 
 # ── the per-category page knows its category ──────────────────────────────────────────────────────
@@ -111,15 +147,18 @@ def test_category_page_knows_its_category(tmp_path, monkeypatch):
 # ── a deactivated / unknown / nonexistent category does NOT render a page (THE specific test) ──────
 
 def test_deactivated_category_not_reachable_by_url(tmp_path, monkeypatch):
+    """The Stage 2 phase 1 URL guard still holds under the allowlist rule: a NON-allowlist category is unreachable
+    by URL -> 404, even WITH an active pinned whale (existence is allowlist membership, not pinned rows; Jack
+    2026-08-30). cbb / fifwc / unknown stay unreachable by typing the path."""
     client, p = _client(monkeypatch, tmp_path)
     with db.connect(p) as conn:
-        _pin(conn, "0xa", "mlb")                         # active
-        _pin(conn, "0xd", "cbb", active=0)               # DEACTIVATED (Stage-0 removed)
-    # a deactivated category MUST NOT render a page, even by typing its URL
-    assert client.get("/farm/cbb").status_code == 404
-    # an unknown / nonexistent category also 404s (not a fabricated page)
-    assert client.get("/farm/banana").status_code == 404
-    # and the active one IS reachable (case-insensitive on the path segment)
+        _pin(conn, "0xa", "mlb")                         # allowlist -> reachable
+        _pin(conn, "0xd", "cbb", active=1)               # NON-allowlist WITH an active pinned whale -> STILL 404
+    assert client.get("/farm/cbb").status_code == 404    # not in the allowlist, active pin notwithstanding
+    assert client.get("/farm/fifwc").status_code == 404  # deactivated by omission
+    assert client.get("/farm/unknown").status_code == 404
+    assert client.get("/farm/banana").status_code == 404  # nonexistent -> not a fabricated page
+    # and an allowlist category IS reachable (case-insensitive on the path segment)
     assert client.get("/farm/mlb").status_code == 200
     assert client.get("/farm/MLB").status_code == 200
 

@@ -7,8 +7,10 @@ The three exclusion states live in the DATA via `removal_reason` ('not_probed' /
 'structural') -- two return, one never does, and that difference is readable from the row without a doc.
 
 These are BASIS tests (P2_PLAN anti-drift): each proves what a list is FILTERED BY, not merely that it has
-rows. A test here FAILS if a removed pair reappears in ANY consumer, or if a tile renders for a category
-outside the active set. NO live DB, NO data write of the real 22 rows -- fixtures only.
+rows. A test here FAILS if a removed pair reappears in ANY consumer. (The TILE/page set is NOT gated here --
+since Jack 2026-08-30 the tiles are `farm.league_categories` = the allowlist, NOT pinned rows; a removed pair
+drops off the pinned-DATA queries below without affecting whether its category's tile renders.) NO live DB, NO
+data write of the real 22 rows -- fixtures only.
 """
 import sqlite3
 
@@ -147,8 +149,11 @@ async def test_removed_pair_invisible_to_poller(tmp_path):
     assert "0xremoved" not in traded                       # -> and no paper trade accrues for it
 
 
-def test_removed_categories_yield_no_tile(tmp_path):
-    """BASIS: the tile/tab set is farm_categories(PINNED); a removed category must not produce a tile."""
+def test_removed_pairs_drop_off_farm_categories_query(tmp_path):
+    """farm_categories(PINNED) is a DATA-PRESENCE query -- "which categories have an active pinned pair" (it drives
+    farm_summary.pinned_categories) -- NOT the tile set. A removed pair drops out of it. Post-Jack-2026-08-30 the
+    TILE/page set is `farm.league_categories` (the allowlist), so a category's tile does NOT depend on this query;
+    the allowlist-tile contract is asserted in test_stage2_nav.test_farm_league_tiles_are_the_allowlist."""
     with db.connect(_fresh(tmp_path)) as conn:
         for i, c in enumerate(IN_CATS):
             _pin(conn, "0xin%d" % i, c, active=1)
@@ -157,9 +162,9 @@ def test_removed_categories_yield_no_tile(tmp_path):
             _remove(conn, "0xex%d" % i, c, reason)
         conn.commit()
         cats = farm.farm_categories(conn, farm.PINNED)
-    assert set(cats) == set(IN_CATS)                        # EXACTLY the active set...
+    assert set(cats) == set(IN_CATS)                        # EXACTLY the categories with an active pinned pair...
     for c, _ in EXCLUDED:
-        assert c not in cats                               # ...no tile for a removed category
+        assert c not in cats                               # ...a removed pair drops off this DATA query
 
 
 def test_removed_pair_off_pinned_list_and_summary(tmp_path):
