@@ -62,6 +62,18 @@ def _utcdate(ts) -> str:
 templates.env.filters["utcdate"] = _utcdate
 
 
+def _utcdatetime(ts) -> str:
+    """unix ts -> 'YYYY-MM-DD HH:MM:SSZ' (UTC); em-dash for missing/zero. Registered as the `utcdt` Jinja filter
+    for the live-trade rows, where an intraday order needs the TIME, not just the date (an order and its exit can
+    share a date)."""
+    if isinstance(ts, (int, float)) and ts:
+        return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(int(ts)))
+    return "—"
+
+
+templates.env.filters["utcdt"] = _utcdatetime
+
+
 def _pm_db_schema_version() -> int | None:
     """Short-lived read connection; reads ONLY prediction_markets.db (db._assert_not_legacy guards the path)."""
     with connect() as conn:
@@ -425,15 +437,21 @@ def _load_live_list() -> dict:
 
 
 def _load_live_subdivision(account_id: str, category: str) -> dict | None:
-    """Per-sub-division read: its config + the whales it copies (R6 attachments, READ-ONLY list), or None -> 404.
-    LIVE trades/stats are P3 (not built) -> the page renders an honest-empty live list. Read-only -- no form,
-    no order path, no arm control (detach is a CLI action, so /live stays read-only)."""
+    """Per-sub-division read: its config + the whales it copies (R6 attachments) + the REAL live-trade journal
+    (pm_subdivision_order, newest first) + the journal-derived open positions, or None -> 404. The live-trade
+    section is now wired to real data (it was hardcoded honest-empty in R3, when the engine did not yet trade);
+    it renders honest-empty only when this sub-division truly has no orders. Read-only -- no form, no order path,
+    no arm control (detach is a CLI action, so /live stays read-only). `sizing_summary` states per-copy BEHAVIOUR
+    (contracts), not just the stored stake (which floors to 1 contract at $0.01 and misleads about cost)."""
     with connect() as conn:
         sub = subdivision.get_subdivision(conn, account_id, category)
         if sub is None:
             return None
         attached = subdivision.attached_whales(conn, account_id, category)
-    return {"sub": sub, "attached": attached}
+        orders = subdivision.live_orders(conn, account_id, category)
+        positions_held = subdivision.live_positions(conn, account_id, category)
+    return {"sub": sub, "attached": attached, "orders": orders, "positions": positions_held,
+            "sizing_summary": subdivision.sizing_summary(sub)}
 
 
 @app.get("/live", response_class=HTMLResponse)
@@ -446,8 +464,9 @@ async def live_list_page(request: Request):
 
 @app.get("/live/{account_id}/{category}", response_class=HTMLResponse)
 async def live_subdivision_page(request: Request, account_id: str, category: str):
-    """One Account-Category sub-division: its config + an honest-empty live list ('created, never traded'; live
-    copies arrive with the execution engine, R4). A sub-division that doesn't exist -> 404. READ-ONLY."""
+    """One Account-Category sub-division: its config + what it currently holds + its live-trade journal (real
+    orders, newest first). Honest-empty ('no live trades yet') only when it truly has not traded -- the engine
+    exists and its fills land here. A sub-division that doesn't exist -> 404. READ-ONLY (no order path)."""
     account_id = (account_id or "").strip()
     category = (category or "").strip().lower()
     data = await asyncio.to_thread(_load_live_subdivision, account_id, category)

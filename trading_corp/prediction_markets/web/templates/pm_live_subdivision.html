@@ -12,7 +12,7 @@
   <ul class="pm-sub pm-kv">
     <li>Venue: {{ sub.venue or 'kalshi' }}</li>
     <li>Market types: {{ sub.market_types }}</li>
-    <li>Sizing: {{ sub.sizing_mode }}{% if sub.fixed_stake_usd %} &middot; ${{ '%.2f'|format(sub.fixed_stake_usd) }}/copy{% endif %}</li>
+    <li>Sizing: {{ sizing_summary }}</li>
     <li>Created: {{ sub.created_ts|utcdate }}</li>
   </ul>
 
@@ -31,7 +31,64 @@
   <div class="pm-empty">No whales attached yet. Promote a pinned whale to this sub-division from its Watchlist row.</div>
   {% endif %}
 
+  {# CURRENTLY HELD: journal-derived open positions (net signed fills per ticker). NOT a live venue read -- pm_web
+     is standalone; the engine's boot reconcile cross-checks this against the exchange. Honest-empty when flat. #}
+  <div class="pm-section-head"><h2 class="pm-h2">Currently held</h2></div>
+  {% if positions %}
+  <div class="pm-table-scroll">
+  <table class="pm-table pm-positions">
+    <thead><tr><th>Ticker</th><th>Market</th><th>Leg</th><th class="pm-num">Contracts</th>
+      <th class="pm-num">Avg price</th><th class="pm-num">Cost basis</th><th class="pm-num">Fees</th></tr></thead>
+    <tbody>
+    {% for p in positions %}
+      <tr>
+        <td>{{ p.ticker }}</td>
+        <td>{{ p.market_type }}</td>
+        <td>{{ p.held_leg|upper }}</td>
+        <td class="pm-num">{{ '%g'|format(p.contracts) }}</td>
+        <td class="pm-num">${{ '%.2f'|format(p.avg_price) }}</td>
+        <td class="pm-num">${{ '%.2f'|format(p.cost_basis_usd) }}</td>
+        <td class="pm-num">${{ '%.4f'|format(p.fees_usd) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="pm-muted">Derived from this sub-division's filled orders (the order journal), not a live venue read.
+    The execution engine's boot reconcile is what cross-checks these against the exchange.</p>
+  {% else %}
+  <div class="pm-empty">No open positions. A filled entry copy that has not been exited shows here.</div>
+  {% endif %}
+
+  {# LIVE TRADES: the real order journal for this sub-division, newest first. Dry-runs are excluded (not live). #}
   <div class="pm-section-head"><h2 class="pm-h2">Live trades</h2></div>
-  <div class="pm-empty">Created &middot; no live trades yet. Live copies arrive with the execution engine.</div>
+  {% if orders %}
+  <div class="pm-table-scroll">
+  <table class="pm-table pm-positions">
+    <thead><tr><th>When (UTC)</th><th>Ticker</th><th>Market</th><th>Leg</th><th>Type</th>
+      <th class="pm-num">Count</th><th class="pm-num">Submitted</th><th class="pm-num">Fill</th>
+      <th class="pm-num">Fee</th><th>TIF</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for o in orders %}
+      <tr>
+        <td>{{ (o.response_ts or o.submitted_ts)|utcdt }}</td>
+        <td>{{ o.ticker }}</td>
+        <td>{{ o.market_type }}</td>
+        <td>{{ o.outcome_leg|upper }}</td>
+        <td>{{ 'EXIT' if o.is_exit else 'ENTRY' }}</td>
+        <td class="pm-num">{{ o.submitted_count if o.submitted_count is not none else '—' }}{% if o.fill_count is not none %} &middot; filled {{ '%g'|format(o.fill_count) }}{% endif %}</td>
+        <td class="pm-num">{% if o.submitted_price is not none %}${{ '%.2f'|format(o.submitted_price) }}{% else %}&mdash;{% endif %}</td>
+        <td class="pm-num">{% if o.fill_price is not none %}${{ '%.2f'|format(o.fill_price) }}{% else %}&mdash;{% endif %}</td>
+        <td class="pm-num">{% if o.fee is not none %}${{ '%.4f'|format(o.fee) }}{% else %}&mdash;{% endif %}</td>
+        <td>{{ o.time_in_force or '—' }}</td>
+        <td>{{ o.outcome_status or '—' }}{% if o.error_detail %} <span class="pm-muted">&middot; {{ o.error_detail }}</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="pm-empty">No live trades yet. Copies appear here once this sub-division fills an order.</div>
+  {% endif %}
 </section>
 {% endblock %}

@@ -14,7 +14,7 @@
     {% for s in subdivisions %}
       <a class="pm-tile" href="/live/{{ s.account_id }}/{{ s.category }}">
         <span class="pm-tile-name">{{ s.account_label }} &middot; {{ s.category|upper }}</span>
-        <span class="pm-tile-hint">created &middot; no live trades yet</span>
+        <span class="pm-tile-hint">{% if s.n_live_trades %}{{ s.n_live_trades }} live trade{{ '' if s.n_live_trades == 1 else 's' }}{% else %}created &middot; no live trades yet{% endif %}</span>
       </a>
     {% endfor %}
   </div>
