@@ -403,3 +403,45 @@ incl. transitive imports). Build+box-scratch only here.**
 (§9D/§9E) + query_scoreboard fix (§9F) 2026-08-29. Independent of R7 (order path untouched -- verified via AST on search.py + search_run.py).
 Runners: `cc\pm_stage4_datagather_ro.*` (21:17Z) / `pm_stage4_r1_boxscratch.*` (22:34Z) / `pm_stage4_r2_apiprobe.*`
 (22:58Z) / `pm_stage4_r2_boxscratch.*`.*
+
+---
+
+## 10. STAGE 4 DEPLOY RECORD (2026-08-30 ~01:24Z). ONE RUNG -- all of Stage 4's first cut + stats.py. VERIFIED.
+Branch @ **`9cab76b`** (local==origin); prod-live **`c88beea` NOT advanced** (separate authorization). Deployed by
+explicit manifest (never the raw diff), Gate-A incl. transitive imports, per-file backups, forced 644, migration
+013 in-rung, activation = pm_web restart via az-root (engine untouched). Baseline = `78e8834` (drift-checked).
+
+**MANIFEST (9 files) -- labeled + activation:**
+- PM-ONLY: `search.py`(NEW), `search_run.py`(NEW), `db.py`(mig-013), `web/app.py`, `web/templates/partials/
+  pm_prospects_rows.html`, `web/templates/pm_farm_category.html`, `web/static/pm_sort.js`(NEW), `web/static/pm.css`.
+- SHARED: `stats.py` (qsb completeness gate + `last_refresh_ts`; read live by `pm_cli report` + `web/app.py`).
+- Activation: **pm_web restart** (web/app + stats + templates); `init_db` migration 12->13; static served; the
+  search modules are inert until invoked. **ENGINE NOT touched** (verified: it imports the order path, not stats/
+  search/pm_search_run).
+
+**STEPS (each a Jack-authorized runner `cc\pm_s4deploy_step{1..5}_*`):** (1) pre-flight -- Gate-A DRIFT CHECK clean:
+all 6 modified files == `78e8834`, 3 new absent; baseline captured. (2) backup -- PM-DB hot backup `integrity_check
+= ok` (sha256 49383349..) + 6 per-file backups -> `~/s4deploy_backup_20260830T011111Z`. (3) deploy+gate-A+migrate:
+9 files cp'd, **perm 644 asserted**, deployed sha256 == `9cab76b` targets; **GATE-A: search+search_run+stats+data-
+client+web.app all import in the service dir** (transitive chain resolves, the R7.e lesson); `init_db` -> **schema
+13**, pm_search_run present+empty, counts unchanged; NO restart. (4) activation: `systemctl restart
+prediction-markets-web` via az-root -> pm_web **59422->83893**. (5) post-checks ALL GREEN.
+
+**LIVE STATE (post-checks):** engine PID **76416 UNCHANGED**; pm_web PID **83893**; PM schema **13**; pm_search_run
+present+**0 rows**; **all counts == baseline** (whale 14 / closed 29893 / catstats 114 / watchlist 114 / roster 114
+/ subdiv 1 / attach 2 / order 0 / paper 203 / account 1 / config 3 / candidate 0); **arm DISARMED** (0 pm_live),
+`pm_subdivision_order` 0; /healthz 200 `pm_db_schema_version:13`; /farm + /farm/mlb + /live + /live/kalshi_jack/mlb
+all 200; **F-1 loss caveat VISIBLE** on /farm/mlb (banner, not buried) + sort JS loaded + honest-empty; SDTrading
+(0x16bb..8492) still shown; **`pm_cli report` exit 0** (mlb board, 6 complete whales cost-ROI ranked -- a changed
+ranking as expected, no crash); **PM pkg unchanged OUTSIDE the manifest** (exactly the 9 differ; arm/execution/
+driver/boot_reconcile/ingest/subdivision/... byte-identical). NO STOP condition tripped. **NOTHING armed, NO order
+placed.** Rollback = restore the 6 backups + rm the 3 new + restore the DB backup + pm_web restart.
+
+**★★ GAP (surfaced to Jack, NOT run): `pm_cli search` IS NOT WIRED.** The search ENGINE (search.py, search_run.py),
+the migration (pm_search_run), the completeness gate (stats.py), and the R4 SCREEN are all live -- but pm_cli.py has
+NO `search` subcommand (it has g0/backfill/refresh/rollup/report/analyze/...), and nothing in it references
+search_run. So `pm_cli search` errors `invalid choice`. The R2-scoped CLI entry-point was deferred when the module
+was built and never wired. **To make search runnable: add a `_cmd_search` + `search` subparser to pm_cli.py that
+composes `search_run.run_search` -> `stats.rollup` -> `search_run.refresh_positions_for` -> `search_run.
+select_and_write_candidates` (with --category/--leaderboard-limit args), then deploy the single azureuser-writable
+`scripts/pm_cli.py` (own tiny rung).** Until then the Prospects list stays honest-empty (correct). NOT done here.
