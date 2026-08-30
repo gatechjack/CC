@@ -528,3 +528,50 @@ NOT advanced. Retained on box for rollback/record: the per-file backup dir + `~/
 **HANDED TO JACK: he runs `pm_cli search --dry-run` first** -- 1 leaderboard call, prints discovered count +
 new-vs-already-complete split + a ~call-count/run-time estimate; NO backfill, NO write -- then decides whether to
 commit to the real run (~20-40 min, writes candidates -> the /farm Prospects screen).
+
+### 11B -- FIRST REAL SEARCH RUN: run_id=1 (Sports) COMPLETE + 134 CANDIDATES + the estimate MISS (2026-08-30)
+
+**Jack-authorized, detached (`setsid`, survived), Jack chose LET-IT-RIDE past 04:30.** Runners
+`cc\pm_search_realrun_launch/monitor.*`, `cc\pm_search_probe.*`, `cc\pm_search_final_analysis.*`,
+`cc\pm_refresh_watch.*`. Log `~/pm_search_run_20260830T032934Z.log`.
+
+**RESULT:** `SEARCH DONE run_id=1 discovered=50 backfilled=47 (complete=40 partial=7 failed=2) skipped_complete=1 ;
+candidates WRITTEN=134 (selected=135 -> 1 no-clobber, gated-stats-rows=397)`. **134 candidates across ALL 15
+allowlist categories, 0 empty** -- 54 cleared N>=50, 80 via top-10 thin-sample fallback. Deep benches:
+soccer 16(16/0), mlb 12(12/0), atp 10(10/0). Fallback-only (0 cleared): epl/ucl/wta 10 each, fed/golf 1.
+Mixed: cs2 10(4/6), nba 10(6/4), nhl 6(2/4), nfl/ufc/wnba 10(1/9), tennis 8(1/7). **The /farm Prospects screen
+is populated for the first time since Stage 2.**
+
+**★ ESTIMATE MISS (grounded model for next time): actual 92m36s vs the ~24-49min estimate = ~2x the high end.**
+Complete-whale rows: min 9 / median 628 / mean 880 / max 4005; pages/whale median 14, mean 19.2 -- the TYPICAL
+whale was CHEAPER than the assumed 30. **The miss is the TAIL, not the median:** 7 whales hit the 8000-row cap =
+160 pages EACH = ~1120 calls = **59% of all calls from 7 whales**; the flat "30/whale" modelled neither the cap
+nor the right tail. Plus throttle: ~1900 calls / 5556s = **~2.9 s/call** (429 backoff), not the implied ~1/s.
+**Next estimate = mass (median ~14 calls) + cap-tail (160 calls each) priced at ~3 s/call -> ~1500-2000 calls,
+~75-100 min for ~50 Sports whales.**
+
+**2 FAILURES = PK COLLISIONS (classified, NOT fixed):** `0x4956f69a..2ee2c7` (#9) + `0xe4a7b5c3..a2dc87` (#15)
+-- ingest `_assert_no_pk_collision` (§13A(i)) hard-failed (two pulled rows collapse to one (wallet,condition_id,
+outcome_index)). CORRECT behaviour: isolated, **stored=0, NO pm_whale row -> nothing half-written, unrankable.**
+DISTINCT from the 08-27 `0x767a` *refresh* collision (these are *backfill*, different whales). **Full transient-
+race-vs-structural-dup classification needs the colliding condition_id, which the log TRUNCATES (`_cmd_search`
+clamps the error to `repr(e)[:80]`) -> a targeted READ-ONLY re-pull of the 2 wallets, DEFERRED (classify-not-fix,
+no unrequested API pulls).** ★ FOLLOW-UP (own tiny rung, NOT done): widen `_cmd_search`'s failure capture beyond
+80 chars so a future collision is diagnosable from the log alone.
+
+**7 PARTIALS = ALL cap-truncated:** `0x2c33/0xe907/0x01c7/0xde9f/0x032e/0x6ac5/0xf68a` -- every one **stored=8000,
+backfill_complete=0** (exceeded the 8000-row default cap). Correctly benched (unrankable on truncated data);
+re-attempt on a future run or complete with a higher `--cap`.
+
+**★ LEADERBOARD DISJOINTNESS (recorded, NOT interpreted -- Jack's ★):** of the 14 existing whales, ONLY
+xifutloong3 (0x2dc1) is on the Sports leaderboard; **SDTrading (0x16bb, the live-trade whale) is NOT.** The 49 new
+wallets are a LARGELY DISJOINT population from the legacy roster. Reading (fresh talent vs our whales not ranking
+on volume) stays OPEN -- premature; let the stats sit.
+
+**★ DIRECTION OF RISK -- the 05:00 refresh took NO hit (read, not assumed):** despite the search tail overlapping
+the daily `refresh --cap 50000` (ran 05:00->05:23, ~23min), today's refresh summary = **complete=14 partial=0
+failed=0, ZERO SQLITE_BUSY/locked/OperationalError/Traceback** in its slice. WAL + `busy_timeout=5000` absorbed
+the overlap exactly as predicted; the contention pattern demonstrated benign on the 03:30 poll held here too.
+
+**R7 UNTOUCHED throughout** (schema 13, pm_subdivision_order 0, pm_live 0; engine 76416 / pm_web 83893 never
+restarted). HALT.
