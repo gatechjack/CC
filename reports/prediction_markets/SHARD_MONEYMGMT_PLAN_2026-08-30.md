@@ -10,6 +10,31 @@ Each rung: build only, box-scratch green, live untouched, adversarial review, SH
 
 ---
 
+## ★ SOURCE CORRECTIONS (Jack read `docs.kalshi.com/getting_started/exchange_sharding` in full, 2026-08-30)
+
+Option B still holds (auto-rebalancing does what it needs), but four facts change the design:
+
+1. **★★ LIVE MARKETS ARE NEVER MIGRATED — category→shard is a PER-MARKET fact.** *"There is currently no plan to
+   migrate any live market to a new exchange instance."* Only events created after 2026-08-24 12:00 ET land on
+   shard 3; older MLB markets stay on shard 0 → **MLB is split across shards by creation date.** The rung-2 gate
+   MUST read the shard of THAT MARKET (`market.exchange_index`), not the category. Funding MLB may need money on
+   BOTH shards during the transition. Likely explains Karen (old shard-0 markets usable while shard-3 starved).
+2. **Intra-account-transfer IS a first-party API** (`/api-reference/portfolio/intra-account-transfer`). Option C
+   (platform moves money itself) is a documented endpoint, not exotic. **C stays DEFERRED on HONEST grounds: B is
+   sufficient and simpler, NOT that C is dangerous-by-construction.**
+3. **Auto-rebalancing NETS OUT RESTING ORDERS.** Every 10s Kalshi computes per-shard balance as *account balance
+   minus the value of resting orders*, then transfers to restore the target %. So resting orders shrink the measured
+   balance and can themselves trigger a rebalance → **rung 4's target is not a static split** (factor resting orders
+   into the % choice).
+4. **Explicit `exchange_index` is NOT just hygiene — it is cheaper + faster.** An auto-routed single REST order write
+   is billed against the unscoped Write budget AND every nonzero shard's Write budget; explicit targeting bills only
+   that shard's, and auto-routing *"will incur an additional latency cost."* → **rung 3 promoted to worth-doing.**
+
+*Filed for later (not now): subaccount balances are LOCAL to an exchange instance, and order groups do not function
+across instances.*
+
+---
+
 ## THE LADDER
 
 ### ★ Rung 1 — Shard-aware balance READ  *(THIS BUILD; load-bearing, first)*

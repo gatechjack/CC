@@ -91,13 +91,20 @@ in PM (legacy arb/copy agents carry ticker prefixes, out of scope to edit). So t
 | ufc | KXUFCFIGHT | **0** | UFC Fight |
 | fed | KXFED | **0** | Fed funds rate |
 
-**CONFIRMED structure — a clean TWO-shard split:** **4 categories on shard 3** (mlb, atp, wta, tennis =
-baseball+tennis) and **11 categories on shard 0** (nba, nfl, nhl, wnba, epl, ucl, soccer, cs2, golf, ufc, fed).
-NONE of our categories touch shard 1 (Combos) or shard 2 (Crypto). So money management is exactly a **shard-0 ↔
-shard-3 problem** on any single account that runs both baseball/tennis AND any of the other 11. A two-entry
-`target_balance_allocation` (`[{0:X},{3:Y}]`) is sufficient to declare the split. *Caveat from docs: shard-3
-membership applies to events created after 2026-08-24 — the series-level read shows 3 today, but always confirm
-`exchange_index` on the specific market at order time.*
+**CONFIRMED structure — a clean TWO-shard split at the SERIES level:** **4 series on shard 3** (mlb, atp, wta,
+tennis) and **11 on shard 0** (nba, nfl, nhl, wnba, epl, ucl, soccer, cs2, golf, ufc, fed). NONE touch shard 1
+(Combos) / shard 2 (Crypto). So it is a **shard-0 ↔ shard-3 problem**.
+
+**★★ CORRECTION (Jack read the source, 2026-08-30) — CATEGORY→SHARD IS A PER-MARKET FACT, NOT PER-CATEGORY.**
+`docs.kalshi.com/getting_started/exchange_sharding`: *"There is currently no plan to migrate any live market to a
+new exchange instance."* Only events created **after 2026-08-24 12:00 ET** land on shard 3; **older live MLB
+markets stay on shard 0.** So a series ticker tells you where its NEW events go — but **an individual market's shard
+is authoritative only from that market's own `exchange_index`, read at order time.** MLB is therefore **split
+across shard 0 AND shard 3 by creation date**, and funding MLB during the transition may need money on BOTH shards,
+not just shard 3. This very likely explains Karen: her shard-0 balance stayed usable for OLD markets while shard 3
+starved for NEW ones. **Consequence for rung 2: the pre-flight gate MUST resolve the shard of THAT MARKET (the
+market object's `exchange_index`), never of the category.** The series map above is a planning aid, not the gate's
+input.
 
 ---
 
