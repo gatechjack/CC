@@ -81,8 +81,15 @@ def _market_quote_dict(m) -> dict:
         ei = int(ei) if ei is not None else None            # None (missing) -> gate 6b FAILS CLOSED (skip:shard_underfunded).
     except (TypeError, ValueError):
         ei = None
+    # ★ BID SIDES ARE REQUIRED (fix, 2026-08-30): gate 3's `M.liquidity_ok` reads `yes_bid_dollars` and rejects any
+    # book with bid<=0 as ONE-SIDED / untradeable. The prior mapping omitted the bids, so EVERY market looked
+    # one-sided -> evaluate skip:illiquid for every signal -> the driver could never place. Exposed by the rung-2
+    # end-to-end driver test (the first to run the placement path); never caught before because the driver ran
+    # DISARMED. no_bid is carried too for the exit-side re-check (K4).
     return {"yes_ask_dollars": d("yes_ask_dollars", "yes_ask"),
             "no_ask_dollars": d("no_ask_dollars", "no_ask"),
+            "yes_bid_dollars": d("yes_bid_dollars", "yes_bid"),
+            "no_bid_dollars": d("no_bid_dollars", "no_bid"),
             "liquidity_dollars": d("liquidity_dollars", "liquidity"),
             "exchange_index": ei}
 

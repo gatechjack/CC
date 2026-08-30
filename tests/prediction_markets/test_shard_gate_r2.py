@@ -107,15 +107,19 @@ def test_gate6b_exit_is_not_shard_gated(tmp_path):
     assert d.status == "dry_run_would_place" and d.is_exit is True
 
 
-# ── the market dict now carries exchange_index (per-market shard input) ──
-def test_market_quote_dict_carries_exchange_index():
+# ── the market dict now carries exchange_index (per-market shard input) + BOTH bid sides (liquidity_ok needs them) ──
+def test_market_quote_dict_carries_exchange_index_and_bids():
     class _M:
-        ticker = T_TOR; yes_ask_dollars = 0.55; no_ask_dollars = 0.47; liquidity_dollars = 500; exchange_index = 3
-    assert L._market_quote_dict(_M())["exchange_index"] == 3
+        ticker = T_TOR; yes_ask_dollars = 0.55; yes_bid_dollars = 0.53
+        no_ask_dollars = 0.47; no_bid_dollars = 0.45; liquidity_dollars = 500; exchange_index = 3
+    q = L._market_quote_dict(_M())
+    assert q["exchange_index"] == 3
+    assert q["yes_bid_dollars"] == 0.53 and q["no_bid_dollars"] == 0.45  # ★ bids carried (else liquidity_ok = one-sided)
 
     class _Bare:
-        ticker = T_SEA                                                   # no exchange_index attr -> None -> fail-closed
-    assert L._market_quote_dict(_Bare())["exchange_index"] is None
+        ticker = T_SEA                                                   # no fields -> all None -> fail-closed / skip
+    b = L._market_quote_dict(_Bare())
+    assert b["exchange_index"] is None and b["yes_bid_dollars"] is None
 
 
 # ── driver fakes (record posts; never a real network call) ─────────────────────
@@ -152,9 +156,10 @@ class FakeBroker:
 
 
 class FakeMarket:
-    def __init__(self, ticker, exchange_index=3, yes_ask=0.55, no_ask=0.47, liq=500):
+    def __init__(self, ticker, exchange_index=3, yes_ask=0.55, yes_bid=0.53, no_ask=0.47, no_bid=0.45, liq=500):
         self.ticker = ticker; self.exchange_index = exchange_index
-        self.yes_ask_dollars = yes_ask; self.no_ask_dollars = no_ask; self.liquidity_dollars = liq
+        self.yes_ask_dollars = yes_ask; self.yes_bid_dollars = yes_bid    # two-sided book (liquidity_ok needs the bid)
+        self.no_ask_dollars = no_ask; self.no_bid_dollars = no_bid; self.liquidity_dollars = liq
 
 
 class FakePos:
