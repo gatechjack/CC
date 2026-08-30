@@ -445,3 +445,50 @@ was built and never wired. **To make search runnable: add a `_cmd_search` + `sea
 composes `search_run.run_search` -> `stats.rollup` -> `search_run.refresh_positions_for` -> `search_run.
 select_and_write_candidates` (with --category/--leaderboard-limit args), then deploy the single azureuser-writable
 `scripts/pm_cli.py` (own tiny rung).** Until then the Prospects list stays honest-empty (correct). NOT done here.
+
+---
+
+## 11 -- THE WIRING RUNG: `pm_cli search` BUILT + BOX-SCRATCH GREEN (2026-08-30; deploy PENDING authorization)
+
+**Closes the §10 GAP.** One authorization, two files, deploy is `scripts/pm_cli.py` ONLY.
+
+**LESSON that named this rung (Jack):** *A FEATURE IS NOT SHIPPED UNTIL SOMETHING CAN INVOKE IT.* The search
+MODULE shipped across R2/R3 (deployed live at §10) yet `pm_cli search` errored `invalid choice` -- the CLI
+entry-point fell between two rungs. Standing checklist item added: **every rung states what INVOKES what it
+built, or says explicitly that nothing does yet.** (memory: `feature-not-shipped-until-invokable`.)
+
+**BUILD (commit `da2e1b1`):**
+- `scripts/pm_cli.py`: `_cmd_search` + a `search` subparser (`--category`, `--leaderboard-limit`, `--dry-run`;
+  `set_defaults(func=_cmd_search, is_async=True)`). `db.init_db` at the top (idempotent, matches _cmd_backfill).
+  Docstring subcommand list made honest (+ points to build_parser() as source of truth).
+- **Composition choice:** `_cmd_search` composes `search_run`'s PIECES (discover_wallets -> ensure_backfilled
+  loop with per-wallet `[i/n]` progress -> open/close_search_run -> stats.rollup -> refresh_positions_for ->
+  select_and_write_candidates) rather than calling `run_search()` wholesale -- so it prints PER-WALLET progress
+  (a 20-40 min run must not look like a hang) WITHOUT re-deploying the already-live `search_run.py`. That is
+  what keeps the deploy to ONE file. Verified every composed call against the real signatures/returns
+  (`ensure_backfilled` -> res["verdict"]/["stored"] at ingest.py:286; resolved_ts = int(cp.timestamp) at
+  ingest.py:143).
+- `--dry-run` (cheap: 1 leaderboard call): prints the new-vs-complete split + a ~call-count / run-time estimate,
+  NO backfill, NO write -- the cost is visible before committing to the real run.
+- `tests/prediction_markets/test_cli_search.py` (NEW, offline): drives the REAL entry point
+  `pm.main(["search", ...])` -- parser + is_async dispatch + the composed run, NOT `_cmd_search` in isolation (a
+  function-level test would pass while the subparser was unwired -- this rung's lesson applied to its own test).
+  4 cases: subparser wired (anti-invalid-choice) / --dry-run no-write / real run writes a candidate / Ruling 1
+  second-run skip. Injected async-CM client + injected clock.
+
+**BOX-SCRATCH GREEN (2026-08-30T02:17Z, runner `cc\pm_stage4_search_boxscratch.*`, Jack-authorized+executed):**
+test_cli_search 4 passed; pm_cli consumers (test_cli, test_kill_switch_r7d) + search suites r1/r2/r3 all pass;
+FULL PM suite pass (1 skipped); INVOKABILITY proven in scratch (`pm_cli --help` lists `search`; `pm_cli search
+--help` EXIT 0 -> transitive imports resolve + subparser builds; flags render). LIVE UNTOUCHED: PM schema 13
+before==after, 0 pm_live, 0 pm_subdivision_order, live `pm_cli.py` sha `f813f5c2c0c0ce82` before==after, search
+subcommand ABSENT (0) before==after, engine 76416 / pm_web 83893 PIDs unchanged.
+
+**DEPLOY PLAN (pm_cli.py ONLY -- PENDING Jack's authorization):** `scripts/pm_cli.py` is azureuser-writable ->
+ssh in-place overwrite, NO az-root. **★ IT IS LIVE INFRASTRUCTURE:** the cron runs it every */30 (poller +
+refresh) plus adjudicate + rollup daily -- all import the same module top-level, so a broken import breaks all of
+them. DISCIPLINE: **time it in a poll gap** (clear of 05:00-05:50 UTC and the */30 boundary); **per-file backup**;
+**forced 644 + perms assertion**; **Gate-A transitive-import proof in the service dir BEFORE the next poll can
+fire**; NO restart (cron re-reads on next invocation). **THE POST-CHECK THAT COUNTS = THE NEXT SCHEDULED */30 POLL
+RUNNING CLEAN (no ImportError) -- reported only AFTER it has fired and been read, never predicted.** On green:
+push (done at build), the deploy record lands here as §11A. Rollback = restore the one per-file backup. **After
+deploy Jack runs `pm_cli search --dry-run` first (sees the split + estimate), then decides on the real run.**
