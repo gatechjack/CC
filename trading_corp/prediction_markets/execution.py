@@ -223,6 +223,29 @@ def _leg_ask(market: dict, leg: str):
         return None
 
 
+def _top_of_book_depth_usd(market: dict, leg: str) -> float:
+    """The LEG-CORRECT top-of-book $ depth available to FILL our BUY, from Kalshi top-of-book SIZE (contracts) x
+    price (dollars). ★ `liquidity_dollars` is a DEPRECATED always-'0.0000' Kalshi stub (docs 2026-08-30), so depth
+    comes from `yes_bid_size_fp` / `yes_ask_size_fp` (merged from the RAW payload; the SDK object drops them). LEG
+    LENS: buying a YES leg lifts the ASK -> `yes_ask_size` contracts at `yes_ask`; buying a NO leg is a YES SELL, so
+    it lifts the YES BIDS -> `yes_bid_size` contracts at the NO price (1 - yes_bid). ★ UNITS: `*_size_fp` is a
+    CONTRACT COUNT (string like '4.00'); the gate-3 floor is a DOLLAR amount -> $depth = size * price. Missing / bad
+    size -> 0.0 -> gate 3 FAILS CLOSED (skip). Multi-level depth above the touch is backlog (C) (/orderbook)."""
+    def f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+    m = market or {}
+    if leg == "no":
+        size = f(m.get("yes_bid_size_fp")); price = 1.0 - f(m.get("yes_bid_dollars"))   # buy NO = lift the YES bids
+    else:
+        size = f(m.get("yes_ask_size_fp")); price = f(m.get("yes_ask_dollars"))         # buy YES = lift the ask
+    if size <= 0.0 or not (0.0 < price < 1.0):
+        return 0.0
+    return size * price
+
+
 # ── the durable journal + O(1) counters (seeded ONCE from a BOUNDED indexed query) ───────────────────────────────
 class Journal:
     """Durable-backed, O(1)-on-the-order-path budget. At CONSTRUCTION it seeds the daily + open + count counters
@@ -330,11 +353,20 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     # clamped inside build_v2_event_order). This floor is a "can the book serve most of it" check, NOT a full-fill
     # guarantee. ** notional is leg-correct (above), so a NO-leg floor scales with (1-yes_price), never the yes side.
     required_depth = sub.liquidity_ratio * notional
-    if not M.liquidity_ok(market, min_liquidity_usd=required_depth,                   # gate 3 (liquid) -- ratio x notional
-                          max_spread_cents=max(1, sub.max_slippage_cents * 2)):
+    # gate 3 (liquid): (i) TWO-SIDED + SPREAD via M.liquidity_ok with a ZERO $-floor -- `liquidity_dollars` is a
+    # DEPRECATED always-'0.0000' Kalshi stub (docs 2026-08-30), so its $-floor is a no-op here (kept for the
+    # two-sided + spread logic); (ii) a REAL depth floor from LEG-CORRECT TOP-OF-BOOK SIZE (yes_*_size_fp x price,
+    # merged from the raw payload -- the SDK object drops the size fields, like exchange_index). Both fail CLOSED.
+    if not M.liquidity_ok(market, min_liquidity_usd=0.0, max_spread_cents=max(1, sub.max_slippage_cents * 2)):
         return Decision("skip:illiquid", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
                         count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
-                        reason="liquidity_floor:need_%.4f=ratio_%.2f*notional_%.4f" % (required_depth, sub.liquidity_ratio, notional))
+                        reason="no_two_sided_or_spread_over_cap")
+    depth_usd = _top_of_book_depth_usd(market, leg)                                   # gate 3 depth: leg-correct size x price
+    if not (depth_usd + 1e-9 >= required_depth):
+        return Decision("skip:illiquid", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                        count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
+                        reason="depth_floor:need_%.4f=ratio_%.2f*notional_%.4f have_%.4f(top_of_book)"
+                               % (required_depth, sub.liquidity_ratio, notional, depth_usd))
     if notional > sub.per_order_usd_cap + 1e-9:                                       # gate 2b (per-order USD ceiling)
         return Decision("reject:per_order_cap", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
                         count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,

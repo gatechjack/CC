@@ -23,11 +23,13 @@ T_SEA = "KXMLBGAME-26AUG281915SEATOR-SEA"
 SLUG = "mlb-sea-tor-2026-08-28"
 
 
-def _markets(tor_shard=3, sea_shard=3, liq=500.0):
+def _markets(tor_shard=3, sea_shard=3, size="500.00"):
+    # post-merge market dict: *_dollars quotes + *_size_fp top-of-book size (gate-3 depth) + exchange_index.
+    # liquidity_dollars is OMITTED -- a deprecated always-0 Kalshi stub; gate 3 no longer reads it.
     return {T_TOR: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47,
-                    "liquidity_dollars": liq, "exchange_index": tor_shard},
+                    "yes_ask_size_fp": size, "yes_bid_size_fp": size, "exchange_index": tor_shard},
             T_SEA: {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55,
-                    "liquidity_dollars": liq, "exchange_index": sea_shard}}
+                    "yes_ask_size_fp": size, "yes_bid_size_fp": size, "exchange_index": sea_shard}}
 
 
 def _ctx(markets=None):
@@ -114,6 +116,27 @@ def test_gate6b_exit_is_not_shard_gated(tmp_path):
     assert d.status == "dry_run_would_place" and d.is_exit is True
 
 
+# ── gate 3 depth: leg-correct top-of-book size x price (liquidity_dollars is a deprecated always-0 stub) ──
+def test_top_of_book_depth_is_leg_correct_and_fail_closed():
+    m = {"yes_bid_dollars": 0.35, "yes_ask_dollars": 0.45, "yes_bid_size_fp": "4.00", "yes_ask_size_fp": "2.00"}
+    # ★ UNITS: size (contracts) x price (dollars) = $ depth. ★ LEG LENS: buy YES lifts the ASK; buy NO lifts YES bids.
+    assert ex._top_of_book_depth_usd(m, "yes") == pytest.approx(2.00 * 0.45)          # yes_ask_size x yes_ask
+    assert ex._top_of_book_depth_usd(m, "no") == pytest.approx(4.00 * (1.0 - 0.35))   # yes_bid_size x (1 - yes_bid)
+    assert ex._top_of_book_depth_usd({"yes_ask_dollars": 0.45}, "yes") == 0.0         # missing size -> fail-closed
+    assert ex._top_of_book_depth_usd({}, "yes") == 0.0                                # empty -> fail-closed
+
+
+def test_gate3_skips_when_top_of_book_too_thin(tmp_path):
+    d = _eval(tmp_path, _sub(), _sig(), _ctx(_markets(size="0.01")), _bal({3: 500.0}))   # 0.01 contracts -> tiny $ depth
+    assert d.status == "skip:illiquid" and "depth_floor" in d.reason
+
+
+def test_gate3_missing_size_fails_closed(tmp_path):
+    m = _markets(); m[T_TOR].pop("yes_ask_size_fp"); m[T_TOR].pop("yes_bid_size_fp")     # raw merge failed -> no size
+    d = _eval(tmp_path, _sub(), _sig(), _ctx(m), _bal({3: 500.0}))
+    assert d.status == "skip:illiquid" and "depth_floor" in d.reason
+
+
 # ── the market dict now carries exchange_index (per-market shard input) + BOTH bid sides (liquidity_ok needs them) ──
 def test_market_quote_dict_carries_exchange_index_and_bids():
     class _M:
@@ -158,7 +181,8 @@ class FakeClient:
             # ★ mirrors the REAL raw /markets payload: it CARRIES exchange_index (which the SDK get_markets object
             # DROPS). market_shard=None simulates the raw payload also lacking it -> gate 6b fail-closes.
             ser = path.split("series_ticker=", 1)[1].split("&", 1)[0]
-            mks = [{"ticker": m.ticker, "status": "open", "exchange_index": self._shard}
+            mks = [{"ticker": m.ticker, "status": "open", "exchange_index": self._shard,
+                    "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"}   # top-of-book size (gate-3 depth)
                    for m in self._game if str(m.ticker).startswith(ser)]
             return {"markets": mks}
         raise AssertionError("unexpected get path %r" % path)
