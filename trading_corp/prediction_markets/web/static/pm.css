@@ -318,3 +318,26 @@ th.pm-primary{color:var(--mono)}
 .pm-pstatus-closed{background:rgba(16,185,129,.14); color:var(--green); border:1px solid rgba(16,185,129,.4)}
 .pm-pstatus-stale{background:rgba(148,163,184,.14); color:var(--muted); border:1px solid var(--edge2)}
 .pm-pstatus-void{background:rgba(148,163,184,.10); color:var(--muted); border:1px solid var(--edge2)}
+
+/* ── R4: prospects screen (F-1 caveat banner, sortable headers, THIN flag, per-whale last-updated, refresh) ── */
+.pm-caveat-loss{display:flex; gap:.5rem; align-items:baseline; margin:.2rem 0 .7rem; padding:.5rem .7rem;
+  font-size:.82rem; line-height:1.4; color:#fde68a; background:rgba(245,158,11,.10);
+  border:1px solid rgba(245,158,11,.45); border-radius:6px}
+.pm-caveat-tag{flex:none; font-size:.66rem; font-weight:700; letter-spacing:.03em; text-transform:uppercase;
+  color:var(--amber); background:rgba(245,158,11,.18); border:1px solid rgba(245,158,11,.5);
+  border-radius:4px; padding:.08rem .35rem}
+.pm-th-caveat{display:block; font-size:.62rem; font-weight:400; color:var(--amber); text-transform:none}
+.pm-sortable{cursor:pointer; user-select:none} .pm-sortable:hover{color:var(--mono)}
+.pm-sortable::after{content:"\2195"; opacity:.35; font-size:.7em; margin-left:.2em}
+.pm-sortable.pm-sort-asc::after{content:"\2191"; opacity:.9}
+.pm-sortable.pm-sort-desc::after{content:"\2193"; opacity:.9}
+.pm-badge-thin{background:rgba(245,158,11,.16); color:var(--amber); border:1px solid rgba(245,158,11,.5);
+  font-size:.66rem; font-weight:700; letter-spacing:.02em}
+.pm-freshdot{display:inline-block; font-size:.74rem; padding:.05rem .3rem; border-radius:4px; border:1px solid var(--edge2)}
+.pm-freshdot.pm-band-green{color:var(--green); border-color:rgba(16,185,129,.4)}
+.pm-freshdot.pm-band-amber{color:var(--amber); border-color:rgba(245,158,11,.4)}
+.pm-freshdot.pm-band-red{color:var(--red); border-color:rgba(244,63,94,.4)}
+.pm-btn-refresh[disabled]{opacity:.6; cursor:progress}
+.pm-btn-refresh.htmx-request{opacity:.6; cursor:progress}
+.pm-refresh-notice{margin:.2rem 0 .6rem; padding:.4rem .6rem; font-size:.8rem; color:var(--warn);
+  background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.4); border-radius:5px}

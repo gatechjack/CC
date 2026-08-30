@@ -270,7 +270,7 @@ def query_scoreboard(conn, *, category: str | None = None, routine: str = "net_r
         # user_name -- ingest NEVER populates it (/closed-positions carries no name); names.sync_user_names
         # copies roster labels in. On NULL the page renders the WALLET, never a blank/fabricated name.
         # Wallet stays the identity; the name is display-only (never keyed on).
-        "w.user_name AS user_name, "
+        "w.user_name AS user_name, w.last_refresh_ts AS last_refresh_ts, "
         # migration-004 one-sided directional slice (P2 CP2 render contract, deferred from CP1). LEFT JOIN
         # so a whale with NO one-sided slice still ranks -- the fields come back NULL and the page renders
         # honest-empty ("--"), never a fabricated 0. is_upper_bound is ALWAYS 1: the figure excludes hedged
