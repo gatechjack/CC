@@ -181,4 +181,129 @@ async def run_search(conn, *, client, clock: Callable[[], int],
         close_search_run(conn, run_id, finished_ts=clock(), n_discovered=len(discovered),
                          n_backfilled=n_backfilled, status=status, summary=summary)
     return {"run_id": run_id, "n_discovered": len(discovered), "n_backfilled": n_backfilled,
-            "status": status, **counts}
+            "status": status, "wallets": [w for w, _ in discovered], **counts}
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# RUNG 3 -- candidate SELECTION + WRITE (the funnel's candidate stage). DB-only core (offline-testable);
+# the /positions recency refresh (network) is a separate injected step. Composed by `pm_cli search`:
+#   run_search (R2) -> stats.rollup -> refresh_positions_for -> select_and_write_candidates (R3)
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+
+async def refresh_positions_for(conn, wallets, *, client, now_ts: int) -> dict:
+    """Refresh /positions -> pm_open_position for `wallets` (the open-position RECENCY proxy, Q2). PER-WALLET
+    ISOLATION: one wallet's failure never aborts the pass -- that wallet simply lacks the open-position signal
+    and can still qualify via settled-recency (last_resolved_ts). Network; inject `client` in tests. Returns
+    per-wallet ok/failed."""
+    ok = 0
+    per_failed: list[dict] = []
+    for w in sorted({(x or "").lower() for x in (wallets or []) if x}):
+        try:
+            await ingest.refresh_open_positions(conn, w, client=client, now_ts=now_ts)
+            ok += 1
+        except Exception as e:
+            per_failed.append({"wallet": w, "error": repr(e)[:200]})
+    return {"ok": ok, "failed": len(per_failed), "per_failed": per_failed}
+
+
+def build_wallet_category_stats(conn, wallets) -> list:
+    """Read pm_category_stats for `wallets` into `search.WalletCategoryStat` rows for select_candidates.
+
+    ★ GATED backfill_complete=1 (the R2->R3 contract, and the SAME gate as stats.query_scoreboard): a
+    partial/failed-backfill whale is NEVER a candidate. The JOIN to pm_whale drops a stats row that has no
+    pm_whale row (unknown completeness -> excluded), and the `backfill_complete=1` predicate drops a
+    partial one -- so only fully-backfilled whales reach selection. The open-position RECENCY proxy
+    (has_open_position) is EXISTS a pm_open_position row for (wallet, category); last_resolved_ts + roi +
+    win_rate + n_resolved come from pm_category_stats. Empty input -> []. Read-only."""
+    wset = sorted({(w or "").lower() for w in (wallets or []) if w})
+    if not wset:
+        return []
+    # CHUNK the IN(...) lists (the pool is ~50, but never LEAN on the API's ~50/bucket cap -- a future wider
+    # discovery source must not blow SQLite's bound-variable limit). Collect the open-position pairs + the
+    # gated stats rows across chunks, THEN build (has_open_position needs the full open-pairs set first).
+    CHUNK = 500
+    open_pairs: set = set()
+    stat_rows: list = []
+    for i in range(0, len(wset), CHUNK):
+        chunk = wset[i:i + CHUNK]
+        ph = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            "SELECT DISTINCT wallet, category FROM pm_open_position WHERE wallet IN (%s)" % ph, chunk
+        ):
+            open_pairs.add(((r["wallet"] or "").lower(), (r["category"] or "").strip().lower()))
+        for r in conn.execute(
+            "SELECT s.wallet, s.category, s.n_resolved, s.roi, s.win_rate, s.last_resolved_ts, w.user_name "
+            "FROM pm_category_stats s JOIN pm_whale w ON s.wallet = w.wallet "
+            "WHERE s.wallet IN (%s) AND COALESCE(w.backfill_complete, 0) = 1 "
+            "ORDER BY s.wallet, s.category" % ph, chunk
+        ):
+            stat_rows.append(((r["wallet"] or "").lower(), (r["category"] or "").strip().lower(),
+                              int(r["n_resolved"] or 0), r["roi"], r["last_resolved_ts"],
+                              r["win_rate"], r["user_name"]))
+    return [search.WalletCategoryStat(
+                wallet=wal, category=cat, n_resolved=n, roi=roi, last_resolved_ts=last_ts,
+                has_open_position=((wal, cat) in open_pairs), win_rate=win, user_name=name)
+            for wal, cat, n, roi, last_ts, win, name in stat_rows]
+
+
+def write_candidates(conn, candidates, *, run_id: int, now_ts: int) -> int:
+    """Write each Candidate as a FUNNEL candidate: pm_watchlist(status='candidate', active=1, source='search',
+    search_run_id=run_id) + a paired pm_roster row. Mirrors the pinned-seed precedent (paper.py) but 'candidate'.
+
+    ★ INSERT OR IGNORE == NO-CLOBBER idempotency: an existing (wallet, category) row is LEFT UNTOUCHED -- so
+    search NEVER un-pins a human's promotion ('pinned'), NEVER resurrects a removed pair (active=0), and a
+    re-run NEVER double-writes. Only a genuinely NEW (wallet, category) is inserted. ★ THREE-BASES INVARIANT:
+    touches ONLY the funnel (pm_watchlist) + the roster (pm_roster) -- NO completed/paper/live base is written;
+    a candidate DISPLAYS the completed basis, it does not create paper or live rows. ★ NO AUTO-PROMOTION / NO
+    AUTO-PAPER: status is 'candidate', never 'pinned' -- promotion (candidate->pinned) stays the manual /farm
+    action (farm_actions.promote_to_watchlist), and the poller paper-trades PINNED rows only. Returns the count
+    of NEWLY-written candidate rows."""
+    candidates = list(candidates)
+    if not candidates:
+        return 0
+    # ATOMIC batch (BEGIN IMMEDIATE): the paired pm_roster + pm_watchlist writes are all-or-nothing, so a crash
+    # mid-loop can never leave a candidate half-written (a watchlist row without its roster row, or the reverse).
+    # Mirrors farm_actions.promote_to_live's transaction discipline; OR IGNORE still keeps every write no-clobber.
+    n = 0
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for c in candidates:
+            wal, cat = (c.wallet or "").lower(), (c.category or "").strip().lower()
+            conn.execute(
+                "INSERT OR IGNORE INTO pm_roster (wallet, category, user_name, source, added_ts, active) "
+                "VALUES (?, ?, ?, 'search', ?, 1)", (wal, cat, c.user_name or "", now_ts))
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO pm_watchlist (wallet, category, added_ts, source, status, search_run_id, "
+                "active, updated_ts) VALUES (?, ?, ?, 'search', 'candidate', ?, 1, ?)",
+                (wal, cat, now_ts, run_id, now_ts))
+            n += (cur.rowcount or 0)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return n
+
+
+def select_and_write_candidates(conn, wallets, *, run_id: int, now_ts: int,
+                                min_resolved: int = search.DEFAULT_MIN_RESOLVED_FLOOR,
+                                recency_window_days: int = search.DEFAULT_RECENCY_DAYS,
+                                thin_sample_target: int = search.DEFAULT_THIN_TARGET,
+                                allowlist=search.CATEGORY_ALLOWLIST) -> dict:
+    """RUNG 3 orchestrator (DB-only): read GATED stats for the run's discovered `wallets` -> R1's
+    select_candidates (N>=50 + <target top-10 thin-sample fallback, 30d open-position/settled recency GATE,
+    15-category allowlist, cost-ROI rank NEVER win%) -> write_candidates -> stamp pm_search_run
+    .n_candidates_written. Assumes stats.rollup + refresh_positions_for already ran (caller's earlier steps).
+    Returns the selection summary + n_written (newly-written; a re-run of already-written candidates writes 0)."""
+    stats_rows = build_wallet_category_stats(conn, wallets)
+    result = search.select_candidates(
+        stats_rows, now_ts=now_ts, min_resolved=min_resolved, recency_window_days=recency_window_days,
+        thin_sample_target=thin_sample_target, allowlist=allowlist)
+    n_written = write_candidates(conn, result.candidates, run_id=run_id, now_ts=now_ts)
+    conn.execute("UPDATE pm_search_run SET n_candidates_written = ? WHERE run_id = ?", (n_written, run_id))
+    if hasattr(conn, "commit"):
+        conn.commit()
+    # n_stats_rows makes the silent-0 visible: 0 gated stats rows read from a non-empty backfilled pool almost
+    # always means stats.rollup did not run (or ran empty) -- distinct from "ran fine, nothing qualified". The
+    # caller (pm_cli search) can WARN when n_stats_rows==0 but wallets were backfilled this run.
+    return {"n_selected": len(result.candidates), "n_written": n_written, "n_stats_rows": len(stats_rows),
+            "excluded": result.excluded, "thin_sample_categories": result.thin_sample_categories}
