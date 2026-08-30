@@ -217,6 +217,8 @@ def test_live_positions_signed_convention_and_exit_nets_flat(tmp_path):
         assert len(pos) == 1
         assert pos[0]["held_leg"] == "yes" and pos[0]["contracts"] == 1.0
         assert abs(pos[0]["cost_basis_usd"] - 0.60) < 1e-9
+        assert abs(pos[0]["avg_price"] - 0.60) < 1e-9        # cost / contracts, NOT cost / fill_count (guard the divide)
+        assert abs(pos[0]["fees_usd"] - 0.0084) < 1e-9
         # a YES exit of 1 on the same ticker -> net 0 -> flat -> dropped
         _insert_order(conn, is_exit=1, client_order_id="exit-1", fill_price=0.65)
         assert subdivision.live_positions(conn, "kalshi_jack", "mlb") == []
@@ -226,6 +228,58 @@ def test_live_positions_signed_convention_and_exit_nets_flat(tmp_path):
         pos2 = subdivision.live_positions(conn, "kalshi_jack", "mlb")
         assert len(pos2) == 1 and pos2[0]["held_leg"] == "no"
         assert pos2[0]["market_type"] == "total"
+
+
+def test_live_tile_count_increments_with_two_orders(monkeypatch, tmp_path):
+    """The tile count must be DB-derived, not a hardcoded '1': two real orders -> '2 live trades'."""
+    cl = _client(monkeypatch, tmp_path, schema=10, seed=True,
+                 orders=[{}, {"client_order_id": "order-2"}])
+    r = cl.get("/live")
+    assert r.status_code == 200
+    assert "2 live trades" in r.text
+
+
+def test_live_positions_ignores_null_ticker_rows(tmp_path):
+    """A filled row with a NULL ticker must NOT become a phantom held position (mirrors boot_reconcile's
+    ticker-not-null guard) -- else it buckets under '' and renders garbage."""
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        conn.execute("INSERT INTO pm_account (account_id, venue, label, active, created_ts) "
+                     "VALUES ('kalshi_jack','kalshi','Jack',1,1)")
+        conn.execute("INSERT INTO pm_subdivision (account_id, category, sizing_mode, fixed_stake_usd, active, created_ts) "
+                     "VALUES ('kalshi_jack','mlb','fixed',0.01,1,1)")
+        _insert_order(conn, ticker=None, client_order_id="null-tk")
+        assert subdivision.live_positions(conn, "kalshi_jack", "mlb") == []
+
+
+def test_live_order_count_and_display_limit(tmp_path):
+    """live_order_count is UNCAPPED (feeds the honest 'N of M' notice); live_orders honours its LIMIT. The two
+    must be able to diverge on purpose (count 2, shown 1) so the notice is truthful, never a silent cap."""
+    p = str(tmp_path / "pm.db")
+    db.init_db(p)
+    with db.connect(p) as conn:
+        conn.execute("INSERT INTO pm_account (account_id, venue, label, active, created_ts) "
+                     "VALUES ('kalshi_jack','kalshi','Jack',1,1)")
+        conn.execute("INSERT INTO pm_subdivision (account_id, category, sizing_mode, fixed_stake_usd, active, created_ts) "
+                     "VALUES ('kalshi_jack','mlb','fixed',0.01,1,1)")
+        _insert_order(conn, client_order_id="o1")
+        _insert_order(conn, client_order_id="o2")
+        assert subdivision.live_order_count(conn, "kalshi_jack", "mlb") == 2
+        assert len(subdivision.live_orders(conn, "kalshi_jack", "mlb", limit=1)) == 1
+
+
+def test_sizing_summary_unit():
+    """sizing_summary states BEHAVIOUR across every branch (the branches the HTML tests don't all reach)."""
+    f = subdivision.sizing_summary
+    cent = f({"sizing_mode": "fixed", "fixed_stake_usd": 0.01})
+    assert "1 contract per copy" in cent and "$0.01/copy" not in cent and "flat-contracts" in cent
+    big = f({"sizing_mode": "fixed", "fixed_stake_usd": 5.0})
+    assert "floor" in big and "minimum one" in big
+    assert "unset" in f({"sizing_mode": "fixed", "fixed_stake_usd": None})
+    assert "kelly" in f({"sizing_mode": "kelly", "fixed_stake_usd": None})
+    # a NULL sizing_mode falls back to 'fixed' (DDL default), not a crash
+    assert "fixed" in f({"sizing_mode": None, "fixed_stake_usd": 0.01})
 
 
 def test_dry_run_orders_excluded_from_live_trades(tmp_path):

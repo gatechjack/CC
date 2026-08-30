@@ -87,6 +87,9 @@
     </tbody>
   </table>
   </div>
+  {% if n_live_trades and n_live_trades > orders|length %}
+  <p class="pm-muted">Showing the latest {{ orders|length }} of {{ n_live_trades }} live trades.</p>
+  {% endif %}
   {% else %}
   <div class="pm-empty">No live trades yet. Copies appear here once this sub-division fills an order.</div>
   {% endif %}

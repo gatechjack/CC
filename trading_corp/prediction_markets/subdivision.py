@@ -171,6 +171,19 @@ def live_orders(conn, account_id: str, category: str, *, limit: int = 200) -> li
     return out
 
 
+def live_order_count(conn, account_id: str, category: str) -> int:
+    """The TOTAL count of REAL orders (dry_run=0) for this sub-division -- the SAME set live_orders() draws from,
+    but UNCAPPED. Lets the page say honestly 'showing the latest N of M' when the journal exceeds live_orders'
+    display LIMIT, so the tile count (also uncapped) and the visible table never diverge SILENTLY (no silent cap).
+    0 if the journal table is absent. Read-only."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return 0
+    r = conn.execute(
+        "SELECT COUNT(*) AS n FROM pm_subdivision_order WHERE account_id = ? AND category = ? AND dry_run = 0",
+        (account_id, category)).fetchone()
+    return int(r["n"]) if r is not None and r["n"] is not None else 0
+
+
 _LEG_SIGN = {"yes": 1, "no": -1}
 
 
@@ -189,7 +202,7 @@ def live_positions(conn, account_id: str, category: str) -> list[dict]:
         "SELECT ticker, outcome_leg, is_exit, fill_count, fill_price, fee "
         "FROM pm_subdivision_order "
         "WHERE account_id = ? AND category = ? AND dry_run = 0 AND outcome_status = 'filled' "
-        "      AND fill_count IS NOT NULL AND fill_count > 0",
+        "      AND fill_count IS NOT NULL AND fill_count > 0 AND ticker IS NOT NULL",   # ticker guard MIRRORS boot_reconcile (no NULL-ticker phantom holding)
         (account_id, category)).fetchall()
     agg: dict = {}
     for r in rows:

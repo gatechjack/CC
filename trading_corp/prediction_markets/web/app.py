@@ -449,9 +449,10 @@ def _load_live_subdivision(account_id: str, category: str) -> dict | None:
             return None
         attached = subdivision.attached_whales(conn, account_id, category)
         orders = subdivision.live_orders(conn, account_id, category)
+        n_live_trades = subdivision.live_order_count(conn, account_id, category)   # uncapped -> honest 'N of M' when truncated
         positions_held = subdivision.live_positions(conn, account_id, category)
-    return {"sub": sub, "attached": attached, "orders": orders, "positions": positions_held,
-            "sizing_summary": subdivision.sizing_summary(sub)}
+    return {"sub": sub, "attached": attached, "orders": orders, "n_live_trades": n_live_trades,
+            "positions": positions_held, "sizing_summary": subdivision.sizing_summary(sub)}
 
 
 @app.get("/live", response_class=HTMLResponse)
