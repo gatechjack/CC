@@ -299,6 +299,14 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
                         is_exit=signal.is_exit, disarm_armed=armed)
     ticker, leg = match.kalshi_ticker, match.leg
     market = ctx.markets.get(ticker)
+    order_shard = (market or {}).get("exchange_index")   # PER-MARKET shard: gate 6b funding + rung-3 explicit routing
+    if isinstance(order_shard, bool):                    # bool is an int subclass but is never a valid shard
+        order_shard = None
+    elif order_shard is not None:                        # coerce to int-or-None: a corrupt non-int FAILS CLOSED
+        try:                                             # (gate 6b skips, body omits -> auto-route), never crashes
+            order_shard = int(order_shard)
+        except (TypeError, ValueError):
+            order_shard = None
     base_price = _leg_ask(market, leg)                                               # gate 7 precondition (quote)
     if base_price is None:
         return Decision("skip:no_quote", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
@@ -356,7 +364,6 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         # (can_fund False) all SKIP. Only can_fund True proceeds. None shard_balances disables the gate (test/paper
         # opt-out; unreachable on the live path -- see the evaluate docstring).
         if shard_balances is not None:
-            order_shard = (market or {}).get("exchange_index")
             fundable = shard_balances.can_fund(order_shard, notional) if order_shard is not None else None
             if fundable is not True:
                 return Decision("skip:shard_underfunded", sid, market_type=match.market_type, kalshi_ticker=ticker,
@@ -369,6 +376,14 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     body, cnt, price = build_v2_event_order(
         ticker=ticker, outcome=leg, is_buy=(not signal.is_exit), base_price=base_price, copy_usd=copy_usd,
         max_slippage_cents=sub.max_slippage_cents, tif=_ENTRY_TIF, client_order_id=coid)
+    # ★ RUNG 3 (PM-only; no shared-broker edit): explicit exchange_index = the MARKET's OWN shard (read from the
+    # market object -- authoritative). DETERMINISTIC routing instead of relying on Kalshi auto-route. Correction 4:
+    # explicit targeting bills only THAT shard's Write budget (auto-route bills the unscoped budget AND every nonzero
+    # shard's) + avoids the auto-route latency cost. Set ONLY when the shard is KNOWN; None (paper/opt-out/unknown)
+    # -> omit -> auto-route (the prior behavior, byte-identical). Added to `body` BEFORE it becomes decision.body, so
+    # the dry-run body and the POSTed body stay byte-identical (option-b parity).
+    if order_shard is not None:
+        body["exchange_index"] = int(order_shard)
     if not signal.is_exit:                       # only ENTRIES consume the entry budget; a reduce_only exit does not
         journal.commit_would_place(sub.account_id, sub.category, notional)
     return Decision("dry_run_would_place", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
