@@ -140,9 +140,9 @@ class _FakePortfolio:
 
 
 class FakeClient:
-    def __init__(self, *, balance_resp=None, balance_raise=False, game_markets=None, positions=None):
+    def __init__(self, *, balance_resp=None, balance_raise=False, game_markets=None, positions=None, market_shard=3):
         self.posts = []; self._balance = balance_resp; self._balance_raise = balance_raise
-        self._game = game_markets or []; self.portfolio = _FakePortfolio(positions)
+        self._game = game_markets or []; self.portfolio = _FakePortfolio(positions); self._shard = market_shard
     async def post(self, path, body):
         self.posts.append((path, body)); return dict(_FILL)
     async def get_markets(self, series_ticker=None, status=None, limit=None, fetch_all=False, **kw):
@@ -150,10 +150,18 @@ class FakeClient:
         # DISJOINT open/settled sets, so the game tickers are NOT duplicated (a dup would look like a doubleheader).
         return self._game if (series_ticker == "KXMLBGAME" and not fetch_all) else []
     async def get(self, path):
-        assert path == "/portfolio/balance"
-        if self._balance_raise:
-            raise RuntimeError("balance read 503")
-        return self._balance
+        if path == "/portfolio/balance":
+            if self._balance_raise:
+                raise RuntimeError("balance read 503")
+            return self._balance
+        if path.startswith("/markets?series_ticker="):
+            # ★ mirrors the REAL raw /markets payload: it CARRIES exchange_index (which the SDK get_markets object
+            # DROPS). market_shard=None simulates the raw payload also lacking it -> gate 6b fail-closes.
+            ser = path.split("series_ticker=", 1)[1].split("&", 1)[0]
+            mks = [{"ticker": m.ticker, "status": "open", "exchange_index": self._shard}
+                   for m in self._game if str(m.ticker).startswith(ser)]
+            return {"markets": mks}
+        raise AssertionError("unexpected get path %r" % path)
 
 
 class FakeBroker:
@@ -163,8 +171,10 @@ class FakeBroker:
 
 
 class FakeMarket:
-    def __init__(self, ticker, exchange_index=3, yes_ask=0.55, yes_bid=0.53, no_ask=0.47, no_bid=0.45, liq=500):
-        self.ticker = ticker; self.exchange_index = exchange_index
+    # ★ mirrors the real pykalshi AsyncMarket object: it carries the *_dollars quote fields but DROPS exchange_index
+    # (verified 2026-08-30). The shard is provided by the raw /markets payload instead (FakeClient.get + market_shard).
+    def __init__(self, ticker, yes_ask=0.55, yes_bid=0.53, no_ask=0.47, no_bid=0.45, liq=500):
+        self.ticker = ticker
         self.yes_ask_dollars = yes_ask; self.yes_bid_dollars = yes_bid    # two-sided book (liquidity_ok needs the bid)
         self.no_ask_dollars = no_ask; self.no_bid_dollars = no_bid; self.liquidity_dollars = liq
 
@@ -224,7 +234,7 @@ async def test_driver_fails_closed_when_balance_read_fails(tmp_path):
     leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p); _seed(p)
     _arm_both(leg)
     client = FakeClient(balance_raise=True, positions=[],
-                        game_markets=[FakeMarket(T_TOR, exchange_index=3), FakeMarket(T_SEA, exchange_index=3)])
+                        game_markets=[FakeMarket(T_TOR), FakeMarket(T_SEA)], market_shard=3)
     pos = FakePositionsClient(FakeBook([FakePos("0xopen", 0, "Toronto Blue Jays", cur=0.5)]))
     await L.scheduled_pm_live_loop(p, FakeBroker(client), pos, account_id=ACCT, category=CAT, poll_sec=0,
                                    legacy_db_path=leg, _max_cycles=1)
@@ -238,7 +248,7 @@ async def test_driver_places_when_market_shard_funded(tmp_path):
     leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p); _seed(p)
     _arm_both(leg)
     client = FakeClient(balance_resp=_FUNDED, positions=[],
-                        game_markets=[FakeMarket(T_TOR, exchange_index=3), FakeMarket(T_SEA, exchange_index=3)])
+                        game_markets=[FakeMarket(T_TOR), FakeMarket(T_SEA)], market_shard=3)
     pos = FakePositionsClient(FakeBook([FakePos("0xopen", 0, "Toronto Blue Jays", cur=0.5)]))
     await L.scheduled_pm_live_loop(p, FakeBroker(client), pos, account_id=ACCT, category=CAT, poll_sec=0,
                                    legacy_db_path=leg, _max_cycles=1)
@@ -250,7 +260,7 @@ async def test_sustained_underfunding_alarm_fires_at_N_and_is_not_latched(tmp_pa
     leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p); _seed(p)
     _arm_both(leg)                                                      # ARMED, but shard 3 EMPTY -> skip every cycle
     client = FakeClient(balance_resp=_EMPTY3, positions=[],
-                        game_markets=[FakeMarket(T_TOR, exchange_index=3), FakeMarket(T_SEA, exchange_index=3)])
+                        game_markets=[FakeMarket(T_TOR), FakeMarket(T_SEA)], market_shard=3)
     pos = FakePositionsClient(FakeBook([FakePos("0xopen", 0, "Toronto Blue Jays", cur=0.5)]))
     with caplog.at_level(logging.WARNING):
         await L.scheduled_pm_live_loop(p, FakeBroker(client), pos, account_id=ACCT, category=CAT, poll_sec=0,
@@ -259,6 +269,26 @@ async def test_sustained_underfunding_alarm_fires_at_N_and_is_not_latched(tmp_pa
     assert client.posts == []                                          # nothing placed (all underfunded)
     row = arm.current_row(ACCT, CAT, legacy_db_path=leg)               # SURFACED, NOT latched: a funding gap is not a fault
     assert row["latched"] is False and arm.is_armed(ACCT, CAT, legacy_db_path=leg) is True
+
+
+def test_fetch_market_context_merges_exchange_index_from_raw():
+    import asyncio
+    # ★ FIXTURE MIRRORS THE REAL OBJECT (the lesson): FakeMarket (like AsyncMarket) has NO exchange_index; the raw
+    # /markets payload (FakeClient.get + market_shard) carries it. This FAILS against the pre-fix code (which read the
+    # SDK object -> None -> gate 6b fail-closed on every order) and PASSES once fetch_market_context merges the raw.
+    assert not hasattr(FakeMarket(T_TOR), "exchange_index")          # the fixture truly lacks it, like the real object
+    client = FakeClient(game_markets=[FakeMarket(T_TOR), FakeMarket(T_SEA)], market_shard=3)
+    ctx = asyncio.run(L.fetch_market_context(client, NOW))
+    assert ctx.markets[T_TOR]["exchange_index"] == 3                 # merged from the raw payload -> gate 6b sees the shard
+    assert ctx.markets[T_SEA]["exchange_index"] == 3
+
+
+def test_fetch_market_context_shard_stays_none_when_raw_also_lacks_it():
+    import asyncio
+    # if the raw payload ALSO lacks the shard, exchange_index stays None -> gate 6b fail-closes (safe, not a crash)
+    client = FakeClient(game_markets=[FakeMarket(T_TOR)], market_shard=None)
+    ctx = asyncio.run(L.fetch_market_context(client, NOW))
+    assert ctx.markets[T_TOR].get("exchange_index") is None
 
 
 # ── structural: the plumbing carries shard_balances + the summary reports underfunded skips ──

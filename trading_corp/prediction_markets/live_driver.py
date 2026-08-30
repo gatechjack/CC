@@ -44,6 +44,7 @@ Spec: reports/prediction_markets/STAGE3_PLAN_2026-08-28.md sec 8/16 + R7_PLAN_20
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import time as _time
 
@@ -76,9 +77,13 @@ def _market_quote_dict(m) -> dict:
                 except (TypeError, ValueError):
                     pass
         return None
-    ei = getattr(m, "exchange_index", None)                 # ★ PER-MARKET shard (gate 6b): live markets never migrate,
-    try:                                                    # so a market's shard is a fact of THAT market, not its series.
-        ei = int(ei) if ei is not None else None            # None (missing) -> gate 6b FAILS CLOSED (skip:shard_underfunded).
+    # ★ exchange_index is DROPPED by the pykalshi get_markets Market OBJECT (verified 2026-08-30: not in attrs, not in
+    # model_dump) even though the RAW /markets payload carries it. So this getattr is ALWAYS None -- it is only the
+    # fail-closed FALLBACK; the authoritative per-market shard is merged from the raw payload in fetch_market_context
+    # (_merge_exchange_index). A market that never gets merged keeps None -> gate 6b FAILS CLOSED (skip).
+    ei = getattr(m, "exchange_index", None)
+    try:
+        ei = int(ei) if ei is not None else None
     except (TypeError, ValueError):
         ei = None
     # ★ BID SIDES ARE REQUIRED (fix, 2026-08-30): gate 3's `M.liquidity_ok` reads `yes_bid_dollars` and rejects any
@@ -96,6 +101,31 @@ def _market_quote_dict(m) -> dict:
             "no_bid_dollars": d("no_bid_dollars", "no_bid"),
             "liquidity_dollars": d("liquidity_dollars", "liquidity"),
             "exchange_index": ei}
+
+
+async def _merge_exchange_index(client, markets: dict) -> None:
+    """★ Merge the PER-MARKET exchange_index from the RAW /markets payload into the market dicts (in place). The
+    pykalshi get_markets Market OBJECT DROPS exchange_index (verified 2026-08-30: not in attrs / model_dump) even
+    though the raw payload carries it -- so gate 6b, which reads the market's shard, would FAIL CLOSED on every order
+    without this. The raw payload is authoritative PER MARKET (correction 1: live markets never migrate, so the
+    series-level shard is only right for post-Aug-24 events; the per-market field is right for all). OPEN markets only
+    (we only PLACE on open books; settled markets take no order). A raw-get failure leaves exchange_index None ->
+    gate 6b fail-closes (safe, just inert for those tickers this cycle)."""
+    for series in SERIES:
+        try:
+            raw = client.get("/markets?series_ticker=%s&status=open&limit=1000" % series)
+            if inspect.isawaitable(raw):
+                raw = await raw
+            for rm in ((raw.get("markets") or []) if isinstance(raw, dict) else []):
+                tk = str(rm.get("ticker") or "").upper()
+                ei = rm.get("exchange_index")
+                if tk in markets and ei is not None:
+                    try:
+                        markets[tk]["exchange_index"] = int(ei)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as e:  # noqa: BLE001 -- raw-get failure -> exchange_index stays None -> gate 6b fail-closes
+            _LOG.warning("pm_live_driver: raw exchange_index merge failed for %s (gate 6b fail-closes there): %s", series, e)
 
 
 async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
@@ -117,6 +147,7 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
                     continue
                 per_series[series].append(tk)
                 markets[tk.upper()] = _market_quote_dict(m)
+    await _merge_exchange_index(client, markets)   # ★ the SDK Market object drops exchange_index -> merge from raw
     game_idx = M.build_kalshi_game_index(game_t)
     total_idx = M.build_kalshi_total_index(total_t)
     spread_idx = M.build_kalshi_spread_index(spread_t)
