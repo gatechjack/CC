@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """pm_cli -- Prediction Markets P1 CLI. Delegates to trading_corp.prediction_markets; NO engine
-imports. Subcommands: g0-validate, backfill, refresh, rollup, repair-categories, report.
+imports. Subcommands: g0-validate, backfill, refresh, rollup, repair-categories, report, search (and
+the Stage-1/3 paper-*, migrate-roster, analyze, sync-names, live-* ops -- see build_parser()).
 
 Run on the box (existing venv), from the repo root:
   PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py <cmd> [opts]
@@ -22,7 +23,7 @@ import sys
 import time
 
 from trading_corp.prediction_markets import (analyze, arm, category, db, farm_actions, ingest, names, paper,
-                                             rosters, stats)
+                                             rosters, search, search_run, stats)
 
 
 def _now() -> int:
@@ -110,6 +111,74 @@ def _cmd_report(args) -> int:
                                        min_resolved=args.min_resolved)
     print(stats.format_report(board, fmt=args.format))
     return 0
+
+
+async def _cmd_search(args) -> int:
+    """SEARCH (Stage 4): discover whales -> ON-DEMAND first-sight backfill (Ruling 1) -> rollup -> /positions
+    recency pull -> write candidates. A ONE-SHOT command Jack runs (NO cron). Prints PER-WALLET progress so a
+    20-40 min run cannot look like a hang. `--dry-run`: discovery + the new-vs-complete split ONLY (1
+    leaderboard call, NO backfill, NO write) so the ~1200-call / 20-40 min cost is visible before committing.
+
+    Composes search_run's PIECES (discover_wallets + the ensure_backfilled loop + open/close_search_run) rather
+    than run_search() wholesale -- so per-wallet progress can print WITHOUT re-deploying the already-live
+    search_run.py (deploy is pm_cli.py ONLY). The flow + the Ruling-1 discriminator are identical to run_search:
+    discover -> for each wallet ensure_backfilled (complete=skip, else one full-page pull) -> rollup ->
+    refresh_positions_for -> select_and_write_candidates. Selection gates N>={floor}, {recency}d recency,
+    the 15-category allowlist, and backfill_complete=1 (a partial whale is never a candidate)."""
+    category = args.category or search_run.DEFAULT_LEADERBOARD_CATEGORY
+    limit = args.leaderboard_limit
+    db.init_db(args.db)   # idempotent + version-gated (no-op at schema head); matches _cmd_backfill/_cmd_rollup
+    async with _client() as client:
+        discovered = await search_run.discover_wallets(client, category=category, limit=limit)
+        n = len(discovered)
+        with db.connect(args.db) as conn:
+            new = [w for (w, _nm) in discovered if not search_run._is_backfill_complete(conn, w)]
+        n_new = len(new)
+        print("SEARCH: bucket=%s discovered=%d ; %d already complete (read from DB) ; %d to backfill (~30 calls each)"
+              % (category, n, n - n_new, n_new), flush=True)
+        if args.dry_run:
+            newset = set(new)
+            print("  DRY-RUN -- discovery only, NO backfill, NO write:")
+            for i, (w, nm) in enumerate(discovered, 1):
+                print("   %3d [%s] %s  %s" % (i, "NEW " if w in newset else "have", w, nm or ""), flush=True)
+            print("  estimate: a real run backfills the %d new -> ~%d /closed-positions calls, ~%d-%d min "
+                  "(+ a /positions recency pull). Re-run WITHOUT --dry-run to commit." %
+                  (n_new, n_new * 30, max(1, n_new // 2), max(2, n_new)), flush=True)
+            return 0
+        counts = {"skipped_complete": 0, "backfilled_complete": 0, "backfilled_partial": 0, "failed": 0}
+        with db.connect(args.db) as conn:
+            run_id = search_run.open_search_run(
+                conn, started_ts=_now(), leaderboard_category=category, leaderboard_limit=limit,
+                min_resolved=search.DEFAULT_MIN_RESOLVED_FLOOR, recency_window_days=search.DEFAULT_RECENCY_DAYS,
+                thin_sample_target=search.DEFAULT_THIN_TARGET)
+            print("SEARCH: run_id=%d -- backfilling (per-wallet progress):" % run_id, flush=True)
+            for i, (wallet, _nm) in enumerate(discovered, 1):
+                try:
+                    res = await search_run.ensure_backfilled(conn, wallet, client=client, now_ts=_now())
+                    if res.get("action") == "skipped_complete":
+                        counts["skipped_complete"] += 1; act = "skip (already complete)"
+                    elif res.get("verdict") == "complete":
+                        counts["backfilled_complete"] += 1; act = "backfilled complete (%s rows)" % res.get("stored")
+                    else:
+                        counts["backfilled_partial"] += 1; act = "backfilled PARTIAL (not ranked until a clean pull)"
+                except Exception as e:  # per-wallet isolation, exactly as run_search
+                    counts["failed"] += 1; act = "FAILED (isolated): %s" % (repr(e)[:80])
+                print("  [%3d/%d] %s -> %s" % (i, n, wallet, act), flush=True)
+            n_backfilled = counts["backfilled_complete"] + counts["backfilled_partial"]
+            search_run.close_search_run(conn, run_id, finished_ts=_now(), n_discovered=n,
+                                        n_backfilled=n_backfilled, status="ok", summary=json.dumps({"counts": counts}))
+            print("SEARCH: rollup (pm_closed_position -> pm_category_stats)...", flush=True)
+            stats.rollup(conn, now_ts=_now())
+            print("SEARCH: /positions recency pull for %d wallets..." % n, flush=True)
+            await search_run.refresh_positions_for(conn, [w for w, _ in discovered], client=client, now_ts=_now())
+            print("SEARCH: selecting + writing candidates (N>=%d, %dd recency, 15-cat allowlist, complete-only)..."
+                  % (search.DEFAULT_MIN_RESOLVED_FLOOR, search.DEFAULT_RECENCY_DAYS), flush=True)
+            r = search_run.select_and_write_candidates(conn, [w for w, _ in discovered], run_id=run_id, now_ts=_now())
+        print("SEARCH DONE: run_id=%d discovered=%d backfilled=%d (complete=%d partial=%d failed=%d) skipped_complete=%d"
+              " ; candidates WRITTEN=%d (selected=%d, gated-stats-rows=%d). View on /farm/<category> (Prospects)." %
+              (run_id, n, n_backfilled, counts["backfilled_complete"], counts["backfilled_partial"], counts["failed"],
+               counts["skipped_complete"], r["n_written"], r["n_selected"], r["n_stats_rows"]), flush=True)
+        return 0
 
 
 def _cmd_sync_names(args) -> int:
@@ -349,6 +418,21 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--no-llm", action="store_true", dest="no_llm",
                     help="skip narration (disabled_by_flag reasoned-null); deterministic report only")
     an.set_defaults(func=_cmd_analyze, is_async=False)
+
+    se = sub.add_parser("search",
+                        help="SEARCH (Stage 4): discover whales -> first-sight backfill (Ruling 1) -> rollup -> "
+                             "recency pull -> write status='candidate' rows. ONE-SHOT (Jack runs it, NO cron). "
+                             "Prints per-wallet progress; ~20-40 min on a first run. Candidates land on /farm/<cat>.")
+    se.add_argument("--category", default=search_run.DEFAULT_LEADERBOARD_CATEGORY,
+                    help="leaderboard bucket to discover from (default %s; ~50/bucket cap)"
+                         % search_run.DEFAULT_LEADERBOARD_CATEGORY)
+    se.add_argument("--leaderboard-limit", type=int, default=search_run.DEFAULT_LEADERBOARD_LIMIT,
+                    dest="leaderboard_limit", help="requested leaderboard size (default %d; the API caps ~50)"
+                                                   % search_run.DEFAULT_LEADERBOARD_LIMIT)
+    se.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="PREVIEW ONLY: discovery + the new-vs-complete split (1 API call, NO backfill, NO write) "
+                         "so the ~call-count / run-time cost is visible before committing")
+    se.set_defaults(func=_cmd_search, is_async=True)
 
     # ── R5 money-layer arm/kill-switch (writes the legacy agent_state via the arm bridge) ──
     for _name, _help in (("live-status", "show arm/kill state (global + a sub-division's effective verdict); read-only"),
