@@ -162,9 +162,9 @@ silently accept a YES↔NO inversion?* Boot-reconcile compares SIGNED net-per-ti
 
 ## 5. LEAVE-IT-RUNNING SNAPSHOT — observed 2026-08-30T14:56:16Z
 
-- **Git:** branch `prediction-markets-stage3-r55-2026-08-29` @ `8402310` (see §7 for the branch tip after this
-  wrap's doc commit). **origin/prod-live advanced to the §7 ledger commit** (was c88beea). prod-live line stays
-  FF-only; `95e78c4` (MACE fork base) reachable.
+- **Git:** branch `prediction-markets-stage3-r55-2026-08-29` @ `1000e72` (code work through the tile fix at
+  `8402310`; this wrap's doc commit on top). **origin/prod-live advanced `c88beea` → `e5fbc60`** (FF-only; the §7
+  ledger commit); `95e78c4` (MACE fork base) stays reachable.
 - **Processes:** engine `trading-corp` PID **76416** (NRestarts 0); pm_web `prediction-markets-web` PID **89704**
   (NRestarts 0). pm_web on 127.0.0.1:**8081**.
 - **HTTP:** `/healthz` 200 (`pm_db_schema_version:13`); `/` 200; `/farm` 200; `/farm/atp` 200; `/live` 200.
@@ -218,7 +218,7 @@ the OLD (pre-session) box tars + `/tmp` files are the only clear purge candidate
 
 ## 7. PROD-LIVE ADVANCE RECORD (2026-08-30) — see the ledger commit message for the full statement
 
-`origin/prod-live` advanced from `c88beea` to a new ledger commit (child of c88beea, FF-only; `95e78c4` stays
+`origin/prod-live` advanced from `c88beea` to `e5fbc60` (child of c88beea, FF-only; `95e78c4` stays
 reachable) recording the THREE deploys since the Stage-3 advance: **Stage 4 SEARCH, `pm_cli search` wiring, and
 the tile fix — 13 code artifacts, fresh box re-hash 2026-08-30T14:56Z, 13/13 byte-matching this commit.** The
 commit message states what prod-live does NOT contain: R7's order-path deploys (execution.py's liquidity floor,
