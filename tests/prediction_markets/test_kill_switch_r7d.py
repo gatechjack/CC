@@ -42,8 +42,8 @@ SPREAD_TICKERS = ["KXMLBSPREAD-26AUG281915SEATOR-TOR2"]
 T_TOR = "KXMLBGAME-26AUG281915SEATOR-TOR"
 T_SEA = "KXMLBGAME-26AUG281915SEATOR-SEA"
 MARKETS = {
-    T_TOR: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "liquidity_dollars": 500},
-    T_SEA: {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "liquidity_dollars": 500},
+    T_TOR: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+    T_SEA: {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
 }
 SLUG = "mlb-sea-tor-2026-08-28"
 

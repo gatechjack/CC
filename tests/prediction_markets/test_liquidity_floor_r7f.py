@@ -24,11 +24,18 @@ ML_SLUG = "mlb-sea-tor-2026-08-28"
 TOT_SLUG = "mlb-sea-tor-2026-08-28-total-8pt5"
 
 
+def _sizes(liq, yes_ask, yes_bid):
+    # gate 3 depth is now TOP-OF-BOOK SIZE x price (liquidity_dollars is a deprecated always-0 stub). Pick the size so
+    # the LEG-CORRECT $ depth == `liq` (YES leg: size*ask; NO leg: size*(1-bid)) -> the floor-boundary asserts below,
+    # written against a $ depth, hold unchanged with the new source.
+    return {"yes_ask_size_fp": "%.6f" % (liq / yes_ask), "yes_bid_size_fp": "%.6f" % (liq / (1.0 - yes_bid))}
+
+
 def _mk(liq_tor=500.0, liq_tot=500.0):
     return {
-        T_TOR: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "liquidity_dollars": liq_tor},
-        "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "liquidity_dollars": 500},
-        T_TOT: {"yes_ask_dollars": 0.82, "yes_bid_dollars": 0.80, "no_ask_dollars": 0.18, "liquidity_dollars": liq_tot},  # high yes-side -> cheap NO leg
+        T_TOR: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, **_sizes(liq_tor, 0.55, 0.53)},
+        "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, **_sizes(500.0, 0.47, 0.45)},
+        T_TOT: {"yes_ask_dollars": 0.82, "yes_bid_dollars": 0.80, "no_ask_dollars": 0.18, **_sizes(liq_tot, 0.82, 0.80)},  # high yes-side -> cheap NO leg
     }
 
 
@@ -79,7 +86,7 @@ def test_liquidity_passes_at_ratio_where_fixed_25_would_skip(tmp_path):
 # ── (2) fails even at 0.75x ──
 def test_liquidity_fails_even_at_ratio(tmp_path):
     d = _eval(tmp_path, _sub(liquidity_ratio=0.75), _sig(ML_SLUG, "Toronto Blue Jays"), _mk(liq_tor=0.20))
-    assert d.status == "skip:illiquid" and "liquidity_floor" in d.reason
+    assert d.status == "skip:illiquid" and "depth_floor" in d.reason
     assert 0.75 * d.notional_usd > 0.20                      # the floor exceeds the $0.20 book -> correctly skipped
 
 

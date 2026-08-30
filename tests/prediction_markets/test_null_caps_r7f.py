@@ -32,8 +32,10 @@ CAP_FIELDS = ("fixed_stake_usd", "per_order_usd_cap", "daily_usd_cap", "max_open
 
 
 def _markets(liq=500.0):
-    return {T_TOR: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "liquidity_dollars": liq},
-            "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "liquidity_dollars": 500}}
+    return {T_TOR: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "liquidity_dollars": liq,
+                    "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+            "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55,
+                    "liquidity_dollars": 500, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"}}
 
 
 def _ctx(markets):
