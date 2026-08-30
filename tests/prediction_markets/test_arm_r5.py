@@ -17,10 +17,10 @@ GAME_TICKERS = ["KXMLBGAME-26AUG281915SEATOR-SEA", "KXMLBGAME-26AUG281915SEATOR-
 TOTAL_TICKERS = ["KXMLBTOTAL-26AUG281915SEATOR-9", "KXMLBTOTAL-26AUG281915SEATOR-8"]
 SPREAD_TICKERS = ["KXMLBSPREAD-26AUG281915SEATOR-TOR2", "KXMLBSPREAD-26AUG281915SEATOR-SEA2"]
 MARKETS = {
-    "KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "liquidity_dollars": 500},
-    "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "liquidity_dollars": 500},
-    "KXMLBTOTAL-26AUG281915SEATOR-9":  {"yes_ask_dollars": 0.52, "yes_bid_dollars": 0.50, "no_ask_dollars": 0.50, "liquidity_dollars": 500},
-    "KXMLBSPREAD-26AUG281915SEATOR-TOR2": {"yes_ask_dollars": 0.40, "yes_bid_dollars": 0.38, "no_ask_dollars": 0.62, "liquidity_dollars": 500},
+    "KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "yes_bid_size_fp": "500000.00", "yes_ask_size_fp": "500000.00"},
+    "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "yes_bid_size_fp": "500000.00", "yes_ask_size_fp": "500000.00"},
+    "KXMLBTOTAL-26AUG281915SEATOR-9":  {"yes_ask_dollars": 0.52, "yes_bid_dollars": 0.50, "no_ask_dollars": 0.50, "yes_bid_size_fp": "500000.00", "yes_ask_size_fp": "500000.00"},
+    "KXMLBSPREAD-26AUG281915SEATOR-TOR2": {"yes_ask_dollars": 0.40, "yes_bid_dollars": 0.38, "no_ask_dollars": 0.62, "yes_bid_size_fp": "500000.00", "yes_ask_size_fp": "500000.00"},
 }
 ACCT, CAT = "kalshi_jack", "mlb"
 

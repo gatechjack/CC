@@ -111,7 +111,7 @@ def test_gate2b_notional_on_usd_catches_wrong_low_price(tmp_path):
     AND (via slippage on a tiny price) the committed USD -> rejected. A range check on price alone would miss it."""
     p = str(tmp_path / "pm.db"); db.init_db(p)
     mk = dict(MARKETS)
-    mk["KXMLBGAME-26AUG281915SEATOR-TOR"] = {"yes_ask_dollars": 0.02, "yes_bid_dollars": 0.019, "no_ask_dollars": 0.97, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"}
+    mk["KXMLBGAME-26AUG281915SEATOR-TOR"] = {"yes_ask_dollars": 0.02, "yes_bid_dollars": 0.019, "no_ask_dollars": 0.97, "yes_bid_size_fp": "500000.00", "yes_ask_size_fp": "500000.00"}
     sub = _sub(fixed_stake_usd=20.0, per_order_usd_cap=25.0)
     with db.connect(p) as conn:
         j = ex.Journal(conn, [sub.account_id], 1787900000)
