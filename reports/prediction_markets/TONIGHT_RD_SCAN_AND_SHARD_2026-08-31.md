@@ -1,5 +1,11 @@
 # Tomorrow's report checklist -- R-d's FIRST unattended run + the shard-proceeds answer (2026-08-31 -> AM read)
 
+## ★★ FIRST ACTION TOMORROW (Jack ruled), BEFORE ANY BUILD WORK RESUMES:
+Run `cc\pm_settlement_walk_ro.ps1` and report it. This is the FIRST unattended settlement cycle -- six closes booked
+automatically by a path that has processed exactly ONE position by hand -- and it carries the shard-proceeds answer
+open since Karen's division died silently on a healthy-looking TOTAL balance. Whatever R2b's state is, this read is
+first. PER-SETTLEMENT WALK, not a total. The four named risks answered INDIVIDUALLY, not "no anomalies".
+
 Tonight R-d's periodic settlement-scan (600s) books terminal-closes UNATTENDED for the first time, on SIX positions
 settling in sequence. The Cubs was one hand-inspected case; six booked automatically is NOT the same evidence.
 ★ THE FIRST REPORT WALKS EACH SETTLEMENT INDIVIDUALLY (R7.g-style), not a total.
