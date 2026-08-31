@@ -22,8 +22,9 @@ settled at "3", so the first real verdict a wallet gets is the final-form one --
 
 ---
 ## Manifest (deployable files -- hash is the gate; tests + this doc are NOT deployed)
-Branch `f4c16d6`. **6 files** = the 4 R2c files + the 2 `/live` settlement-display-fix files (folded in so one pm_web
-restart carries both; the fix would strand if it shipped separately). sha256 (git archive bytes == working tree):
+Branch `f4c16d6`. **7 files** = the 4 R2c files + the 2 `/live` settlement-display-fix files + `loss_grounding.py`
+(a NEW Stage-5 dependency `app.py` imports, never deployed -- the first deploy attempt's Gate-A caught its absence
+and auto-restored; added as file 7). sha256 (git archive bytes == working tree):
 
 ```
 e25205954c479d6ba039e149cea8ba6bd2f5ec01971dce15b53f8e84f9c2ec36  trading_corp/prediction_markets/web/app.py
@@ -32,7 +33,13 @@ cec9c3d4620b72ef843159f66a44c52374769ab6aecbfe80505ef85e56fe9b9a  trading_corp/p
 833644da11da8a9712c7c7fb54ee2100ff3d78a430f4bec793f2a1e269c1e941  trading_corp/scripts/pm_web.py
 3ba6326832daa7015970ab46a5e400a5e91bf3c98bb1a6a63ad5eedc766c000a  trading_corp/prediction_markets/subdivision.py           (display fix)
 99b06b4ad710ff699fc423da2bc43613b7166cd12f0464486a815cc41d3963f9  trading_corp/prediction_markets/web/templates/pm_live_subdivision.html  (display fix)
+b03e3436a6309dd20ddd312f8d171907264dcaa1c6ccbf0e2e4a9bbbb0cec312  trading_corp/prediction_markets/loss_grounding.py        (NEW file -- Stage-5 dep, base=absent)
 ```
+
+**DEPLOYED (files in place) 2026-08-31T18:56Z** -- Gate-A transitive imports green (app.title=pm_web, scoped-fetch=True,
+live_orders=True, ground_losses=True), all 7 hash-gated MATCH, 644 OK. Running pm_web still OLD until the restart.
+Backup `~/pm_r2c_deploy_backup_20260831T185617Z`. Manifest-gap lesson (repeat of the R7.e boot_reconcile miss):
+Gate-A must -- and did -- catch a new transitive dependency the file-diff manifest omitted.
 
 The `/live` display fix renders a **settlement-close** (close_source='settlement') as **SETTLED** (won/lost) with its
 **realized P&L**, distinct from a whale **EXIT** -- the Cubs 16:33Z row was mislabelled EXIT with a $0.00 fill.
