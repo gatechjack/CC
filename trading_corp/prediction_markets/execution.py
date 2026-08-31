@@ -81,8 +81,9 @@ class CopySignal:
     outcome_index: int
     signal_id: str            # STABLE across restarts: the whale's entry tx_hash (canonical) or a position-id hash
     is_exit: bool = False     # entry vs exit (Option D). An exit -> reduce_only on the SAME leg.
-    close_source: str | None = None  # None=whale-exit (per-wallet close) | 'opposed'=cancellation-by-disagreement
-                                     # (ACCOUNT-level FULL flatten -- both whales disagreeing takes the market off the books)
+    close_source: str | None = None  # None=whale-exit | 'opposed'=cancellation-by-disagreement (two whales disagree
+                                     # -> market off the books). BOTH close PER-WALLET; the opposed flatten emits one
+                                     # per holding whale (detect_opposing_closes), summing to the full account flatten.
 
 
 @dataclass(frozen=True)

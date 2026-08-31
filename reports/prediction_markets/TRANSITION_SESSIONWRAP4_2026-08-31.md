@@ -115,7 +115,17 @@ signal" (that was legacy's quick fix), not "hold both" (guaranteed loss of the s
   "one whale's worth" (the per-wallet accounting everywhere else makes one-wallet the easy accidental bug — TEST it).
   Close via the SHARED terminal-close primitive (not a third path); `close_source='opposed'` with its own /live label
   beside SETTLED/EXIT; exit-exempt on budget gates but DISARM STILL BLOCKS; incoming gets a labelled SKIP not an error;
-  guard must NEVER fire on a legitimate same-side copy. (Build in progress this session; review; halt for deploy.)
+  guard must NEVER fire on a legitimate same-side copy.
+- **★ BUILT + REVIEWED + GREEN, AWAITING DEPLOY (ENGINE deploy -- NOT pm_web; execution.py/live_driver.py/settlement.py
+  -> restart_tc.ps1 + a bitunix heads-up + boot_reconcile WILL run, and it stays CLEAN because settlement now nets in
+  every view).** Detection keys on (condition_id, outcome_index); the flatten emits ONE opposed-close PER HOLDING WHALE
+  (per-wallet, summing to the full account flatten), close_source='opposed', /live label OPPOSED. **3-reviewer
+  adversarial pass found TWO BLOCKERS, both fixed + re-verified:** (1) account-net-under-one-wallet made the per-wallet
+  settlement scan double-book -> now per-wallet closes; (2) settlement rows had NULL cid/oidx -> phantom held outcome
+  could false-contest a same-side copy -> settlement now stamps cid/oidx. Named accepted gaps: duplicate-Poly-cid
+  false-negative (safe/bias-to-hold direction); binary-market assumption (matcher-enforced; revisit if categories
+  widen). Full suite green. Branch @ the opposing-guard commits; NOT deployed (Jack: halt for deploy). No schema change
+  (close_source exists since mig-015).
 Investigated read-only 2026-08-31 (runner `cc\pm_seabos_dump_ro.ps1` + `cc\pm_seabos_venue_ro.ps1`). SEABOS-SEA (Aug31)
 showed **10 contracts** = TWO DIFFERENT whales copying the SAME side: id=10 wallet `0x684baa57` (signal_id fb54635d,
 coid e16526f9, 17:17:31Z) + id=12 wallet `0x16bb9951`/SDTrading (signal_id dfcab59d, coid 151fa144, 18:54:50Z), both

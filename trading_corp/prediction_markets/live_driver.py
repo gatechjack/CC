@@ -606,8 +606,9 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                     if confirmed:
                         prior_snapshots[w] = snapshot_open_positions(book.rows)
                 # ★ OPPOSING-PAIR GUARD: when two whales disagree on ONE market (same condition_id, different
-                # outcome_index), the bet comes OFF THE BOOKS -- CLOSE what we hold (account-level FULL flatten,
-                # close_source='opposed') and SKIP both incoming sides (place neither; signal ordering is not
+                # outcome_index), the bet comes OFF THE BOOKS -- CLOSE what we hold (close_source='opposed', ONE
+                # PER-WALLET close per holding whale -> the whole account flattens) and SKIP both incoming sides
+                # (place neither; signal ordering is not
                 # information). Same-side stacking (same cid+outcome_index) is NEVER contested -> untouched (agreement
                 # is conviction). The close is a reduce_only exit through the SAME chokepoint below -- DISARM still
                 # blocks it, and the net-open guard makes it idempotent against a co-occurring whale-exit (no double
