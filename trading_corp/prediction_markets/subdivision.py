@@ -81,10 +81,12 @@ def get_subdivision(conn, account_id: str, category: str) -> dict | None:
     """One ACTIVE sub-division's config for its detail page, or None (not found / tables absent -> 404)."""
     if not _ready(conn):
         return None
+    # NB: `s.contracts` needs migration 014 -- deploy the migration BEFORE this query ships (sizing_summary tolerates
+    # its absence by defaulting to 5, but the SELECT itself would error pre-014).
     r = conn.execute(
         "SELECT s.account_id, s.category, s.label AS sub_label, s.market_types, s.sizing_mode, s.fixed_stake_usd, "
-        "       s.per_order_usd_cap, s.daily_usd_cap, s.max_open_usd, s.max_orders_per_day, s.max_slippage_cents, "
-        "       s.created_ts, COALESCE(a.label, s.account_id) AS account_label, a.venue "
+        "       s.contracts, s.per_order_usd_cap, s.daily_usd_cap, s.max_open_usd, s.max_orders_per_day, "
+        "       s.max_slippage_cents, s.created_ts, COALESCE(a.label, s.account_id) AS account_label, a.venue "
         "FROM pm_subdivision s LEFT JOIN pm_account a ON a.account_id = s.account_id "
         "WHERE s.account_id = ? AND s.category = ? AND s.active = 1", (account_id, category)).fetchone()
     return dict(r) if r is not None else None
@@ -135,6 +137,11 @@ def sizing_summary(sub) -> str:
     flat-contracts sizing mode still on the backlog (stated so it is not mistaken for the final design). Pure
     display -- no DB, no order path."""
     mode = (sub.get("sizing_mode") or "fixed")
+    if mode == "contracts":
+        n = sub.get("contracts")
+        n = 5 if n is None else int(n)
+        return ("flat contracts · %d contract%s per copy (read per cycle -- change the number, no restart; "
+                "the copy costs %d x the contract price)" % (n, "" if n == 1 else "s", n))
     if mode != "fixed":
         return "%s (per-copy size set by the %s model)" % (mode, mode)
     stake = sub.get("fixed_stake_usd")

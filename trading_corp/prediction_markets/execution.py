@@ -54,6 +54,10 @@ _LOG = logging.getLogger(__name__)
 # Config DEFAULTS live in CODE (Jack ruled: config values in code, not migrations; a DDL-NULL cap falls back here).
 CONFIG_DEFAULTS = {
     "fixed_stake_usd": 5.0,
+    # flat-contracts sizing (sizing_mode='contracts'): a FLAT whole-contract count per copy. The DDL default is the
+    # ruled 5 (migration 014, NOT NULL DEFAULT 5); this is the code fallback if the column is ever NULL. Read per
+    # cycle -- change the number, no restart. NOT the fixed_stake_usd-floors-to-1 hack.
+    "contracts": 5,
     "per_order_usd_cap": 25.0,
     "daily_usd_cap": 50.0,
     "max_open_usd": 100.0,
@@ -84,7 +88,7 @@ class SubConfig:
     account_id: str
     category: str
     market_types: tuple       # e.g. ("moneyline","total","spread") -- R2 filter
-    sizing_mode: str          # 'fixed' (R4); 'kelly' shape carried, NOT built
+    sizing_mode: str          # 'fixed' (flat DOLLARS, legacy); 'contracts' (flat CONTRACTS, R8); 'kelly' shape carried, NOT built
     fixed_stake_usd: float
     per_order_usd_cap: float
     daily_usd_cap: float
@@ -96,6 +100,10 @@ class SubConfig:
     # for direct construction (tests); PRODUCTION always sets it explicitly via sub_config_from_row (DB value or the
     # CONFIG_DEFAULTS fallback), so the two 0.75s never diverge on the live path.
     liquidity_ratio: float = 0.75
+    # flat-contracts count (sizing_mode='contracts'): the whole-contract count per copy, read per cycle from
+    # pm_subdivision.contracts (migration 014, DDL default 5). Defaulted here for direct construction (tests);
+    # production sets it via sub_config_from_row. Ignored when sizing_mode != 'contracts'.
+    contracts: int = 5
 
     @property
     def division(self) -> str:
@@ -179,7 +187,8 @@ def sub_config_from_row(row) -> SubConfig:
     return SubConfig(
         account_id=_row_get(row, "account_id"), category=_row_get(row, "category"),
         market_types=types, sizing_mode=(_row_get(row, "sizing_mode") or "fixed"),
-        fixed_stake_usd=float(cap("fixed_stake_usd")), per_order_usd_cap=float(cap("per_order_usd_cap")),
+        fixed_stake_usd=float(cap("fixed_stake_usd")), contracts=int(cap("contracts")),
+        per_order_usd_cap=float(cap("per_order_usd_cap")),
         daily_usd_cap=float(cap("daily_usd_cap")), max_open_usd=float(cap("max_open_usd")),
         max_orders_per_day=int(cap("max_orders_per_day")), max_slippage_cents=int(cap("max_slippage_cents")),
         liquidity_ratio=_safe_liquidity_ratio(row),   # NULL -> 0.75; non-positive/NaN -> CLAMPED to 0.75 + LOUD log; read PER CYCLE
@@ -308,11 +317,19 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     live_driver.scheduled_pm_live_loop) -- the standing "a safety check that silently stops checking" guard."""
     sid = signal.signal_id
     armed = is_armed(conn, sub.account_id, sub.category, legacy_db_path=legacy_db_path)   # gate 1 (recorded)
-    copy_usd = float(sub.fixed_stake_usd)
-
-    if copy_usd > sub.per_order_usd_cap + 1e-9:                                       # gate 2a (config sanity)
-        return Decision("reject:per_order_cap", sid, disarm_armed=armed, is_exit=signal.is_exit,
-                        reason="fixed_stake_%.4f_gt_cap_%.4f" % (copy_usd, sub.per_order_usd_cap))
+    # SIZING MODE (read per cycle): 'contracts' = a FLAT whole-contract count (R8); 'fixed'/other = flat DOLLARS
+    # (legacy). In contracts mode fixed_stake_usd is IRRELEVANT (may be NULL) -- the per-order dollar bound is
+    # gate 2b (notional vs per_order cap), not gate 2a. The USD gates all gate on the leg-correct NOTIONAL below.
+    sizing_mode = (sub.sizing_mode or "fixed")
+    if sizing_mode == "contracts":
+        copy_usd = 0.0                                                                # not a dollars stake
+        flat_contracts = max(1, int(sub.contracts))                                  # >=1; per-cycle from pm_subdivision.contracts
+    else:
+        copy_usd = float(sub.fixed_stake_usd)
+        flat_contracts = None
+        if copy_usd > sub.per_order_usd_cap + 1e-9:                                   # gate 2a (flat-dollars config sanity ONLY)
+            return Decision("reject:per_order_cap", sid, disarm_armed=armed, is_exit=signal.is_exit,
+                            reason="fixed_stake_%.4f_gt_cap_%.4f" % (copy_usd, sub.per_order_usd_cap))
 
     parsed = M.parse_poly_mlb_bet(signal.slug, signal.outcome)                        # gate 3 (match, exact strike)
     match = M.match_bet(parsed, ctx.moneyline_index, ctx.total_index, ctx.spread_index, ctx.kalshi_dates,
@@ -337,7 +354,7 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     # ★ Compute THIS order's own notional BEFORE the liquidity gate: the gate-3 floor is a RATIO of it (Jack RULED
     # 2026-08-29), so the depth required scales with the order actually being placed, not a fixed $. (Moved up from
     # below the liquidity gate; the caps that follow reuse the same values -- pure reordering, no double-compute.)
-    count = usd_to_contracts(copy_usd, base_price)
+    count = flat_contracts if sizing_mode == "contracts" else usd_to_contracts(copy_usd, base_price)
     _side, limit_price = v2_side_and_price(outcome=leg, is_buy=(not signal.is_exit),
                                            base_price=base_price, max_slippage_cents=sub.max_slippage_cents)
     # ★ OUTCOME-LEG committed cash per contract (the $163.84 fix / the NO-leg lens -- bitten 6x): a NO leg costs
@@ -407,7 +424,8 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     # log-not-place; an exit is reduce_only (is_buy=False on the SAME leg).
     body, cnt, price = build_v2_event_order(
         ticker=ticker, outcome=leg, is_buy=(not signal.is_exit), base_price=base_price, copy_usd=copy_usd,
-        max_slippage_cents=sub.max_slippage_cents, tif=_ENTRY_TIF, client_order_id=coid)
+        max_slippage_cents=sub.max_slippage_cents, tif=_ENTRY_TIF, client_order_id=coid,
+        count=(count if sizing_mode == "contracts" else None))   # flat-contracts: pass the count explicitly (no stake-floor)
     # ★ RUNG 3 (PM-only; no shared-broker edit): explicit exchange_index = the MARKET's OWN shard (read from the
     # market object -- authoritative). DETERMINISTIC routing instead of relying on Kalshi auto-route. Correction 4:
     # explicit targeting bills only THAT shard's Write budget (auto-route bills the unscoped budget AND every nonzero

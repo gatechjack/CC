@@ -767,6 +767,16 @@ MIGRATION_013: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_search_run_started ON pm_search_run(started_ts DESC)",
 ]
 
+# migration 014 (2026-08-31, Stage 3 R8 prep): FLAT-CONTRACTS sizing. `sizing_mode='contracts'` sizes each copy
+# at a FLAT whole-contract count read from this column PER CYCLE (change the number -> no engine restart), a real
+# third mode alongside 'fixed' (flat DOLLARS, what legacy uses) -- NOT the fixed_stake_usd-floors-to-1 hack. PURE
+# DDL. Unlike the risk-cap columns (DDL default NULL -> code CONFIG_DEFAULTS), Jack RULED an explicit DDL DEFAULT 5
+# here so the value is a plain editable number. BEHAVIOUR-NEUTRAL: existing subs stay sizing_mode='fixed' until a
+# deliberate config write flips them to 'contracts'; the column is unread while mode != 'contracts'.
+MIGRATION_014: list[str] = [
+    "ALTER TABLE pm_subdivision ADD COLUMN contracts INTEGER NOT NULL DEFAULT 5",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -781,6 +791,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (11, MIGRATION_011),
     (12, MIGRATION_012),
     (13, MIGRATION_013),
+    (14, MIGRATION_014),
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

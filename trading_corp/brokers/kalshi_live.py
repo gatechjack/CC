@@ -162,15 +162,18 @@ def v2_side_and_price(*, outcome: str, is_buy: bool, base_price: float, max_slip
 
 def build_v2_event_order(
     *, ticker: str, outcome: str, is_buy: bool, base_price: float, copy_usd: float,
-    max_slippage_cents: int, tif: str, client_order_id: str,
+    max_slippage_cents: int, tif: str, client_order_id: str, count: int | None = None,
 ) -> tuple[dict, int, float]:
     """Build the V2 `POST /portfolio/events/orders` request body (pure). Returns
     `(body, count, yes_price)`. `price` is a 4-decimal dollar string ('0.5600'),
-    `count` a whole-contract string ('1'); exits carry `reduce_only=True`."""
+    `count` a whole-contract string ('1'); exits carry `reduce_only=True`.
+    `count`: an EXPLICIT whole-contract count (flat-contracts sizing). When None (flat-dollars sizing /
+    the legacy caller) it is DERIVED from `copy_usd` via usd_to_contracts -- the prior behaviour, byte-identical.
+    Passing it avoids flooring a dollars stake back into a count (float-fragile)."""
     side, price = v2_side_and_price(
         outcome=outcome, is_buy=is_buy, base_price=base_price, max_slippage_cents=max_slippage_cents,
     )
-    count = usd_to_contracts(copy_usd, base_price)
+    count = int(count) if count is not None else usd_to_contracts(copy_usd, base_price)
     body = {
         "ticker": str(ticker).upper(),
         "client_order_id": client_order_id,
