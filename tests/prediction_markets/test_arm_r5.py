@@ -228,10 +228,10 @@ def test_disarm_blocks_exit_though_exit_exempt_gates_pass(tmp_path):
         # (a) an ENTRY is rejected by the daily cap; (b) the EXIT is exit-EXEMPT -> passes evaluate
         d_entry = ex.evaluate(_sig("mlb-sea-tor-2026-08-28", "Toronto Blue Jays", sid="e"), sub, _ctx(), j,
                               conn, 1787900000, legacy_db_path=leg)
-        # seed a FILLED holding on the resolved ticker/leg so the EXIT has a real position to close (Option-D holding guard)
-        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
-                     "outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,?,?,0,5,'filled',0,?,?)",
-                     (ACCT, CAT, d_entry.kalshi_ticker, d_entry.leg, 1787900000, 1787900000)); conn.commit()
+        # seed a FILLED holding on the resolved ticker/leg AND the exit signal's wallet (per-wallet holding guard)
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,"
+                     "fill_count,outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,?,?,?,0,5,'filled',0,?,?)",
+                     (ACCT, CAT, exit_sig.wallet, d_entry.kalshi_ticker, d_entry.leg, 1787900000, 1787900000)); conn.commit()
         d_exit = ex.evaluate(exit_sig, sub, _ctx(), j, conn, 1787900000, legacy_db_path=leg)
         assert d_entry.status == "reject:daily_cap"
         assert d_exit.status == "dry_run_would_place" and d_exit.is_exit is True   # gates 5/6/8 do NOT block the exit

@@ -393,7 +393,7 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         # (Jack RULED): FULL close on any confirmed whale exit (not a mirror-ratio); reduce_only also caps at the
         # venue so we can never oversell. Read fresh from the durable journal (self-corrects within a cycle as
         # earlier exits finalize).
-        held = journal_net_open_contracts(conn, sub.account_id, sub.category, ticker, leg)
+        held = journal_net_open_contracts(conn, sub.account_id, sub.category, ticker, leg, signal.wallet)
         count = int(round(held))
         if count <= 0:
             return Decision("skip:not_held", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
@@ -622,20 +622,22 @@ def open_positions_needing_manual_exit(conn) -> list:
     return out
 
 
-def journal_net_open_contracts(conn, account_id: str, category: str, ticker: str, leg: str) -> float:
-    """Read-only: the sub-division's NET-OPEN filled contracts on ONE (ticker, leg) = SUM(entry fills) -
-    SUM(exit fills) from the durable journal (dry_run=0, filled). Two Option-D uses: (a) the HOLDING GUARD -- never
-    fire a reduce_only exit against a position we do not hold (fail-closed: 0 -> no exit); (b) the candidate exit
-    SIZE for a FULL close (Fork B1, net-open contracts). Ticker compared UPPER (the identity the order path sends
-    to Kalshi). 0.0 if the table is absent or the leg is flat. NEVER negative for a real book (exits reduce_only
-    cannot exceed entries); a negative would surface an over-exit / mis-booking, so it is NOT clamped here --
-    callers decide (the guard treats <=0 as 'do not exit')."""
+def journal_net_open_contracts(conn, account_id: str, category: str, ticker: str, leg: str, wallet: str) -> float:
+    """Read-only: THIS WHALE's NET-OPEN filled contracts on ONE (ticker, leg) = SUM(entry fills) - SUM(exit fills)
+    from the durable journal (dry_run=0, filled), scoped to `wallet`. Two Option-D uses: (a) the HOLDING GUARD --
+    never fire a reduce_only exit against a position we do not hold (fail-closed: 0 -> no exit); (b) the candidate
+    exit SIZE for a FULL close (Fork B1, net-open contracts). ★ PER-WALLET (Jack RULED 2026-08-31): the rule is
+    'we exit when THE WHALE exits' -- so an exit closes OUR copy of THAT whale's position, NOT a co-whale's position
+    on the same (ticker, leg). Account-level scoping would close whale B because whale A sold (safe/bias-to-flat but
+    WRONG -- it strands B's edge on A's decision). Ticker compared UPPER (the identity the order path sends to
+    Kalshi). 0.0 if the table is absent or the leg is flat for this whale. NEVER negative for a real book (exits
+    reduce_only cannot exceed entries); a negative would surface an over-exit / mis-booking, NOT clamped here."""
     if not _table_exists(conn, "pm_subdivision_order"):
         return 0.0
     r = conn.execute(
         "SELECT COALESCE(SUM(CASE WHEN is_exit=0 THEN COALESCE(fill_count,0) "
         "  ELSE -COALESCE(fill_count,0) END), 0) AS net "
-        "FROM pm_subdivision_order WHERE account_id=? AND category=? AND UPPER(ticker)=UPPER(?) "
+        "FROM pm_subdivision_order WHERE account_id=? AND category=? AND wallet=? AND UPPER(ticker)=UPPER(?) "
         "  AND outcome_leg=? AND dry_run=0 AND outcome_status='filled'",
-        (account_id, category, ticker, leg)).fetchone()
+        (account_id, category, wallet, ticker, leg)).fetchone()
     return float(r["net"] or 0.0) if r else 0.0

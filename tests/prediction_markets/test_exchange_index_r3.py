@@ -53,11 +53,11 @@ def _bal(shards):
 def _eval(tmp_path, ctx, shard_balances, sig=None, hold=None):
     p = str(tmp_path / "pm.db"); db.init_db(p)
     with db.connect(p) as conn:
-        if hold:                                              # FILLED entry so an exit has a position to close
+        if hold:                                              # FILLED entry (on the signal's wallet) so an exit can close it
             tkr, leg, n = hold
-            conn.execute("INSERT INTO pm_subdivision_order (account_id, category, ticker, outcome_leg, is_exit, "
+            conn.execute("INSERT INTO pm_subdivision_order (account_id, category, wallet, ticker, outcome_leg, is_exit, "
                          "fill_count, outcome_status, dry_run, submitted_ts, response_ts) "
-                         "VALUES (?,?,?,?,0,?,'filled',0,?,?)", (ACCT, CAT, tkr, leg, n, NOW, NOW)); conn.commit()
+                         "VALUES (?,?,'0xWHALE',?,?,0,?,'filled',0,?,?)", (ACCT, CAT, tkr, leg, n, NOW, NOW)); conn.commit()
         return ex.evaluate(sig or _sig(), _sub(), ctx, ex.Journal(conn, [ACCT], NOW), conn, NOW,
                            shard_balances=shard_balances, legacy_db_path=str(tmp_path / "noleg.db"))
 

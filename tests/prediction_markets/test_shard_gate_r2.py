@@ -57,11 +57,11 @@ def _bal(shards):
     return sb.parse_balance({"balance_dollars": "%.4f" % sum(shards.values()), "balance_breakdown": bd})
 
 
-def _seed_hold(conn, ticker, leg, n):
-    # a FILLED entry so an exit has a real net-open position to close (Option-D holding guard)
-    conn.execute("INSERT INTO pm_subdivision_order (account_id, category, ticker, outcome_leg, is_exit, fill_count, "
-                 "outcome_status, dry_run, submitted_ts, response_ts) VALUES (?,?,?,?,0,?,'filled',0,?,?)",
-                 (ACCT, CAT, ticker, leg, n, NOW, NOW)); conn.commit()
+def _seed_hold(conn, ticker, leg, n, wallet="0xWHALE"):
+    # a FILLED entry (on the exit signal's wallet) so an exit has a real net-open position to close (per-wallet guard)
+    conn.execute("INSERT INTO pm_subdivision_order (account_id, category, wallet, ticker, outcome_leg, is_exit, "
+                 "fill_count, outcome_status, dry_run, submitted_ts, response_ts) VALUES (?,?,?,?,?,0,?,'filled',0,?,?)",
+                 (ACCT, CAT, wallet, ticker, leg, n, NOW, NOW)); conn.commit()
 
 
 def _eval(tmp_path, sub, sig, ctx, shard_balances, hold=None):

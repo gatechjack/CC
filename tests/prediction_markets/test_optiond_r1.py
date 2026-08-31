@@ -111,33 +111,49 @@ def test_two_sells_distinct_signal_ids():
     assert a[0].signal_id != b[0].signal_id
 
 
-# ── read-only net-open helper (holding guard + Fork-B1 size) ──────────────────
-def _order(conn, ticker, leg, is_exit, fill, *, status="filled", dry=0):
+# ── read-only net-open helper (holding guard + Fork-B1 size), PER-WALLET (F2) ──────────────
+def _order(conn, ticker, leg, is_exit, fill, *, status="filled", dry=0, wallet=W):
     conn.execute(
-        "INSERT INTO pm_subdivision_order (account_id, category, ticker, outcome_leg, is_exit, fill_count, "
-        " outcome_status, dry_run, submitted_ts, response_ts) VALUES ('kalshi_jack','mlb',?,?,?,?,?,?,1,1)",
-        (ticker, leg, is_exit, fill, status, dry))
+        "INSERT INTO pm_subdivision_order (account_id, category, wallet, ticker, outcome_leg, is_exit, fill_count, "
+        " outcome_status, dry_run, submitted_ts, response_ts) VALUES ('kalshi_jack','mlb',?,?,?,?,?,?,?,1,1)",
+        (wallet, ticker, leg, is_exit, fill, status, dry))
     conn.commit()
+
+
+def _noc(conn, ticker, leg, wallet=W):
+    return ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", ticker, leg, wallet)
 
 
 def test_net_open_entry_minus_exits(tmp_path):
     p = str(tmp_path / "pm.db"); db.init_db(p)
     T = "KXMLBGAME-26AUG281915SEATOR-TOR"
     with db.connect(p) as conn:
-        assert ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", T, "yes") == 0.0   # nothing yet
+        assert _noc(conn, T, "yes") == 0.0                               # nothing yet
         _order(conn, T, "yes", 0, 5.0)                                   # entry 5
-        assert ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", T, "yes") == 5.0
+        assert _noc(conn, T, "yes") == 5.0
         _order(conn, T, "yes", 1, 2.0)                                   # exit 2 -> net 3
-        assert ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", T, "yes") == 3.0
+        assert _noc(conn, T, "yes") == 3.0
         _order(conn, T, "yes", 1, 3.0)                                   # exit 3 -> net 0 (flat)
-        assert ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", T, "yes") == 0.0
+        assert _noc(conn, T, "yes") == 0.0
         # a dry_run row and a non-filled row must NOT count
         _order(conn, T, "yes", 0, 9.0, dry=1)
         _order(conn, T, "yes", 0, 9.0, status="no_fill")
-        assert ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", T, "yes") == 0.0
+        assert _noc(conn, T, "yes") == 0.0
         # case-insensitive ticker + leg isolation
-        assert ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", T.lower(), "yes") == 0.0
-        assert ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", T, "no") == 0.0
+        assert _noc(conn, T.lower(), "yes") == 0.0
+        assert _noc(conn, T, "no") == 0.0
+
+
+def test_net_open_is_per_wallet(tmp_path):
+    # ★ F2 (Jack RULED per-wallet): two whales hold the SAME (ticker, leg); each whale's net-open is ISOLATED, so
+    # whale A's exit closes A's 5 -- NOT A+B's 8. Account-level scoping would strand whale B on whale A's decision.
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    T = "KXMLBGAME-26AUG281915SEATOR-TOR"; A = "0xAAA"; B = "0xBBB"
+    with db.connect(p) as conn:
+        _order(conn, T, "yes", 0, 5.0, wallet=A)                         # whale A holds 5
+        _order(conn, T, "yes", 0, 3.0, wallet=B)                         # whale B holds 3
+        assert _noc(conn, T, "yes", wallet=A) == 5.0                     # A's copy only
+        assert _noc(conn, T, "yes", wallet=B) == 3.0                     # B's copy only, untouched by A
 
 
 # ── the NO-leg exit through the chokepoint (sell NO -> side=bid, reduce_only) ──
@@ -171,9 +187,9 @@ def test_no_leg_exit_reduce_only_side_bid(tmp_path):
                         condition_id=CID, outcome_index=1, signal_id="ex_no", is_exit=True)
     with db.connect(p) as conn:
         # seed a FILLED NO holding (net-open 4) on the total ticker so the exit has a position to close
-        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
-                     "outcome_status,dry_run,submitted_ts,response_ts) VALUES "
-                     "('kalshi_jack','mlb','KXMLBTOTAL-26AUG281915SEATOR-9','no',0,4,'filled',0,1,1)"); conn.commit()
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,"
+                     "fill_count,outcome_status,dry_run,submitted_ts,response_ts) VALUES "
+                     "('kalshi_jack','mlb',?,'KXMLBTOTAL-26AUG281915SEATOR-9','no',0,4,'filled',0,1,1)", (W,)); conn.commit()
         j = ex.Journal(conn, [sub.account_id], 1787900000)
         d = ex.evaluate(sig, sub, _ctx_full(), j, conn, 1787900000)
     assert d.status == "dry_run_would_place" and d.is_exit is True and d.leg == "no"
@@ -196,9 +212,9 @@ def _eval_exit(tmp_path, held, *, ctx=None, ticker="KXMLBGAME-26AUG281915SEATOR-
     p = str(tmp_path / "pm.db"); db.init_db(p)
     with db.connect(p) as conn:
         if held > 0:
-            conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
-                         "outcome_status,dry_run,submitted_ts,response_ts) VALUES "
-                         "('kalshi_jack','mlb',?,?,0,?,'filled',0,1,1)", (ticker, leg, held)); conn.commit()
+            conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,"
+                         "fill_count,outcome_status,dry_run,submitted_ts,response_ts) VALUES "
+                         "('kalshi_jack','mlb',?,?,?,0,?,'filled',0,1,1)", (W, ticker, leg, held)); conn.commit()
         sig = ex.CopySignal(wallet=W, slug="mlb-sea-tor-2026-08-28", outcome=outcome, condition_id=CID,
                             outcome_index=0, signal_id="ex", is_exit=is_exit)
         return ex.evaluate(sig, _sub_c(), ctx or _ctx_full(), ex.Journal(conn, ["kalshi_jack"], 1787900000),

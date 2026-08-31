@@ -452,9 +452,9 @@ def _seed_money_and_hold(conn, held=5):
                  (ACCT, CAT, int(_t.time())))
     conn.execute("INSERT OR IGNORE INTO pm_subdivision_attachment(account_id,category,wallet,active,source,added_ts) "
                  "VALUES(?,?,'0xWHALE',1,'promote_to_live',?)", (ACCT, CAT, int(_t.time())))
-    conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
-                 "outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,?,?,0,?,'filled',0,?,?)",
-                 (ACCT, CAT, T_TOR, "yes", held, NOW, NOW))
+    conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,fill_count,"
+                 "outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,'0xWHALE',?,?,0,?,'filled',0,?,?)",
+                 (ACCT, CAT, T_TOR, "yes", held, NOW, NOW))       # wallet 0xWHALE = the attachment the exit copies
     conn.commit()
 
 
@@ -523,9 +523,9 @@ async def test_scheduled_loop_places_a_NO_leg_whale_exit(tmp_path):
                      (ACCT, CAT, int(time.time())))
         conn.execute("INSERT OR IGNORE INTO pm_subdivision_attachment(account_id,category,wallet,active,source,added_ts) "
                      "VALUES(?,?,'0xWHALE',1,'promote_to_live',?)", (ACCT, CAT, int(time.time())))
-        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
-                     "outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,?,'no',0,4,'filled',0,?,?)",
-                     (ACCT, CAT, T_TOTAL, NOW, NOW))                              # a REAL -4 NO holding to close
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,fill_count,"
+                     "outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,'0xWHALE',?,'no',0,4,'filled',0,?,?)",
+                     (ACCT, CAT, T_TOTAL, NOW, NOW))                              # a REAL -4 NO holding (wallet 0xWHALE) to close
         conn.commit()
     now = int(time.time())
     pos_client = FakeMultiCyclePositionsClient(
