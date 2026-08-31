@@ -141,9 +141,22 @@ def test_net_open_entry_minus_exits(tmp_path):
 
 
 # ── the NO-leg exit through the chokepoint (sell NO -> side=bid, reduce_only) ──
+# Full SEA@TOR fixtures (mirroring test_execution_r4) so the matcher resolves the total -- the minimal ctx was a
+# fixture gap, not a code issue; the NO-leg exit LOGIC is what this proves.
+_GAME_TICKERS = ["KXMLBGAME-26AUG281915SEATOR-SEA", "KXMLBGAME-26AUG281915SEATOR-TOR"]
 _TOTAL_TICKERS = ["KXMLBTOTAL-26AUG281915SEATOR-9", "KXMLBTOTAL-26AUG281915SEATOR-8"]
-_MARKETS = {"KXMLBTOTAL-26AUG281915SEATOR-9": {"yes_ask_dollars": 0.52, "yes_bid_dollars": 0.50,
-            "no_ask_dollars": 0.50, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"}}
+_SPREAD_TICKERS = ["KXMLBSPREAD-26AUG281915SEATOR-TOR2", "KXMLBSPREAD-26AUG281915SEATOR-SEA2"]
+_MARKETS = {
+    "KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+    "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+    "KXMLBTOTAL-26AUG281915SEATOR-9":  {"yes_ask_dollars": 0.52, "yes_bid_dollars": 0.50, "no_ask_dollars": 0.50, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+    "KXMLBSPREAD-26AUG281915SEATOR-TOR2": {"yes_ask_dollars": 0.40, "yes_bid_dollars": 0.38, "no_ask_dollars": 0.62, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+}
+
+
+def _ctx_full():
+    return ex.MarketContext(M.build_kalshi_game_index(_GAME_TICKERS), M.build_kalshi_total_index(_TOTAL_TICKERS),
+                            M.build_kalshi_spread_index(_SPREAD_TICKERS), frozenset({"2026-08-28"}), _MARKETS)
 
 
 def test_no_leg_exit_reduce_only_side_bid(tmp_path):
@@ -151,14 +164,13 @@ def test_no_leg_exit_reduce_only_side_bid(tmp_path):
     which is side 'ask'). The NO-leg-inversion lens on the EXIT path -- only reachable after a NO entry (which
     trips the standing NO-leg STOP), but proven correct here regardless."""
     p = str(tmp_path / "pm.db"); db.init_db(p)
-    ctx = ex.MarketContext({}, M.build_kalshi_total_index(_TOTAL_TICKERS), {}, frozenset({"2026-08-28"}), _MARKETS)
-    sub = ex.SubConfig(account_id="kalshi_jack", category="mlb", market_types=("total",), sizing_mode="fixed",
-                       fixed_stake_usd=5.0, per_order_usd_cap=25.0, daily_usd_cap=50.0, max_open_usd=100.0,
-                       max_orders_per_day=25, max_slippage_cents=2)
+    sub = ex.SubConfig(account_id="kalshi_jack", category="mlb", market_types=("moneyline", "total", "spread"),
+                       sizing_mode="fixed", fixed_stake_usd=5.0, per_order_usd_cap=25.0, daily_usd_cap=50.0,
+                       max_open_usd=100.0, max_orders_per_day=25, max_slippage_cents=2)
     sig = ex.CopySignal(wallet=W, slug="mlb-sea-tor-2026-08-28-total-8pt5", outcome="Under",
                         condition_id=CID, outcome_index=1, signal_id="ex_no", is_exit=True)
     with db.connect(p) as conn:
         j = ex.Journal(conn, [sub.account_id], 1787900000)
-        d = ex.evaluate(sig, sub, ctx, j, conn, 1787900000)
+        d = ex.evaluate(sig, sub, _ctx_full(), j, conn, 1787900000)
     assert d.status == "dry_run_would_place" and d.is_exit is True and d.leg == "no"
-    assert d.body.get("reduce_only") is True and d.body["side"] == "bid"
+    assert d.body.get("reduce_only") is True and d.body["side"] == "bid"     # sell NO -> buy-YES side = bid
