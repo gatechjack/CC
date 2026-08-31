@@ -27,11 +27,24 @@ def _legacy(tmp_path):
     return p
 
 
-def _entry(conn, ticker, leg, count, price, fee, *, wallet=SDT):
-    conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,"
-                 "fill_count,fill_price,fee,outcome_status,dry_run,submitted_ts,response_ts) "
-                 "VALUES (?,?,?,?,?,0,?,?,?,'filled',0,?,?)",
-                 (ACCT, CAT, wallet, ticker, leg, count, price, fee, NOW, NOW)); conn.commit()
+def _entry(conn, ticker, leg, count, price, fee, *, wallet=SDT, cid=None, oidx=None):
+    conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,condition_id,outcome_index,ticker,"
+                 "outcome_leg,is_exit,fill_count,fill_price,fee,outcome_status,dry_run,submitted_ts,response_ts) "
+                 "VALUES (?,?,?,?,?,?,?,0,?,?,?,'filled',0,?,?)",
+                 (ACCT, CAT, wallet, cid, oidx, ticker, leg, count, price, fee, NOW, NOW)); conn.commit()
+
+
+def test_settlement_close_carries_condition_id_and_outcome_index(tmp_path):
+    # ★ REVIEW BLOCKER fix: the settlement-close must carry the entry's (cid, oidx) so it nets flat in the
+    # (condition_id, outcome_index) opposition view too -- not only the ticker-keyed reconcile/UI. Else a settled
+    # side leaves a phantom held outcome that could false-contest a legitimate same-side re-signal.
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        _entry(conn, CUBS, "yes", 1, 0.60, 0.0084, cid="0xCUBSCID", oidx=1)     # entry carries cid/oidx
+        S.book_settlements(conn, ACCT, CAT, S.parse_settlements(_raw()), now_ts=NOW)
+        r = conn.execute("SELECT condition_id, outcome_index FROM pm_subdivision_order WHERE close_source IS NOT NULL"
+                         ).fetchone()
+    assert r["condition_id"] == "0xCUBSCID" and r["outcome_index"] == 1
 
 
 def _raw(ticker=CUBS, event=CUBS_EVENT, result="no", settled="2026-08-31T02:44:41.420484Z", revenue=0):

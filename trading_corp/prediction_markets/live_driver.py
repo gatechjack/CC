@@ -616,7 +616,7 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 _entries = [s for s in signals if not s.is_exit]
                 _exits = [s for s in signals if s.is_exit]        # whale-EXIT signals -- pass through untouched
                 _kept, _opposed, _contested = execution.detect_opposing_closes(
-                    _entries, execution.account_held_by_market(conn, account_id, category))
+                    _entries, execution.account_held_outcomes(conn, account_id, category))
                 if _contested:
                     log.warning("pm_live_driver: OPPOSING-PAIR guard -- %d contested market(s) -> FLAT (close held + "
                                 "skip both sides); opposed_closes=%d contested_cids=%s",

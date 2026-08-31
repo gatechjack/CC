@@ -1,20 +1,22 @@
 """Opposing-pair guard (cancellation-by-disagreement). When two whales take OPPOSITE sides of ONE market the bet
-comes OFF THE BOOKS: we CLOSE what we hold (account-level FULL flatten, close_source='opposed') and SKIP both incoming
-sides. Proves the LEG DEFINITION per market type via (condition_id, outcome_index) -- moneyline two teams, total
-over/under, spread; a different LINE is a different condition_id and must NEVER be flagged -- the multi-copy flatten
-(ALL whales' contracts, not one whale's), that the guard NEVER fires on a legitimate same-side copy, the DEFER when
-the close has no routing source, and that DISARM still blocks the opposed close. Fixtures use the real SEATOR market
-index (standing lens: mirror the real object)."""
+comes OFF THE BOOKS: we CLOSE what we hold (PER-WALLET closes, one per holding whale, summing to a full account
+flatten) with close_source='opposed', and SKIP both incoming sides. Proves the LEG DEFINITION per market type via
+(condition_id, outcome_index) -- moneyline two teams, total over/under, spread; a different LINE is a different
+condition_id and must NEVER be flagged -- that the guard NEVER fires on a legitimate same-side copy, the PER-WALLET
+flatten (all whales, no account-net-under-one-wallet negative), the DEFER when a close has no routing source, that a
+SETTLED side nets flat in the (cid,oidx) view (no phantom held outcome -- the review blocker), and that DISARM still
+blocks the opposed close. Fixtures use the real SEATOR market index (standing lens: mirror the real object)."""
 import types
 
 import pytest
 
 from trading_corp.prediction_markets import db, execution as ex, live_driver as ld
-from trading_corp.data import mlb_poly_kalshi_match as M
 
 W = "0x16bb9951a36fce71e2ef57890b786145e0ba8492"
 CID = "0xcond_sea_tor"                      # the SEATOR moneyline market (its two outcomes = SEA / TOR)
 TOR_T = "KXMLBGAME-26AUG281915SEATOR-TOR"
+
+from trading_corp.data import mlb_poly_kalshi_match as M
 
 _GAME_TICKERS = ["KXMLBGAME-26AUG281915SEATOR-SEA", "KXMLBGAME-26AUG281915SEATOR-TOR"]
 _TOTAL_TICKERS = ["KXMLBTOTAL-26AUG281915SEATOR-9", "KXMLBTOTAL-26AUG281915SEATOR-8"]
@@ -43,10 +45,11 @@ def _sig(wallet, slug, outcome, cid, oidx, **kw):
                          signal_id="%s:%s:%s" % (wallet, cid, oidx), **kw)
 
 
-def _order(conn, wallet, ticker, leg, is_exit, fill, *, cid=None, oidx=0, status="filled"):
+def _order(conn, wallet, ticker, leg, is_exit, fill, *, cid=None, oidx=0, status="filled", close_source=None):
     conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,condition_id,outcome_index,ticker,"
-                 "outcome_leg,is_exit,fill_count,outcome_status,dry_run,submitted_ts,response_ts) VALUES "
-                 "('kalshi_jack','mlb',?,?,?,?,?,?,?,?,0,1,1)", (wallet, cid, oidx, ticker, leg, is_exit, fill, status))
+                 "outcome_leg,is_exit,fill_count,outcome_status,close_source,dry_run,submitted_ts,response_ts) VALUES "
+                 "('kalshi_jack','mlb',?,?,?,?,?,?,?,?,?,0,1,1)",
+                 (wallet, cid, oidx, ticker, leg, is_exit, fill, status, close_source))
     conn.commit()
 
 
@@ -54,21 +57,21 @@ def _order(conn, wallet, ticker, leg, is_exit, fill, *, cid=None, oidx=0, status
 def test_moneyline_two_teams_same_cid_diff_oidx_is_contested():
     bal = _sig("0xW1", "mlb-bal-col", "Orioles", "0xbc", 0)          # team A (oidx 0)
     col = _sig("0xW2", "mlb-bal-col", "Rockies", "0xbc", 1)          # team B (oidx 1) -- same market, other outcome
-    held = {"0xbc": {1: {"net": 5.0, "ticker": "KXMLBGAME-X-COL", "leg": "yes"}}}   # we hold COL
+    held = {"0xbc": {1}}                                             # we hold COL (oidx 1)
     kept, closes, contested = ex.detect_opposing_closes([bal, col], held)
     assert contested == {"0xbc"}
     assert kept == []                                                # BOTH incoming sides skipped (off the books)
-    assert len(closes) == 1
+    assert len(closes) == 1                                          # one holding whale (COL) -> one per-wallet close
     c = closes[0]
-    assert c.is_exit and c.close_source == "opposed" and c.outcome_index == 1     # close the HELD outcome (COL)
-    assert c.slug == "mlb-bal-col" and c.outcome == "Rockies"        # routed from the co-present COL signal
+    assert c.is_exit and c.close_source == "opposed" and c.outcome_index == 1
+    assert c.wallet == "0xW2" and c.slug == "mlb-bal-col" and c.outcome == "Rockies"   # routed from the COL signal
 
 
 def test_total_over_under_contested_but_different_LINES_not():
     over9 = _sig("0xW1", "mlb-tot-9", "Over", "0xtot9", 1)
     under9 = _sig("0xW2", "mlb-tot-9", "Under", "0xtot9", 0)         # same line (same cid), other outcome -> contested
     over10 = _sig("0xW3", "mlb-tot-10", "Over", "0xtot10", 1)        # DIFFERENT line = DIFFERENT cid -> NOT opposing
-    held = {"0xtot9": {1: {"net": 5.0, "ticker": "T9", "leg": "yes"}}}
+    held = {"0xtot9": {1}}
     kept, closes, contested = ex.detect_opposing_closes([over9, under9, over10], held)
     assert contested == {"0xtot9"}                                   # over/under on line 9 disagree
     assert "0xtot10" not in contested                               # a different line is a different market
@@ -79,7 +82,7 @@ def test_guard_NEVER_fires_on_legitimate_same_side_stacking():
     # ★ 3 whales the SAME side (same cid AND same oidx) -> agreement is conviction, NEVER contested. If this ever
     # flagged, it would break the same-side-is-conviction design. All kept, no closes.
     sigs = [_sig(w, "mlb-sea", "Seattle", CID, 0) for w in ("0xA", "0xB", "0xC")]
-    held = {CID: {0: {"net": 15.0, "ticker": TOR_T, "leg": "yes"}}}   # we hold the SAME outcome the whales back
+    held = {CID: {0}}                                               # we hold the SAME outcome the whales back
     kept, closes, contested = ex.detect_opposing_closes(sigs, held)
     assert contested == set() and closes == [] and kept == sigs
 
@@ -88,42 +91,56 @@ def test_defer_close_when_no_co_present_routing_source():
     # we HOLD the opposing outcome but its whale's book failed this cycle (no co-present signal) -> the incoming
     # opposing side is still skipped (contested), but the close is DEFERRED (never guessed) and retried next cycle.
     bal = _sig("0xW1", "mlb-bc", "Orioles", "0xbc", 0)
-    held = {"0xbc": {1: {"net": 5.0, "ticker": "COL", "leg": "yes"}}}   # held COL, but NO COL signal present
+    held = {"0xbc": {1}}                                            # held COL (oidx 1), but NO COL signal present
     kept, closes, contested = ex.detect_opposing_closes([bal], held)
-    assert contested == {"0xbc"} and kept == [] and closes == []       # skip incoming, defer the close
+    assert contested == {"0xbc"} and kept == [] and closes == []   # skip incoming, defer the close
 
 
-# ── account-level net-open (the multi-copy flatten basis) ─────────────────────────────────────────────────
-def test_account_net_open_is_all_whales_but_journal_is_per_wallet(tmp_path):
+# ── PER-WALLET flatten: one close per holding whale (all of it), not one account-net row ──────────────────
+def test_opposed_close_emits_ONE_PER_HOLDING_WHALE_flattening_all():
+    # ★ THE MULTI-COPY RULING (Jack): flat means ALL of it. 3 whales hold oidx0; a 4th signals oidx1 -> the guard
+    # emits THREE opposed-closes (one per holding whale), each per-wallet -- summing to the full flatten, WITHOUT the
+    # account-net-under-one-wallet negative the review rejected.
+    A, B, C, D = "0xA", "0xB", "0xC", "0xD"
+    entries = [_sig(w, "mlb-sea", "Seattle", CID, 0) for w in (A, B, C)] + [_sig(D, "mlb-tor", "Toronto", CID, 1)]
+    held = {CID: {0}}                                               # we hold oidx0 (all three whales' copies)
+    kept, closes, contested = ex.detect_opposing_closes(entries, held)
+    assert contested == {CID} and kept == []                        # all 4 incoming skipped
+    assert len(closes) == 3                                          # ★ ONE close per holding whale
+    assert {c.wallet for c in closes} == {A, B, C}                  # each holding whale, per-wallet
+    assert all(c.close_source == "opposed" and c.is_exit and c.outcome_index == 0 for c in closes)
+
+
+def test_account_held_outcomes_and_per_wallet_close_size(tmp_path):
     p = str(tmp_path / "pm.db"); db.init_db(p)
     with db.connect(p) as conn:
         for w in ("0xA", "0xB", "0xC"):
-            _order(conn, w, TOR_T, "yes", 0, 5.0, cid=CID, oidx=0)     # 3 whales x 5 = 15 account net
-        assert ex.account_net_open_contracts(conn, "kalshi_jack", "mlb", TOR_T, "yes") == 15.0   # ALL whales
-        assert ex.journal_net_open_contracts(conn, "kalshi_jack", "mlb", TOR_T, "yes", "0xA") == 5.0   # ONE whale
-        held = ex.account_held_by_market(conn, "kalshi_jack", "mlb")
-        assert held[CID][0]["net"] == 15.0 and held[CID][0]["ticker"] == TOR_T and held[CID][0]["leg"] == "yes"
-
-
-def test_opposed_close_FLATTENS_ALL_not_one_whale_worth(tmp_path):
-    # ★ THE MULTI-COPY RULING (Jack): flat means ALL of it. 3 whales hold 15; an opposed close flattens 15, NOT 5.
-    p = str(tmp_path / "pm.db"); db.init_db(p)
-    with db.connect(p) as conn:
-        for w in ("0xA", "0xB", "0xC"):
-            _order(conn, w, TOR_T, "yes", 0, 5.0, cid=CID, oidx=0)
+            _order(conn, w, TOR_T, "yes", 0, 5.0, cid=CID, oidx=0)     # 3 whales x 5 = 15 account net on oidx0
+        held = ex.account_held_outcomes(conn, "kalshi_jack", "mlb")
+        assert held == {CID: {0}}                                      # one held outcome on this cid
+        # each opposed-close sizes at ITS wallet's net-open (5), NOT the account 15 -- the flatten is the SUM of the 3
         opp = _sig("0xA", "mlb-sea-tor-2026-08-28", "Toronto Blue Jays", CID, 0, is_exit=True, close_source="opposed")
         d = ex.evaluate(opp, _sub(), _ctx(), ex.Journal(conn, ["kalshi_jack"], 1787900000), conn, 1787900000)
-    assert d.status == "dry_run_would_place" and d.is_exit is True and d.body.get("reduce_only") is True
-    assert int(d.body["count"]) == 15                              # ★ account-level FULL flatten (15), not 5
+    assert d.status == "dry_run_would_place" and d.body.get("reduce_only") is True
+    assert int(d.body["count"]) == 5                                  # per-wallet (A's 5); B and C get their own closes
 
-    # contrast: a whale-EXIT (close_source None) for 0xA closes only A's 5 (per-wallet, unchanged)
-    p2 = str(tmp_path / "pm2.db"); db.init_db(p2)
-    with db.connect(p2) as conn:
-        for w in ("0xA", "0xB", "0xC"):
-            _order(conn, w, TOR_T, "yes", 0, 5.0, cid=CID, oidx=0)
-        wx = _sig("0xA", "mlb-sea-tor-2026-08-28", "Toronto Blue Jays", CID, 0, is_exit=True)   # close_source=None
-        d2 = ex.evaluate(wx, _sub(), _ctx(), ex.Journal(conn, ["kalshi_jack"], 1787900000), conn, 1787900000)
-    assert int(d2.body["count"]) == 5                              # per-wallet whale-exit unchanged (F2)
+
+# ── the SETTLED-side phantom (review BLOCKER): a settlement nets flat in the (cid,oidx) view too ──────────
+def test_settled_side_nets_flat_no_phantom_held_outcome(tmp_path):
+    # ★ REVIEW BLOCKER: a settlement-close now carries cid/oidx, so a settled side nets FLAT in account_held_outcomes
+    # (the same as in the ticker-keyed reconcile/UI). Without this, a settled oidx0 lingered as a phantom and could
+    # false-contest a legitimate same-side re-signal on the still-live oidx1.
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        _order(conn, W, "KXMLBGAME-X-A", "yes", 0, 5.0, cid="0xX", oidx=0)     # held oidx0 (entry)
+        _order(conn, W, "KXMLBGAME-X-B", "yes", 0, 5.0, cid="0xX", oidx=1)     # held oidx1 (the other side, historical)
+        # oidx0 SETTLES -> a settlement-close carrying cid/oidx0 (as book_settlements now writes it)
+        _order(conn, W, "KXMLBGAME-X-A", "yes", 1, 5.0, cid="0xX", oidx=0, close_source="settlement")
+        held = ex.account_held_outcomes(conn, "kalshi_jack", "mlb")
+    assert held["0xX"] == {1}                                          # ★ oidx0 netted flat; only oidx1 remains
+    # a same-side re-signal on the LIVE oidx1 is therefore NOT contested (no phantom oidx0 to disagree with)
+    kept, closes, contested = ex.detect_opposing_closes([_sig(W, "s1", "o1", "0xX", 1)], held)
+    assert contested == set() and closes == []
 
 
 # ── DISARM still blocks the opposed close (it is a reduce_only order through the SAME chokepoint) ──────────
@@ -136,10 +153,10 @@ async def test_disarm_blocks_the_opposed_close(tmp_path, monkeypatch):
 
     async def _place(_d):
         placed["n"] += 1                                            # must NOT be reached (disarm blocks first)
-        return types.SimpleNamespace(order_id="x", qty=15.0, price=0.53, fee=0.1)
+        return types.SimpleNamespace(order_id="x", qty=5.0, price=0.53, fee=0.1)
 
     with db.connect(p) as conn:
-        _order(conn, "0xA", TOR_T, "yes", 0, 15.0, cid=CID, oidx=0)   # a held position so the close would-place
+        _order(conn, "0xA", TOR_T, "yes", 0, 5.0, cid=CID, oidx=0)   # a held position so the close would-place
         opp = _sig("0xA", "mlb-sea-tor-2026-08-28", "Toronto Blue Jays", CID, 0, is_exit=True, close_source="opposed")
         summ = await ld.run_live_arm_gated_cycle(conn, _sub(), [opp], _ctx(),
                                                  ex.Journal(conn, ["kalshi_jack"], 1787900000), 1787900000,

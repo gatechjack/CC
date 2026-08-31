@@ -120,6 +120,10 @@ def _settlement_for_ticker(ticker: str, by_ticker: dict):
 # ── the held positions (per wallet x ticker x leg) from OUR journal ──────────────────────────────────────
 _HELD_SQL = (
     "SELECT wallet, UPPER(ticker) AS ticker, outcome_leg, "
+    # cid/oidx are constant per (wallet,ticker,leg); MAX() carries them onto the settlement close so it nets in the
+    # (cid,oidx) opposition view too -- not only the ticker-keyed reconcile/UI (REVIEW blocker: else a settled side
+    # left a phantom held outcome that could false-contest a legitimate same-side re-signal).
+    "  MAX(condition_id) AS condition_id, MAX(outcome_index) AS outcome_index, "
     "  SUM(CASE WHEN is_exit=0 THEN COALESCE(fill_count,0) ELSE 0 END) AS entered, "
     "  SUM(CASE WHEN is_exit=1 THEN COALESCE(fill_count,0) ELSE 0 END) AS exited, "
     "  SUM(CASE WHEN is_exit=0 THEN COALESCE(fill_count,0)*COALESCE(fill_price,0)+COALESCE(fee,0) "
@@ -176,11 +180,11 @@ def book_settlements(conn, account_id: str, category: str, settlements, *, now_t
         realized = round(proceeds - cost_basis_open, 6)
         settled_ts = rec.settled_ts if rec.settled_ts is not None else int(now_ts)
         conn.execute(
-            "INSERT INTO pm_subdivision_order (account_id, category, wallet, ticker, outcome_leg, is_exit, "
-            " fill_count, fill_price, fee, outcome_status, close_source, realized_pnl, won, settled_ts, dry_run, "
-            " submitted_ts, response_ts) VALUES (?,?,?,?,?,1,?,?,0,'filled',?,?,?,?,0,?,?)",
-            (account_id, category, wallet, ticker, leg, net_open, round(settled_value, 4), close_source,
-             realized, won, settled_ts, int(now_ts), int(now_ts)))
+            "INSERT INTO pm_subdivision_order (account_id, category, wallet, condition_id, outcome_index, ticker, "
+            " outcome_leg, is_exit, fill_count, fill_price, fee, outcome_status, close_source, realized_pnl, won, "
+            " settled_ts, dry_run, submitted_ts, response_ts) VALUES (?,?,?,?,?,?,?,1,?,?,0,'filled',?,?,?,?,0,?,?)",
+            (account_id, category, wallet, row["condition_id"], row["outcome_index"], ticker, leg, net_open,
+             round(settled_value, 4), close_source, realized, won, settled_ts, int(now_ts), int(now_ts)))
         proceeds_by_ticker[ticker] = proceeds_by_ticker.get(ticker, 0.0) + proceeds
         booked.append({"wallet": wallet, "ticker": ticker, "leg": leg, "net_open": net_open,
                        "settled_value": settled_value, "realized_pnl": realized, "won": won,
