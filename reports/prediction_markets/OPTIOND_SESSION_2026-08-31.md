@@ -20,10 +20,19 @@ latch-clear/cap-change/order-path-on-live/prod-live-advance.
 - /live/kalshi_jack/mlb -> 200, still shows Cubs under "Currently held" (journal-derived; journal holds +1). Venue
   FLAT. journal(+1)-vs-venue(flat) divergence present, undetected, pending next-restart latch. NO-leg: none filled.
 
-### Runner unit note (carry into backlog #2 shard-aware balance read)
-`/portfolio/balance` `balance_breakdown[].balance` is in FRACTIONAL DOLLARS (`'509.1956'`, `'0.0081'`), NOT cents.
-The TOP-LEVEL `balance` field is cents (`bal.balance/100`, kalshi_live.py:278). A shard-aware reader must read the
-breakdown WITHOUT the /100 the top-level reader uses. (My first state-report runner mis-divided; corrected here.)
+### Runner unit note + SHIPPED-CODE VERIFICATION (Jack flagged: check the deployed read, not just the runner)
+`/portfolio/balance` carries THREE money shapes (live-verified 2026-08-31T12:18Z, raw response):
+`balance`=50920 (INTEGER CENTS), `balance_dollars`='509.2037' (fixed-point dollar STRING), and
+`balance_breakdown[].balance` = dollar STRINGS (`'509.1956'` shard 3, `'0.0081'` shard 0).
+- **My state-report RUNNER had a /100 bug** (divided the breakdown, printing a bogus $5.09). Isolated to the runner.
+- **The SHIPPED `shard_balance.py` is CORRECT** -- `_to_dollars_float` treats the breakdown + `balance_dollars` as
+  dollars and does NOT divide by 100 (only the integer-cents top-level `balance` is /100, as a fallback). Verified
+  live: `parse_balance(raw).shard(3) = 509.1956` (dollars), `shard_sum == total_dollars = 509.2037`,
+  `can_fund(3,60)=True` / `can_fund(3,600)=False`. **Gate 6b compares the REAL shard balance -- NO bug, no fix.**
+  (This is NOT the R4-caps / R5-seed class after all; shard_balance.py was written with this exact distinction.)
+- Backlog #2 (shard-aware read) is already satisfied by `shard_balance.py` RUNG 1; the `bal.balance/100` at
+  kalshi_live.py:278 remains the MASKED-TOTAL legacy read, untouched (a display/exposure concern, not gate 6b).
+  Runner `cc\pm_shardbal_verify_ro.ps1`.
 
 ## B. ITEM 0 — R-d settlement-close path (SCOPING ONLY, no build)
 
