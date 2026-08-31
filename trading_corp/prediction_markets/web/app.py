@@ -20,6 +20,7 @@ Spec: reports/prediction_markets/PM_REBUILD_PLAN_2026-08-26.md (Stage 2, the pha
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 
@@ -29,8 +30,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search
-from ..category import NON_SINGLE_GAME_CATEGORIES
+from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding
+from ..category import NON_SINGLE_GAME_CATEGORIES, derive_category_from_slug
+
+log = logging.getLogger(__name__)
 
 _PKG_DIR = Path(__file__).resolve().parent
 _TEMPLATE_DIR = _PKG_DIR / "templates"
@@ -188,26 +191,71 @@ async def whale_positions(request: Request, wallet: str, category: str, drill: s
 # "only successful verdicts are cached" rule live in analyze.analyze_whale. The key is NOT wired (e3) so today
 # every call returns the llm_unavailable reasoned-null and the deterministic report renders without a verdict.
 
-def _run_analyze(wallet: str, category: str, force: bool, now_ts: int) -> dict:
+def _row_category(row) -> str:
+    """Category of an Activity/Closed row via the platform's TIER-1 slug-prefix deriver (sync, NO network) -- the
+    SAME axis pm_closed_position.category is built on, so the re-grounded loss set filters on the same category as
+    the deterministic core. Rows tier-1 cannot place (unknown) fall OUT of the category filter -> for them a_only is
+    a conservative LOWER bound, never an over-count. (No tier-2 gamma-tag join here: grounding is a caveat, and one
+    network round per analyze click is already the /activity + /closed-positions paging.)"""
+    return derive_category_from_slug(getattr(row, "event_slug", None), getattr(row, "slug", None))[0]
+
+
+def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grounding=None) -> dict:
     """Run Analyze on ONE short-lived connection, OFF the event loop. WRITES the PM DB (cache + cost ledger);
     reads/writes ONLY prediction_markets.db (db._assert_not_legacy guards the path). Sync (analyze narrates
-    synchronously) so it drops straight into asyncio.to_thread with no nested event loop."""
+    synchronously) so it drops straight into asyncio.to_thread with no nested event loop. `loss_grounding` (Stage 5)
+    is the re-grounded loss set the async route fetched on a miss; None -> the report renders ungrounded."""
     with connect() as conn:
-        rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force)
+        rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force, loss_grounding=loss_grounding)
         day = analyze._utc_day(now_ts)
         spent, n_calls = analyze.daily_cost(conn, day)
     return {"report": rep, "flags": analyze.analysis_flags(rep),
             "cost_today": spent, "cost_cap": analyze.PM_ANALYZE_DAILY_CAP_USD, "cost_day": day}
 
 
+def _analysis_is_cached(wallet: str, category: str) -> bool:
+    """Off-loop cache PEEK: is there a stored verdict for this (wallet, category, current skill_version)? Governs
+    whether the route pays for the /activity loss-grounding fetch AT ALL -- a cache HIT skips the network entirely,
+    so the 'a hit spends nothing' contract holds for the /activity fetch too, not just the LLM call."""
+    with connect() as conn:
+        return analyze.is_cached(conn, wallet, category)
+
+
+async def _ground_losses(wallet: str, category: str):
+    """Re-ground the whale's LOSS set for (wallet, category) from /activity (Stage 5, the F-1 held-to-worthless
+    bias). Returns a LossGrounding or None. FAIL-SOFT: any network/parse failure -> None and Analyze proceeds
+    UNGROUNDED (the honest-loss block simply does not render) -- the grounding is a caveat enrichment, NEVER
+    load-bearing for the deterministic report. Network runs ON the loop (its awaits yield); the lazy import keeps
+    the data-layer client off the module import surface (the standalone-imports guard, test_pm_web_imports_no_engine)."""
+    try:
+        from ...data.polymarket_data_api_client import PolymarketDataAPIClient
+        async with PolymarketDataAPIClient() as client:
+            g = await loss_grounding.fetch_and_ground_losses(client, wallet, category, category_of=_row_category)
+        # Only surface a grounded block when /activity actually yielded in-category held-to-resolution decisions to
+        # compare against. A zero-decision fetch has NOTHING to affirm -- rendering "0W/0L honest" would imply we
+        # checked and found nothing when we may simply have no activity feed for this slice -- so treat it as
+        # UNGROUNDED (no block), the honest degrade.
+        return g if (g is not None and g.n_activity_held_resolved > 0) else None
+    except Exception as exc:   # noqa: BLE001 -- caveat enrichment must never break Analyze; degrade to ungrounded
+        log.warning("pm analyze: loss-grounding failed for %s/%s (%s) -- rendering ungrounded",
+                    wallet[:10], category, type(exc).__name__)
+        return None
+
+
 @app.post("/farm/analyze/{wallet}/{category}", response_class=HTMLResponse)
 async def farm_analyze(request: Request, wallet: str, category: str, force: str | None = None):
     """Analyze a (wallet, category) and swap in the result partial. POST because it may WRITE (narrate ->
     cache + cost). `?force=1` re-analyzes (evicts the cached verdict first). Identity is the (wallet, category),
-    not which list the button sat in."""
+    not which list the button sat in. Stage 5: re-ground the loss set from /activity ONLY when we will actually
+    (re)build -- a cache HIT skips the /activity fetch, so a hit still spends nothing."""
     wallet = (wallet or "").lower()
+    category = (category or "").strip().lower()
     do_force = str(force or "").strip().lower() in ("1", "true", "yes", "on")
-    data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, int(time.time()))
+    now_ts = int(time.time())
+    grounding = None
+    if do_force or not await asyncio.to_thread(_analysis_is_cached, wallet, category):
+        grounding = await _ground_losses(wallet, category)               # async network ON the loop; None on failure
+    data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, now_ts, grounding)
     return templates.TemplateResponse(request, "partials/pm_analyze_result.html", {"request": request, **data})
 
 

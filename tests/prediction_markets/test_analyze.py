@@ -273,9 +273,30 @@ def test_force_reanalyzes(tmp_path):
 
 
 # ── the route ──────────────────────────────────────────────────────────────────────────────────────────
+class _EmptyDataClient:
+    """No-network stand-in for PolymarketDataAPIClient: Stage 5 made /farm/analyze re-ground losses from /activity
+    on a cache MISS, so an offline route test must inject a client that returns nothing (else it would hit the wire).
+    A zero-decision fetch renders UNGROUNDED (no loss-completeness block), so these pre-Stage-5 assertions hold."""
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def fetch_activity(self, *a, **k):
+        return []
+
+    async def fetch_closed_positions(self, *a, **k):
+        return []
+
+    async def fetch_market_resolutions(self, *a, **k):
+        return {}
+
+
 def _client(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)   # llm_unavailable path (production state today)
     monkeypatch.setenv("PM_DB_PATH", _seed(tmp_path))
+    monkeypatch.setattr("trading_corp.data.polymarket_data_api_client.PolymarketDataAPIClient", _EmptyDataClient)
     from trading_corp.prediction_markets.web.app import app
     return TestClient(app)
 

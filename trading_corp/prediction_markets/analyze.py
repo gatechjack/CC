@@ -54,8 +54,12 @@ PM_ANALYZE_MODEL = "claude-haiku-4-5-20251001"   # was get_model_for('polymarket
                                                  # Analyze can't have its model swapped out from under it.
 PM_ANALYZE_MAX_OUTPUT_TOKENS = 220
 PM_ANALYZE_DAILY_CAP_USD = 20.00                 # Jack ruling 2026-08-25 (legacy code=$1.00; §7.4 doc said $2)
-PM_ANALYZE_SKILL_VERSION = "2"                   # bump on ANY prompt/model/report-shape change -> cache miss
-#   "1"->"2" (2026-08-31, Stage 5): PMAnalysisReport gained the loss-completeness fields (re-grounded loss set).
+PM_ANALYZE_SKILL_VERSION = "3"                   # bump on ANY prompt/model/report-shape change -> cache miss
+#   "1"->"2" (2026-08-31, Stage 5 R2b): PMAnalysisReport gained the loss-completeness fields (re-grounded loss set).
+#   "2"->"3" (2026-08-31, Stage 5 R2c + prompt rung): the re-grounded loss set now FLOWS into the narrator prompt
+#     (a top caveat tier + the honest win/loss lines), so the promotion-judge verdict itself reasons about the F-1
+#     omission -- not just the printed table. Settle this at "3" BEFORE the Anthropic key is wired, so the first
+#     PAID narration a wallet gets is the final-form one (key-last ordering, Jack 2026-08-31).
 # Haiku price per 1M tokens -- forked from agents/research/cost.py (the 'claude-haiku-4-5-20251001' row).
 _HAIKU_PRICE = {"input": 0.80, "output": 4.0}
 
@@ -398,13 +402,17 @@ percentage is given, use it as written; never recompute or convert.
 - Tone: factual, dispassionate, like a quant summarizing a screen. No hedging words unless the data is \
 genuinely ambiguous.
 - Lead with the most decision-relevant caveat, in this priority:
-  1) data quality CONTAMINATED -- the headline rests on a §3A-filtered subset
-  2) thin sample (n_resolved below the stated threshold) -- too few settled positions to trust the rate
-  3) two-sided share high -- the whale hedges / market-makes, so the one-sided ROI is an UPPER BOUND, not a \
+  1) LOSS SET MATERIALLY INCOMPLETE -- if a "Loss completeness" section is present AND it recovered \
+held-to-worthless losses (a_only > 0), the win rate above is OVER-STATED: /closed-positions dropped real losses. \
+Lead with the honest win/loss and the omission %, and say the copyable edge is smaller than the headline win rate \
+implies. (If NO "Loss completeness" section is present, say NOTHING about this -- do not speculate about omission.)
+  2) data quality CONTAMINATED -- the headline rests on a §3A-filtered subset
+  3) thin sample (n_resolved below the stated threshold) -- too few settled positions to trust the rate
+  4) two-sided share high -- the whale hedges / market-makes, so the one-sided ROI is an UPPER BOUND, not a \
 copyable return
-  4) CHALK (avg winning price >= 0.85) -- favorite-farming; a high win rate at these prices carries little edge
-  5) CONTESTED (avg winning price < 0.70) -- contrarian entries
-  6) a clean, adequately-sampled record if none of the above apply
+  5) CHALK (avg winning price >= 0.85) -- favorite-farming; a high win rate at these prices carries little edge
+  6) CONTESTED (avg winning price < 0.70) -- contrarian entries
+  7) a clean, adequately-sampled record if none of the above apply
 
 Vocabulary cues (apply only when the condition holds):
 - cost-based ROI is THE metric; notional ROI is shown for legacy comparison only -- never lead with it
@@ -412,6 +420,11 @@ Vocabulary cues (apply only when the condition holds):
 - high two_sided_pct -> "hedges / market-makes"
 - avg_win_price >= 0.85 -> "favorite-farming profile"; avg_win_price < 0.70 -> "contrarian profile"
 - data_quality contaminated -> "the record rests on a filtered subset"
+- Loss completeness present with a_only > 0 -> "the win rate is over-stated; ~X% of this whale's losses were \
+omitted by the completed-trades API, so the honest record is <honest W/L>"; if it shows a LOWER BOUND (activity \
+windowed), add "and that omission is a floor -- there may be more beyond the window"
+- Loss completeness present with a_only = 0 -> "re-grounding confirms the loss set is complete -- the win rate is \
+not inflated by the completed-trades omission"
 
 Output: 2-4 sentences of prose. No bullets, no headings, no markdown."""
 
@@ -465,6 +478,23 @@ def _build_user_content(rep: PMAnalysisReport) -> str:
         % (rep.data_quality or "clean", _fmt_pct(rep.dq_count_pct), _fmt_pct(rep.dq_dollar_pct)),
         "  backfill_complete = %s" % ("yes" if rep.backfill_complete else "NO (partial history -- not ranked)"),
     ]
+    # Stage 5 (R2c + prompt rung): the re-grounded loss set, PRE-FORMATTED so the narrator cites it verbatim (the
+    # no-arithmetic rule). Present ONLY when the loss set was re-grounded from /activity -- when absent, the block is
+    # omitted entirely and the system prompt tells the model to say nothing about omission (no speculation).
+    if rep.loss_grounded:
+        lines += [
+            "",
+            "Loss completeness (re-grounded from /activity, held-to-resolution -- corrects the /closed-positions "
+            "under-reporting of held-to-worthless losses, the F-1 bias):",
+            "  honest win/loss = %sW / %sL   (vs the %dW / %dL above, which is /closed-positions only)"
+            % (rep.honest_wins if rep.honest_wins is not None else "n/a",
+               rep.honest_losses if rep.honest_losses is not None else "n/a", rep.wins, rep.losses),
+            "  held-to-worthless losses recovered (a_only) = %s"
+            % (rep.a_only_losses if rep.a_only_losses is not None else "n/a"),
+            "  loss omission = %s of honest losses were dropped by /closed-positions  (the measured bias for THIS whale)"
+            % _fmt_pct(rep.loss_omission_pct),
+            "  completeness = %s" % (rep.loss_completeness or "n/a"),
+        ]
     if rep.samples:
         lines.append("")
         lines.append("Largest resolved positions by |PnL| (illustrative):")
@@ -565,6 +595,12 @@ def _cache_evict(conn, wallet: str, category: str, skill_version: str) -> None:
                  (wallet, category, skill_version))
 
 
+def is_cached(conn, wallet: str, category: str, skill_version: str = PM_ANALYZE_SKILL_VERSION) -> bool:
+    """True iff a stored verdict exists for this (wallet, category, skill_version). Read-only; the analyze route
+    peeks this to decide whether to pay for the /activity loss-grounding fetch -- a cache HIT skips it entirely."""
+    return _cache_get(conn, (wallet or "").lower(), category, skill_version) is not None
+
+
 # ── orchestration ─────────────────────────────────────────────────────────────────────────────────────
 def analyze_whale(conn, wallet: str, category: str, *, now_ts: int, force: bool = False,
                   narrator_enabled: bool = True, chat: object | None = None,
@@ -608,5 +644,5 @@ __all__ = [
     "PM_ANALYZE_MODEL", "PM_ANALYZE_DAILY_CAP_USD", "PM_ANALYZE_SKILL_VERSION",
     "NULL_DISABLED", "NULL_NO_DATA", "NULL_CAP", "NULL_UNAVAILABLE", "NULL_ERROR", "NULL_REASON_LABELS",
     "build_pm_analysis", "analysis_flags", "narrate", "analyze_whale",
-    "is_llm_available", "daily_cost", "report_to_json", "report_from_json",
+    "is_llm_available", "is_cached", "daily_cost", "report_to_json", "report_from_json",
 ]

@@ -130,7 +130,7 @@ def _grounding():
 
 
 def test_skill_version_bumped_for_stage5():
-    assert analyze.PM_ANALYZE_SKILL_VERSION == "2"                              # invalidates the pre-Stage-5 cache
+    assert analyze.PM_ANALYZE_SKILL_VERSION == "3"                              # R2c+prompt rung: grounded set flows into the prompt
 
 
 def test_report_ungrounded_leaves_fields_none(tmp_path):
@@ -152,3 +152,29 @@ def test_report_grounded_carries_fields_without_touching_core(tmp_path):
     # round-trips through the cache (de)serialization with the new fields intact
     rt = analyze.report_from_json(analyze.report_to_json(rep))
     assert rt.loss_grounded is True and rt.a_only_losses == 1 and rt.loss_omission_pct == 0.5
+
+
+# ── prompt rung: the re-grounded loss set FLOWS into the narrator prompt (the promotion judge reasons on it) ──
+def test_prompt_user_content_carries_grounded_loss_lines(tmp_path):
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        rep = analyze.build_pm_analysis(conn, "0xw", "mlb", now_ts=1788200000, loss_grounding=_grounding())
+    uc = analyze._build_user_content(rep)
+    assert "Loss completeness (re-grounded from /activity" in uc      # the section is present
+    assert "honest win/loss = 2W / 2L" in uc                          # PRE-FORMATTED (no arithmetic for the model)
+    assert "a_only) = 1" in uc                                        # the recovered held-to-worthless loss
+    assert "loss omission = 50%" in uc                                # the measured bias, pre-formatted
+    assert "completeness = complete" in uc
+
+
+def test_prompt_user_content_omits_loss_lines_when_ungrounded(tmp_path):
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        rep = analyze.build_pm_analysis(conn, "0xw", "mlb", now_ts=1788200000)   # no loss_grounding
+    assert "Loss completeness" not in analyze._build_user_content(rep)           # absent -> the model says nothing
+
+
+def test_system_prompt_leads_with_loss_omission_tier():
+    sp = analyze._SYSTEM_PROMPT
+    assert "LOSS SET MATERIALLY INCOMPLETE" in sp                     # the new tier-1 caveat
+    assert "do not speculate about omission" in sp                   # the guard: absent section -> say nothing

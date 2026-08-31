@@ -124,6 +124,37 @@
 
   {% if flags %}<div class="pm-flags pm-analyze-flags">{{ flag_badges(flags) }}</div>{% endif %}
 
+  {# ── LOSS COMPLETENESS (Stage 5, F-1) -- re-grounds the loss SET from /activity (held-to-resolution) because
+       /closed-positions systematically under-reports held-to-worthless losses, wallet-dependently. The CORE
+       numbers above stay /closed-positions-based (rollup + scoreboard parity); this block is the honest read of
+       how much this whale's win rate is over-stated. Renders ONLY when grounding succeeded (fail-soft: an offline
+       /activity fetch just omits this block, never breaks Analyze). Analyze is the promotion judge -- this is the
+       single most decision-relevant caveat for "copy with real money". #}
+  {% if report.loss_grounded %}
+    <div class="pm-analyze-state pm-state-lossground{% if report.a_only_losses and report.a_only_losses > 0 %} pm-state-bias{% endif %}"
+         data-loss-grounded="1">
+      {% if report.a_only_losses and report.a_only_losses > 0 %}
+        <strong>Loss set re-grounded (win rate over-stated):</strong>
+        the settled-position record above counts <strong>{{ report.losses }}</strong> loss(es); re-grounding against
+        /activity recovers <strong>{{ report.a_only_losses }}</strong> held-to-worthless loss(es) that
+        /closed-positions dropped &mdash; an honest <strong>{{ report.honest_wins }}W&nbsp;/&nbsp;{{ report.honest_losses }}L</strong>{%
+        if report.loss_omission_pct is not none %}, i.e. <strong>{{ '%.0f'|format(report.loss_omission_pct * 100) }}%</strong>
+        of this whale&rsquo;s losses were omitted by the completed-trades API{% endif %}.
+      {% else %}
+        <strong>Loss set re-grounded (no omission):</strong>
+        re-grounding against /activity found <strong>no</strong> held-to-worthless losses missing from
+        /closed-positions (honest <strong>{{ report.honest_wins }}W&nbsp;/&nbsp;{{ report.honest_losses }}L</strong>)
+        &mdash; the win rate above is not inflated by the F-1 omission for this whale.
+      {% endif %}
+      <div class="pm-muted pm-lossground-foot">
+        {{ loss_omission_caveat }}
+        {%- if 'lower bound' in (report.loss_completeness or '') %} <strong>/activity was windowed here</strong>, so
+        the recovered count is a <strong>lower bound</strong> &mdash; more may lie beyond the window.{% endif %}
+        <span class="pm-lossground-src">completeness: {{ report.loss_completeness }}</span>
+      </div>
+    </div>
+  {% endif %}
+
   {# ── illustrative rows (largest by |PnL|); drill for the full set ──────────────────────────────── #}
   {% if report.samples %}
     <details class="pm-analyze-samples" open>
@@ -158,6 +189,7 @@
     <sup>&dagger;</sup> cost-based ROI (net / cost_basis) is the metric; notional ROI is legacy-comparison only. &nbsp;&middot;&nbsp;
     <sup>*</sup> win% is a chalk indicator, <strong>not</strong> a rank key. &nbsp;&middot;&nbsp;
     <sup>&Dagger;</sup> one-sided ROI is an <strong>upper bound</strong> (excludes hedged markets, §13A(f)). &nbsp;&middot;&nbsp;
-    numbers are fresh from the resolved rows; <strong>no /activity, no fills</strong> (this is a settled-position record, not a trade audit).
+    the <strong>core metrics</strong> are fresh from the resolved rows with <strong>no /activity, no fills</strong> (a settled-position
+    record, not a trade audit); the <strong>loss-completeness</strong> block, when shown, re-grounds only the loss SET from /activity (Stage 5).
   </p>
 </section>
