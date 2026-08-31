@@ -1529,6 +1529,52 @@ async def run(argv: list[str] | None = None) -> int:
         except Exception as _pk_exc:  # noqa: BLE001 — never break engine boot
             log.exception("Poly->Kalshi MLB copy wiring FAILED (engine continues): %s", _pk_exc)
 
+        # ── Prediction Markets LIVE DRIVER (Stage 3 R7.e, 2026-08-29) — task WIRED; ARM STATE gates POSTs ──
+        # Mirrors the poly_kalshi block above: fail-safe wiring that NEVER breaks engine boot. enabled:true =
+        # the task RUNS (polls /positions, boot-reconciles, runs the chokepoint) but places NOTHING unless the
+        # arm state (default DISARMED) says so. R7.e wires it DISARMED; R7.f is the first arm (separate authz).
+        try:
+            import yaml as _pm_yaml
+            with open("config/strategies.yaml", "r", encoding="utf-8") as _pm_f:
+                _pm_cfg = (_pm_yaml.safe_load(_pm_f) or {}).get("pm_live_driver") or {}
+            if _pm_cfg.get("enabled"):
+                from trading_corp.brokers.kalshi_live import KalshiLiveBroker
+                from trading_corp.prediction_markets import live_driver as _pm_live_driver, db as _pm_db
+                from trading_corp.data.polymarket_data_api_client import PolymarketDataAPIClient
+                # The KALSHI-ORIGINAL account (secret_ref='KALSHI' on pm_account 'kalshi_jack') — NOT the KAREN
+                # keys poly_kalshi uses. IOC marketable-limit, same transport.
+                _pm_broker = KalshiLiveBroker(
+                    api_key_id=secrets.kalshi_api_key_id,
+                    private_key_pem=secrets.kalshi_private_key_pem,
+                    demo=(os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")),
+                    order_type="ioc",
+                    max_slippage_cents=int(_pm_cfg.get("max_slippage_cents", 2)),
+                )
+                await _pm_broker.connect()
+                # The whale /positions reader — the SAME PolymarketDataAPIClient the paper cadence injects into
+                # paper.poll_pinned. It MUST be entered as an async context manager (it creates its httpx client
+                # in __aenter__); enter it here for the engine's life (mirrors _pk_broker.connect() above; httpx
+                # is cleaned up at process exit like the other long-lived engine clients).
+                _pm_positions_client = PolymarketDataAPIClient()
+                await _pm_positions_client.__aenter__()
+                pm_live_task = asyncio.create_task(
+                    _pm_live_driver.scheduled_pm_live_loop(
+                        _pm_db.pm_db_path(), _pm_broker, _pm_positions_client,
+                        account_id=_pm_cfg.get("account_id", "kalshi_jack"),
+                        category=_pm_cfg.get("category", "mlb"),
+                        poll_sec=float(_pm_cfg.get("poll_interval_sec", 7)),
+                        index_refresh_sec=float(_pm_cfg.get("index_refresh_sec", 900)),
+                        legacy_db_path=None,   # arm.resolve_legacy_db_path -> data/trading_corp.db
+                    )
+                )
+                log.info("PM LIVE DRIVER WIRED (account=%s category=%s poll=%ss) — ARM STATE governs whether it POSTs",
+                         _pm_cfg.get("account_id", "kalshi_jack"), _pm_cfg.get("category", "mlb"),
+                         _pm_cfg.get("poll_interval_sec", 7))
+            else:
+                log.info("PM live driver: pm_live_driver.enabled=false — not wired")
+        except Exception as _pm_exc:  # noqa: BLE001 — never break engine boot
+            log.exception("PM live driver wiring FAILED (engine continues): %s", _pm_exc)
+
         # --- Phase 2a boot invariant: live ∩ paper rosters must be disjoint ---
         # Log-loud-and-continue (see assert_roster_invariant_boot): detection +
         # alerting only — the live loop + paper read-time subtract are what
