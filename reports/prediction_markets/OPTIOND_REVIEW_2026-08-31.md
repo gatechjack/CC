@@ -41,13 +41,12 @@ bounded by reduce_only + the R-b boot-reconcile latch. **This is the item-0 inte
 argument to build R-d (settlement-close) as the next rung, reusing Option D's terminal accounting.** Recommend:
 build R-d before Option D runs long unattended; safe to arm Option D short-term given the bounds above -- Jack's call.
 
-### F2 (MEDIUM) — multi-whale full-close scope: a RULING
-`journal_net_open_contracts` is per-ACCOUNT (no wallet predicate), so whale A's exit closes A's AND B's copies on
-the same (ticker, leg). Over-close is risk-REDUCING (bias-to-flat, safe) but strands B's edge. With two active
-attachments (SDTrading + xifutloong3) this is live-relevant TODAY. **Ruling needed:** (a) per-WALLET full-close
-(matches "we exit when THE WHALE exits"; a one-line WHERE `AND wallet=?` + count from that whale's net-open) --
-RECOMMEND; or (b) account-level full-close (more conservative "get fully out" when any tracked whale exits). Not a
-safety blocker (either way we never oversell -- reduce_only). Small fix once ruled.
+### F2 (MEDIUM) — multi-whale full-close scope: RULED per-wallet + FIXED (9230288)
+`journal_net_open_contracts` was per-ACCOUNT, so whale A's exit closed A's AND B's copies. **Jack RULED (a)
+PER-WALLET** ("we exit when THE WHALE exits" -- account-level closes B because A sold, stranding B's edge; safe/
+bias-to-flat but wrong when the fix is one line). FIXED: `journal_net_open_contracts` takes `wallet` + `WHERE
+wallet=?`; `evaluate` threads `signal.wallet`; `test_net_open_is_per_wallet` proves A's 5 and B's 3 stay isolated.
+Full suite green.
 
 ### F3 (MEDIUM) — stale-sell pairing window
 A SELL in the top-100 /activity within +/-300s can pair with a NEW/unrelated reduction on the same (cid, oidx).
