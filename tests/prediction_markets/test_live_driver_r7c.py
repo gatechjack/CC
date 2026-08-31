@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-from trading_corp.prediction_markets import arm, db, execution as ex, live_driver as L
+from trading_corp.prediction_markets import arm, db, execution as ex, live_driver as L, boot_reconcile as BR
 from trading_corp.data import mlb_poly_kalshi_match as M
 from trading_corp.data.polymarket_data_api_client import PositionRow, ActivityRow
 
@@ -83,17 +83,21 @@ class _FakePortfolio:
 
 class FakeKalshiClient:
     """Records every would-be POST; NEVER hits the network. `post` returns a fill or raises a KalshiError."""
-    def __init__(self, *, post_raise=None, positions=None, pos_raise=None, game_markets=None, total_markets=None):
+    def __init__(self, *, post_raise=None, positions=None, pos_raise=None, game_markets=None, total_markets=None,
+                 settlements_raw=None):
         self.posts = []
         self._post_raise = post_raise
         self.portfolio = _FakePortfolio(positions, pos_raise)
         self._game = game_markets or []
         self._total = total_markets or []
+        self._settlements = settlements_raw or {}
     async def post(self, path, body):
         self.posts.append((path, body))
         if self._post_raise:
             raise self._post_raise
         return dict(_FILL)
+    async def get(self, path, *a, **k):                        # R-d: /portfolio/settlements (raw); {} otherwise
+        return self._settlements if "settlements" in str(path) else {}
     async def get_markets(self, series_ticker=None, status=None, limit=None, fetch_all=False, **kw):
         if series_ticker == "KXMLBGAME":
             return self._game
@@ -540,3 +544,37 @@ async def test_scheduled_loop_places_a_NO_leg_whale_exit(tmp_path):
     assert len(exit_posts) == 1 and exit_posts[0]["ticker"] == T_TOTAL and exit_posts[0]["count"] == "4"
     assert exit_posts[0]["side"] == "bid"                                        # sell NO -> buy-YES side = bid
     assert exit_posts[0]["price"] == "0.5400"                                    # marketable: yes_ask 0.52 + slip 0.02
+
+
+# ── R-d2: the BOOT settlement-scan books a settled-while-down position -> boot_reconcile comes up CLEAN ──
+@pytest.mark.asyncio
+async def test_boot_settlement_scan_books_cubs_then_reconcile_is_clean(tmp_path):
+    """R-d2 -- THE COMBINED-DEPLOY PROOF at the driver level. A position that SETTLED WHILE THE ENGINE WAS DOWN
+    (Cubs: journal +1 YES, venue FLAT since settlement) is booked by the BOOT settlement-scan BEFORE boot_reconcile
+    -> reconcile comes up CLEAN and the sub STAYS ARMED. Without R-d this exact restart would latch R-b."""
+    import time
+    CUBS = "KXMLBGAME-26AUG301920CINCHC-CHC"
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)
+    with db.connect(p) as conn:
+        conn.execute("INSERT OR IGNORE INTO pm_account(account_id,venue,secret_ref,label,active,created_ts) "
+                     "VALUES(?, 'kalshi','KALSHI','Jack',1,?)", (ACCT, int(time.time())))
+        conn.execute("INSERT OR IGNORE INTO pm_subdivision(account_id,category,market_types,sizing_mode,"
+                     "fixed_stake_usd,active,created_ts) VALUES(?,?,'moneyline,total,spread','fixed',5.0,1,?)",
+                     (ACCT, CAT, int(time.time())))
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,"
+                     "fill_count,fill_price,fee,outcome_status,dry_run,submitted_ts,response_ts) "
+                     "VALUES (?,?,'0xWHALE',?,'yes',0,1,0.60,0.0084,'filled',0,?,?)", (ACCT, CAT, CUBS, NOW, NOW))
+        conn.commit()                                                            # the live Cubs holding (journal +1)
+    settlements_raw = {"settlements": [{"ticker": CUBS, "event_ticker": "KXMLBGAME-26AUG301920CINCHC",
+                                        "market_result": "no", "settled_time": "2026-08-31T02:44:41Z", "revenue": 0}]}
+    fake = FakeKalshiClient(positions=[], settlements_raw=settlements_raw,       # venue FLAT (Cubs settled + gone)
+                            game_markets=[FakeMarket(T_TOR)])
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(FakeBook([])),
+                                   account_id=ACCT, category=CAT, poll_sec=0, legacy_db_path=leg, _max_cycles=1)
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_order WHERE close_source='settlement'").fetchone()[0] == 1
+        assert BR.journal_signed_positions(conn, ACCT) == {}                     # journal flat on Cubs after booking
+    row = arm.current_row(ACCT, CAT, legacy_db_path=leg)
+    assert (row is None or not row.get("latched"))                              # NOT latched (reconcile was CLEAN)
+    assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is True                  # still armed -- the deploy comes up trading

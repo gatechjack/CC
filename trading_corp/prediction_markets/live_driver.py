@@ -50,7 +50,7 @@ import inspect
 import logging
 import time as _time
 
-from . import arm, boot_reconcile, db, execution, paper, shard_balance
+from . import arm, boot_reconcile, db, execution, paper, settlement, shard_balance
 from ..data import mlb_poly_kalshi_match as M
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
@@ -64,6 +64,11 @@ _SETTLED_LOOKBACK_SEC = 160 * 86400
 # ~1-2 cycles; N=3 (~21s at poll=7s) clears that transient with margin, so the alarm fires only on a GENUINE sustained
 # gap (no allocation set, or drained faster than refill) -- fast enough to matter, not so fast it cries on a transient.
 _SHARD_UNDERFUNDED_ALARM_N = 3
+# ★ R-d settlement-scan cadence: booking a settled position is BOOKKEEPING, not time-critical like a trade, and
+# settlements are infrequent -- so scan on a THROTTLE (default 600s) inside the loop, NOT every ~7s cycle (which
+# would cost ~12k /portfolio/settlements calls/day for no benefit). The BOOT scan (before boot-reconcile) is the
+# load-bearing one -- it books a position that settled while the engine was DOWN so reconcile comes up CLEAN.
+_SETTLE_SCAN_SEC = 600.0
 
 
 # ── market context: fetch the live Kalshi catalog + build the 3-dim index ─────────────────────────────
@@ -453,6 +458,19 @@ async def run_boot_reconcile(conn, sub, client, *, legacy_db_path=None):
                                             fetch_positions=fetch, legacy_db_path=legacy_db_path)
 
 
+# ── R-d: the AUTHENTICATED settlements read (raw payload -> parsed records) ─────────────────────────────
+async def fetch_settlements(client) -> list:
+    """READ Kalshi settlements via a RAW `client.get('/portfolio/settlements?limit=200')` -> [SettlementRecord].
+    RAW (not the typed pykalshi model) because the raw payload carries `market_result` the SDK object drops -- the
+    same 'read the raw payload' lesson as exchange_index. Parsing/validation is delegated to
+    settlement.parse_settlements (a non-dict result -> [], never a mis-parse). This module imports NO broker; the
+    caller passes the broker's authenticated raw client."""
+    r = client.get("/portfolio/settlements?limit=200")
+    if inspect.isawaitable(r):
+        r = await r
+    return settlement.parse_settlements(r)
+
+
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
 async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, account_id, category, poll_sec=7.0,
                                  index_refresh_sec=900.0, legacy_db_path=None, log=None, _max_cycles=None):
@@ -469,9 +487,24 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
         ctx = await fetch_market_context(client, int(_time.time())); last_idx = _time.time()
     except Exception as e:  # noqa: BLE001
         log.warning("pm_live_driver: boot index build failed: %s", e)
+    last_settle = 0.0                                          # R-d: throttle timer for the periodic settlement-scan
     with db.connect(pm_db_path) as conn:
         sub = execution.sub_config_from_row(conn.execute(
             "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, category)).fetchone())
+        # ★ R-d BOOT SETTLEMENT-SCAN -- runs BEFORE boot-reconcile so a position that SETTLED WHILE THE ENGINE WAS
+        # DOWN (the Cubs case) is booked FLAT on the way up, and boot-reconcile then comes up CLEAN instead of
+        # latching R-b. FAIL-SAFE: if the settlements fetch fails, nothing is booked -> boot-reconcile still latches
+        # R-b (the safe fallback, a human confirms + clears). Booking never places an order.
+        try:
+            bsumm = settlement.book_settlements(conn, account_id, category,
+                                                await fetch_settlements(client), now_ts=int(_time.time()))
+            if bsumm["n_booked"]:
+                log.info("pm_live_driver: BOOT settlement-scan booked %d terminal-close(s) -- inspect the first: %s",
+                         bsumm["n_booked"], bsumm["booked"])
+        except Exception as e:  # noqa: BLE001 -- a settlements-read failure must not stop boot; reconcile then latches R-b
+            log.warning("pm_live_driver: BOOT settlement-scan failed (nothing booked -> boot-reconcile may latch R-b, "
+                        "the safe fallback): %s", e)
+        last_settle = _time.time()                             # so the periodic scan waits a full interval after boot
         try:
             res = await run_boot_reconcile(conn, sub, client, legacy_db_path=legacy_db_path)
             log.info("pm_live_driver: boot-reconcile reconciled=%s latched=%s", res.reconciled, res.latched)
@@ -515,6 +548,20 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
             with db.connect(pm_db_path) as conn:
                 sub = execution.sub_config_from_row(conn.execute(
                     "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, category)).fetchone())
+                # ★ R-d PERIODIC settlement-scan (throttled): book any position that settled since the last scan
+                # BEFORE this cycle's Journal + evaluate, so a settled position is netted flat first (a stale
+                # whale-exit for it then sees skip:not_held, and the exposure counters exclude it). A settled MLB
+                # game we hold resolves mid-session; this drops it from /live + net-open within the throttle window.
+                if (_time.time() - last_settle) > _SETTLE_SCAN_SEC:
+                    try:
+                        ssumm = settlement.book_settlements(conn, account_id, category,
+                                                            await fetch_settlements(client), now_ts=now_ts)
+                        if ssumm["n_booked"]:
+                            log.info("pm_live_driver: periodic settlement-scan booked %d terminal-close(s): %s",
+                                     ssumm["n_booked"], ssumm["booked"])
+                    except Exception as e:  # noqa: BLE001 -- a settlements-read failure just skips this scan (retried next window)
+                        log.warning("pm_live_driver: periodic settlement-scan failed (retried next window): %s", e)
+                    last_settle = _time.time()
                 journal = execution.Journal(conn, [account_id], now_ts)
                 wallets = [r["wallet"] for r in conn.execute(
                     "SELECT wallet FROM pm_subdivision_attachment WHERE account_id=? AND category=? AND active=1",
