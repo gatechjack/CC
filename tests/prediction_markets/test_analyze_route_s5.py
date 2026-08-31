@@ -129,7 +129,7 @@ def test_route_force_regrounds_even_when_cached(tmp_path, monkeypatch):
             constructed["n"] += 1
 
     cl = _client(tmp_path, monkeypatch, _CountingGround)
-    with db.connect(db._resolve_db_path()) as conn:
+    with db.connect(db.pm_db_path()) as conn:
         rep = analyze.build_pm_analysis(conn, W, "mlb", now_ts=NOW)
         analyze._cache_put(conn, dataclasses.replace(rep, verdict="stale", null_reason=None, model="test"))
         conn.commit()
