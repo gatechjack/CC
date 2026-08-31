@@ -58,7 +58,7 @@ def test_moneyline_two_teams_same_cid_diff_oidx_is_contested():
     bal = _sig("0xW1", "mlb-bal-col", "Orioles", "0xbc", 0)          # team A (oidx 0)
     col = _sig("0xW2", "mlb-bal-col", "Rockies", "0xbc", 1)          # team B (oidx 1) -- same market, other outcome
     held = {"0xbc": {1}}                                             # we hold COL (oidx 1)
-    kept, closes, contested = ex.detect_opposing_closes([bal, col], held)
+    kept, closes, contested, _pre = ex.detect_opposing_closes([bal, col], held)
     assert contested == {"0xbc"}
     assert kept == []                                                # BOTH incoming sides skipped (off the books)
     assert len(closes) == 1                                          # one holding whale (COL) -> one per-wallet close
@@ -72,7 +72,7 @@ def test_total_over_under_contested_but_different_LINES_not():
     under9 = _sig("0xW2", "mlb-tot-9", "Under", "0xtot9", 0)         # same line (same cid), other outcome -> contested
     over10 = _sig("0xW3", "mlb-tot-10", "Over", "0xtot10", 1)        # DIFFERENT line = DIFFERENT cid -> NOT opposing
     held = {"0xtot9": {1}}
-    kept, closes, contested = ex.detect_opposing_closes([over9, under9, over10], held)
+    kept, closes, contested, _pre = ex.detect_opposing_closes([over9, under9, over10], held)
     assert contested == {"0xtot9"}                                   # over/under on line 9 disagree
     assert "0xtot10" not in contested                               # a different line is a different market
     assert over10 in kept and over9 not in kept and under9 not in kept   # the other-line signal survives untouched
@@ -83,8 +83,21 @@ def test_guard_NEVER_fires_on_legitimate_same_side_stacking():
     # flagged, it would break the same-side-is-conviction design. All kept, no closes.
     sigs = [_sig(w, "mlb-sea", "Seattle", CID, 0) for w in ("0xA", "0xB", "0xC")]
     held = {CID: {0}}                                               # we hold the SAME outcome the whales back
-    kept, closes, contested = ex.detect_opposing_closes(sigs, held)
+    kept, closes, contested, _pre = ex.detect_opposing_closes(sigs, held)
     assert contested == set() and closes == [] and kept == sigs
+
+
+def test_preexisting_pair_is_LEFT_ALONE_not_flattened_retroactively():
+    # ★ Jack RULED let a pre-existing pair (BALCOL) SETTLE. We ALREADY hold BOTH sides (oidx 0 AND 1). On the next
+    # cycle both whales re-signal their side -> the guard must NOT flatten it (that would be two exit orders into a
+    # started game, overriding the ruling). It PREVENTS new pairs, it does not retroactively clean up.
+    bal = _sig("0xW1", "mlb-bal-col", "Orioles", "0xbc", 0)         # re-signal of the held BAL side
+    col = _sig("0xW2", "mlb-bal-col", "Rockies", "0xbc", 1)         # re-signal of the held COL side
+    held = {"0xbc": {0, 1}}                                         # we ALREADY hold BOTH sides (pre-existing pair)
+    kept, closes, contested, preexisting = ex.detect_opposing_closes([bal, col], held)
+    assert preexisting == {"0xbc"}                                  # recognized as pre-existing
+    assert contested == set() and closes == []                     # ★ NOT flattened -- left to settle
+    assert bal in kept and col in kept                             # re-entries flow (gate-4 dedups them; no new order)
 
 
 def test_defer_close_when_no_co_present_routing_source():
@@ -92,7 +105,7 @@ def test_defer_close_when_no_co_present_routing_source():
     # opposing side is still skipped (contested), but the close is DEFERRED (never guessed) and retried next cycle.
     bal = _sig("0xW1", "mlb-bc", "Orioles", "0xbc", 0)
     held = {"0xbc": {1}}                                            # held COL (oidx 1), but NO COL signal present
-    kept, closes, contested = ex.detect_opposing_closes([bal], held)
+    kept, closes, contested, _pre = ex.detect_opposing_closes([bal], held)
     assert contested == {"0xbc"} and kept == [] and closes == []   # skip incoming, defer the close
 
 
@@ -104,7 +117,7 @@ def test_opposed_close_emits_ONE_PER_HOLDING_WHALE_flattening_all():
     A, B, C, D = "0xA", "0xB", "0xC", "0xD"
     entries = [_sig(w, "mlb-sea", "Seattle", CID, 0) for w in (A, B, C)] + [_sig(D, "mlb-tor", "Toronto", CID, 1)]
     held = {CID: {0}}                                               # we hold oidx0 (all three whales' copies)
-    kept, closes, contested = ex.detect_opposing_closes(entries, held)
+    kept, closes, contested, _pre = ex.detect_opposing_closes(entries, held)
     assert contested == {CID} and kept == []                        # all 4 incoming skipped
     assert len(closes) == 3                                          # ★ ONE close per holding whale
     assert {c.wallet for c in closes} == {A, B, C}                  # each holding whale, per-wallet
@@ -139,7 +152,7 @@ def test_settled_side_nets_flat_no_phantom_held_outcome(tmp_path):
         held = ex.account_held_outcomes(conn, "kalshi_jack", "mlb")
     assert held["0xX"] == {1}                                          # ★ oidx0 netted flat; only oidx1 remains
     # a same-side re-signal on the LIVE oidx1 is therefore NOT contested (no phantom oidx0 to disagree with)
-    kept, closes, contested = ex.detect_opposing_closes([_sig(W, "s1", "o1", "0xX", 1)], held)
+    kept, closes, contested, _pre = ex.detect_opposing_closes([_sig(W, "s1", "o1", "0xX", 1)], held)
     assert contested == set() and closes == []
 
 

@@ -687,14 +687,17 @@ def account_held_outcomes(conn, account_id: str, category: str) -> dict:
 
 
 def detect_opposing_closes(entry_signals, held_outcomes: dict):
-    """PURE (no DB): given this cycle's ENTRY signals + `account_held_outcomes` ({cid: set(oidx)}), find every
-    CONTESTED market and return (kept_entries, opposed_closes, contested_cids).
+    """PURE (no DB): given this cycle's ENTRY signals + `account_held_outcomes` ({cid: set(oidx)}), find every NEWLY
+    CONTESTED market and return (kept_entries, opposed_closes, contested_cids, preexisting_pair_cids).
 
-    A market (condition_id) is CONTESTED iff the union of {outcome_index we HOLD} and {outcome_index an incoming
-    entry backs} has >= 2 DISTINCT outcomes -- i.e. the whales disagree. On a contested market we go FLAT (Jack
-    RULED): CLOSE every outcome we hold and SKIP all incoming entries for that market (place neither side; signal
-    ordering carries no information). SAME-SIDE stacking -- multiple whales on the SAME (cid, outcome_index) -- is
-    NEVER contested (one distinct outcome) and flows through untouched: agreement is conviction.
+    ★ THE GUARD PREVENTS a new opposing pair; it does NOT retroactively flatten a pair we ALREADY hold both sides of
+    (Jack RULED: let a pre-existing pair -- BALCOL -- SETTLE; a boot-time flatten would override that with two exit
+    orders into a started game). So a cid where we already hold >= 2 distinct outcomes is a PRE-EXISTING pair: LEFT
+    ALONE (returned separately for visibility; its re-entry signals flow through and are gate-4 deduped, so no new
+    order). A cid is NEWLY CONTESTED only when we hold <= 1 side AND the union {held} u {incoming} reaches >= 2
+    distinct outcomes -- i.e. an incoming signal is CREATING the disagreement this cycle. Then we go FLAT: CLOSE the
+    outcome(s) we hold and SKIP all incoming entries for that market (place neither side; signal ordering carries no
+    information). SAME-SIDE stacking (same cid+outcome_index, N wallets) is NEVER contested -- agreement is conviction.
 
     ★ PER-WALLET CLOSES (REVIEW fix): the flatten emits ONE opposed-close per HOLDING WHALE (each co-present entry
     signal on a held outcome), sized per-wallet in evaluate. The SUM flattens the whole account ('flat means ALL of
@@ -706,13 +709,16 @@ def detect_opposing_closes(entry_signals, held_outcomes: dict):
     inc_by_cid: dict = {}                 # cid -> {oidx: [every co-present entry signal on that outcome]}
     for s in entry_signals:
         inc_by_cid.setdefault(s.condition_id, {}).setdefault(s.outcome_index, []).append(s)
-    contested = set()
+    contested, preexisting = set(), set()
     for cid in set(inc_by_cid) | set(held_outcomes):
-        inc_oidx = set(inc_by_cid.get(cid, {}).keys())
         held_oidx = set(held_outcomes.get(cid, set()))
-        if len(inc_oidx | held_oidx) >= 2:
-            contested.add(cid)
-    kept = [s for s in entry_signals if s.condition_id not in contested]
+        if len(held_oidx) >= 2:
+            preexisting.add(cid)          # we ALREADY hold both sides -> pre-existing pair, LEAVE IT (let it settle)
+            continue
+        inc_oidx = set(inc_by_cid.get(cid, {}).keys())
+        if len(held_oidx | inc_oidx) >= 2:
+            contested.add(cid)            # the disagreement is being CREATED this cycle -> prevent it, go flat
+    kept = [s for s in entry_signals if s.condition_id not in contested]   # pre-existing-pair entries flow (gate-4 dedups)
     closes = []
     for cid in contested:
         for oi in held_outcomes.get(cid, set()):
@@ -720,4 +726,4 @@ def detect_opposing_closes(entry_signals, held_outcomes: dict):
                 closes.append(CopySignal(
                     wallet=src.wallet, slug=src.slug, outcome=src.outcome, condition_id=cid, outcome_index=oi,
                     signal_id=stable_signal_id(src.wallet, cid, oi, "opposed"), is_exit=True, close_source="opposed"))
-    return kept, closes, contested
+    return kept, closes, contested, preexisting

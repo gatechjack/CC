@@ -616,12 +616,17 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 # and a different LINE (a different condition_id) never false-fires.
                 _entries = [s for s in signals if not s.is_exit]
                 _exits = [s for s in signals if s.is_exit]        # whale-EXIT signals -- pass through untouched
-                _kept, _opposed, _contested = execution.detect_opposing_closes(
+                _kept, _opposed, _contested, _preexisting = execution.detect_opposing_closes(
                     _entries, execution.account_held_outcomes(conn, account_id, category))
                 if _contested:
-                    log.warning("pm_live_driver: OPPOSING-PAIR guard -- %d contested market(s) -> FLAT (close held + "
-                                "skip both sides); opposed_closes=%d contested_cids=%s",
+                    log.warning("pm_live_driver: OPPOSING-PAIR guard -- %d NEWLY-contested market(s) -> FLAT (close "
+                                "held + skip both sides); opposed_closes=%d contested_cids=%s",
                                 len(_contested), len(_opposed), sorted(_contested))
+                if _preexisting:
+                    # a pair we ALREADY hold both sides of -> LEFT ALONE (the guard prevents NEW pairs, it does not
+                    # retroactively flatten; Jack RULED let a pre-existing pair settle). Logged for visibility.
+                    log.info("pm_live_driver: OPPOSING-PAIR guard -- %d PRE-EXISTING pair(s) LEFT to settle (NOT "
+                             "flattened): cids=%s", len(_preexisting), sorted(_preexisting))
                 signals = _kept + _exits + _opposed
                 place_fn = make_place_fn(client)
                 summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
