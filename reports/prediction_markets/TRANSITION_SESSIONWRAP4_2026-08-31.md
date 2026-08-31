@@ -95,7 +95,27 @@ direction that inflates it:** a losing longshot resolves to $0 = a held-to-worth
 is the tool to re-ground it per (whale, category, price-bucket).** That is the follow-on worth doing — do not act on
 the raw longshot edge; re-ground first. It makes Stage-5 loss-grounding the prerequisite for the one idea in the study.
 
-## ★ 5b. PER-MARKET EXPOSURE STACKS PER WHALE — no per-market cap (a GAP; know before adding whales)
+## ★ 5b. OPPOSING-PAIR GUARD MISSING — the requirement, its FIRST MEASURED COST, and the rulings (2026-08-31)
+★ CORRECTION (Jack): SAME-side stacking is CORRECT behaviour (agreement = conviction; 10 whales on one side = 50ct,
+intended) — the earlier "per-market cap gap" framing is STRUCK. The real requirement: **when two whales take OPPOSITE
+sides of the same market, the bet comes off the books — we CLOSE the position we hold.** Not "ignore the second
+signal" (that was legacy's quick fix), not "hold both" (guaranteed loss of the spread+fees).
+- **★ FIRST MEASURED COST OF THE MISSING GUARD: 8.7¢, 2026-08-31.** We held BOTH sides of `KXMLBGAME-26AUG312040BALCOL`
+  (Orioles/Rockies): BAL (oidx=0, whale 0x684baa57) + COL (oidx=1, SDTrading), both YES 5ct, same Polymarket cid
+  `0x521f47a9`. Prices summed to exactly $1.00 so the locked loss = the two fees (~$0.087). Jack RULED: **LET IT
+  SETTLE** (closing = 2 more spreads+fees into a pre-game book to recover <9¢ — very likely worse; outcome is
+  determined either way). One opposing pair out of 17 tickers with 3 whales attached — THIS number is the argument
+  for the build.
+- **The leg question is SOLVED by (condition_id, outcome_index):** opposing = SAME cid, DIFFERENT oidx (BALCOL cid
+  shared, oidx 0 vs 1); same-side = same cid+oidx (SEABOS); different line = DIFFERENT cid (SDCIN total-9 `0x3f88`
+  vs total-10 `0x1d60` — NOT opposing). No Kalshi ticker-string parsing; works for moneyline/total/spread uniformly
+  (each is one Polymarket binary market with mutually-exclusive outcomes).
+- **★ RULINGS for the build (Jack 2026-08-31):** (#2) FLAT — close the held side, SKIP the incoming (neither side
+  held; signal ordering carries no information). (multi-copy) flatten ALL of it — 3 whales' 15ct closes fully, not
+  "one whale's worth" (the per-wallet accounting everywhere else makes one-wallet the easy accidental bug — TEST it).
+  Close via the SHARED terminal-close primitive (not a third path); `close_source='opposed'` with its own /live label
+  beside SETTLED/EXIT; exit-exempt on budget gates but DISARM STILL BLOCKS; incoming gets a labelled SKIP not an error;
+  guard must NEVER fire on a legitimate same-side copy. (Build in progress this session; review; halt for deploy.)
 Investigated read-only 2026-08-31 (runner `cc\pm_seabos_dump_ro.ps1` + `cc\pm_seabos_venue_ro.ps1`). SEABOS-SEA (Aug31)
 showed **10 contracts** = TWO DIFFERENT whales copying the SAME side: id=10 wallet `0x684baa57` (signal_id fb54635d,
 coid e16526f9, 17:17:31Z) + id=12 wallet `0x16bb9951`/SDTrading (signal_id dfcab59d, coid 151fa144, 18:54:50Z), both

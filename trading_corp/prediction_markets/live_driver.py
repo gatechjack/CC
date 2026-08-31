@@ -325,14 +325,16 @@ def _record_order(conn, sub, signal, decision, *, outcome_status, fill=None, err
     conn.execute(
         "INSERT INTO pm_subdivision_order (account_id, category, wallet, condition_id, outcome_index, signal_id, "
         " client_order_id, ticker, order_side, outcome_leg, is_exit, submitted_count, submitted_price, "
-        " time_in_force, outcome_status, broker_order_id, fill_count, fill_price, fee, error_detail, dry_run, "
-        " submitted_ts, response_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
+        " time_in_force, outcome_status, broker_order_id, fill_count, fill_price, fee, error_detail, close_source, "
+        " dry_run, submitted_ts, response_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
         (sub.account_id, sub.category, signal.wallet, signal.condition_id, signal.outcome_index, signal.signal_id,
          decision.client_order_id, decision.kalshi_ticker, decision.body.get("side"), decision.leg,
          1 if signal.is_exit else 0, decision.count, decision.price, decision.body.get("time_in_force"),
          outcome_status, (getattr(fill, "order_id", None) if fill else None),
          (float(getattr(fill, "qty", 0.0)) if fill else None), (float(getattr(fill, "price", 0.0)) if fill else None),
-         (float(getattr(fill, "fee", 0.0)) if fill else None), error_detail, int(now_ts), int(now_ts)))
+         (float(getattr(fill, "fee", 0.0)) if fill else None), error_detail,
+         getattr(signal, "close_source", None),   # 'opposed' for a cancellation-by-disagreement; None for entry/whale-exit
+         int(now_ts), int(now_ts)))
     if hasattr(conn, "commit"):
         conn.commit()
 
@@ -603,6 +605,23 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                     # recoverable fetch error). No reduction seen -> confirmed stays True -> advance normally.
                     if confirmed:
                         prior_snapshots[w] = snapshot_open_positions(book.rows)
+                # ★ OPPOSING-PAIR GUARD: when two whales disagree on ONE market (same condition_id, different
+                # outcome_index), the bet comes OFF THE BOOKS -- CLOSE what we hold (account-level FULL flatten,
+                # close_source='opposed') and SKIP both incoming sides (place neither; signal ordering is not
+                # information). Same-side stacking (same cid+outcome_index) is NEVER contested -> untouched (agreement
+                # is conviction). The close is a reduce_only exit through the SAME chokepoint below -- DISARM still
+                # blocks it, and the net-open guard makes it idempotent against a co-occurring whale-exit (no double
+                # close). Detected on the SEMANTIC market identity, so 'opposing' is unambiguous across market types
+                # and a different LINE (a different condition_id) never false-fires.
+                _entries = [s for s in signals if not s.is_exit]
+                _exits = [s for s in signals if s.is_exit]        # whale-EXIT signals -- pass through untouched
+                _kept, _opposed, _contested = execution.detect_opposing_closes(
+                    _entries, execution.account_held_by_market(conn, account_id, category))
+                if _contested:
+                    log.warning("pm_live_driver: OPPOSING-PAIR guard -- %d contested market(s) -> FLAT (close held + "
+                                "skip both sides); opposed_closes=%d contested_cids=%s",
+                                len(_contested), len(_opposed), sorted(_contested))
+                signals = _kept + _exits + _opposed
                 place_fn = make_place_fn(client)
                 summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
                                                       shard_balances=shard_bal, legacy_db_path=legacy_db_path, log=log)

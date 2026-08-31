@@ -81,6 +81,8 @@ class CopySignal:
     outcome_index: int
     signal_id: str            # STABLE across restarts: the whale's entry tx_hash (canonical) or a position-id hash
     is_exit: bool = False     # entry vs exit (Option D). An exit -> reduce_only on the SAME leg.
+    close_source: str | None = None  # None=whale-exit (per-wallet close) | 'opposed'=cancellation-by-disagreement
+                                     # (ACCOUNT-level FULL flatten -- both whales disagreeing takes the market off the books)
 
 
 @dataclass(frozen=True)
@@ -399,7 +401,14 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         # (Jack RULED): FULL close on any confirmed whale exit (not a mirror-ratio); reduce_only also caps at the
         # venue so we can never oversell. Read fresh from the durable journal (self-corrects within a cycle as
         # earlier exits finalize).
-        held = journal_net_open_contracts(conn, sub.account_id, sub.category, ticker, leg, signal.wallet)
+        # ★ SIZING BASIS by close_source: a whale-EXIT closes OUR copy of THAT whale's position (per-wallet, Fork B1);
+        # an OPPOSED close takes the MARKET off the books -> flatten the ACCOUNT's FULL net-open on this (ticker, leg)
+        # across ALL whales, NOT one whale's worth (Jack RULED 2026-08-31 -- the per-wallet default is the accidental
+        # "one whale's worth" bug the multi-copy case exposes). reduce_only caps at the venue either way (no oversell).
+        if getattr(signal, "close_source", None) == "opposed":
+            held = account_net_open_contracts(conn, sub.account_id, sub.category, ticker, leg)
+        else:
+            held = journal_net_open_contracts(conn, sub.account_id, sub.category, ticker, leg, signal.wallet)
         count = int(round(held))
         if count <= 0:
             return Decision("skip:not_held", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
@@ -647,3 +656,80 @@ def journal_net_open_contracts(conn, account_id: str, category: str, ticker: str
         "  AND outcome_leg=? AND dry_run=0 AND outcome_status='filled'",
         (account_id, category, wallet, ticker, leg)).fetchone()
     return float(r["net"] or 0.0) if r else 0.0
+
+
+def account_net_open_contracts(conn, account_id: str, category: str, ticker: str, leg: str) -> float:
+    """Read-only: the ACCOUNT's NET-OPEN filled contracts on ONE (ticker, leg) across ALL whales (no wallet filter).
+    The opposed-close sizing basis: an opposing pair takes the MARKET off the books, so we flatten the whole account
+    position, not one whale's worth. This is the DELIBERATE counterpart to `journal_net_open_contracts`' per-wallet
+    scoping -- do NOT collapse the two; the whale-exit MUST stay per-wallet, the opposed-close MUST be account-level."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return 0.0
+    r = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN is_exit=0 THEN COALESCE(fill_count,0) "
+        "  ELSE -COALESCE(fill_count,0) END), 0) AS net "
+        "FROM pm_subdivision_order WHERE account_id=? AND category=? AND UPPER(ticker)=UPPER(?) "
+        "  AND outcome_leg=? AND dry_run=0 AND outcome_status='filled'",
+        (account_id, category, ticker, leg)).fetchone()
+    return float(r["net"] or 0.0) if r else 0.0
+
+
+def account_held_by_market(conn, account_id: str, category: str) -> dict:
+    """{condition_id: {outcome_index: {net, ticker, leg}}} for every ACCOUNT-level NET-OPEN>0 position (all whales).
+    The opposition detector's view of what we HOLD, keyed on the SEMANTIC market (condition_id) + outcome_index --
+    the identity that makes 'opposing' unambiguous across market types (two outcomes of ONE Polymarket market are
+    mutually exclusive: moneyline = two teams, total = over/under, spread = the two sides; a different LINE is a
+    different condition_id, so it is a different market and never opposes -- SDCIN total-9 vs total-10)."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return {}
+    rows = conn.execute(
+        "SELECT condition_id, outcome_index, ticker, outcome_leg, "
+        " COALESCE(SUM(CASE WHEN is_exit=0 THEN COALESCE(fill_count,0) ELSE -COALESCE(fill_count,0) END),0) AS net "
+        "FROM pm_subdivision_order WHERE account_id=? AND category=? AND dry_run=0 AND outcome_status='filled' "
+        "  AND condition_id IS NOT NULL AND outcome_index IS NOT NULL "
+        "GROUP BY condition_id, outcome_index, ticker, outcome_leg", (account_id, category)).fetchall()
+    out: dict = {}
+    for r in rows:
+        net = float(r["net"] or 0.0)
+        if net <= 1e-9:
+            continue
+        out.setdefault(r["condition_id"], {})[int(r["outcome_index"])] = {
+            "net": net, "ticker": r["ticker"], "leg": r["outcome_leg"]}
+    return out
+
+
+def detect_opposing_closes(entry_signals, held_by_market: dict):
+    """PURE (no DB): given this cycle's ENTRY signals + `account_held_by_market`, find every CONTESTED market and
+    return (kept_entries, opposed_closes, contested_cids).
+
+    A market (condition_id) is CONTESTED iff the union of {outcome_index we HOLD net-open} and {outcome_index an
+    incoming entry backs} has >= 2 DISTINCT outcomes -- i.e. the whales disagree on the outcome. On a contested
+    market we go FLAT (Jack RULED): CLOSE every outcome we hold (opposed exit, ACCOUNT-level full net) and SKIP all
+    incoming entries for that market (place neither side; signal ordering carries no information). SAME-SIDE stacking
+    -- multiple whales on the SAME (cid, outcome_index) -- is NEVER contested (one distinct outcome) and flows through
+    untouched: agreement is conviction (10 whales on one side = 50 contracts, intended). The close's slug/outcome are
+    sourced from a co-present entry signal for the held outcome (the holding whale still holds it -> it re-signals this
+    cycle); if that source is unavailable this cycle (the whale's book failed), the close is DEFERRED (retried next
+    cycle), never guessed."""
+    inc_by_cid: dict = {}                 # cid -> {oidx: the first entry signal seen (slug/outcome source)}
+    for s in entry_signals:
+        inc_by_cid.setdefault(s.condition_id, {}).setdefault(s.outcome_index, s)
+    contested = set()
+    for cid in set(inc_by_cid) | set(held_by_market):
+        inc_oidx = set(inc_by_cid.get(cid, {}).keys())
+        held_oidx = {oi for oi, v in held_by_market.get(cid, {}).items() if v["net"] > 0}
+        if len(inc_oidx | held_oidx) >= 2:
+            contested.add(cid)
+    kept = [s for s in entry_signals if s.condition_id not in contested]
+    closes = []
+    for cid in contested:
+        for oi, v in held_by_market.get(cid, {}).items():
+            if v["net"] <= 0:
+                continue
+            src = inc_by_cid.get(cid, {}).get(oi)     # a co-present entry signal for the HELD outcome (slug/outcome)
+            if src is None:
+                continue                              # no routing source this cycle -> DEFER (retried), never guess
+            closes.append(CopySignal(
+                wallet=src.wallet, slug=src.slug, outcome=src.outcome, condition_id=cid, outcome_index=oi,
+                signal_id=stable_signal_id(src.wallet, cid, oi, "opposed"), is_exit=True, close_source="opposed"))
+    return kept, closes, contested

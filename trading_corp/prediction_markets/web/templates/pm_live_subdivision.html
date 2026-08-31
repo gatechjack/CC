@@ -80,7 +80,7 @@
         <td>{{ o.ticker }}</td>
         <td>{{ o.market_type }}</td>
         <td>{{ o.outcome_leg|upper }}</td>
-        <td>{% if settled %}SETTLED{% if o.won == 1 %} <span class="pm-won-y">won</span>{% elif o.won == 0 %} <span class="pm-won-n">lost</span>{% endif %}{% elif o.is_exit %}EXIT{% else %}ENTRY{% endif %}</td>
+        <td>{% if settled %}SETTLED{% if o.won == 1 %} <span class="pm-won-y">won</span>{% elif o.won == 0 %} <span class="pm-won-n">lost</span>{% endif %}{% elif o.close_source == 'opposed' %}<span title="cancellation-by-disagreement: two whales took opposite sides, so we closed the position -- off the books">OPPOSED</span>{% elif o.is_exit %}EXIT{% else %}ENTRY{% endif %}</td>
         <td class="pm-num">{{ o.submitted_count if o.submitted_count is not none else '—' }}{% if o.fill_count is not none %} &middot; {{ 'settled' if settled else 'filled' }} {{ '%g'|format(o.fill_count) }}{% endif %}</td>
         <td class="pm-num">{% if settled %}&mdash;{% elif o.submitted_price is not none %}${{ '%.2f'|format(o.submitted_price) }}{% else %}&mdash;{% endif %}</td>
         <td class="pm-num">{% if settled %}{% if o.realized_pnl is not none %}<span class="{% if o.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.4f'|format(o.realized_pnl) }}</span> <span class="pm-muted">realized</span>{% else %}&mdash;{% endif %}{% elif o.fill_price is not none %}${{ '%.2f'|format(o.fill_price) }}{% else %}&mdash;{% endif %}</td>
