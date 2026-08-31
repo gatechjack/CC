@@ -582,3 +582,22 @@ def open_positions_needing_manual_exit(conn) -> list:
             out.append({"account_id": r["account_id"], "category": r["category"], "ticker": r["ticker"],
                         "outcome_leg": r["outcome_leg"], "net_open_contracts": net})
     return out
+
+
+def journal_net_open_contracts(conn, account_id: str, category: str, ticker: str, leg: str) -> float:
+    """Read-only: the sub-division's NET-OPEN filled contracts on ONE (ticker, leg) = SUM(entry fills) -
+    SUM(exit fills) from the durable journal (dry_run=0, filled). Two Option-D uses: (a) the HOLDING GUARD -- never
+    fire a reduce_only exit against a position we do not hold (fail-closed: 0 -> no exit); (b) the candidate exit
+    SIZE for a FULL close (Fork B1, net-open contracts). Ticker compared UPPER (the identity the order path sends
+    to Kalshi). 0.0 if the table is absent or the leg is flat. NEVER negative for a real book (exits reduce_only
+    cannot exceed entries); a negative would surface an over-exit / mis-booking, so it is NOT clamped here --
+    callers decide (the guard treats <=0 as 'do not exit')."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return 0.0
+    r = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN is_exit=0 THEN COALESCE(fill_count,0) "
+        "  ELSE -COALESCE(fill_count,0) END), 0) AS net "
+        "FROM pm_subdivision_order WHERE account_id=? AND category=? AND UPPER(ticker)=UPPER(?) "
+        "  AND outcome_leg=? AND dry_run=0 AND outcome_status='filled'",
+        (account_id, category, ticker, leg)).fetchone()
+    return float(r["net"] or 0.0) if r else 0.0

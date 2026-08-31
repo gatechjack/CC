@@ -190,6 +190,77 @@ def positions_to_entry_signals(rows, wallet: str) -> list:
     return out
 
 
+# ── Option D (whale-exit) detection inputs: /activity SELLs + /positions size-reductions ───────────────
+# The exit path is: /activity SELL (trigger) + /positions size-reduction (confirmation), matched in-window by
+# execution.detect_exit_signals (BOTH agree or MISSED -- no single-signal fallback). These two PURE adapters build
+# its inputs from the real ActivityRow / PositionRow shapes; the caller (the live loop) owns the prior /positions
+# snapshot (Fork A: in-memory, boot-seeded). Neither adapter places or writes -- they only shape data.
+_REDUCTION_EPS = 1e-6
+
+
+def activity_sells_from_activity(rows, wallet: str) -> list:
+    """A whale's /activity rows -> the SELL dicts detect_exit_signals wants: {wallet, condition_id, outcome_index,
+    ts, tx_hash}. Keeps ONLY discretionary sells: type=='TRADE' AND side=='SELL'. type=='TRADE' excludes REDEEM /
+    settlement events (a redemption is not a discretionary exit); the SELL requirement then pairs with a /positions
+    reduction. Uses the passed `wallet` (the attachment identity, mirroring positions_to_entry_signals) so the
+    emitted key matches the reduction side's wallet exactly. tx_hash is the PER-SELL identity -> the exit's
+    signal_id (distinct across re-sells, stable across restart) -- also the Finding-5 lever (a later sub-rung)."""
+    out = []
+    for r in rows:
+        if str(getattr(r, "type", "") or "").upper() != "TRADE":
+            continue
+        if str(getattr(r, "side", "") or "").upper() != "SELL":
+            continue
+        cid = str(getattr(r, "condition_id", "") or "")
+        if not cid:
+            continue
+        out.append({"wallet": wallet, "condition_id": cid,
+                    "outcome_index": int(getattr(r, "outcome_index", 0) or 0),
+                    "ts": int(getattr(r, "timestamp", 0) or 0),
+                    "tx_hash": str(getattr(r, "transaction_hash", "") or "")})
+    return out
+
+
+def snapshot_open_positions(rows) -> dict:
+    """Snapshot a whale's GENUINELY-OPEN /positions as {(condition_id, outcome_index): (size, slug, outcome)} --
+    the prior-cycle baseline detect_position_reductions diffs against (Fork A: the live loop holds this in memory,
+    boot-seeded so the FIRST cycle emits no reduction). slug/outcome are carried so a leg that is later FULLY SOLD
+    (absent next cycle -> no current row to read them from) can still produce the confirmation payload from the
+    PRIOR snapshot. Genuinely-open only (symmetric with positions_to_entry_signals); a settlement transition that
+    also shrinks a leg is filtered by the SELL requirement in detect_exit_signals, not here."""
+    snap: dict = {}
+    for p in rows:
+        if not paper.is_genuinely_open(p):
+            continue
+        cid = str(getattr(p, "condition_id", "") or "")
+        oidx = paper.pos_outcome_index(p)
+        key = (cid, oidx)
+        size, _slug, _out = snap.get(key, (0.0, "", ""))
+        snap[key] = (size + float(getattr(p, "size", 0.0) or 0.0),
+                     str(getattr(p, "slug", "") or ""), str(getattr(p, "outcome", "") or ""))
+    return snap
+
+
+def detect_position_reductions(prior: dict, rows, wallet: str, now_ts: int) -> list:
+    """Diff current genuinely-open /positions against `prior` (a snapshot_open_positions map from a previous cycle)
+    -> reduction events {wallet, condition_id, outcome_index, ts, slug, outcome} for each leg whose genuinely-open
+    size DROPPED (cur < prior - eps), INCLUDING a drop to 0 (fully sold -> vanished). `ts` is the DETECTION time
+    (now_ts) -- a /positions row carries no change timestamp -- so detect_exit_signals' window must cover the
+    (detection - sell) lag. slug/outcome are taken from the PRIOR snapshot so a vanished leg still matches its
+    Kalshi ticker. PURE (reads only the passed snapshot + rows). A settlement/redemption also shrinks a position
+    but has NO co-occurring SELL, so requiring BOTH in detect_exit_signals filters it -- this adapter does not try
+    to distinguish it (the SELL is the authoritative discretionary-exit signal)."""
+    cur = snapshot_open_positions(rows)
+    out = []
+    for key, (prev_size, slug, outcome) in prior.items():
+        cid, oidx = key
+        now_size = cur.get(key, (0.0, "", ""))[0]
+        if now_size < float(prev_size) - _REDUCTION_EPS:
+            out.append({"wallet": wallet, "condition_id": cid, "outcome_index": oidx,
+                        "ts": int(now_ts), "slug": slug, "outcome": outcome})
+    return out
+
+
 # ── the placement seam (option b): POST the gate-approved body VERBATIM ────────────────────────────────
 def make_place_fn(client):
     """Return an async `place_fn(decision) -> FillEvent` that POSTs the APPROVED `decision.body` verbatim and maps
