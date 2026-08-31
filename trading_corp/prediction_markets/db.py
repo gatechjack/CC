@@ -777,6 +777,19 @@ MIGRATION_014: list[str] = [
     "ALTER TABLE pm_subdivision ADD COLUMN contracts INTEGER NOT NULL DEFAULT 5",
 ]
 
+# migration 015 (2026-08-31, R-d settlement-close): a filled live position that SETTLED on Kalshi is booked as a
+# TERMINAL-CLOSE row (is_exit=1, outcome_status='filled', fill_count=held -> it nets the position in both
+# boot_reconcile and /live, the same shape a whale-exit produces). These columns carry the settlement FACTS the
+# order journal never had: close_source ('settlement' | 'settlement_void'), realized_pnl (booked P&L), won (1/0),
+# settled_ts (Kalshi settled_time). PURE DDL; BEHAVIOUR-NEUTRAL -- existing rows read NULL and nothing writes these
+# until the R-d settlement-scan is deployed. (The settled per-contract value reuses `fill_price`: won->1.0/lost->0.0.)
+MIGRATION_015: list[str] = [
+    "ALTER TABLE pm_subdivision_order ADD COLUMN close_source TEXT",
+    "ALTER TABLE pm_subdivision_order ADD COLUMN realized_pnl REAL",
+    "ALTER TABLE pm_subdivision_order ADD COLUMN won INTEGER",
+    "ALTER TABLE pm_subdivision_order ADD COLUMN settled_ts INTEGER",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -792,6 +805,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (12, MIGRATION_012),
     (13, MIGRATION_013),
     (14, MIGRATION_014),
+    (15, MIGRATION_015),
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

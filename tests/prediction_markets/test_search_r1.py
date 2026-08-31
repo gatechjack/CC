@@ -24,11 +24,11 @@ OLD_TS = NOW - 100 * DAY       # outside a 30d window
 
 # ════════════════════════════════════════════════ migration 013 ════════════════════════════════════════
 
-def test_schema_head_is_14():
-    # migration 014 (contracts column, R8 flat-contracts sizing) advanced the head from 13 -> 14; migration 013
-    # (pm_search_run) is still present. (This assertion was stale from the sizing session; corrected here.)
-    assert db.SCHEMA_HEAD == 14
-    assert (13, db.MIGRATION_013) in db.MIGRATIONS
+def test_schema_head_is_15():
+    # 013=pm_search_run, 014=contracts column (R8 sizing), 015=settlement-close columns (R-d). Head pinned so a
+    # migration bump is a deliberate one-line edit here.
+    assert db.SCHEMA_HEAD == 15
+    assert (13, db.MIGRATION_013) in db.MIGRATIONS and (15, db.MIGRATION_015) in db.MIGRATIONS
 
 
 def test_migration_013_creates_pm_search_run(tmp_path):
