@@ -123,7 +123,7 @@ def ground_losses(activity_rows, closed_rows, resolutions: dict, *, activity_tru
     honest_w = cw + ao_w
     honest_l = cl + ao_l
     denom = honest_w + honest_l
-    completeness = ("windowed(activity truncated -- a_only losses are a LOWER bound)"
+    completeness = ("windowed(activity truncated -- a_only losses are a lower bound)"
                     if activity_truncated else "complete(activity exhausted within window)")
     return LossGrounding(
         closed_wins=cw, closed_losses=cl, a_only_wins=ao_w, a_only_losses=ao_l,
