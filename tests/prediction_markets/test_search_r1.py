@@ -24,8 +24,10 @@ OLD_TS = NOW - 100 * DAY       # outside a 30d window
 
 # ════════════════════════════════════════════════ migration 013 ════════════════════════════════════════
 
-def test_schema_head_is_13():
-    assert db.SCHEMA_HEAD == 13
+def test_schema_head_is_14():
+    # migration 014 (contracts column, R8 flat-contracts sizing) advanced the head from 13 -> 14; migration 013
+    # (pm_search_run) is still present. (This assertion was stale from the sizing session; corrected here.)
+    assert db.SCHEMA_HEAD == 14
     assert (13, db.MIGRATION_013) in db.MIGRATIONS
 
 
@@ -59,9 +61,10 @@ def test_migration_013_is_pure_ddl_empty(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM pm_search_run").fetchone()[0] == 0
 
 
-def test_upgrade_12_to_13_adds_only_search_run(tmp_path):
-    """Applying 1..12 by hand leaves the DB at 12 with NO pm_search_run; init_db increments to 13
-    and adds exactly that table -- the 12->13 step is behaviour-neutral for every other table."""
+def test_upgrade_12_to_13_adds_search_run(tmp_path):
+    """Applying 1..12 by hand leaves the DB at 12 with NO pm_search_run; applying migration 013 adds exactly that
+    table (the 12->13 step is behaviour-neutral for every other table). (Formerly asserted a head of 13; migration
+    014 later advanced the head, so this checks the 013 step directly and lets init_db reach SCHEMA_HEAD.)"""
     p = str(tmp_path / "pm.db")
     with db.connect(p) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)")
@@ -78,7 +81,7 @@ def test_upgrade_12_to_13_adds_only_search_run(tmp_path):
             "SELECT name FROM sqlite_master WHERE name='pm_search_run'").fetchone() is None
     db.init_db(p)
     with db.connect(p) as conn:
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 13
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == db.SCHEMA_HEAD
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE name='pm_search_run'").fetchone() is not None
 
