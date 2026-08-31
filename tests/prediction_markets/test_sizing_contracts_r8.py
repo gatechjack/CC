@@ -96,6 +96,44 @@ def test_contracts_mode_ignores_a_null_fixed_stake():
     assert d.status == "dry_run_would_place" and d.count == 3
 
 
+def test_contracts_mode_via_production_pipeline_with_null_fixed_stake():
+    # the PRODUCTION path: a DB row with NULL fixed_stake_usd + sizing_mode='contracts' -> sub_config_from_row
+    # substitutes the CONFIG_DEFAULT stake (never delivers None), so evaluate cannot reach float(None). Sizes N.
+    cfg = ex.sub_config_from_row({"account_id": ACCT, "category": CAT, "market_types": "moneyline,total,spread",
+                                  "sizing_mode": "contracts", "fixed_stake_usd": None, "contracts": 5,
+                                  "per_order_usd_cap": 25.0, "daily_usd_cap": 50.0, "max_open_usd": 100.0,
+                                  "max_orders_per_day": 25, "max_slippage_cents": 2, "liquidity_ratio": 0.75})
+    assert cfg.contracts == 5 and cfg.fixed_stake_usd == 5.0        # NULL stake -> code default (phantom, unused)
+    assert _decide(cfg).count == 5                                  # ... and it sizes 5 contracts, no crash
+
+
+def test_contracts_zero_or_negative_clamps_to_1_loudly(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING):
+        d0 = _decide(_sub(sizing_mode="contracts", contracts=0))
+    assert d0.status == "dry_run_would_place" and d0.count == 1     # clamped, not a silent 1
+    assert any("CLAMPED to 1" in r.getMessage() for r in caplog.records)   # ... and LOUD (the liquidity_ratio=0 lens)
+    assert _decide(_sub(sizing_mode="contracts", contracts=-4)).count == 1
+
+
+def test_contracts_1_boundary():
+    d = _decide(_sub(sizing_mode="contracts", contracts=1))
+    assert d.status == "dry_run_would_place" and d.count == 1 and d.body["count"] == "1"
+
+
+def test_sub_config_from_row_tolerates_a_pre014_sqlite_row_missing_contracts():
+    # a REAL sqlite3.Row from a schema-13-shaped table (NO contracts column): _row_get catches IndexError -> None
+    # -> CONFIG_DEFAULTS 5. Proves the engine path is safe if execution.py ran before migration 014.
+    conn = sqlite3.connect(":memory:"); conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE pm_subdivision (account_id TEXT, category TEXT, market_types TEXT, sizing_mode TEXT, "
+                 "fixed_stake_usd REAL, per_order_usd_cap REAL, daily_usd_cap REAL, max_open_usd REAL, "
+                 "max_orders_per_day INTEGER, max_slippage_cents INTEGER, liquidity_ratio REAL)")
+    conn.execute("INSERT INTO pm_subdivision VALUES ('kalshi_jack','mlb','moneyline','fixed',5.0,25,50,100,25,2,0.75)")
+    row = conn.execute("SELECT * FROM pm_subdivision").fetchone()
+    assert "contracts" not in row.keys()                           # pre-014 shape
+    assert ex.sub_config_from_row(row).contracts == 5              # tolerated -> code default
+
+
 # ══ build_v2_event_order: explicit count vs the legacy derive-from-copy_usd path ══
 def test_build_v2_explicit_count_vs_legacy_derive():
     body_c, cnt_c, _ = build_v2_event_order(ticker=T_TOR, outcome="yes", is_buy=True, base_price=0.55, copy_usd=0.0,

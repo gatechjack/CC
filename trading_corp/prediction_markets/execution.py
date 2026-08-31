@@ -321,9 +321,16 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     # (legacy). In contracts mode fixed_stake_usd is IRRELEVANT (may be NULL) -- the per-order dollar bound is
     # gate 2b (notional vs per_order cap), not gate 2a. The USD gates all gate on the leg-correct NOTIONAL below.
     sizing_mode = (sub.sizing_mode or "fixed")
+    if sizing_mode not in ("fixed", "contracts", "kelly"):                            # NEVER a silent fallback
+        _LOG.warning("pm sizing_mode: UNRECOGNISED %r -> falling back to flat-dollars 'fixed' (check the "
+                     "pm_subdivision.sizing_mode value; the built modes are 'fixed' and 'contracts')", sizing_mode)
     if sizing_mode == "contracts":
         copy_usd = 0.0                                                                # not a dollars stake
-        flat_contracts = max(1, int(sub.contracts))                                  # >=1; per-cycle from pm_subdivision.contracts
+        flat_contracts = int(sub.contracts)                                          # per-cycle from pm_subdivision.contracts
+        if flat_contracts < 1:                                                        # LOUD clamp (the liquidity_ratio=0 lens)
+            _LOG.warning("pm contracts: INVALID %r (non-positive) -> CLAMPED to 1. A 0/negative contract count would "
+                         "otherwise SILENTLY place 1 -- set a positive contracts value.", sub.contracts)
+            flat_contracts = 1
     else:
         copy_usd = float(sub.fixed_stake_usd)
         flat_contracts = None
