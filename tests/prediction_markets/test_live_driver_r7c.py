@@ -83,18 +83,23 @@ class _FakePortfolio:
 
 class FakeKalshiClient:
     """Records every would-be POST; NEVER hits the network. `post` returns a fill or raises a KalshiError."""
-    def __init__(self, *, post_raise=None, positions=None, pos_raise=None, game_markets=None):
+    def __init__(self, *, post_raise=None, positions=None, pos_raise=None, game_markets=None, total_markets=None):
         self.posts = []
         self._post_raise = post_raise
         self.portfolio = _FakePortfolio(positions, pos_raise)
         self._game = game_markets or []
+        self._total = total_markets or []
     async def post(self, path, body):
         self.posts.append((path, body))
         if self._post_raise:
             raise self._post_raise
         return dict(_FILL)
     async def get_markets(self, series_ticker=None, status=None, limit=None, fetch_all=False, **kw):
-        return self._game if series_ticker == "KXMLBGAME" else []
+        if series_ticker == "KXMLBGAME":
+            return self._game
+        if series_ticker == "KXMLBTOTAL":
+            return self._total
+        return []
 
 
 class FakeBroker:
@@ -191,6 +196,7 @@ def test_signal_conversion_filters_and_maps_stable():
 def test_market_quote_dict_maps_and_tolerates_missing():
     d = L._market_quote_dict(FakeMarket(T_TOR, yes_ask=0.6, no_ask=0.4, liq=700))
     assert d["yes_ask_dollars"] == 0.6 and d["no_ask_dollars"] == 0.4 and d["liquidity_dollars"] == 700.0
+    assert d["yes_bid_dollars"] == 0.53                        # the exit prices off the bid -> it must be mapped
     class _Bare:  # no quote fields -> None (evaluate then skip:no_quote, safe)
         ticker = T_SEA
     assert L._market_quote_dict(_Bare())["yes_ask_dollars"] is None
@@ -414,8 +420,8 @@ async def test_boot_reconcile_raise_force_latches(tmp_path):
 
 
 # ── Option D R-D3: the scheduled loop DETECTS a whale exit (/positions reduction + /activity SELL) and PLACES it ──
-def _prow(cid, oidx, size, outcome="Toronto Blue Jays", cur=0.5):
-    return PositionRow.from_api({"proxyWallet": "0xWHALE", "conditionId": cid, "size": size, "slug": SLUG,
+def _prow(cid, oidx, size, outcome="Toronto Blue Jays", cur=0.5, slug=SLUG):
+    return PositionRow.from_api({"proxyWallet": "0xWHALE", "conditionId": cid, "size": size, "slug": slug,
                                  "outcome": outcome, "outcomeIndex": oidx, "curPrice": cur, "redeemable": False,
                                  "avgPrice": 0.5})
 
@@ -473,6 +479,7 @@ async def test_scheduled_loop_detects_and_places_a_whale_exit(tmp_path):
     exit_posts = [b for (_pth, b) in fake.posts if b.get("reduce_only")]         # the exit is reduce_only
     assert len(exit_posts) == 1 and exit_posts[0]["ticker"] == T_TOR and exit_posts[0]["count"] == "5"
     assert exit_posts[0]["side"] == "ask"                                        # sell YES to close = ask
+    assert exit_posts[0]["price"] == "0.5100"                                    # ★ marketable: yes_bid 0.53 - slip 0.02
     with db.connect(p) as conn:
         r = conn.execute("SELECT is_exit, outcome_status, fill_count FROM pm_subdivision_order "
                          "WHERE is_exit=1 AND dry_run=0").fetchone()
@@ -495,3 +502,41 @@ async def test_scheduled_loop_disarmed_does_not_place_the_exit(tmp_path):
     assert fake.posts == []                                                      # nothing placed while disarmed
     with db.connect(p) as conn:
         assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_order WHERE is_exit=1").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduled_loop_places_a_NO_leg_whale_exit(tmp_path):
+    """R-D3 NO-LEG (standing lens #1, through the full loop): an Under (NO) total position vanishes + a SELL
+    confirms -> the loop places a reduce_only NO exit = side 'bid', priced marketable off the NO bid (1 - yes_ask).
+    NO-leg exits are only reachable after a NO ENTRY (which trips the standing NO-leg STOP), but the WIRING +
+    total-index match + NO-bid derivation must be correct end-to-end. (Also exercises a NEGATIVE position_fp on the
+    boot-reconcile side.)"""
+    import time
+    T_TOTAL = "KXMLBTOTAL-26AUG281915SEATOR-9"; TOTAL_SLUG = "mlb-sea-tor-2026-08-28-total-8pt5"
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)
+    with db.connect(p) as conn:
+        conn.execute("INSERT OR IGNORE INTO pm_account(account_id,venue,secret_ref,label,active,created_ts) "
+                     "VALUES(?, 'kalshi','KALSHI','Jack',1,?)", (ACCT, int(time.time())))
+        conn.execute("INSERT OR IGNORE INTO pm_subdivision(account_id,category,market_types,sizing_mode,"
+                     "fixed_stake_usd,active,created_ts) VALUES(?,?,'moneyline,total,spread','fixed',5.0,1,?)",
+                     (ACCT, CAT, int(time.time())))
+        conn.execute("INSERT OR IGNORE INTO pm_subdivision_attachment(account_id,category,wallet,active,source,added_ts) "
+                     "VALUES(?,?,'0xWHALE',1,'promote_to_live',?)", (ACCT, CAT, int(time.time())))
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
+                     "outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,?,'no',0,4,'filled',0,?,?)",
+                     (ACCT, CAT, T_TOTAL, NOW, NOW))                              # a REAL -4 NO holding to close
+        conn.commit()
+    now = int(time.time())
+    pos_client = FakeMultiCyclePositionsClient(
+        [FakeBook([_prow("0xunder", 1, 4.0, outcome="Under", slug=TOTAL_SLUG)]), FakeBook([])],
+        [_arow("0xunder", 1, "SELL", now, "0xtxU")])
+    fake = FakeKalshiClient(positions=[FakeKPos(T_TOTAL, -4)],                    # boot-reconcile: journal -4 (NO) == kalshi -4
+                            game_markets=[FakeMarket(T_TOR), FakeMarket(T_SEA)],  # resolves the total's anchor game
+                            total_markets=[FakeMarket(T_TOTAL, yes_ask=0.52, no_ask=0.50, yes_bid=0.50)])
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), pos_client, account_id=ACCT, category=CAT,
+                                   poll_sec=0, legacy_db_path=leg, _max_cycles=2)
+    exit_posts = [b for (_pth, b) in fake.posts if b.get("reduce_only")]
+    assert len(exit_posts) == 1 and exit_posts[0]["ticker"] == T_TOTAL and exit_posts[0]["count"] == "4"
+    assert exit_posts[0]["side"] == "bid"                                        # sell NO -> buy-YES side = bid
+    assert exit_posts[0]["price"] == "0.5400"                                    # marketable: yes_ask 0.52 + slip 0.02

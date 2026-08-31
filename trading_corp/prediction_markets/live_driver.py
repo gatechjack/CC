@@ -535,6 +535,7 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                     # load; the reduction cannot appear before the sell it confirms (a sell precedes its own
                     # position drop), so this misses nothing the window would have caught. Per-whale isolated.
                     reds = detect_position_reductions(prior_snapshots.get(w, {}), book.rows, w, now_ts)
+                    confirmed = True
                     if reds:
                         try:
                             acts = await positions_client.fetch_activity(w)
@@ -544,10 +545,17 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                                 log.info("pm_live_driver: %d confirmed whale-EXIT signal(s) for %s (reductions=%d, "
                                          "sells=%d)", len(exits), w[:12], len(reds), len(sells))
                             signals += exits
-                        except Exception as e:  # noqa: BLE001 -- exit-confirm fetch failed -> NO exit this cycle (bias-down)
+                        except Exception as e:  # noqa: BLE001 -- exit-confirm fetch FAILED -> no exit + RETRY next cycle
+                            confirmed = False    # do NOT advance the snapshot -> the reduction is RE-DETECTED next cycle
                             log.warning("pm_live_driver: exit-confirm /activity fetch failed for %s (no exit this "
-                                        "cycle; re-checked next cycle): %s", w[:12], e)
-                    prior_snapshots[w] = snapshot_open_positions(book.rows)   # update AFTER the diff (never before)
+                                        "cycle; the reduction is RE-CHECKED next cycle -- snapshot not advanced): %s",
+                                        w[:12], e)
+                    # ★ advance the prior snapshot ONLY after a COMPLETED diff (+ a successful confirm when a reduction
+                    # was seen). A failed /activity confirm keeps the OLD snapshot so the pending reduction retries
+                    # rather than being silently lost to a transient blip (a missed exit is accepted, but not for a
+                    # recoverable fetch error). No reduction seen -> confirmed stays True -> advance normally.
+                    if confirmed:
+                        prior_snapshots[w] = snapshot_open_positions(book.rows)
                 place_fn = make_place_fn(client)
                 summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
                                                       shard_balances=shard_bal, legacy_db_path=legacy_db_path, log=log)
