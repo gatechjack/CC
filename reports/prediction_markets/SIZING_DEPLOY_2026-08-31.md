@@ -34,11 +34,20 @@ Here: **S1 migration 014 → S2 code → S3 restarts.** Reverse it and the migra
 Schema landing anywhere but 14; the latch or `pm_subdivision_order` count moving; `sizing_mode` changing; `/live`
 breaking; the engine not coming back; any division missing from the startup lines.
 
-## Results (filled as steps complete)
-- S1: _pending authorization_
-- S2: _pending_
-- S3: _pending_
-- S4: _pending_
+## Results — DEPLOY COMPLETE 2026-08-31, all GREEN
+- **S1 (02:04Z):** Gate-1 backup `~/pm_mig014_backup_20260831T020430Z.db` integrity `ok`; schema **13→14**; `contracts`
+  column `INTEGER NOT NULL DEFAULT '5'`; **existing kalshi_jack/mlb row landed `contracts=5`** (DDL default filled it,
+  not NULL); sizing_mode still 'fixed'; order count 1; latch `count_ceiling`. No restart.
+- **S2 (02:07Z):** 4 files placed 0644, **box==branch sha256 MATCH on all four**, Gate-A + py_compile + live-tree
+  import OK. Backup `~/pm_sizing_code_backup_20260831T020713Z`. No restart.
+- **S3:** Jack ran `restart_tc.ps1` (engine, bitunix bounce) + `restart_pmweb.ps1` (pm_web).
+- **S4 (02:13-02:14Z):** ★ latch `count_ceiling` + order count 1 + effective_armed false UNTOUCHED; ★ sizing_mode
+  still `'fixed'` (caps 1/2/2/2, caps write not run); engine 106773→**107937**, pm_web 103913→**108138** (both
+  changed); **boot-reconcile reconciled=True latched=False** (02:14:05, clean; one self-healing index-build
+  transient); schema 14; `/live` **200** renders the first trade + held table (get_subdivision's new `s.contracts`
+  SELECT works on schema 14); tile "1 live trade"; ALL divisions back (bitunix connected $144.21/$128.97 + reconcilers
+  clean, poly_kalshi WIRED, PM driver WIRED, PEAD/MACE/Kalshi-arb/scout/copy/Donchian/SFP online). **Nothing sizes
+  differently — capability shipped, OFF until the caps write.**
 
 *Then, each separately: the caps write (sizing_mode='contracts', contracts=5, max_orders 20 / per_order $5.50 /
 daily $60 / max_open $60) → re-attach xifutloong3 → arm → R8.*
