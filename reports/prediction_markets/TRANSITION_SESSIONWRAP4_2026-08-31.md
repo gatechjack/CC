@@ -1,5 +1,9 @@
 # PM TRANSITION — SESSION WRAP 4 (2026-08-31, ~19:10Z)
 
+> ★★★ SUPERSEDED 2026-08-31 ~22:15Z by `TRANSITION_SESSIONWRAP5_2026-08-31.md` — READ SW5 FIRST. SW4 predates the
+> OPPOSING-SIDE GUARD deploy, the caps raise to 50/$150/$150, and the count_ceiling latch+clear. Its live-state
+> numbers below (caps 20/$60/$60, engine 119559) are stale; SW5 carries the current anchor.
+
 > ★★★ THIS SUPERSEDES `TRANSITION_SESSIONWRAP3_2026-08-31.md`. Read THIS first. SW3's live state (schema 14,
 > pre-Option-D/R-d, pre-Stage-5) is stale. Everything below is observed read-only at ~19:07–19:10Z.
 
