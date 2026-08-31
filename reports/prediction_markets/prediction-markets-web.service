@@ -13,8 +13,14 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/home/azureuser/trading_corp
 Environment=PM_WEB_HOST=127.0.0.1
 Environment=PM_WEB_PORT=8081
-# NOTE: KEY_VAULT_URI is intentionally OMITTED here -- Phase 1 (/healthz) needs no Anthropic key. It is added
-# only when ANALYZE is built (e3), AFTER proving KeyVault-from-2nd-unit works. Do not add a placeholder.
+# Stage 5 e3 (2026-08-31): KEY_VAULT_URI mirrors the ENGINE unit's line so pm_web can reach Key Vault via the VM's
+# system-assigned Managed Identity. pm_web does a SCOPED Anthropic-only fetch at startup
+# (scripts/pm_web.py::_load_anthropic_key_from_keyvault) -- DELIBERATELY NOT load_secrets(): pm_web imports no
+# broker and must not hold live trading keys (least privilege, Jack ruled). FAIL-SOFT: if the fetch fails, pm_web
+# still boots and Analyze degrades to the llm_unavailable reasoned-null. Apply az-root: edit this line into the LIVE
+# unit, then `systemctl daemon-reload` + restart prediction-markets-web.service (NO engine restart, no bitunix bounce).
+# Add this LAST, after the R2c + prompt-rung code is deployed, so the first PAID narration is final-form (key-last).
+Environment="KEY_VAULT_URI=https://kv-tc-vtwbowt3wtkpy.vault.azure.net/"
 ExecStart=/home/azureuser/trading_corp/venv/bin/python trading_corp/scripts/pm_web.py
 Restart=on-failure
 RestartSec=10
