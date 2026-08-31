@@ -108,16 +108,13 @@ def parse_settlements(raw) -> list:
     return out
 
 
-def _settlement_for_ticker(ticker: str, by_ticker: dict, by_event: list):
-    """Find the settlement for a held MARKET ticker: exact ticker match first, else a record whose event_ticker is
-    a prefix of the market ticker (a market ticker is `EVENT-SIDE`). None if unsettled."""
-    r = by_ticker.get(ticker)
-    if r is not None:
-        return r
-    for rec in by_event:
-        if rec.event_ticker and ticker.startswith(rec.event_ticker):
-            return rec
-    return None
+def _settlement_for_ticker(ticker: str, by_ticker: dict):
+    """Find the settlement for a held MARKET ticker by EXACT ticker match. (An event_ticker-PREFIX fallback was
+    DROPPED, reviewer F2 2026-08-31: /portfolio/settlements records are per-MARKET and carry the market `ticker`,
+    and a prefix guess could bind the WRONG side of a game -- booking a win as a loss -- if a record lacked a market
+    ticker. An unmatched held position is simply left OPEN; if the venue is actually flat, boot_reconcile latches
+    R-b, the safe fallback.)"""
+    return by_ticker.get(ticker)
 
 
 # ── the held positions (per wallet x ticker x leg) from OUR journal ──────────────────────────────────────
@@ -154,7 +151,6 @@ def book_settlements(conn, account_id: str, category: str, settlements, *, now_t
     a summary; `booked` carries each close (for the boot-scan to LOG, esp. the first-ever settlement, hand-inspect)."""
     settlements = list(settlements)
     by_ticker = {r.ticker: r for r in settlements if r.ticker}
-    by_event = [r for r in settlements if r.event_ticker]
     booked, skipped_flat, skipped_no_settlement = [], 0, 0
     proceeds_by_ticker: dict = {}
     for row in conn.execute(_HELD_SQL, (account_id, category)):
@@ -165,7 +161,7 @@ def book_settlements(conn, account_id: str, category: str, settlements, *, now_t
         if net_open <= _EPS:
             skipped_flat += 1
             continue
-        rec = _settlement_for_ticker(ticker, by_ticker, by_event)
+        rec = _settlement_for_ticker(ticker, by_ticker)
         if rec is None or rec.result not in ("yes", "no", "void"):
             skipped_no_settlement += 1
             continue
@@ -195,7 +191,7 @@ def book_settlements(conn, account_id: str, category: str, settlements, *, now_t
     # cross-check: our per-ticker settlement PROCEEDS vs Kalshi's revenue (order fees are not in `revenue`, so a
     # small gap is expected; a LARGE gap is a booking anomaly -> WARN + hand-inspect, do NOT block the booking).
     for tk, proceeds in proceeds_by_ticker.items():
-        rec = by_ticker.get(tk) or _settlement_for_ticker(tk, by_ticker, by_event)
+        rec = by_ticker.get(tk)
         rev = rec.revenue if rec else None
         if rev is not None and abs(proceeds - rev) > _REVENUE_TOL:
             _LOG.warning("pm settlement: PROCEEDS cross-check divergence on %s: our proceeds=%.4f vs kalshi "

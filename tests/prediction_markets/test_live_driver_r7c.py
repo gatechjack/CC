@@ -578,3 +578,31 @@ async def test_boot_settlement_scan_books_cubs_then_reconcile_is_clean(tmp_path)
     row = arm.current_row(ACCT, CAT, legacy_db_path=leg)
     assert (row is None or not row.get("latched"))                              # NOT latched (reconcile was CLEAN)
     assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is True                  # still armed -- the deploy comes up trading
+
+
+@pytest.mark.asyncio
+async def test_boot_without_settlement_latches_rb_negative_control(tmp_path):
+    """R-d2 NEGATIVE CONTROL (backs the positive test's 'without R-d this would latch'): the SAME state but NO
+    settlement record -> the boot-scan books nothing -> boot_reconcile sees journal +1 vs a FLAT venue ->
+    JOURNAL_ONLY -> latches R-b + DISARMS. This is the 'without R-d' baseline the clean-after is measured against."""
+    import time
+    CUBS = "KXMLBGAME-26AUG301920CINCHC-CHC"
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)
+    with db.connect(p) as conn:
+        conn.execute("INSERT OR IGNORE INTO pm_account(account_id,venue,secret_ref,label,active,created_ts) "
+                     "VALUES(?, 'kalshi','KALSHI','Jack',1,?)", (ACCT, int(time.time())))
+        conn.execute("INSERT OR IGNORE INTO pm_subdivision(account_id,category,market_types,sizing_mode,"
+                     "fixed_stake_usd,active,created_ts) VALUES(?,?,'moneyline','fixed',5.0,1,?)", (ACCT, CAT, int(time.time())))
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,"
+                     "fill_count,fill_price,fee,outcome_status,dry_run,submitted_ts,response_ts) "
+                     "VALUES (?,?,'0xWHALE',?,'yes',0,1,0.60,0.0084,'filled',0,?,?)", (ACCT, CAT, CUBS, NOW, NOW))
+        conn.commit()
+    fake = FakeKalshiClient(positions=[], game_markets=[FakeMarket(T_TOR)])      # NO settlements_raw + venue FLAT
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(FakeBook([])),
+                                   account_id=ACCT, category=CAT, poll_sec=0, legacy_db_path=leg, _max_cycles=1)
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_order WHERE close_source='settlement'").fetchone()[0] == 0
+    row = arm.current_row(ACCT, CAT, legacy_db_path=leg)
+    assert row["latched"] is True and row["auto_trigger"] == arm.AUTO_BOOT_RECONCILE   # R-b latched (JOURNAL_ONLY)
+    assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is False                        # disarmed

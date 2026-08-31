@@ -300,10 +300,16 @@ class Journal:
                     # yes-side limit; a NO row must seed at (1 - submitted_price) so the daily/open counters
                     # re-seed at the SAME basis commit_would_place uses at runtime (else NO-leg exposure
                     # under-seeds on restart -> a money-gate bypass -- the R4 caps bug, in the seed query).
+                    # ★ ENTRIES ONLY (is_exit=0): the runtime accumulator commit_would_place fires ONLY for entries
+                    # (execution.evaluate: `if not signal.is_exit: journal.commit_would_place`), so the RESTART seed
+                    # must match that basis -- else the counters re-seed on a DIFFERENT basis than they accumulate.
+                    # This also keeps a reduce_only EXIT (Option D) and a SETTLEMENT-close (R-d) row -- both is_exit=1
+                    # -- out of orders_today (gate 8 caps ENTRIES) and the daily/open USD (an exit/settlement is not a
+                    # daily SPEND and must not inflate the count ceiling on the next restart).
                     "SELECT category, COUNT(*) n, COALESCE(SUM(CASE WHEN outcome_leg='yes' "
                     "  THEN submitted_count*submitted_price ELSE submitted_count*(1.0-submitted_price) END),0) usd "
                     "FROM pm_subdivision_order "
-                    "WHERE account_id=? AND dry_run=0 AND outcome_status='filled' AND response_ts>=? "
+                    "WHERE account_id=? AND dry_run=0 AND outcome_status='filled' AND is_exit=0 AND response_ts>=? "
                     "GROUP BY category", (aid, self._day0)).fetchall():
                     self._daily_usd[(aid, r["category"])] = float(r["usd"] or 0.0)
                     self._orders_today[(aid, r["category"])] = int(r["n"] or 0)

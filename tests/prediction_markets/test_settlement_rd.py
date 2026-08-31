@@ -158,3 +158,19 @@ def test_unsettled_position_is_left_open(tmp_path):
         _entry(conn, CUBS, "yes", 1, 0.60, 0.0084)
         summ = S.book_settlements(conn, ACCT, CAT, [], now_ts=NOW)       # no settlement records -> nothing booked
     assert summ["n_booked"] == 0 and summ["skipped_no_settlement"] == 1
+
+
+def test_seed_counts_entries_only_not_exits_or_settlements(tmp_path):
+    # ★ reviewer F1: the Journal count/USD seed is ENTRIES-only (is_exit=0) so a whale-EXIT and a SETTLEMENT-close
+    # (both is_exit=1) do NOT inflate orders_today -> a heavy-settlement day cannot prematurely trip the count ceiling.
+    from trading_corp.prediction_markets import execution as ex
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        _entry(conn, CUBS, "yes", 5, 0.60, 0.0084)                       # 1 ENTRY (is_exit=0)
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,ticker,outcome_leg,is_exit,"
+                     "fill_count,submitted_count,submitted_price,outcome_status,dry_run,response_ts) "
+                     "VALUES (?,?,?,?,?,1,2,2,0.51,'filled',0,?)", (ACCT, CAT, SDT, CUBS, "yes", NOW))  # a whale-EXIT
+        conn.commit()
+        S.book_settlements(conn, ACCT, CAT, S.parse_settlements(_raw()), now_ts=NOW)   # a SETTLEMENT-close (net 3)
+        j = ex.Journal(conn, [ACCT], NOW)
+    assert j.orders_today(ACCT, CAT) == 1                                # ONLY the entry; exit + settlement excluded
