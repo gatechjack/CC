@@ -79,6 +79,47 @@ class _FakeKPos:                  # a Kalshi portfolio position for boot_reconci
         self.ticker = ticker; self.position_fp = position_fp
 
 
+class _Fill:                      # a FillEvent-shaped stub for _finalize_order (getattr order_id/qty/price/fee)
+    order_id = "OID"; qty = 1.0; price = 0.60; fee = 0.0084
+
+
+# ── fakes for the END-TO-END scheduled-loop test (mirror R7.c; capture posts, never a real network call) ──
+class _FakePortfolio:
+    def __init__(self, positions=None): self._positions = positions or []
+    async def get_positions(self, fetch_all=False): return list(self._positions)
+
+
+class _FakeClient:
+    def __init__(self, *, positions=None, game_markets=None):
+        self.posts = []; self.portfolio = _FakePortfolio(positions); self._game = game_markets or []
+    async def post(self, path, body):
+        self.posts.append((path, body))
+        return {"order_id": "OID", "fill_count": "1", "average_fill_price": "0.60", "average_fee_paid": "0.0084",
+                "remaining_count": "0"}
+    async def get_markets(self, series_ticker=None, status=None, limit=None, fetch_all=False, **kw):
+        return self._game if series_ticker == "KXMLBGAME" else []
+
+
+class _FakeBroker:
+    def __init__(self, client):
+        class _R: pass
+        self._read = _R(); self._read._client = client
+
+
+class _FakeMarket:
+    def __init__(self, ticker, yes_ask=0.60, no_ask=0.40, liq=500):
+        self.ticker = ticker; self.yes_ask_dollars = yes_ask; self.no_ask_dollars = no_ask; self.liquidity_dollars = liq
+
+
+class _FakeBook:
+    def __init__(self, rows, complete=True): self.rows = rows; self.complete = complete; self.n = len(rows); self.pages = 1
+
+
+class _FakePositionsClient:
+    def __init__(self, book): self._book = book
+    async def fetch_positions_book(self, wallet): return self._book
+
+
 def _real_signal():
     """The REAL entry signal, derived through the PRODUCTION path (positions -> CopySignal). Its signal_id is the
     stable derivation -- so evaluate() computes the REAL coid from it."""
@@ -189,6 +230,24 @@ async def test_2b_armed_cycle_does_not_replace_a_filled_signal(tmp_path):
     assert n == 1                                                               # still exactly the one real row
 
 
+@pytest.mark.asyncio
+async def test_2c_positive_control_armed_cycle_places_on_empty_journal(tmp_path):
+    """Positive control (rules out an EARLIER gate masking a broken gate 4): with an EMPTY journal the SAME real
+    signal + ctx PLACES (reaches the stub placer). So the skip in the deduped runs above is gate 4 specifically,
+    not gate 3/8 rejecting first."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)
+    calls = []
+    async def stub(d):
+        calls.append(d); return _Fill()
+    with db.connect(p) as conn:
+        j = ex.Journal(conn, [ACCT], NOW)
+        summ = await L.run_live_arm_gated_cycle(conn, _sub(), [_real_signal()], _ctx(), j, NOW,
+                                                place_fn=stub, legacy_db_path=leg)
+        n = conn.execute("SELECT COUNT(*) FROM pm_subdivision_order WHERE dry_run=0").fetchone()[0]
+    assert len(calls) == 1 and summ["placed"] == 1 and summ["n_would_place"] == 1 and n == 1
+
+
 # ══ PROPERTY 3 (★): THE CRASH WINDOW -- 'submitting' with no recorded outcome ══
 def test_3_crash_window_submitting_row_seeds_dedup_no_second_order(tmp_path):
     """A POST sent + the journal-write never completed leaves a 'submitting' row. On restart the coid MUST seed
@@ -200,6 +259,7 @@ def test_3_crash_window_submitting_row_seeds_dedup_no_second_order(tmp_path):
         assert REAL_COID in j._placed_coids                    # ★ seeded DESPITE 'submitting' (dry_run=0 + coid)
         assert j.already_placed(REAL_COID) is True
         assert j.orders_today(ACCT, CAT) == 0                  # ... but NOT counted as filled (no budget/position)
+        assert j.daily_usd(ACCT, CAT) == 0.0 and j.open_usd(ACCT) == 0.0   # the BUDGET counters also stay zero
         d = ex.evaluate(_real_signal(), _sub(), _ctx(), j, conn, NOW)
     assert d.status == "skip:duplicate"                        # ★ NO second order across the crash window
 
@@ -216,7 +276,8 @@ async def test_3b_crash_window_armed_cycle_places_nothing(tmp_path):
         j = ex.Journal(conn, [ACCT], NOW)
         summ = await L.run_live_arm_gated_cycle(conn, _sub(), [_real_signal()], _ctx(), j, NOW,
                                                 place_fn=stub, legacy_db_path=leg)
-    assert calls == [] and summ["placed"] == 0                 # armed, gates pass, yet the crash-window coid dedups
+        n = conn.execute("SELECT COUNT(*) FROM pm_subdivision_order").fetchone()[0]
+    assert calls == [] and summ["placed"] == 0 and n == 1      # armed, gates pass, yet the crash-window coid dedups
 
 
 def test_3c_boot_reconcile_adjudicates_the_submitting_residual(tmp_path):
@@ -252,6 +313,37 @@ async def test_3d_boot_reconcile_run_latches_on_the_residual(tmp_path):
         res = await L.run_boot_reconcile(conn, _sub(), _FC([_FakeKPos(TICKER, 1)]), legacy_db_path=leg)
     assert res.reconciled is False and res.latched is True
     assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is False
+
+
+@pytest.mark.asyncio
+async def test_3e_end_to_end_scheduled_loop_latches_before_any_cycle_can_place(tmp_path):
+    """★ END-TO-END (the ordering guarantee, regression-gated): a crash-window residual ('submitting' + a REAL
+    Kalshi position the filled-journal doesn't reflect) + an ARMED account -> scheduled_pm_live_loop must
+    boot-reconcile FIRST, latch (KALSHI_ONLY), and place NOTHING in cycle 1. Proves boot-reconcile runs before the
+    cycle (structurally there is no await between them; this guards a future refactor from breaking it)."""
+    import time as _t
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)                                            # ARMED -> the loop must DISARM it before placing
+    with db.connect(p) as conn:
+        conn.execute("INSERT OR IGNORE INTO pm_account(account_id,venue,secret_ref,label,active,created_ts) "
+                     "VALUES(?, 'kalshi','KALSHI','Jack',1,?)", (ACCT, int(_t.time())))
+        conn.execute("INSERT OR IGNORE INTO pm_subdivision(account_id,category,market_types,sizing_mode,"
+                     "fixed_stake_usd,active,created_ts) VALUES(?,?,'moneyline,total,spread','fixed',5.0,1,?)",
+                     (ACCT, CAT, int(_t.time())))
+        conn.execute("INSERT OR IGNORE INTO pm_subdivision_attachment(account_id,category,wallet,active,source,added_ts) "
+                     "VALUES(?,?,?,1,'promote_to_live',?)", (ACCT, CAT, WALLET, int(_t.time())))
+        _insert_order(conn, outcome_status="submitting")     # the crash-window residual (coid journaled, no fill)
+    client = _FakeClient(positions=[_FakeKPos(TICKER, 1)],    # Kalshi actually HOLDS +1 (the POST filled pre-crash)
+                         game_markets=[_FakeMarket(TICKER), _FakeMarket(TICKER_OPP)])
+    posc = _FakePositionsClient(_FakeBook([_Pos()]))         # the whale still holds -> the same signal recurs
+    await L.scheduled_pm_live_loop(p, _FakeBroker(client), posc, account_id=ACCT, category=CAT,
+                                   poll_sec=0, legacy_db_path=leg, _max_cycles=1)
+    assert client.posts == []                                # ★ NO POST -- boot-reconcile latched before the cycle
+    row = arm.current_row(ACCT, CAT, legacy_db_path=leg)
+    assert row["latched"] is True and row["auto_trigger"] == arm.AUTO_BOOT_RECONCILE
+    assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is False
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_order").fetchone()[0] == 1   # only the residual, no new row
 
 
 # ══ PROPERTY 4: restart with in-memory counters gone -- the journal reseeds, no re-place ══
@@ -303,6 +395,39 @@ def test_5b_a_different_market_is_not_deduped(tmp_path):
         _insert_order(conn, outcome_status="filled")                    # the Cubs order is journaled
         j = ex.Journal(conn, [ACCT], NOW)
         assert j.already_placed(coid_other) is False                    # the OTHER market's coid is NOT deduped
+
+
+def test_6_different_category_is_a_different_division_not_deduped(tmp_path):
+    """Cross-category isolation: the coid key includes `division` = account:category, so the SAME wallet + market
+    copied under a DIFFERENT category derives a DIFFERENT coid and is NOT deduped. (Analytically safe; here proven
+    so a shared placed-coid set across categories on one account cannot silently cross-block.)"""
+    sid = ex.stable_signal_id(WALLET, CID, OIDX, L._stable_entry_key(CID, OIDX))
+    coid_mlb = client_order_id("kalshi_jack:mlb", WALLET, TICKER, LEG, sid)
+    coid_nfl = client_order_id("kalshi_jack:nfl", WALLET, TICKER, LEG, sid)
+    assert coid_mlb == REAL_COID and coid_nfl != coid_mlb               # division in the key -> distinct coids
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        _insert_order(conn, outcome_status="filled")                   # the mlb order journaled
+        j = ex.Journal(conn, [ACCT], NOW)
+        assert j.already_placed(coid_mlb) is True and j.already_placed(coid_nfl) is False
+
+
+# ══ FINDING (documented tradeoff): a no_fill / error row ALSO dedups the signal ══
+def test_9_no_fill_or_error_row_dedups_the_signal_documented_tradeoff(tmp_path):
+    """PENDING-first journals the coid pre-POST; the placed-coid seed has NO outcome_status filter, so a `no_fill`
+    (benign 0-fill on a thin IOC book) or an `error` row ALSO dedups the SAME signal on the next cycle -- the
+    signal is NOT retried even though NO position was acquired. Same accepted SAFE direction as the re-entry
+    limitation (a missed copy, never a double); it means a TRANSIENT 0-fill can permanently strand a signal until
+    the whale's position identity changes. Asserted so the behaviour is documented, not a silent surprise."""
+    for status in ("no_fill", "error"):
+        p = str(tmp_path / ("pm_%s.db" % status)); db.init_db(p)
+        with db.connect(p) as conn:
+            _insert_order(conn, outcome_status=status)                 # coid journaled; NO position acquired
+            j = ex.Journal(conn, [ACCT], NOW)
+            assert j.already_placed(REAL_COID) is True                 # seeded despite no fill
+            assert j.orders_today(ACCT, CAT) == 0                      # ... and correctly counts NO position/budget
+            d = ex.evaluate(_real_signal(), _sub(), _ctx(), j, conn, NOW)
+        assert d.status == "skip:duplicate", (status, d.status)        # the signal is NOT retried (the tradeoff)
 
 
 # ══ LENS 1 (fails-open): the seed counts EXACTLY dry_run=0 rows ══
