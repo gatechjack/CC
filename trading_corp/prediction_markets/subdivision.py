@@ -165,9 +165,10 @@ def live_orders(conn, account_id: str, category: str, *, limit: int = 200) -> li
         return []
     rows = conn.execute(
         "SELECT id, ticker, order_side, outcome_leg, is_exit, submitted_count, submitted_price, time_in_force, "
-        "       outcome_status, fill_count, fill_price, remaining_count, fee, error_detail, submitted_ts, response_ts "
-        "FROM pm_subdivision_order "
-        "WHERE account_id = ? AND category = ? AND dry_run = 0 "
+        "       outcome_status, fill_count, fill_price, remaining_count, fee, error_detail, submitted_ts, response_ts, "
+        "       close_source, realized_pnl, won, settled_ts "   # close_source distinguishes a SETTLEMENT-close from a
+        "FROM pm_subdivision_order "                            # whale-EXIT (both is_exit=1); realized_pnl is the P&L a
+        "WHERE account_id = ? AND category = ? AND dry_run = 0 "  # settlement books in place of a submitted/fill price.
         "ORDER BY COALESCE(response_ts, submitted_ts) DESC, id DESC LIMIT ?",
         (account_id, category, int(limit))).fetchall()
     out = []

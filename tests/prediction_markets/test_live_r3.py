@@ -139,6 +139,42 @@ def test_live_subdivision_shows_real_filled_order(monkeypatch, tmp_path):
     assert "not a live venue read" in html
 
 
+# the Cubs settlement-close, field-for-field (id=8 on live 2026-08-31): is_exit=1 but close_source='settlement',
+# NO order was placed (broker_order_id/client_order_id None, no submitted/fill price/fee/TIF), realized -0.6084 lost.
+_SETTLEMENT = {
+    "is_exit": 1, "close_source": "settlement", "realized_pnl": -0.6084, "won": 0, "settled_ts": 1788144281,
+    "order_side": None, "submitted_count": None, "submitted_price": None, "time_in_force": None,
+    "broker_order_id": None, "client_order_id": None, "condition_id": None, "outcome_index": None,
+    "signal_id": None, "fill_count": 1.0, "fill_price": 0.0, "fee": 0.0, "outcome_status": "filled",
+    "submitted_ts": 1788194009, "response_ts": 1788194009,
+}
+
+
+def test_settlement_close_renders_as_SETTLED_not_EXIT(monkeypatch, tmp_path):
+    """★ THE CUBS DISPLAY BUG: a settlement-close (is_exit=1, close_source='settlement', no order placed) was
+    rendering as 'EXIT' with a $0.00 fill -- conflating 'the game ended' with 'the whale got out'. It must render
+    SETTLED (won/lost) with the REALIZED P&L in place of the blank submitted/fill price."""
+    cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[{}, dict(_SETTLEMENT)])
+    html = cl.get("/live/kalshi_jack/mlb").text
+    assert "SETTLED" in html                                   # the settlement is labelled distinctly
+    assert "lost" in html                                      # won=0 -> lost badge
+    assert "-0.6084" in html and "realized" in html            # the realized P&L IN PLACE OF a blank price
+    assert "ENTRY" in html                                     # the entry row still renders as ENTRY
+    # the settlement did NOT invent an order: it must not show a submitted/fill price or a TIF for that close
+    assert "immediate_or_cancel" in html                       # (the ENTRY row's TIF still shows -- present, not asserted-absent)
+
+
+def test_real_whale_exit_still_renders_EXIT_not_settled(monkeypatch, tmp_path):
+    """Guard the other side: a REAL whale-exit (is_exit=1 but close_source != 'settlement') keeps rendering EXIT,
+    with its submitted/fill price -- only a settlement close is relabelled."""
+    exit_row = {"is_exit": 1, "close_source": "whale_exit", "client_order_id": "exit-coid",
+                "submitted_price": 0.41, "fill_price": 0.40, "fee": 0.006, "order_side": "ask"}
+    cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[dict(exit_row)])
+    html = cl.get("/live/kalshi_jack/mlb").text
+    assert "EXIT" in html and "SETTLED" not in html            # a placed exit is EXIT, never SETTLED
+    assert "$0.40" in html                                     # its real fill price still shows
+
+
 def test_sizing_display_states_behaviour_not_misleading_cent(monkeypatch, tmp_path):
     """★ SECOND DEFECT: a $0.01 stake must NOT render as '$0.01/copy' (which reads as 'each copy costs a cent').
     It must state the behaviour -- 1 contract per copy."""
