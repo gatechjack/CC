@@ -22,32 +22,42 @@ settled at "3", so the first real verdict a wallet gets is the final-form one --
 
 ---
 ## Manifest (deployable files -- hash is the gate; tests + this doc are NOT deployed)
-Branch `9b8e79a`. sha256 (working tree == committed):
+Branch `f4c16d6`. **6 files** = the 4 R2c files + the 2 `/live` settlement-display-fix files (folded in so one pm_web
+restart carries both; the fix would strand if it shipped separately). sha256 (git archive bytes == working tree):
 
 ```
 e25205954c479d6ba039e149cea8ba6bd2f5ec01971dce15b53f8e84f9c2ec36  trading_corp/prediction_markets/web/app.py
 cec9c3d4620b72ef843159f66a44c52374769ab6aecbfe80505ef85e56fe9b9a  trading_corp/prediction_markets/analyze.py
 7c84e1e30ce811d4c7cf4c982a663e686a8b2e83398deb167e1d3da3b64b8d9f  trading_corp/prediction_markets/web/templates/partials/pm_analyze_result.html
 833644da11da8a9712c7c7fb54ee2100ff3d78a430f4bec793f2a1e269c1e941  trading_corp/scripts/pm_web.py
+3ba6326832daa7015970ab46a5e400a5e91bf3c98bb1a6a63ad5eedc766c000a  trading_corp/prediction_markets/subdivision.py           (display fix)
+99b06b4ad710ff699fc423da2bc43613b7166cd12f0464486a815cc41d3963f9  trading_corp/prediction_markets/web/templates/pm_live_subdivision.html  (display fix)
 ```
+
+The `/live` display fix renders a **settlement-close** (close_source='settlement') as **SETTLED** (won/lost) with its
+**realized P&L**, distinct from a whale **EXIT** -- the Cubs 16:33Z row was mislabelled EXIT with a $0.00 fill.
+Validated read-only: `is_exit=1, close_source='settlement', broker_order_id=NULL, client_order_id=NULL, realized_pnl=-0.6084`,
+and a whole-day engine-log sweep showed **no** Cubs order POST on 2026-08-31 -- it settled, it was not sold.
 
 All four live under the pm_web unit's world (azureuser-writable via ssh). The shared venv
 (`/home/azureuser/trading_corp/venv`) already has `azure-identity` + `azure-keyvault-secrets` (the engine's
 load_secrets uses them), so the scoped fetch has its libs -- the ImportError branch is only a safety net.
 
-### Base (current LIVE) hashes -- captured read-only 2026-08-31T18:05Z (the deploy aborts if the box drifts from these)
+### Base (current LIVE) hashes -- captured read-only 2026-08-31T18:23Z (the deploy aborts if the box drifts from these)
 ```
 47c75d5686c30eff6d27a0ded0627b64ddb7cb821fa8627fa87faff1964a0b49  web/app.py (base)
 c726aaef98ce512dcf1535378f8ca6045fafec642d77ad0038c4a8d79635abcb  analyze.py (base)
 b90fef6ed46d40992dd208601c21f3080f4431f48c30fb084b9efd4c90641cef  pm_analyze_result.html (base)
 cb49b841c7a790a182750b0c1f7de1e56b0055e209b0a3ea9b9a2bcba2a36090  scripts/pm_web.py (base)
+babe388c56e7b69ed5ed6b74f03ca325f006924177375397c4d6dc64ac2f3765  subdivision.py (base)
+08d9286f43227873bcb3dd53f8cc8ae1c543d3adf745c08027940719422ed9df  pm_live_subdivision.html (base)
 ```
 
 ### Runners (authored, validated; NOT run except the read-only baseline)
 - `cc\pm_r2c_baseline_ro.ps1` -- READ-ONLY, already run 18:05Z (captured the base hashes above).
-- `cc\pm_r2c_deploy.ps1` -- git-archives the 4 files -> scp -> backup + hash-assert copy + 644 + Gate-A transitive
-  imports (`import web.app` + `import scripts.pm_web`). **NO restart.** Aborts+restores on any drift/hash/Gate-A
-  failure, leaving the live tree pristine. This is the deploy = a HALT item (Jack authorizes execution).
+- `cc\pm_r2c_deploy.ps1` -- git-archives the 6 files -> scp -> backup + hash-assert copy + 644 + Gate-A transitive
+  imports (`import web.app` + `import scripts.pm_web` + `import subdivision`). **NO restart.** Aborts+restores on any
+  drift/hash/Gate-A failure, leaving the live tree pristine. This is the deploy = a HALT item (Jack authorizes execution).
 - `cc\pm_r2c_postcheck_ro.ps1` -- READ-ONLY: health, on-disk manifest, the 3-state classification, and the Analyze
   render (see below). Run AFTER the restart.
 
