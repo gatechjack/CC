@@ -54,7 +54,8 @@ PM_ANALYZE_MODEL = "claude-haiku-4-5-20251001"   # was get_model_for('polymarket
                                                  # Analyze can't have its model swapped out from under it.
 PM_ANALYZE_MAX_OUTPUT_TOKENS = 220
 PM_ANALYZE_DAILY_CAP_USD = 20.00                 # Jack ruling 2026-08-25 (legacy code=$1.00; §7.4 doc said $2)
-PM_ANALYZE_SKILL_VERSION = "1"                   # bump on ANY prompt/model/report-shape change -> cache miss
+PM_ANALYZE_SKILL_VERSION = "2"                   # bump on ANY prompt/model/report-shape change -> cache miss
+#   "1"->"2" (2026-08-31, Stage 5): PMAnalysisReport gained the loss-completeness fields (re-grounded loss set).
 # Haiku price per 1M tokens -- forked from agents/research/cost.py (the 'claude-haiku-4-5-20251001' row).
 _HAIKU_PRICE = {"input": 0.80, "output": 4.0}
 
@@ -146,6 +147,17 @@ class PMAnalysisReport:
     tokens_in: int = 0
     tokens_out: int = 0
     served_from_cache: bool = False
+    # ── Stage 5 LOSS-COMPLETENESS (re-grounded from /activity; None when not grounded) ──
+    # The core wins/losses/win_rate above stay /closed-positions-based (rollup + scoreboard consistency -- Stage 5
+    # does NOT re-plumb the platform rollup, F-1). These SEPARATE fields carry the HONEST re-grounded loss set +
+    # the MEASURED bias, so Analyze tells the operator how honest its own input is per whale. Defaults keep the
+    # dataclass backward-compatible (an ungrounded/offline analysis leaves them None/False).
+    loss_grounded: bool = False           # True iff the loss set was re-grounded from /activity (the promotion judge)
+    honest_wins: int | None = None        # /closed-positions UNION A_only
+    honest_losses: int | None = None
+    a_only_losses: int | None = None      # losses /closed-positions DROPPED (the F-1 omission, recovered)
+    loss_omission_pct: float | None = None  # a_only_losses / honest_losses -- the MEASURED bias for THIS whale
+    loss_completeness: str | None = None  # the measured bound ('complete...' | 'windowed(...lower bound)')
 
     @property
     def is_thin(self) -> bool:
@@ -173,7 +185,8 @@ class NarrationResult:
 # ── deterministic report (pm_closed_position ONLY; reuses the ONE predicate + stats formulas) ─────────
 def build_pm_analysis(conn, wallet: str, category: str, *, now_ts: int,
                       min_resolved: int | None = None,
-                      skill_version: str = PM_ANALYZE_SKILL_VERSION) -> PMAnalysisReport:
+                      skill_version: str = PM_ANALYZE_SKILL_VERSION,
+                      loss_grounding=None) -> PMAnalysisReport:
     """Aggregate the (wallet, category) slice of pm_closed_position into the deterministic report. NO LLM,
     NO write. Every scoreable metric filters through `db.scoreable_where()` (the ONE §3A predicate) and uses
     the SAME formulas as `stats.rollup` -- see that function for the parity contract (roi cost-based, roi
@@ -294,7 +307,15 @@ def build_pm_analysis(conn, wallet: str, category: str, *, now_ts: int,
         onesided_n=(onesided_n or None), data_quality=data_quality, dq_count_pct=dq_count_pct,
         dq_dollar_pct=dq_dollar_pct, data_state=data_state, all_quarantined=all_quarantined,
         min_resolved=min_resolved, rollup_n_resolved=rollup_n, reconciled=reconciled, recon_note=recon_note,
-        generated_ts=int(now_ts), skill_version=skill_version, samples=samples)
+        generated_ts=int(now_ts), skill_version=skill_version, samples=samples,
+        # Stage 5: carry the re-grounded loss set (the promotion judge) + the measured bias, WITHOUT touching the
+        # /closed-positions-based wins/losses above (rollup + scoreboard consistency, F-1). None when not grounded.
+        loss_grounded=(loss_grounding is not None),
+        honest_wins=(loss_grounding.honest_wins if loss_grounding is not None else None),
+        honest_losses=(loss_grounding.honest_losses if loss_grounding is not None else None),
+        a_only_losses=(loss_grounding.a_only_losses if loss_grounding is not None else None),
+        loss_omission_pct=(loss_grounding.loss_omission_pct if loss_grounding is not None else None),
+        loss_completeness=(loss_grounding.completeness if loss_grounding is not None else None))
 
 
 def analysis_flags(rep: PMAnalysisReport) -> list[str]:
@@ -549,7 +570,8 @@ def analyze_whale(conn, wallet: str, category: str, *, now_ts: int, force: bool 
                   narrator_enabled: bool = True, chat: object | None = None,
                   skill_version: str = PM_ANALYZE_SKILL_VERSION,
                   min_resolved: int | None = None,
-                  daily_cap_usd: float = PM_ANALYZE_DAILY_CAP_USD) -> PMAnalysisReport:
+                  daily_cap_usd: float = PM_ANALYZE_DAILY_CAP_USD,
+                  loss_grounding=None) -> PMAnalysisReport:
     """The button/CLI entrypoint. Cache-hit -> return stored, spend NOTHING. Miss/force -> build the
     deterministic report, narrate under the cap, book any spend, and cache ONLY a successful verdict.
     Writes pm_analysis_cache + pm_analysis_cost (both PM DB); NEVER agent_state, NEVER the legacy DB."""
@@ -563,7 +585,7 @@ def analyze_whale(conn, wallet: str, category: str, *, now_ts: int, force: bool 
         _cache_evict(conn, wallet, category, skill_version)                     # re-analyze: clear stale verdict
 
     rep = build_pm_analysis(conn, wallet, category, now_ts=now_ts, min_resolved=min_resolved,
-                            skill_version=skill_version)
+                            skill_version=skill_version, loss_grounding=loss_grounding)
 
     day = _utc_day(now_ts)
     cap_hit = _cap_hit(conn, day, daily_cap_usd)

@@ -4,7 +4,7 @@ win/loss = /closed-positions UNION A_only, and a MEASURED completeness bound whe
 the REAL ActivityRow/ClosedPositionRow (from_api) so the adapters run against the true field shapes."""
 import pytest
 
-from trading_corp.prediction_markets import loss_grounding as LG
+from trading_corp.prediction_markets import loss_grounding as LG, analyze, db
 from trading_corp.data.polymarket_data_api_client import ActivityRow, ClosedPositionRow
 
 
@@ -119,3 +119,36 @@ async def test_orchestrator_flags_truncation_at_the_page_ceiling():
     g = await LG.fetch_and_ground_losses(fake, "0xW", "mlb", category_of=_cat_of,
                                          activity_max_pages=2, activity_limit=3)
     assert g.activity_truncated is True and "windowed" in g.completeness
+
+
+# ── R2b: Analyze integration (loss_completeness fields; core losses UNCHANGED; round-trip; skill bump) ──
+def _grounding():
+    activity = [_act("in_both", 0, "BUY", 10), _act("drop_loss", 0, "BUY", 5), _act("drop_win", 0, "BUY", 5)]
+    closed = [_closed("in_both", 0, 0.0), _closed("cw", 1, 1.0)]
+    res = {"in_both": _res(1), "drop_loss": _res(1), "drop_win": _res(0)}
+    return LG.ground_losses(activity, closed, res, activity_truncated=False)   # honest 2/2, a_only_losses 1, pct 0.5
+
+
+def test_skill_version_bumped_for_stage5():
+    assert analyze.PM_ANALYZE_SKILL_VERSION == "2"                              # invalidates the pre-Stage-5 cache
+
+
+def test_report_ungrounded_leaves_fields_none(tmp_path):
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        rep = analyze.build_pm_analysis(conn, "0xw", "mlb", now_ts=1788200000)  # no loss_grounding
+    assert rep.loss_grounded is False and rep.honest_losses is None and rep.loss_completeness is None
+
+
+def test_report_grounded_carries_fields_without_touching_core(tmp_path):
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        rep = analyze.build_pm_analysis(conn, "0xw", "mlb", now_ts=1788200000, loss_grounding=_grounding())
+    # ★ the re-grounded set is CARRIED as new fields...
+    assert rep.loss_grounded is True and rep.honest_losses == 2 and rep.honest_wins == 2
+    assert rep.a_only_losses == 1 and rep.loss_omission_pct == 0.5 and rep.loss_completeness.startswith("complete")
+    # ...WITHOUT touching the /closed-positions-based core (empty DB -> 0; rollup/scoreboard parity preserved)
+    assert rep.losses == 0 and rep.wins == 0
+    # round-trips through the cache (de)serialization with the new fields intact
+    rt = analyze.report_from_json(analyze.report_to_json(rep))
+    assert rt.loss_grounded is True and rt.a_only_losses == 1 and rt.loss_omission_pct == 0.5
