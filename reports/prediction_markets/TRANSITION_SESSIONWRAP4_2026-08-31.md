@@ -23,10 +23,12 @@ Next agent: multi-account (UI + data modelling) is next, a different KIND of wor
 - **boot_reconcile last verdict:** reconciled=True latched=False @16:33:29Z (engine has not restarted since, so this
   stands). Tonight's PM settlement scan (600s) has booked NOTHING yet — the 12 positions settle later tonight.
 
-## ★ 1. TOMORROW'S FIRST ACTION — before ANY build work
-Run **`cc\pm_settlement_walk_ro.ps1`** and report it. This is R-d's SECOND unattended settlement cycle — up to 12
-positions settle overnight (SD/CIN, DET/MIN, ATH/TEX, PHI/AZ, MIA/WSH, SEA/BOS, + Sept-1 games + the totals), each
-booked automatically by a path that has hand-processed exactly ONE position (the Cubs).
+## ★ 1. THE SETTLEMENT WALK — after tonight's games settle, before build work resumes (NOT "tomorrow")
+★ FRAMING (Jack, 2026-08-31): games are RUNNING now and settle TONIGHT — Jack is working through today, so this is
+NOT "tomorrow's first action" and the doc must not imply a stop. Run **`cc\pm_settlement_walk_ro.ps1`** once tonight's
+games have settled, whenever that is, BEFORE any build work resumes. This is R-d's SECOND unattended settlement cycle
+— up to 12 positions settle tonight (SD/CIN, DET/MIN, ATH/TEX, PHI/AZ, MIA/WSH, SEA/BOS, + Sept-1 games + the totals),
+each booked automatically by a path that has hand-processed exactly ONE position (the Cubs).
 - **PER-SETTLEMENT WALK, not a total.** For each: the venue settlement record (market_result/revenue/settled_time)
   vs the R-d booked row (is_exit=1, close_source='settlement', fill_count, won, realized_pnl, settled_ts); recompute
   `realized = net_open*settled_value − net_open*avg_cost` by hand for at least the winners (N=5 was never exercised —
@@ -92,6 +94,23 @@ direction that inflates it:** a losing longshot resolves to $0 = a held-to-worth
 /closed-positions drops. So the low buckets are missing their losers → an UPPER BOUND. **Stage 5's `loss_grounding`
 is the tool to re-ground it per (whale, category, price-bucket).** That is the follow-on worth doing — do not act on
 the raw longshot edge; re-ground first. It makes Stage-5 loss-grounding the prerequisite for the one idea in the study.
+
+## ★ 5b. PER-MARKET EXPOSURE STACKS PER WHALE — no per-market cap (a GAP; know before adding whales)
+Investigated read-only 2026-08-31 (runner `cc\pm_seabos_dump_ro.ps1` + `cc\pm_seabos_venue_ro.ps1`). SEABOS-SEA (Aug31)
+showed **10 contracts** = TWO DIFFERENT whales copying the SAME side: id=10 wallet `0x684baa57` (signal_id fb54635d,
+coid e16526f9, 17:17:31Z) + id=12 wallet `0x16bb9951`/SDTrading (signal_id dfcab59d, coid 151fa144, 18:54:50Z), both
+YES @ 0.40, same condition_id `0x3706bf52…` / outcome_index 0 (same entry key `pos:0x3706bf52…:0`). **Venue confirms:
+`position_fp="10.00"`, journal net +10 — they MATCH.**
+- **NOT a dedup defect.** The Finding-5 same-whale re-entry key is not implicated: signal_id (execution.py:202), the
+  idempotency coid (:441) and the holding-guard `journal_net_open_contracts` (:646 `AND wallet=?`) are ALL per-wallet,
+  so two different wallets are two independent copies — gate 4 CORRECTLY allowed both. No same-whale re-entry occurred.
+- **★ THE GAP: nothing caps PER-MARKET exposure.** The in-memory caps (execution.py:290-332) are: `per_order_usd_cap`
+  (per order), `daily_usd` + `orders_today` (per account+category), `open_usd` (per ACCOUNT, total across all markets).
+  **None is per-market/per-ticker.** So a single game carries N_whales × 5 contracts — with 3 whales attached, up to
+  **15 contracts (3× the intended single-whale size)** on one market, bounded only by the $60 account open cap + 20
+  orders/day. This is correct copy behaviour (independent signals) but **Jack should know a single game can already
+  reach 3× size before he adds more whales.** If a per-market cap is wanted, it is a NEW gate (per (account, category,
+  condition_id) exposure), not a config of the existing caps. Filed to the backlog; not a stop, not a defect.
 
 ## ★ 6. NEXT SESSION'S AGENDA
 **Settlement walk FIRST (§1), then MULTI-ACCOUNT** — a different KIND of work (UI + data modelling):
