@@ -43,6 +43,17 @@ each booked automatically by a path that has hand-processed exactly ONE position
   target allocation)? Say PLAINLY which. **If every position loses, the question stays OPEN — a legitimate answer,
   not a failure.** A winner answers it.
 
+**★ THE WALK NOW ANSWERS THREE THINGS (Jack 2026-08-31), not one finding among several:**
+1. **The per-settlement walk INDIVIDUALLY** (not a total) -- a dozen-plus closes booked unattended by a path with ONE
+   hand-inspected case; the four named risks answered ONE AT A TIME.
+2. **★ THE SHARD-PROCEEDS QUESTION -- now a DEPENDENCY, not a curiosity:** $150/day (the new daily cap) against a
+   shard-3 balance of **~$460** is roughly **THREE DAYS** if proceeds SWEEP to shard 0 instead of returning to shard 3.
+   That is Karen's silent death -- a healthy TOTAL while the FUNDING shard empties. If they sweep, the caps need
+   revisiting IMMEDIATELY and a shard top-up becomes a DAILY operational task. Say plainly: return-to-3 or sweep-to-0.
+3. **★ THE THREE OPPOSING PAIRS' LOCKED LOSSES, TOTALLED** (BALCOL 0x521f47a9 + SDCIN 0x1bac2543 + 0xc38041b8) -- BALCOL
+   was ~8.7c on an efficient book; the other two may be worse or better (whether their prices summed above $1). That
+   total is the measured cost of the requirement miss and belongs in the record as ONE number.
+
 ## ★ 2. JACK'S OUTSTANDING TASK — the KEY_VAULT_URI unit line (Analyze narration)
 Until it lands, Analyze prints the deterministic table + loss-completeness block and writes NO sentence (STATE 1 now:
 `pm_web: KEY_VAULT_URI unset … narration stays unavailable`, pm_web healthy). `skill_version` is FINAL at **3**, so
@@ -124,8 +135,20 @@ signal" (that was legacy's quick fix), not "hold both" (guaranteed loss of the s
   settlement scan double-book -> now per-wallet closes; (2) settlement rows had NULL cid/oidx -> phantom held outcome
   could false-contest a same-side copy -> settlement now stamps cid/oidx. Named accepted gaps: duplicate-Poly-cid
   false-negative (safe/bias-to-hold direction); binary-market assumption (matcher-enforced; revisit if categories
-  widen). Full suite green. Branch @ the opposing-guard commits; NOT deployed (Jack: halt for deploy). No schema change
-  (close_source exists since mig-015).
+  widen). Full suite green. No schema change (close_source exists since mig-015).
+- **★★ DEPLOYED LIVE 2026-08-31 ~21:33Z (engine restart 119559->127578) + WORKING WITHIN MINUTES.** boot_reconcile CLEAN
+  (@21:37:14, blocker #2 fix proven on live). ★ **THE GUARD'S FIRST LIVE CYCLES MEASURE THE REQUIREMENT MISS: THREE
+  pre-existing opposing pairs had already formed while it was being built** -- BALCOL (0x521f47a9) + SDCIN (0x1bac2543,
+  id4 CIN + id22 SD) + 0xc38041b8 -- **three opposing pairs in a few hours with three whales**, all correctly LEFT to
+  settle (retroactive-enforcement fix), and it is already PREVENTING a 4th (0x2308d78d, skipping both sides every
+  cycle). [[retroactive-enforcement]] [[a-write-must-satisfy-every-view]] [[deploy-manifest-is-import-closure]] (the
+  loss_grounding manifest-gap Gate-A catch was this deploy's sibling lesson).
+- **★ CAPS RAISED (live PM-DB write, Gate-1 backup + resolved-verify via sub_config_from_row): max_orders_per_day
+  20->50, daily_usd_cap 60->$150, max_open_usd 60->$150** (per_order $5.50 / contracts 5 unchanged). The count ceiling
+  DID bind at 21:32 (orders/day 20>=20 -> count_ceiling latch, effective_armed=False) -- 20 was a runaway breaker
+  binding on legitimate volume, so the raise is REMEDIAL. Then RAISE-FIRST-THEN-CLEAR: cleared the count_ceiling latch
+  + re-armed (effective_armed=True @21:49). $150 = the SAME $3/order allowance the old $60/20 had, scaled to 50;
+  grounded in today's real $2.38/order avg ($119 for 50, headroom to $150). Backup `~/pm_r5_caps_backup_20260831T214753Z.db`.
 Investigated read-only 2026-08-31 (runner `cc\pm_seabos_dump_ro.ps1` + `cc\pm_seabos_venue_ro.ps1`). SEABOS-SEA (Aug31)
 showed **10 contracts** = TWO DIFFERENT whales copying the SAME side: id=10 wallet `0x684baa57` (signal_id fb54635d,
 coid e16526f9, 17:17:31Z) + id=12 wallet `0x16bb9951`/SDTrading (signal_id dfcab59d, coid 151fa144, 18:54:50Z), both
