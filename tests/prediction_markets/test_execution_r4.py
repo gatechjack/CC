@@ -221,6 +221,12 @@ def test_exit_needs_both_signals_else_missed():
 def test_exit_transits_chokepoint_as_reduce_only(tmp_path):
     p = str(tmp_path / "pm.db"); db.init_db(p)
     with db.connect(p) as conn:
+        # seed a FILLED holding (net-open 5 YES) so the EXIT has a position to close (Option-D holding guard + B1 size)
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
+                     "outcome_status,dry_run,submitted_ts,response_ts) VALUES "
+                     "('kalshi_jack','mlb','KXMLBGAME-26AUG281915SEATOR-TOR','yes',0,5,'filled',0,1,1)"); conn.commit()
         d = _one(conn, _sig("mlb-sea-tor-2026-08-28", "Toronto Blue Jays", is_exit=True))
     assert d.status == "dry_run_would_place" and d.is_exit is True
     assert d.body.get("reduce_only") is True and d.body["side"] == "ask"      # sell YES to reduce, reduce_only set
+    assert int(d.body["count"]) == 5                                          # ★ B1 FULL close = journal net-open (5)
+    assert d.body["price"] == "0.5100"                                        # ★ marketable: yes_bid 0.53 - slip 0.02 (NOT ask-based)

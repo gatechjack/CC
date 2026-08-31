@@ -363,6 +363,10 @@ async def test_r7d_disarm_blocks_exit_through_the_driver(tmp_path):
     # the exit is exit-EXEMPT -> it PASSES evaluate even under a tiny daily cap (proves the gates don't block it):
     sub_tight = _sub(daily_usd_cap=1.0)
     with db.connect(p) as conn:
+        # seed a FILLED holding so the EXIT has a real position to close (Option-D holding guard); persists for the cycles below
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
+                     "outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,?,?,0,5,'filled',0,?,?)",
+                     (ACCT, CAT, T_TOR, "yes", NOW, NOW)); conn.commit()
         d = ex.evaluate(exit_sig, sub_tight, _ctx(), ex.Journal(conn, [ACCT], NOW), conn, NOW, legacy_db_path=leg)
         assert d.status == "dry_run_would_place" and d.is_exit is True
     # DISARMED: the exit does NOT reach the placer (off is off; the human flattens by hand on Kalshi):

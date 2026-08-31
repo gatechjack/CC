@@ -170,7 +170,87 @@ def test_no_leg_exit_reduce_only_side_bid(tmp_path):
     sig = ex.CopySignal(wallet=W, slug="mlb-sea-tor-2026-08-28-total-8pt5", outcome="Under",
                         condition_id=CID, outcome_index=1, signal_id="ex_no", is_exit=True)
     with db.connect(p) as conn:
+        # seed a FILLED NO holding (net-open 4) on the total ticker so the exit has a position to close
+        conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
+                     "outcome_status,dry_run,submitted_ts,response_ts) VALUES "
+                     "('kalshi_jack','mlb','KXMLBTOTAL-26AUG281915SEATOR-9','no',0,4,'filled',0,1,1)"); conn.commit()
         j = ex.Journal(conn, [sub.account_id], 1787900000)
         d = ex.evaluate(sig, sub, _ctx_full(), j, conn, 1787900000)
     assert d.status == "dry_run_would_place" and d.is_exit is True and d.leg == "no"
     assert d.body.get("reduce_only") is True and d.body["side"] == "bid"     # sell NO -> buy-YES side = bid
+    assert int(d.body["count"]) == 4                                          # ★ B1 FULL close = net-open (4)
+    assert d.body["price"] == "0.5400"                                        # ★ marketable NO exit: yes_ask 0.52 + slip 0.02
+
+
+# ── R-D2: holding guard (phantom-exit / K1), B1 full-close, gate exemptions, marketable pricing ──
+def _sub_c(**over):
+    base = dict(account_id="kalshi_jack", category="mlb", market_types=("moneyline", "total", "spread"),
+                sizing_mode="contracts", contracts=5, fixed_stake_usd=0.01, per_order_usd_cap=5.5,
+                daily_usd_cap=60.0, max_open_usd=60.0, max_orders_per_day=20, max_slippage_cents=2)
+    base.update(over)
+    return ex.SubConfig(**base)
+
+
+def _eval_exit(tmp_path, held, *, ctx=None, ticker="KXMLBGAME-26AUG281915SEATOR-TOR", leg="yes",
+               outcome="Toronto Blue Jays", is_exit=True):
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        if held > 0:
+            conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
+                         "outcome_status,dry_run,submitted_ts,response_ts) VALUES "
+                         "('kalshi_jack','mlb',?,?,0,?,'filled',0,1,1)", (ticker, leg, held)); conn.commit()
+        sig = ex.CopySignal(wallet=W, slug="mlb-sea-tor-2026-08-28", outcome=outcome, condition_id=CID,
+                            outcome_index=0, signal_id="ex", is_exit=is_exit)
+        return ex.evaluate(sig, _sub_c(), ctx or _ctx_full(), ex.Journal(conn, ["kalshi_jack"], 1787900000),
+                           conn, 1787900000)
+
+
+def test_exit_holding_guard_refuses_phantom_exit(tmp_path):
+    # ★ K1 PHANTOM-EXIT GUARD: an exit against a position we do NOT hold must NEVER place -> skip:not_held, no body.
+    d = _eval_exit(tmp_path, held=0)
+    assert d.status == "skip:not_held" and d.is_exit is True and d.body is None
+
+
+def test_exit_full_close_sizes_at_net_open_not_flat_contracts(tmp_path):
+    # ★ B1: FULL close = net-open (12), NOT sub.contracts (5). A flat-5 exit would STRAND 7 (the Cubs failure).
+    d = _eval_exit(tmp_path, held=12)
+    assert d.status == "dry_run_would_place" and int(d.body["count"]) == 12 and d.body.get("reduce_only") is True
+
+
+def test_exit_exempt_from_per_order_usd_cap(tmp_path):
+    # ★ a risk-reducing exit must NEVER be rejected by the per-order USD cap (else it strands). 50*~0.51 = ~$25.5 >> $5.5.
+    d = _eval_exit(tmp_path, held=50)
+    assert d.status == "dry_run_would_place" and int(d.body["count"]) == 50
+
+
+def test_exit_exempt_from_liquidity_depth_floor_but_entry_is_not(tmp_path):
+    # ★ a THIN book (top-of-book size 1) blocks an ENTRY on the depth floor but must NEVER block an EXIT.
+    thin = {"KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47,
+                "yes_bid_size_fp": "1.00", "yes_ask_size_fp": "1.00"},
+            "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55,
+                "yes_bid_size_fp": "1.00", "yes_ask_size_fp": "1.00"}}
+    ctx = ex.MarketContext(M.build_kalshi_game_index(_GAME_TICKERS), M.build_kalshi_total_index(_TOTAL_TICKERS),
+                           M.build_kalshi_spread_index(_SPREAD_TICKERS), frozenset({"2026-08-28"}), thin)
+    d_exit = _eval_exit(tmp_path, held=5, ctx=ctx)
+    assert d_exit.status == "dry_run_would_place"                                  # exit: depth floor exempt
+    # contrast: an ENTRY (contracts=5) on the SAME thin book skips on the depth floor
+    p2 = str(tmp_path / "entry.db"); db.init_db(p2)
+    with db.connect(p2) as conn:
+        entry = ex.CopySignal(wallet=W, slug="mlb-sea-tor-2026-08-28", outcome="Toronto Blue Jays", condition_id=CID,
+                              outcome_index=0, signal_id="en", is_exit=False)
+        d_entry = ex.evaluate(entry, _sub_c(), ctx, ex.Journal(conn, ["kalshi_jack"], 1787900000), conn, 1787900000)
+    assert d_entry.status == "skip:illiquid" and "depth_floor" in d_entry.reason
+
+
+def test_exit_marketable_pricing_crosses_a_wide_spread(tmp_path):
+    # ★ THE MARKETABILITY FIX: on a WIDE spread (bid 0.30, ask 0.55) the exit prices off the BID (0.30 - slip 0.02 =
+    # 0.28) so the reduce_only IOC CROSSES. The shipped ask-referenced exit would price 0.53 -- above the 0.30 bid --
+    # and 0-fill = a MISSED exit. (yes leg -> side ask.)
+    wide = {"KXMLBGAME-26AUG281915SEATOR-TOR": {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.30, "no_ask_dollars": 0.47,
+                "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+            "KXMLBGAME-26AUG281915SEATOR-SEA": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55,
+                "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"}}
+    ctx = ex.MarketContext(M.build_kalshi_game_index(_GAME_TICKERS), M.build_kalshi_total_index(_TOTAL_TICKERS),
+                           M.build_kalshi_spread_index(_SPREAD_TICKERS), frozenset({"2026-08-28"}), wide)
+    d = _eval_exit(tmp_path, held=5, ctx=ctx)
+    assert d.status == "dry_run_would_place" and d.body["side"] == "ask" and d.body["price"] == "0.2800"

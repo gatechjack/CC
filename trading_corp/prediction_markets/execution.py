@@ -232,6 +232,30 @@ def _leg_ask(market: dict, leg: str):
         return None
 
 
+def _leg_exit_bid(market: dict, leg: str):
+    """The per-contract BID of OUR leg -- the price we can SELL into IMMEDIATELY (a marketable reduce_only IOC
+    EXIT). ENTRIES price to BUY at the ASK (`_leg_ask`); EXITS must price to SELL at the BID or the IOC never
+    crosses. ★ The shipped exit path fed `_leg_ask` for BOTH directions, so an exit's limit was ask-slip -- which
+    fills ONLY when spread <= slip (2c); on any wider book the reduce_only IOC 0-fills = a MISSED EXIT, defeating
+    Option D's purpose (the whole point is to GET OUT). This returns the leg BID so the exit crosses:
+      * YES leg  -> `yes_bid` (sell YES: side=ask at yes_bid - slip, crosses the bid).
+      * NO leg   -> the NO bid = (1 - `yes_ask`) (selling NO = buying YES at the ask; YES-centric, and it uses
+                    yes_ask -- always populated on the live path -- rather than a possibly-absent no_bid field).
+    None (no bid to sell into) -> fail-closed skip:no_quote. Out-of-band prices -> None (same guard as _leg_ask)."""
+    if not isinstance(market, dict):
+        return None
+    try:
+        if leg == "yes":
+            v = market.get("yes_bid_dollars")
+            p = float(v)
+        else:
+            ya = market.get("yes_ask_dollars")
+            p = 1.0 - float(ya)                       # NO bid = 1 - YES ask (sell NO = buy YES at the ask)
+        return p if 0.0 < p < 1.0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _top_of_book_depth_usd(market: dict, leg: str) -> float:
     """The LEG-CORRECT top-of-book $ depth available to FILL our BUY, from Kalshi top-of-book SIZE (contracts) x
     price (dollars). ★ `liquidity_dollars` is a DEPRECATED always-'0.0000' Kalshi stub (docs 2026-08-30), so depth
@@ -334,7 +358,7 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     else:
         copy_usd = float(sub.fixed_stake_usd)
         flat_contracts = None
-        if copy_usd > sub.per_order_usd_cap + 1e-9:                                   # gate 2a (flat-dollars config sanity ONLY)
+        if not signal.is_exit and copy_usd > sub.per_order_usd_cap + 1e-9:            # gate 2a (ENTRY flat-dollars config sanity ONLY)
             return Decision("reject:per_order_cap", sid, disarm_armed=armed, is_exit=signal.is_exit,
                             reason="fixed_stake_%.4f_gt_cap_%.4f" % (copy_usd, sub.per_order_usd_cap))
 
@@ -354,47 +378,59 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
             order_shard = int(order_shard)
         except (TypeError, ValueError):
             order_shard = None
-    base_price = _leg_ask(market, leg)                                               # gate 7 precondition (quote)
+    # gate 7 precondition (a quote to price against). ENTRIES price to BUY at the leg ASK; EXITS price to SELL at
+    # the leg BID so the reduce_only IOC actually CROSSES (an ask-referenced sell fills only when spread <= slip --
+    # a latent under-fill = a missed exit; see _leg_exit_bid). base_price feeds v2_side_and_price + build_v2 below.
+    base_price = _leg_exit_bid(market, leg) if signal.is_exit else _leg_ask(market, leg)
     if base_price is None:
         return Decision("skip:no_quote", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
-                        reason="no_two_sided_quote_for_leg", is_exit=signal.is_exit, disarm_armed=armed)
-    # ★ Compute THIS order's own notional BEFORE the liquidity gate: the gate-3 floor is a RATIO of it (Jack RULED
-    # 2026-08-29), so the depth required scales with the order actually being placed, not a fixed $. (Moved up from
-    # below the liquidity gate; the caps that follow reuse the same values -- pure reordering, no double-compute.)
-    count = flat_contracts if sizing_mode == "contracts" else usd_to_contracts(copy_usd, base_price)
+                        reason=("no_bid_to_sell_into" if signal.is_exit else "no_two_sided_quote_for_leg"),
+                        is_exit=signal.is_exit, disarm_armed=armed)
+    if signal.is_exit:
+        # ★ HOLDING GUARD (fail-closed) + Fork-B1 FULL CLOSE. A reduce_only EXIT is a REAL SELL; firing one against a
+        # position we do NOT hold is the K1 phantom-exit class -- the worst outcome here -- so size the close at OUR
+        # journal NET-OPEN on THIS (ticker, leg) and REFUSE (skip:not_held) when it is <= 0 (nothing to close). B1
+        # (Jack RULED): FULL close on any confirmed whale exit (not a mirror-ratio); reduce_only also caps at the
+        # venue so we can never oversell. Read fresh from the durable journal (self-corrects within a cycle as
+        # earlier exits finalize).
+        held = journal_net_open_contracts(conn, sub.account_id, sub.category, ticker, leg)
+        count = int(round(held))
+        if count <= 0:
+            return Decision("skip:not_held", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                            is_exit=True, disarm_armed=armed, reason="no_net_open_to_exit(held=%.4f)" % held)
+    else:
+        count = flat_contracts if sizing_mode == "contracts" else usd_to_contracts(copy_usd, base_price)
     _side, limit_price = v2_side_and_price(outcome=leg, is_buy=(not signal.is_exit),
                                            base_price=base_price, max_slippage_cents=sub.max_slippage_cents)
     # ★ OUTCOME-LEG committed cash per contract (the $163.84 fix / the NO-leg lens -- bitten 6x): a NO leg costs
-    # (1 - yes_side_price), NOT the yes-side price. EVERY USD gate -- the caps AND now the liquidity floor -- gates
-    # on THIS, the money the account actually commits on THIS leg.
+    # (1 - yes_side_price), NOT the yes-side price. Every ENTRY USD gate gates on THIS. For an EXIT it is the
+    # per-contract sale value (informational: the caps below do not apply to a risk-reducing exit).
     leg_cost = limit_price if leg == "yes" else (1.0 - limit_price)
     notional = count * leg_cost
-    # gate 3 (liquid): required book depth = liquidity_ratio * THIS order's notional (config, per sub-division, READ
-    # PER CYCLE; NOT a fixed $, NOT per_order_usd_cap -- decoupled: the cap limits what we SPEND, the floor checks the
-    # book can SERVE it). ** CONSEQUENCE (Jack ruled knowingly): at ratio < 1.0 the book may not FULLY fill the order
-    # -- a partial fill / walking to the next price level is possible. At 1 contract that is fill-or-nothing
-    # (meaningless); at larger sizes the residual price movement is bounded SEPARATELY by the slippage cap (gate 7,
-    # clamped inside build_v2_event_order). This floor is a "can the book serve most of it" check, NOT a full-fill
-    # guarantee. ** notional is leg-correct (above), so a NO-leg floor scales with (1-yes_price), never the yes side.
-    required_depth = sub.liquidity_ratio * notional
-    # gate 3 (liquid): (i) TWO-SIDED + SPREAD via M.liquidity_ok with a ZERO $-floor -- `liquidity_dollars` is a
-    # DEPRECATED always-'0.0000' Kalshi stub (docs 2026-08-30), so its $-floor is a no-op here (kept for the
-    # two-sided + spread logic); (ii) a REAL depth floor from LEG-CORRECT TOP-OF-BOOK SIZE (yes_*_size_fp x price,
-    # merged from the raw payload -- the SDK object drops the size fields, like exchange_index). Both fail CLOSED.
-    if not M.liquidity_ok(market, min_liquidity_usd=0.0, max_spread_cents=max(1, sub.max_slippage_cents * 2)):
-        return Decision("skip:illiquid", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
-                        count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
-                        reason="no_two_sided_or_spread_over_cap")
-    depth_usd = _top_of_book_depth_usd(market, leg)                                   # gate 3 depth: leg-correct size x price
-    if not (depth_usd + 1e-9 >= required_depth):
-        return Decision("skip:illiquid", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
-                        count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
-                        reason="depth_floor:need_%.4f=ratio_%.2f*notional_%.4f have_%.4f(top_of_book)"
-                               % (required_depth, sub.liquidity_ratio, notional, depth_usd))
-    if notional > sub.per_order_usd_cap + 1e-9:                                       # gate 2b (per-order USD ceiling)
-        return Decision("reject:per_order_cap", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
-                        count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
-                        reason="notional_%.4f_gt_cap_%.4f" % (notional, sub.per_order_usd_cap))
+    # ★ gates 3 (liquidity/depth) + 2b (per-order USD cap) are ENTRY caps ONLY. A reduce_only EXIT reduces risk and
+    # must NEVER be blocked by a size/liquidity cap: a rejected exit STRANDS the position (the Cubs failure). The
+    # exit is instead guarded by the bid-price precondition above (a book to sell into) + the holding guard; the IOC
+    # + slippage clamp (gate 7, inside build_v2) bound its fill, and reduce_only bounds its size at the venue.
+    if not signal.is_exit:
+        # gate 3 (liquid): required book depth = liquidity_ratio * THIS order's notional (config, per sub-division,
+        # READ PER CYCLE; decoupled from the spend cap). (i) TWO-SIDED + SPREAD via M.liquidity_ok (ZERO $-floor --
+        # liquidity_dollars is a deprecated always-'0.0000' stub); (ii) a REAL depth floor from LEG-CORRECT
+        # TOP-OF-BOOK SIZE (yes_*_size_fp x price, merged from the raw payload). Both fail CLOSED.
+        required_depth = sub.liquidity_ratio * notional
+        if not M.liquidity_ok(market, min_liquidity_usd=0.0, max_spread_cents=max(1, sub.max_slippage_cents * 2)):
+            return Decision("skip:illiquid", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                            count=count, notional_usd=notional, is_exit=False, disarm_armed=armed,
+                            reason="no_two_sided_or_spread_over_cap")
+        depth_usd = _top_of_book_depth_usd(market, leg)                               # gate 3 depth: leg-correct size x price
+        if not (depth_usd + 1e-9 >= required_depth):
+            return Decision("skip:illiquid", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                            count=count, notional_usd=notional, is_exit=False, disarm_armed=armed,
+                            reason="depth_floor:need_%.4f=ratio_%.2f*notional_%.4f have_%.4f(top_of_book)"
+                                   % (required_depth, sub.liquidity_ratio, notional, depth_usd))
+        if notional > sub.per_order_usd_cap + 1e-9:                                   # gate 2b (per-order USD ceiling)
+            return Decision("reject:per_order_cap", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                            count=count, notional_usd=notional, is_exit=False, disarm_armed=armed,
+                            reason="notional_%.4f_gt_cap_%.4f" % (notional, sub.per_order_usd_cap))
 
     coid = _kalshi_coid(sub.division, signal.wallet, ticker, leg, sid)                # gate 4 (idempotency)
     if journal.already_placed(coid):
@@ -432,7 +468,9 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
     body, cnt, price = build_v2_event_order(
         ticker=ticker, outcome=leg, is_buy=(not signal.is_exit), base_price=base_price, copy_usd=copy_usd,
         max_slippage_cents=sub.max_slippage_cents, tif=_ENTRY_TIF, client_order_id=coid,
-        count=(count if sizing_mode == "contracts" else None))   # flat-contracts: pass the count explicitly (no stake-floor)
+        # EXIT -> the net-open count (full close); ENTRY contracts-mode -> the flat count; ENTRY fixed-mode -> None
+        # (derive from copy_usd). An exit never derives from copy_usd (it is 0 in contracts mode).
+        count=(count if (signal.is_exit or sizing_mode == "contracts") else None))
     # ★ RUNG 3 (PM-only; no shared-broker edit): explicit exchange_index = the MARKET's OWN shard (read from the
     # market object -- authoritative). DETERMINISTIC routing instead of relying on Kalshi auto-route. Correction 4:
     # explicit targeting bills only THAT shard's Write budget (auto-route bills the unscoped budget AND every nonzero

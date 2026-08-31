@@ -50,9 +50,14 @@ def _bal(shards):
     return sb.parse_balance({"balance_dollars": "%.4f" % sum(shards.values()), "balance_breakdown": bd})
 
 
-def _eval(tmp_path, ctx, shard_balances, sig=None):
+def _eval(tmp_path, ctx, shard_balances, sig=None, hold=None):
     p = str(tmp_path / "pm.db"); db.init_db(p)
     with db.connect(p) as conn:
+        if hold:                                              # FILLED entry so an exit has a position to close
+            tkr, leg, n = hold
+            conn.execute("INSERT INTO pm_subdivision_order (account_id, category, ticker, outcome_leg, is_exit, "
+                         "fill_count, outcome_status, dry_run, submitted_ts, response_ts) "
+                         "VALUES (?,?,?,?,0,?,'filled',0,?,?)", (ACCT, CAT, tkr, leg, n, NOW, NOW)); conn.commit()
         return ex.evaluate(sig or _sig(), _sub(), ctx, ex.Journal(conn, [ACCT], NOW), conn, NOW,
                            shard_balances=shard_balances, legacy_db_path=str(tmp_path / "noleg.db"))
 
@@ -97,6 +102,7 @@ def test_corrupt_shard_coerces_or_fails_closed(tmp_path):
 
 def test_exit_body_also_routes_explicitly(tmp_path):
     # a reduce_only EXIT is NOT shard-gated, but its body should still route deterministically to the market's shard
-    d = _eval(tmp_path, _ctx(_markets(tor_shard=3)), _bal({3: 0.0}), sig=_sig(is_exit=True, sid="ex"))
+    d = _eval(tmp_path, _ctx(_markets(tor_shard=3)), _bal({3: 0.0}), sig=_sig(is_exit=True, sid="ex"),
+              hold=(T_TOR, "yes", 5))
     assert d.status == "dry_run_would_place" and d.is_exit is True
     assert d.body["exchange_index"] == 3 and d.body.get("reduce_only") is True

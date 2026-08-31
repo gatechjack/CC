@@ -57,9 +57,18 @@ def _bal(shards):
     return sb.parse_balance({"balance_dollars": "%.4f" % sum(shards.values()), "balance_breakdown": bd})
 
 
-def _eval(tmp_path, sub, sig, ctx, shard_balances):
+def _seed_hold(conn, ticker, leg, n):
+    # a FILLED entry so an exit has a real net-open position to close (Option-D holding guard)
+    conn.execute("INSERT INTO pm_subdivision_order (account_id, category, ticker, outcome_leg, is_exit, fill_count, "
+                 "outcome_status, dry_run, submitted_ts, response_ts) VALUES (?,?,?,?,0,?,'filled',0,?,?)",
+                 (ACCT, CAT, ticker, leg, n, NOW, NOW)); conn.commit()
+
+
+def _eval(tmp_path, sub, sig, ctx, shard_balances, hold=None):
     p = str(tmp_path / "pm.db"); db.init_db(p)
     with db.connect(p) as conn:
+        if hold:
+            _seed_hold(conn, *hold)
         return ex.evaluate(sig, sub, ctx, ex.Journal(conn, [ACCT], NOW), conn, NOW,
                            shard_balances=shard_balances, legacy_db_path=str(tmp_path / "noleg.db"))
 
@@ -111,8 +120,9 @@ def test_gate6b_shard0_market_funds_and_places(tmp_path):
 
 
 def test_gate6b_exit_is_not_shard_gated(tmp_path):
-    # a reduce_only EXIT reduces risk -> gate 6b (entry-only) must NEVER skip it, even on an empty shard
-    d = _eval(tmp_path, _sub(), _sig(is_exit=True, sid="ex"), _ctx(_markets(tor_shard=3)), _bal({3: 0.0}))
+    # a reduce_only EXIT reduces risk -> gate 6b (entry-only) must NEVER skip it, even on an empty shard (holding seeded)
+    d = _eval(tmp_path, _sub(), _sig(is_exit=True, sid="ex"), _ctx(_markets(tor_shard=3)), _bal({3: 0.0}),
+              hold=(T_TOR, "yes", 5))
     assert d.status == "dry_run_would_place" and d.is_exit is True
 
 
