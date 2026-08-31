@@ -68,7 +68,7 @@ def test_book_cubs_loss_realized_minus_6084(tmp_path):
     assert r["is_exit"] == 1 and r["outcome_status"] == "filled" and r["fill_count"] == 1.0
     assert r["fill_price"] == 0.0 and r["fee"] == 0.0 and r["close_source"] == "settlement" and r["won"] == 0
     assert abs(r["realized_pnl"] - (-0.6084)) < 1e-9                     # 0 proceeds - (0.60 + 0.0084)
-    assert r["settled_ts"] == 1788136681 and r["wallet"] == SDT
+    assert r["settled_ts"] == SETTLED_TS and r["wallet"] == SDT
 
 
 # ── ★ THE TEST THAT MATTERS: boot_reconcile CLEAN after booking (LATCHED before) ──
