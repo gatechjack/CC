@@ -131,3 +131,42 @@ def ground_losses(activity_rows, closed_rows, resolutions: dict, *, activity_tru
         loss_omission_pct=((ao_l / honest_l) if honest_l > 0 else None),
         activity_truncated=bool(activity_truncated), completeness=completeness,
         n_activity_held_resolved=len(aheld))
+
+
+# ── the async ORCHESTRATOR: page /activity + /closed-positions + gamma, category-filter, ground (Stage 5 R2a) ──
+# Verbatim paging from the probe: /activity up to `activity_max_pages*activity_limit` (5000 default, TRUNCATED flag);
+# /closed-positions up to `closed_max` (~the API's ~1500 cap). Category filtering is DECOUPLED from the slug->category
+# derivation via an injected `category_of(row)->str` -- so this stays PURE-logic + testable with a fake client, and
+# the derivation (names.py) lives at the ONE caller (analyze). The client is a PolymarketDataAPIClient (duck-typed:
+# fetch_activity / fetch_closed_positions / fetch_market_resolutions). This is the ONE site with the API cost.
+async def fetch_and_ground_losses(client, wallet: str, category: str, *, category_of,
+                                  activity_max_pages: int = 10, activity_limit: int = 500,
+                                  closed_limit: int = 50, closed_max: int = 2000):
+    """Fetch + category-filter + ground the loss set for (wallet, category). Returns a LossGrounding. `category_of`
+    maps an Activity/Closed row to its category string (injected). A_only is a LOWER bound when /activity truncated."""
+    acts, trunc = [], False
+    for pg in range(activity_max_pages):
+        rows = await client.fetch_activity(wallet, limit=activity_limit, offset=pg * activity_limit)
+        if not rows:
+            break
+        acts.extend(rows)
+        if len(rows) < activity_limit:
+            break
+    else:
+        trunc = True                                          # hit the page ceiling -> the ~5000-row window truncated
+    closed, off = [], 0
+    while True:
+        rows = await client.fetch_closed_positions(wallet, limit=closed_limit, offset=off)
+        if not rows:
+            break
+        closed.extend(rows)
+        if len(rows) < closed_limit:
+            break
+        off += closed_limit
+        if off >= closed_max:
+            break
+    acts_cat = [a for a in acts if category_of(a) == category]
+    closed_cat = [c for c in closed if category_of(c) == category]
+    cids = list({getattr(x, "condition_id", None) for x in (acts_cat + closed_cat) if getattr(x, "condition_id", None)})
+    resolutions = (await client.fetch_market_resolutions(cids)) if cids else {}
+    return ground_losses(acts_cat, closed_cat, resolutions, activity_truncated=trunc)

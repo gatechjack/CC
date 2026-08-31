@@ -2,6 +2,8 @@
 held-to-resolution, GAMMA as the resolution authority, A_only = the losses /closed-positions DROPPED, the HONEST
 win/loss = /closed-positions UNION A_only, and a MEASURED completeness bound when /activity truncates. Fixtures use
 the REAL ActivityRow/ClosedPositionRow (from_api) so the adapters run against the true field shapes."""
+import pytest
+
 from trading_corp.prediction_markets import loss_grounding as LG
 from trading_corp.data.polymarket_data_api_client import ActivityRow, ClosedPositionRow
 
@@ -75,3 +77,45 @@ def test_no_losses_gives_none_omission_pct():
 def test_closed_decisions_winner_convention():
     d = LG.closed_decisions([_closed("a", 0, 0.95), _closed("b", 1, 0.10)])
     assert d[("a", 0)]["won"] is True and d[("b", 1)]["won"] is False           # cur_price >= 0.9 = win
+
+
+# ── R2a: the async orchestrator (page + category-filter + ground) ─────────────
+def _act_slug(cid, oidx, side, size, slug, typ="TRADE"):
+    return ActivityRow.from_api({"conditionId": cid, "outcomeIndex": oidx, "side": side, "size": size,
+                                 "type": typ, "slug": slug, "proxyWallet": "0xW"})
+
+
+class _FakeClient:
+    """Duck-types PolymarketDataAPIClient's three readers. activity/closed are LISTS OF PAGES (paged by offset)."""
+    def __init__(self, activity_pages, closed_pages, resolutions):
+        self._a = activity_pages; self._c = closed_pages; self._r = resolutions
+    async def fetch_activity(self, wallet, *, limit, offset):
+        i = offset // limit; return list(self._a[i]) if i < len(self._a) else []
+    async def fetch_closed_positions(self, wallet, *, limit, offset):
+        i = offset // limit; return list(self._c[i]) if i < len(self._c) else []
+    async def fetch_market_resolutions(self, cids, **kw):
+        return {cid: self._r[cid] for cid in cids if cid in self._r}
+
+
+def _cat_of(r):                                                                 # derive category from the slug prefix
+    s = str(getattr(r, "slug", "") or ""); return s.split("-")[0] if s else ""
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_category_filter_and_grounding():
+    # activity: an mlb held LOSS absent from closed (a_only) + an nba row that MUST be filtered out
+    a = [[_act_slug("c_mlb", 0, "BUY", 5, "mlb-x"), _act_slug("c_nba", 0, "BUY", 5, "nba-y")]]
+    fake = _FakeClient(a, [[]], {"c_mlb": _res(1), "c_nba": _res(1)})            # both would be losses if counted
+    g = await LG.fetch_and_ground_losses(fake, "0xW", "mlb", category_of=_cat_of)
+    assert g.a_only_losses == 1 and g.honest_losses == 1                        # ONLY the mlb row; nba excluded
+    assert g.activity_truncated is False
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_flags_truncation_at_the_page_ceiling():
+    # 2 FULL pages of `limit` rows with max_pages=2 -> the page ceiling is hit -> truncated=True
+    full = [_act_slug("c%d" % i, 0, "BUY", 5, "mlb-x") for i in range(3)]       # limit=3 -> a full page
+    fake = _FakeClient([full, full], [[]], {("c%d" % i): _res(1) for i in range(3)})
+    g = await LG.fetch_and_ground_losses(fake, "0xW", "mlb", category_of=_cat_of,
+                                         activity_max_pages=2, activity_limit=3)
+    assert g.activity_truncated is True and "windowed" in g.completeness
