@@ -34,7 +34,9 @@ SAFETY carried from R5 (all enforced HERE):
     a boot-reconcile RAISE (our own DB fault) ALSO force-latches (do not proceed armed on a system fault).
   * A loud `OrderPlacementError` (incl. a wrapped transport timeout) increments a consecutive-error latch; a 401/403
     latches the whole account (auth-failure) + flags open positions for MANUAL exit.
-  * ENTRIES ONLY for the first order (Option-D whale EXIT detection is a LATER rung).
+  * ENTRIES from /positions; EXITS (Option D) from a /positions size-REDUCTION CONFIRMED by an /activity SELL
+    in-window (BOTH or MISSED). Every exit is reduce_only, sized at OUR journal net-open (FULL close, Fork B1),
+    refused if we hold nothing (skip:not_held), and -- like an entry -- BLOCKED by DISARM (off is off).
 
 R7.e VERIFY (read-only): the pykalshi `get_markets` market-object quote field names mapped into
 `MarketContext.markets` (yes_ask/no_ask/liquidity). A miss leaves a ticker UNQUOTED -> evaluate skip:no_quote (safe).
@@ -196,6 +198,10 @@ def positions_to_entry_signals(rows, wallet: str) -> list:
 # its inputs from the real ActivityRow / PositionRow shapes; the caller (the live loop) owns the prior /positions
 # snapshot (Fork A: in-memory, boot-seeded). Neither adapter places or writes -- they only shape data.
 _REDUCTION_EPS = 1e-6
+# Fork D: the max lag between a whale's /activity SELL (the actual sell ts) and our /positions-reduction DETECTION
+# (a poll-time ts) for detect_exit_signals to PAIR them. 300s covers data-api propagation + one poll; too tight
+# misses confirmations, too loose is negligible risk (paired only on exact condition_id + outcome_index). Tunable.
+_EXIT_WINDOW_SEC = 300
 
 
 def activity_sells_from_activity(rows, wallet: str) -> list:
@@ -481,6 +487,11 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 return                                 # ★ do NOT proceed into the (possibly-armed) cycle on a double fault
     cycles = 0
     consec_underfunded = 0                                  # gate-6b sustained-underfunding alarm counter (cross-cycle)
+    # ★ Option D (Fork A1): the PRIOR /positions snapshot per whale, held IN MEMORY (NOT persisted -- the journal is
+    # the single source of truth for position state; a persisted snapshot would be a second one). {wallet ->
+    # snapshot_open_positions(...)}. EMPTY at boot, so cycle 1 emits NO reduction (nothing to diff against) and seeds
+    # it. A restart re-derives from /positions -- a reduction straddling the restart is a MISSED exit (accepted).
+    prior_snapshots: dict = {}
     while _max_cycles is None or cycles < _max_cycles:
         cycles += 1
         # ★ fail-closed default, BOUND before anything can raise: even if a future refactor moved the placement call
@@ -515,8 +526,28 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                     except Exception as e:  # noqa: BLE001 -- per-whale isolation (a fetch error skips that whale)
                         log.warning("pm_live_driver: /positions fetch failed for %s: %s", w[:12], e); continue
                     if not getattr(book, "complete", False):
-                        continue                                        # never act on a partial book
+                        continue                                        # never act on a partial book (also: do NOT
+                        # touch prior_snapshots on a partial -- a short book would look like a spurious reduction)
                     signals += positions_to_entry_signals(book.rows, w)
+                    # ── Option D whale-EXIT detection: a /positions size-REDUCTION vs the prior snapshot, CONFIRMED by
+                    # an /activity SELL in-window (execution.detect_exit_signals: BOTH or MISSED). /activity is pulled
+                    # LAZILY -- ONLY when a reduction is actually seen -- so the ~7s cadence does not double the API
+                    # load; the reduction cannot appear before the sell it confirms (a sell precedes its own
+                    # position drop), so this misses nothing the window would have caught. Per-whale isolated.
+                    reds = detect_position_reductions(prior_snapshots.get(w, {}), book.rows, w, now_ts)
+                    if reds:
+                        try:
+                            acts = await positions_client.fetch_activity(w)
+                            sells = activity_sells_from_activity(acts, w)
+                            exits = execution.detect_exit_signals(sells, reds, window_sec=_EXIT_WINDOW_SEC)
+                            if exits:
+                                log.info("pm_live_driver: %d confirmed whale-EXIT signal(s) for %s (reductions=%d, "
+                                         "sells=%d)", len(exits), w[:12], len(reds), len(sells))
+                            signals += exits
+                        except Exception as e:  # noqa: BLE001 -- exit-confirm fetch failed -> NO exit this cycle (bias-down)
+                            log.warning("pm_live_driver: exit-confirm /activity fetch failed for %s (no exit this "
+                                        "cycle; re-checked next cycle): %s", w[:12], e)
+                    prior_snapshots[w] = snapshot_open_positions(book.rows)   # update AFTER the diff (never before)
                 place_fn = make_place_fn(client)
                 summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
                                                       shard_balances=shard_bal, legacy_db_path=legacy_db_path, log=log)

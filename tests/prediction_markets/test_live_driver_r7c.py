@@ -18,6 +18,7 @@ import pytest
 
 from trading_corp.prediction_markets import arm, db, execution as ex, live_driver as L
 from trading_corp.data import mlb_poly_kalshi_match as M
+from trading_corp.data.polymarket_data_api_client import PositionRow, ActivityRow
 
 ACCT, CAT = "kalshi_jack", "mlb"
 NOW = 1787900000
@@ -109,8 +110,9 @@ class FakeKPos:                       # a Kalshi portfolio position (boot-reconc
 
 
 class FakeMarket:                     # a pykalshi get_markets market object
-    def __init__(self, ticker, yes_ask=0.55, no_ask=0.47, liq=500):
-        self.ticker = ticker; self.yes_ask_dollars = yes_ask; self.no_ask_dollars = no_ask; self.liquidity_dollars = liq
+    def __init__(self, ticker, yes_ask=0.55, no_ask=0.47, liq=500, yes_bid=0.53):
+        self.ticker = ticker; self.yes_ask_dollars = yes_ask; self.no_ask_dollars = no_ask
+        self.liquidity_dollars = liq; self.yes_bid_dollars = yes_bid   # yes_bid: the exit prices off the BID
 
 
 class FakePos:                        # a polymarket /positions row (for is_genuinely_open + pos_outcome_index)
@@ -409,3 +411,87 @@ async def test_boot_reconcile_raise_force_latches(tmp_path):
     row = arm.current_row(ACCT, CAT, legacy_db_path=leg)                        # the fault force-latched -> the armed sub is DISARMED
     assert row["latched"] is True and row["auto_trigger"] == arm.AUTO_BOOT_RECONCILE
     assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is False and fake.posts == []
+
+
+# ── Option D R-D3: the scheduled loop DETECTS a whale exit (/positions reduction + /activity SELL) and PLACES it ──
+def _prow(cid, oidx, size, outcome="Toronto Blue Jays", cur=0.5):
+    return PositionRow.from_api({"proxyWallet": "0xWHALE", "conditionId": cid, "size": size, "slug": SLUG,
+                                 "outcome": outcome, "outcomeIndex": oidx, "curPrice": cur, "redeemable": False,
+                                 "avgPrice": 0.5})
+
+
+def _arow(cid, oidx, side, ts, tx, typ="TRADE"):
+    return ActivityRow.from_api({"proxyWallet": "0xWHALE", "conditionId": cid, "outcomeIndex": oidx, "side": side,
+                                 "timestamp": ts, "transactionHash": tx, "type": typ, "size": 5.0, "slug": SLUG,
+                                 "outcome": "Toronto Blue Jays"})
+
+
+class FakeMultiCyclePositionsClient:
+    """Returns `books[cycle]` (fetch_positions_book is called once/cycle for one whale) so the position can SHRINK
+    across cycles; fetch_activity returns the confirming SELL. Mirrors PolymarketDataAPIClient's two methods."""
+    def __init__(self, books, activity):
+        self._books = list(books); self._call = 0; self._activity = activity
+    async def fetch_positions_book(self, wallet):
+        b = self._books[min(self._call, len(self._books) - 1)]; self._call += 1; return b
+    async def fetch_activity(self, wallet, **kw):
+        return list(self._activity)
+
+
+def _seed_money_and_hold(conn, held=5):
+    import time as _t
+    conn.execute("INSERT OR IGNORE INTO pm_account(account_id,venue,secret_ref,label,active,created_ts) "
+                 "VALUES(?, 'kalshi','KALSHI','Jack',1,?)", (ACCT, int(_t.time())))
+    conn.execute("INSERT OR IGNORE INTO pm_subdivision(account_id,category,market_types,sizing_mode,"
+                 "fixed_stake_usd,active,created_ts) VALUES(?,?,'moneyline,total,spread','fixed',5.0,1,?)",
+                 (ACCT, CAT, int(_t.time())))
+    conn.execute("INSERT OR IGNORE INTO pm_subdivision_attachment(account_id,category,wallet,active,source,added_ts) "
+                 "VALUES(?,?,'0xWHALE',1,'promote_to_live',?)", (ACCT, CAT, int(_t.time())))
+    conn.execute("INSERT INTO pm_subdivision_order (account_id,category,ticker,outcome_leg,is_exit,fill_count,"
+                 "outcome_status,dry_run,submitted_ts,response_ts) VALUES (?,?,?,?,0,?,'filled',0,?,?)",
+                 (ACCT, CAT, T_TOR, "yes", held, NOW, NOW))
+    conn.commit()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_loop_detects_and_places_a_whale_exit(tmp_path):
+    """R-D3 REAL-PATH (the standing lens: a suite that never runs the armed exit path proves nothing). Cycle 1 the
+    whale HOLDS (0xopen size 5) -> the loop seeds its /positions snapshot; cycle 2 the position VANISHES and
+    /activity shows a SELL -> the loop DETECTS the confirmed exit and (ARMED) PLACES a reduce_only FULL close of our
+    net-open holding (5), on the held leg, via a real POST."""
+    import time
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)
+    with db.connect(p) as conn:
+        _seed_money_and_hold(conn, held=5)                                       # a REAL +5 YES holding to close
+    now = int(time.time())
+    pos_client = FakeMultiCyclePositionsClient([FakeBook([_prow("0xopen", 0, 5.0)]), FakeBook([])],
+                                               [_arow("0xopen", 0, "SELL", now, "0xtxSELL")])
+    fake = FakeKalshiClient(positions=[FakeKPos(T_TOR, 5)],                       # boot-reconcile: journal +5 == kalshi +5 (clean)
+                            game_markets=[FakeMarket(T_TOR), FakeMarket(T_SEA)])
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), pos_client, account_id=ACCT, category=CAT,
+                                   poll_sec=0, legacy_db_path=leg, _max_cycles=2)
+    exit_posts = [b for (_pth, b) in fake.posts if b.get("reduce_only")]         # the exit is reduce_only
+    assert len(exit_posts) == 1 and exit_posts[0]["ticker"] == T_TOR and exit_posts[0]["count"] == "5"
+    assert exit_posts[0]["side"] == "ask"                                        # sell YES to close = ask
+    with db.connect(p) as conn:
+        r = conn.execute("SELECT is_exit, outcome_status, fill_count FROM pm_subdivision_order "
+                         "WHERE is_exit=1 AND dry_run=0").fetchone()
+    assert r is not None and r["outcome_status"] == "filled"                     # the exit was journaled as an is_exit fill
+
+
+@pytest.mark.asyncio
+async def test_scheduled_loop_disarmed_does_not_place_the_exit(tmp_path):
+    """The same detection, DISARMED -> the exit is DETECTED but NEVER placed (off is off, at the loop level)."""
+    import time
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)   # NO _arm_both -> disarmed
+    with db.connect(p) as conn:
+        _seed_money_and_hold(conn, held=5)
+    now = int(time.time())
+    pos_client = FakeMultiCyclePositionsClient([FakeBook([_prow("0xopen", 0, 5.0)]), FakeBook([])],
+                                               [_arow("0xopen", 0, "SELL", now, "0xtxSELL")])
+    fake = FakeKalshiClient(positions=[FakeKPos(T_TOR, 5)], game_markets=[FakeMarket(T_TOR), FakeMarket(T_SEA)])
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), pos_client, account_id=ACCT, category=CAT,
+                                   poll_sec=0, legacy_db_path=leg, _max_cycles=2)
+    assert fake.posts == []                                                      # nothing placed while disarmed
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_order WHERE is_exit=1").fetchone()[0] == 0
