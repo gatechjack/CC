@@ -121,7 +121,13 @@ def usd_to_contracts(copy_usd: float, base_price: float) -> int:
 
 def client_order_id(division: str, whale_handle: str, ticker: str, outcome: str, signal_id: str) -> str:
     """Deterministic idempotency key — a UUID5 over the logical-copy identity.
-    Resubmitting the same logical copy returns the existing Kalshi order."""
+    ASSUMPTION (unverified, and NOT the primary guard): Kalshi is EXPECTED to treat a duplicate
+    client_order_id as idempotent (echo/return the existing order rather than place a second). This is a
+    SECONDARY backstop only. The PROVEN primary dedup is gate 4 against the durable journal (execution.py) plus
+    pending-first coid journaling (live_driver.py); Kalshi's own dedup matters ONLY if that pending INSERT itself
+    fails — i.e. the journal is already broken. It is deliberately UNVERIFIED (Ruling B, 2026-08-31): proving it
+    needs a real duplicate POST on a funded account, spending money to test a backstop for an already-failed
+    primary — not worth it. State it as an assumption; do not rely on it as a fact."""
     key = f"{division}|{whale_handle}|{ticker}|{outcome}|{signal_id}"
     return str(uuid.uuid5(_COID_NAMESPACE, key))
 

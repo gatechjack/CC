@@ -403,9 +403,11 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
             try:
                 arm.latch_boot_reconcile_mismatch(account_id, category, detail="boot-reconcile system fault: %r" % e,
                                                   legacy_db_path=legacy_db_path)
-            except Exception as e2:  # noqa: BLE001
-                log.critical("pm_live_driver: could NOT latch after a boot-reconcile fault (%s) -- STILL disarmed by "
-                             "the R5 absent->DISARMED default unless someone armed: %s", e, e2)
+            except Exception as e2:  # noqa: BLE001 -- RULING A (2026-08-31): a FAILED force-latch must NOT fall through
+                log.critical("pm_live_driver: could NOT latch after a boot-reconcile fault (%s) -- REFUSING to enter "
+                             "the trading loop: cannot confirm DISARM, and falling through would trade on an "
+                             "UNVERIFIED journal (a 'safety check that silently stops checking'): %s", e, e2)
+                return                                 # ★ do NOT proceed into the (possibly-armed) cycle on a double fault
     cycles = 0
     consec_underfunded = 0                                  # gate-6b sustained-underfunding alarm counter (cross-cycle)
     while _max_cycles is None or cycles < _max_cycles:
