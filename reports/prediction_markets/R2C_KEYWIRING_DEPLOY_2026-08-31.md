@@ -35,9 +35,34 @@ All four live under the pm_web unit's world (azureuser-writable via ssh). The sh
 (`/home/azureuser/trading_corp/venv`) already has `azure-identity` + `azure-keyvault-secrets` (the engine's
 load_secrets uses them), so the scoped fetch has its libs -- the ImportError branch is only a safety net.
 
-**A hash-gated deploy runner (`pm_r2c_deploy_*`) will be prepared as a SEPARATE authorized step** (backup -> copy 4
-files with a per-file hash assertion -> Gate-A transitive-import -> restart -> post-check), mirroring the R-d deploy.
-This doc is the design + the unit line; the deploy itself is not run here.
+### Base (current LIVE) hashes -- captured read-only 2026-08-31T18:05Z (the deploy aborts if the box drifts from these)
+```
+47c75d5686c30eff6d27a0ded0627b64ddb7cb821fa8627fa87faff1964a0b49  web/app.py (base)
+c726aaef98ce512dcf1535378f8ca6045fafec642d77ad0038c4a8d79635abcb  analyze.py (base)
+b90fef6ed46d40992dd208601c21f3080f4431f48c30fb084b9efd4c90641cef  pm_analyze_result.html (base)
+cb49b841c7a790a182750b0c1f7de1e56b0055e209b0a3ea9b9a2bcba2a36090  scripts/pm_web.py (base)
+```
+
+### Runners (authored, validated; NOT run except the read-only baseline)
+- `cc\pm_r2c_baseline_ro.ps1` -- READ-ONLY, already run 18:05Z (captured the base hashes above).
+- `cc\pm_r2c_deploy.ps1` -- git-archives the 4 files -> scp -> backup + hash-assert copy + 644 + Gate-A transitive
+  imports (`import web.app` + `import scripts.pm_web`). **NO restart.** Aborts+restores on any drift/hash/Gate-A
+  failure, leaving the live tree pristine. This is the deploy = a HALT item (Jack authorizes execution).
+- `cc\pm_r2c_postcheck_ro.ps1` -- READ-ONLY: health, on-disk manifest, the 3-state classification, and the Analyze
+  render (see below). Run AFTER the restart.
+
+### Staged sequence
+1. Jack authorizes `pm_r2c_deploy.ps1` -> files land, hash-gated, Gate-A OK (running pm_web still OLD).
+2. Jack restarts pm_web (`Desktop\restart_pmweb.ps1`, az-root).
+3. `pm_r2c_postcheck_ro.ps1` -> **expect STATE 1** (narration unavailable, pm_web healthy -- key not yet on the unit).
+4. Jack adds the `KEY_VAULT_URI` line to the unit (az-root) + daemon-reload + restart pm_web. **Key LAST.**
+5. `pm_r2c_postcheck_ro.ps1` again -> **expect STATE 2** (narration ENABLED). (This run narrates + spends ~$0.002/whale.)
+
+### ★ Classify the narration state via ACTIVE env, NOT `systemctl cat | grep`
+The live unit currently carries `KEY_VAULT_URI` **only inside the "intentionally OMITTED" COMMENT** -- so a naive
+`systemctl cat prediction-markets-web.service | grep KEY_VAULT_URI` returns a FALSE POSITIVE (it matches the comment).
+The post-check classifies via `systemctl show -p Environment` (INLINE env only, no comments) + the running process's
+`/proc/PID/environ` (ground truth) + the scoped-fetch journal line. Do not read the comment as configuration.
 
 ---
 ## The unit edit (Jack, az-root) -- the exact one-liner
@@ -70,10 +95,33 @@ Behind Authelia, open pm_web and click **Analyze** on a whale with real history 
 - **Verdict**: once the key is wired, the narration renders (Haiku) and its FIRST sentence should lead with the loss
   omission when material. Before the key: the `llm_unavailable` null still shows, block still renders (that's the
   value today).
-- **journal** (`journalctl -u prediction-markets-web -n 50`) should show ONE line at startup:
+### The THREE states the post-check distinguishes (each produces a DIFFERENT journal line -- state 1 must not be misread as a failure)
+The scoped fetch logs exactly ONE line at startup (`journalctl -u prediction-markets-web -n 400 | grep pm_web: | tail -1`):
+
+- **STATE 1 -- code deployed, unit line NOT yet added** (expected between step 3 and 4 above):
+  `pm_web: KEY_VAULT_URI unset -- no Key Vault fetch; Analyze narration stays unavailable (deterministic report + loss-completeness still render).`
+  Narration unavailable, **pm_web healthy**. This is the CORRECT state before the unit edit -- not a failure.
+- **STATE 2 -- unit line added, fetch succeeds**:
   `pm_web: ANTHROPIC_API_KEY loaded from Key Vault (...) -- Analyze narration ENABLED.`
-  If the fetch failed for any reason, the line reads `... narration unavailable; pm_web boots normally.` and the app
-  is up regardless (fail-soft) -- diagnosable, never a silent no-boot.
+- **STATE 3 -- unit line added, fetch FAILS** (unreachable / empty secret / azure libs missing):
+  `pm_web: Key Vault fetch of ANTHROPIC-API-KEY failed (<ErrType>) -- narration unavailable; pm_web boots normally.`
+  Fail-soft working: **pm_web still booted**, and this line is TEXTUALLY DISTINCT from state 1 ("failed" vs "unset"),
+  so a broken vault fetch cannot be confused with missing config. If you see state 3, check the vault / MI RBAC.
+
+The post-check reads this line and prints the verdict, cross-checked against `systemctl show -p Environment` and the
+process `/proc` env (never `systemctl cat | grep`, which trips on the OMITTED comment).
+
+### Analyze render (the R2c display ruling -- the caveat BESIDE the number, named whale)
+The post-check auto-selects the richest `(wallet, category)` in `pm_closed_position` (preferring mlb/nba/nfl, where we
+have live /activity) and POSTs `/farm/analyze/<wallet>/<category>` on loopback, then:
+- names the whale used (wallet + user_name + category + n_resolved) -- the FIRST candidate whose /activity grounding
+  produced the block;
+- proves the loss-completeness block rendered (`data-loss-grounded="1"`, honest W/L, omission %, completeness bound);
+- **asserts POSITION by byte offset**: `data-loss-grounded` appears BEFORE `pm-analyze-foot` and `pm-legend` -- i.e.
+  the caveat sits WITH the stats, not at page bottom (the whole point of the R2c display ruling).
+Run this step in **STATE 1** (pre-key): the block renders from the grounded report regardless of the verdict, and an
+Analyze POST with a null verdict writes NOTHING (no cache, no cost) -- so the display is verified for FREE before the
+key is ever wired.
 
 ---
 ## What this deploy does NOT do
