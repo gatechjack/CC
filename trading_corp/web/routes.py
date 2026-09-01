@@ -211,6 +211,12 @@ def register(app: FastAPI) -> None:
     # shadow-logger rows + news sentiment + outcome per trade. Honest-empty; verdict gated at n>=30.
     from trading_corp.web import sfp_llm_analysis_view
     sfp_llm_analysis_view.register(app)
+    # M5 (2026-09-01): the Prediction Markets GLOBAL arm/disarm control at /pm/arm. Admin-only (fail-closed via
+    # prediction_markets.web.authz). Lives HERE (engine-web) because the arm WRITE must be on the side that owns the
+    # engine + legacy DB -- pm_web is isolation-guarded and must NEVER write arm state (arm.py documents this). All
+    # logic is in pm_arm_view; this is the 2-line additive graft so the shared routes.py reconciles cleanly (box-is-truth).
+    from trading_corp.web import pm_arm_view
+    pm_arm_view.register(app)
     # Robinhood MACE cockpit (zero-HITL condor engine) at /mace. Observability
     # only — no approve/reject controls. Honest-empty until real rows exist.
     from trading_corp.web import mace_view
