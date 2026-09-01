@@ -62,7 +62,38 @@ different basis. A `dry_run=1` (paper/logged) row can never enter it (tested).
 - Box-scratch `cc\pm_whale_attrib_boxscratch_ro` proved the record + stacking on the real 41-entry / 23-settlement /
   2-opposed dataset.
 
-## Deploy (HALT — pm_web batch, next pm_web restart)
+## ★ DEPLOYED LIVE 2026-09-01 ~19:11Z (pm_web restart 143911->145927; engine 144229 + arm UNCHANGED)
+File-by-file graft (box-is-truth). ★ The reconciliation CAUGHT A BRANCH-DRIFT TRAP: HEAD app.py had drifted to
+include the M5 `is_admin` plumbing (61b2e8f) that was deliberately held out of the box; a wholesale HEAD deploy would
+have sneaked M5 onto the box. Fix: the whale hunk was GRAFTED onto the box's e7af7d8 app.py (verified: whale markers
+present, M5 is_admin absent) -> deployed sha 4c8ceb7a6050. subdivision.py + pm_live_subdivision.html deployed wholesale
+(bases matched: 77f8e02c6308 / 835a0ccd9131). Gate-A (py_compile + import the app) green; 644 + perms asserted.
+POST-CHECK on the live page: the per-whale realized SUMS to the account total (-20.2384 == -20.2384) on the LIVE
+render path; SDTrading -17.33 / 0x684baa57 +0.33 / xifutloong3 -3.23; SEABOS-SEA renders as 2 per-whale held rows;
+label distinct; thin travels with the number; opposed-closed its own count. ONE transient anomaly resolved: the
+post-check briefly read effective_armed=False -- a FAIL-SAFE read (the arm module returns DISARMED on an INDETERMINATE
+mode=ro read, its correct inversion); a re-read showed both arm rows armed=true with UNCHANGED ts (no disarm write).
+The division stays ARMED + trading.
+
+## ★ TWO LIMITATIONS -> BACKLOG (stated, not buried)
+1. **Opposed-close realized P&L is UNBOOKED (engine-side backlog item).** The engine does not compute realized_pnl on
+   an opposing-guard FLATTEN, so an opposed-closed copy's money outcome is in neither `realized` nor `open` -- the
+   page shows `opposed_closed=N` so it is not hidden, but the P&L itself is lost from the per-whale record. Fixing it
+   is an ENGINE change (book realized on opposed flattens, like a settlement books it), out of scope for a pm_web-only
+   change. 2 such rows today. Filed for the next engine window.
+2. **0x684baa57 has no display name** -> the page shows the wallet short-form (correct fallback). Name that whale in
+   `pm_whale.user_name` upstream if Jack wants it labelled.
+
+## ★ STANDING-LENS INSTANCE (Jack ruled 2026-09-01) -- a-write-must-satisfy-every-view
+**Historical rows written before a schema fix do NOT satisfy the joins written after it.** The first-ever Cubs
+settlement (id=8) predates the cid-stamping fix, so its `condition_id`/`outcome_index` are NULL. A per-whale P&L built
+on a close->entry JOIN (on cid/oidx) would SILENTLY DROP that row -- and nobody would notice, because a missing row
+does not error; the platform's first SDTrading trade would just vanish from its record. The fix -- attribute by the
+WALLET ON EACH ROW (present on every row, old and new) -- was chosen because the NULL-cid case was FOUND, not
+assumed. Lens: when you add a JOIN (a new "view") over a table, the OLD rows must satisfy it too; a schema fix that
+started stamping a column leaves every pre-fix row unable to join on it. [[a-write-must-satisfy-every-view]]
+
+## Deploy (DONE — pm_web batch, delivered on the 19:11Z pm_web restart)
 3 files: `subdivision.py` (live_orders + live_positions_by_whale + live_copies_by_whale) + `web/app.py`
 (_load_live_subdivision passes the new data) + `web/templates/pm_live_subdivision.html` (Whale columns + the record
 section). No new import (uses `search.DEFAULT_MIN_RESOLVED_FLOOR`, already imported). Reconcile file-by-file vs the box
