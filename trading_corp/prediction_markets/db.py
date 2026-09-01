@@ -790,6 +790,24 @@ MIGRATION_015: list[str] = [
     "ALTER TABLE pm_subdivision_order ADD COLUMN settled_ts INTEGER",
 ]
 
+# M3 (2026-09-01): the engine writes per-account PER-SHARD balance snapshots here; pm_web reads the LATEST (stays
+# credential-free -- it never touches the venue). Stores EVERY shard (by_shard_json), NOT just the total, because
+# the whole sharding lesson is that the masked total hides an empty funding shard (the state that silently killed
+# Karen's division). Accumulates -> a balance HISTORY, so the shard-proceeds direction (return-to-3) is
+# continuously verifiable and a CHANGE would be visible, not only a one-off arithmetic check.
+MIGRATION_016: list[str] = [
+    "CREATE TABLE IF NOT EXISTS pm_shard_balance_snapshot ("
+    " id            INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " account_id    TEXT    NOT NULL,"
+    " snapshot_ts   INTEGER NOT NULL,"
+    " total_dollars REAL    NOT NULL,"
+    " by_shard_json TEXT    NOT NULL,"
+    " has_breakdown INTEGER NOT NULL,"
+    " updated_ts    INTEGER"
+    ")",
+    "CREATE INDEX IF NOT EXISTS ix_pm_shard_snapshot_acct_ts ON pm_shard_balance_snapshot(account_id, snapshot_ts DESC)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -806,6 +824,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (13, MIGRATION_013),
     (14, MIGRATION_014),
     (15, MIGRATION_015),
+    (16, MIGRATION_016),
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"
