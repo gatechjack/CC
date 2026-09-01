@@ -29,8 +29,11 @@ Run **`cc\pm_settlement_walk_ro.ps1`**. It answers THREE things, all load-bearin
    silent death (a healthy TOTAL while the FUNDING shard empties). If they sweep: the caps need revisiting
    IMMEDIATELY and a shard top-up becomes a DAILY operational task. Say plainly: **return-to-3 or sweep-to-0**.
 3. **★ THE THREE OPPOSING PAIRS' LOCKED LOSSES, totalled as ONE NUMBER** — the measured cost of the requirements
-   miss. Pairs: BALCOL (0x521f47a9), SDCIN moneyline (0x1bac2543), MIAWSH (0xc38041b8). BALCOL was ~8.7c on an
-   efficient book; the other two may be worse or better (whether their prices summed above $1). Total them.
+   miss. Pairs: BALCOL (0x521f47a9), SDCIN moneyline (0x1bac2543), MIAWSH (0xc38041b8). Total them.
+   **★ CORRECTED 2026-09-01 (settlement walk, `SETTLEMENT_WALK_2026-09-01.md`):** the "~8.7c" above was mis-attributed
+   to BALCOL — **8.7c is MIAWSH's** realized (MIA -2.5935 / WSH +2.5065 = -0.0870). **SDCIN moneyline = -0.1345 (13.5c)**
+   (SD +2.0080 / CIN -2.1425). **Two settled = -0.2215 total (22.2c); BALCOL still OPEN** (2040 game, both legs +5 held).
+   The real cost is HIGHER than the single-pair estimate implied — which strengthens the guard, not weakens it.
 
 ## ★ 2. JACK'S OUTSTANDING TASK — the KEY_VAULT_URI unit line (Analyze narration)
 Until it lands, Analyze prints the deterministic table + loss-completeness block and writes NO sentence (STATE 1:
