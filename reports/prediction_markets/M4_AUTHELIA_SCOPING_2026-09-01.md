@@ -55,14 +55,13 @@ NOTHING**. No branch grants on absence. Proven, including the lockout case below
   - `app.py` write-action admin gate: `_forbid_if_not_admin` enforced SERVER-SIDE at the top of
     promote/demote/attach. **Proven by a test that POSTs AS KAREN and asserts 403** (`test_m4_gates.py`), not a
     hidden-button check. `farm_analyze` stays UNGATED (Karen is the promotion judge).
-- ★ TWO OPEN QUESTIONS for Jack (flagged, NOT auto-resolved):
-  1. **`refresh` (POST /farm/{cat}/refresh/{wallet}) is currently UNGATED**, grouped with Analyze as judging-support
-     (the reviewed design named exactly promote/attach/demote as admin-only). It re-pulls a whale's history (network
-     spend, writes stats) but changes no roster/promotion state. If "Farm League read-only for Karen except Analyze"
-     should also bar refresh, say so and I gate it (one line).
-  2. **403-vs-404 for a non-visible account.** I return **403** (matches this doc). A **404** would be
-     least-disclosure (Karen could not tell Jack's account exists). Both are fail-closed for ACCESS; only existence
-     disclosure differs. Say the word and I switch `_load_account`'s `_FORBIDDEN` branch to reuse the 404 page.
+- ★ TWO OPEN QUESTIONS -- BOTH RULED by Jack 2026-09-01:
+  1. **`refresh` -> GATE IT (done).** Karen is the promotion JUDGE (Analyze = judgment, ungated), not the data
+     operator; refresh is a ~30-call API pull against a shared budget, so it joins promote/attach/demote behind the
+     server-side gate. A one-line flip back if it ever blocks something she needs. (Test: `test_refresh_as_karen_forbidden`.)
+  2. **403-vs-404 -> KEEP 403 (unchanged).** Behind Authelia with two known users, least-disclosure buys little; a
+     404 for an account that exists would confuse Jack debugging Karen's access more than it protects. An honest 403
+     ("exists, not yours") is true and useful.
 - REMAINS (deploy, ENV-LEADS + HALT): confirm the live `Remote-User` value; set `PM_ADMIN_IDENTITIES`; the karen
   owner_identity DB write. NEEDS from Jack: his + Karen's Authelia usernames.
 - The gate/scoping TestClient suite (`test_m4_gates.py`) runs at Gate-A on the box (fastapi present); locally the

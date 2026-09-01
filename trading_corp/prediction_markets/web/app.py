@@ -539,7 +539,12 @@ async def refresh_action(request: Request, category: str, wallet: str):
     button disabled while it runs (hx-disabled-elt) so the operator sees it working and cannot double-fire; JS-off
     blocks on the browser's native load, then a 303 back to the page. A failed/partial refresh is SAFE (see
     _refresh_whale) -- the whale is never left half-populated or ranked on incomplete data, and a NOTICE explains a
-    partial/failed outcome so a dropped whale is never a silent vanish."""
+    partial/failed outcome so a dropped whale is never a silent vanish. ADMIN-ONLY (M4, Jack ruled 2026-09-01):
+    Karen is the promotion JUDGE (Analyze is judgment, ungated), but refresh is a ~30-call API pull against a SHARED
+    budget -- a data-operator action, so it joins promote/attach/demote behind the server-side gate."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
     category = (category or "").strip().lower()
     outcome = await _refresh_whale((wallet or "").lower(), int(time.time()))
     if request.headers.get("HX-Request"):

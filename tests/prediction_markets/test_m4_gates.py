@@ -108,6 +108,15 @@ def test_attach_as_karen_forbidden(monkeypatch, tmp_path):
     assert r.status_code == 403                             # ★ attach is the highest-stakes action -> gated hardest
 
 
+def test_refresh_as_karen_forbidden(monkeypatch, tmp_path):
+    # refresh is a ~30-call API pull against a shared budget -> a DATA-operator action, gated with the others (Jack
+    # ruled 2026-09-01). Karen is the promotion JUDGE (Analyze), not the data operator. The gate short-circuits
+    # BEFORE _refresh_whale, so no network is touched on the denied path.
+    cl = _client(monkeypatch, tmp_path)
+    r = cl.post("/farm/mlb/refresh/0xwhale", headers={"Remote-User": "karen"})
+    assert r.status_code == 403
+
+
 def test_write_actions_no_identity_forbidden(monkeypatch, tmp_path):
     # fail-closed: no identity header -> not admin -> refused (an unauthenticated replay cannot mutate).
     cl = _client(monkeypatch, tmp_path)
