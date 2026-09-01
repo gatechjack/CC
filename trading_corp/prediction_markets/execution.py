@@ -686,9 +686,35 @@ def account_held_outcomes(conn, account_id: str, category: str) -> dict:
     return out
 
 
-def detect_opposing_closes(entry_signals, held_outcomes: dict):
-    """PURE (no DB): given this cycle's ENTRY signals + `account_held_outcomes` ({cid: set(oidx)}), find every NEWLY
-    CONTESTED market and return (kept_entries, opposed_closes, contested_cids, preexisting_pair_cids).
+def account_opposed_cids(conn, account_id: str, category: str) -> set:
+    """The OPPOSED-MEMORY: {condition_id} this (account, category) has EVER contested -- every cid carrying a
+    close_source='opposed' row. An opposed market stays OFF THE BOOKS for the rest of its life (Jack RULED: the
+    disagreement does not resolve, the GAME does), so once contested NEITHER side is re-entered even if a whale's
+    opposing signal FLICKERS. Derived from the journal's opposed-close rows -- the opposed close IS the record, so
+    there is NO separate marker table and thus NO rows that outlive their markets; it goes inert at settlement (a
+    resolved market emits no entry signals). Keyed on the market being CONTESTED (not on the coid), so the bound is
+    INDEPENDENT of gate-4's stable-coid dedup -- it survives the R7.h /activity-tx_hash re-entry fix that would
+    otherwise unbound the churn. Read-only; [] if the journal table is absent (pre-migration-010)."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return set()
+    return {r[0] for r in conn.execute(
+        "SELECT DISTINCT condition_id FROM pm_subdivision_order "
+        "WHERE account_id = ? AND category = ? AND close_source = 'opposed' AND condition_id IS NOT NULL",
+        (account_id, category)).fetchall()}
+
+
+def detect_opposing_closes(entry_signals, held_outcomes: dict, opposed_cids=None):
+    """PURE (no DB): given this cycle's ENTRY signals + `account_held_outcomes` ({cid: set(oidx)}) + the
+    OPPOSED-MEMORY `opposed_cids` (every cid EVER contested -- account_opposed_cids), find every CONTESTED market and
+    return (kept_entries, opposed_closes, contested_cids, preexisting_pair_cids).
+
+    ★ THE OPPOSED-MEMORY (2026-09-01) closes the FLICKER bug: the guard used to contest only on the SAME-CYCLE
+    signal union, so when the opposing side's signal briefly vanished the market read as uncontested and the other
+    side ENTERED (then closed next cycle when the signal returned) -- a bounded but real enter-close churn. A cid in
+    `opposed_cids` stays CONTESTED for the rest of its life (Jack RULED: the disagreement does not resolve, the GAME
+    does), so its incoming entries are SKIPPED even when the opposition flickers off. Keyed on the market being
+    CONTESTED (the opposed close in the journal), NOT on the coid -> the bound is INDEPENDENT of gate-4's stable-coid
+    dedup, so it survives the R7.h /activity-tx_hash re-entry fix that would otherwise unbound the churn.
 
     ★ THE GUARD PREVENTS a new opposing pair; it does NOT retroactively flatten a pair we ALREADY hold both sides of
     (Jack RULED: let a pre-existing pair -- BALCOL -- SETTLE; a boot-time flatten would override that with two exit
@@ -706,6 +732,7 @@ def detect_opposing_closes(entry_signals, held_outcomes: dict):
     wallet whose book failed this cycle has no co-present signal -> its close is DEFERRED (retried), never guessed;
     a co-present signal for a wallet that does NOT actually hold (per its journal net-open) is a safe no-op
     (evaluate's holding guard returns skip:not_held)."""
+    opposed_cids = opposed_cids or frozenset()
     inc_by_cid: dict = {}                 # cid -> {oidx: [every co-present entry signal on that outcome]}
     for s in entry_signals:
         inc_by_cid.setdefault(s.condition_id, {}).setdefault(s.outcome_index, []).append(s)
@@ -716,8 +743,10 @@ def detect_opposing_closes(entry_signals, held_outcomes: dict):
             preexisting.add(cid)          # we ALREADY hold both sides -> pre-existing pair, LEAVE IT (let it settle)
             continue
         inc_oidx = set(inc_by_cid.get(cid, {}).keys())
-        if len(held_oidx | inc_oidx) >= 2:
-            contested.add(cid)            # the disagreement is being CREATED this cycle -> prevent it, go flat
+        # CONTESTED = the disagreement is being created THIS cycle (held u incoming >= 2) OR the market is in the
+        # OPPOSED-MEMORY (already contested earlier -> stays off the books through a signal flicker).
+        if cid in opposed_cids or len(held_oidx | inc_oidx) >= 2:
+            contested.add(cid)
     kept = [s for s in entry_signals if s.condition_id not in contested]   # pre-existing-pair entries flow (gate-4 dedups)
     closes = []
     for cid in contested:

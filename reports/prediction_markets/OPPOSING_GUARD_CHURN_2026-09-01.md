@@ -52,3 +52,32 @@ the per-(cid,oidx) coid dedup.
 ## Severity now
 LOW-and-bounded today (2 small round-trips on one pair; net cost a few cents + ~4 fees). The finding is the LATENT
 coupling to R7.h, not a live runaway. Division still armed, no latch, order path healthy.
+
+---
+
+## BUILT (2026-09-01, Jack RULED build-now, ahead of R7.h) — the opposed-memory
+`execution.account_opposed_cids(conn, account, category)` = {cid with a `close_source='opposed'` row} (journal-
+derived — the opposed close IS the record; NO marker table → NO dead rows). `detect_opposing_closes` gains an
+`opposed_cids` param: a cid in it is CONTESTED regardless of the same-cycle signal union, so a flicker never lets a
+side back in. `live_driver` passes `account_opposed_cids(...)` into the guard each cycle. Journal-derived ⇒
+**restart-durable** (the memory survives an engine bounce).
+
+### Adversarial review (pointed at the coupling, per Jack)
+- **Does R7.h still create a loop after this?** NO — proven. The guard drops an opposed cid's entries from `kept`
+  in the DRIVER, upstream of the chokepoint's gate-4 coid dedup. A re-entry with a BRAND-NEW `signal_id`
+  (simulating R7.h's /activity-tx_hash key) is still skipped (`test_opposed_memory_independent_of_coid_survives_r7h`).
+  The bound is keyed on the market being CONTESTED, not on the coid → independent of the dedup. R7.h becomes safe.
+- **Same-side agreement blocked?** NO — only cids with an opposed CLOSE enter the memory; same-side stacking has
+  entries but no opposed close, so it flows even with an unrelated opposed cid present (test).
+- **Flicker fixed?** YES — side A held → B incoming → close A, skip B; then B incoming with A's signal GONE and us
+  flat → still skipped (test). Without the memory the same input re-enters B (the bug, reproduced in the test).
+- **Clear on settlement / dead rows?** The memory is inert after settlement (a resolved market emits no entry
+  signals), and there is NO marker table — the opposed-close rows are permanent, correct trade history, not markers
+  that outlive their markets. Minor future-hygiene: the DISTINCT-cid set grows slowly over time (cheap; a GC of
+  opposed cids past their game date could be added later, not needed now).
+- **Spurious closes?** NO — the closes loop only emits for HELD outcomes with a co-present signal; an opposed cid we
+  hold nothing on yields a pure SKIP, no close. DISARM still blocks any opposed close (unchanged chokepoint).
+
+### Deploy = ENGINE change (execution.py + live_driver.py) → all-divisions restart; coordinate with PEAD; HALT.
+Tests: `test_opposing_close_r5.py` +4 (flicker / same-side / coid-independent / account_opposed_cids); all logic
+verified locally, full suite runs on the box at deploy.

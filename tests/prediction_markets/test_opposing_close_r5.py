@@ -177,3 +177,57 @@ async def test_disarm_blocks_the_opposed_close(tmp_path, monkeypatch):
         n_rows = conn.execute("SELECT COUNT(*) n FROM pm_subdivision_order WHERE is_exit=1 AND dry_run=0").fetchone()["n"]
     assert summ["n_would_place"] == 1 and summ["n_disarm_blocked"] == 1 and summ["placed"] == 0
     assert placed["n"] == 0 and n_rows == 0                         # off is off: no POST, no journal row
+
+
+# ── OPPOSED-MEMORY (2026-09-01): the flicker fix + the R7.h-coupling-independent bound ──────────────────────────
+def test_opposed_memory_survives_signal_flicker():
+    """★ THE FLICKER BUG, fixed. Cycle 1: hold A, B incoming -> contest (close A, skip B). Cycle 2 (FLICKER): only
+    B incoming, A's opposing signal GONE, we hold nothing. WITHOUT the memory B reads uncontested and ENTERS (the
+    bug -- the overnight enter-close churn). WITH the memory (cid in opposed_cids) B is still SKIPPED."""
+    cid = "0xflick"
+    A = _sig("0xW1", "mlb-a-b", "TeamA", cid, 0)
+    B = _sig("0xW2", "mlb-a-b", "TeamB", cid, 1)
+    kept1, closes1, contested1, _ = ex.detect_opposing_closes([A, B], {cid: {0}}, opposed_cids=set())
+    assert contested1 == {cid} and kept1 == []                       # cycle 1: same-cycle union -> contested
+    assert any(c.close_source == "opposed" for c in closes1)         # A closed
+    # cycle 2 without memory -> the BUG: B enters
+    kept_bug, _, _, _ = ex.detect_opposing_closes([B], {}, opposed_cids=set())
+    assert kept_bug == [B]
+    # cycle 2 WITH memory -> FIXED: B skipped, nothing to close (we hold nothing)
+    kept_fix, closes_fix, contested_fix, _ = ex.detect_opposing_closes([B], {}, opposed_cids={cid})
+    assert contested_fix == {cid} and kept_fix == [] and closes_fix == []
+
+
+def test_opposed_memory_never_blocks_same_side_agreement():
+    """★ MUST NOT fire on agreement. Same-side stacking (same cid+oidx, N wallets) is the design (conviction). The
+    memory is keyed on a cid being CONTESTED, so a same-side cid NOT in opposed_cids flows -- even with an
+    unrelated opposed cid present in the memory."""
+    same = "0xsame"
+    s1 = _sig("0xW1", "mlb-x-y", "X", same, 0)
+    s2 = _sig("0xW2", "mlb-x-y", "X", same, 0)                        # SAME outcome, different wallet = agreement
+    kept, closes, contested, _ = ex.detect_opposing_closes([s1, s2], {same: {0}}, opposed_cids={"0xunrelated"})
+    assert contested == set() and kept == [s1, s2] and closes == []  # agreement flows; the unrelated opposed cid is irrelevant
+
+
+def test_opposed_memory_independent_of_coid_survives_r7h():
+    """★ THE COUPLING PROOF. The skip is keyed on the cid being opposed, NOT on the coid -- the guard drops the
+    entry from `kept` BEFORE the chokepoint's gate-4 coid dedup. So an incoming re-entry with a BRAND-NEW signal_id
+    (simulating R7.h keying entries on an /activity tx_hash, which would defeat the stable-coid dedup) is STILL
+    skipped. The bound holds after R7.h -- the whole reason to build this first."""
+    cid = "0xopp"
+    fresh = ex.CopySignal(wallet="0xW2", slug="mlb-a-b", outcome="TeamB", condition_id=cid, outcome_index=1,
+                          signal_id="activity-tx-0xDEADBEEF")         # a distinct coid basis; gate-4 would NOT dedup it
+    kept, closes, contested, _ = ex.detect_opposing_closes([fresh], {}, opposed_cids={cid})
+    assert contested == {cid} and kept == [] and closes == []        # skipped upstream of gate-4, regardless of signal_id
+
+
+def test_account_opposed_cids_only_opposed_not_settlement_or_entry(tmp_path, monkeypatch):
+    """account_opposed_cids returns ONLY cids with a close_source='opposed' row -- NOT entries, NOT settlement
+    closes. So a settled or same-side cid is never falsely off-the-books, and there is no marker table to leave
+    dead rows (the opposed close IS the record)."""
+    p = str(tmp_path / "pm.db"); monkeypatch.setenv("PM_DB_PATH", p); db.init_db(p)
+    with db.connect(p) as conn:
+        _order(conn, "0xW1", "KX-A", "yes", 0, 5, cid="0xentry", oidx=0)                              # plain entry
+        _order(conn, "0xW1", "KX-B", "yes", 1, 5, cid="0xsettle", oidx=0, close_source="settlement")  # settlement close
+        _order(conn, "0xW1", "KX-C", "yes", 1, 5, cid="0xopposed", oidx=0, close_source="opposed")    # opposed close
+        assert ex.account_opposed_cids(conn, "kalshi_jack", "mlb") == {"0xopposed"}

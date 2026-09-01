@@ -616,8 +616,12 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 # and a different LINE (a different condition_id) never false-fires.
                 _entries = [s for s in signals if not s.is_exit]
                 _exits = [s for s in signals if s.is_exit]        # whale-EXIT signals -- pass through untouched
+                # OPPOSED-MEMORY (2026-09-01): a cid EVER contested stays off the books for its life (survives a
+                # signal flicker; the enter-close churn fix). Keyed on the market being contested, not the coid, so
+                # it holds independently of gate-4 dedup (safe under the R7.h re-entry change).
                 _kept, _opposed, _contested, _preexisting = execution.detect_opposing_closes(
-                    _entries, execution.account_held_outcomes(conn, account_id, category))
+                    _entries, execution.account_held_outcomes(conn, account_id, category),
+                    execution.account_opposed_cids(conn, account_id, category))
                 if _contested:
                     log.warning("pm_live_driver: OPPOSING-PAIR guard -- %d NEWLY-contested market(s) -> FLAT (close "
                                 "held + skip both sides); opposed_closes=%d contested_cids=%s",
