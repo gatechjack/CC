@@ -44,9 +44,27 @@ NOTHING**. No branch grants on absence. Proven, including the lockout case below
   control** (no arm control exists on any page). The account overview shows only accounts she may see.
 
 ## Build state + what remains
-- ★ BUILT: `authz.visible_account_ids` / `visible_accounts` (fail-closed) + 6 tests (incl the lockout demonstration).
-- REMAINS (code): app.py filters `_load_accounts_overview` + 403s `_load_account` for a non-visible account; the
-  admin gate on the promote/attach/demote POST routes; owner_identity carried on the account rows the scoping reads.
+- ★ BUILT (authz, commit fffad6e): `authz.visible_account_ids` / `visible_accounts` (fail-closed) + 6 tests (incl the lockout demonstration).
+- ★ BUILT (wiring, commit 50fa844): the CODE half is now complete --
+  - `subdivision.active_accounts` / `accounts_overview` carry `owner_identity` (a SCOPING field, NOT a secret;
+    `secret_ref` is still never selected). Defensive `_column_exists` -> NULL if the column predates its migration
+    (it is in migration 010, present on live schema 15).
+  - `app.py` account-visibility filter: `/` (overview) + `/account/{id}` scoped by `authz.visible_account_ids`.
+    identity+admin resolved ON the loop, passed into the OFF-loop loader (the thread never touches the request).
+    A non-visible-but-EXISTING account -> **403** (distinct from a non-existent -> 404). See the open question below.
+  - `app.py` write-action admin gate: `_forbid_if_not_admin` enforced SERVER-SIDE at the top of
+    promote/demote/attach. **Proven by a test that POSTs AS KAREN and asserts 403** (`test_m4_gates.py`), not a
+    hidden-button check. `farm_analyze` stays UNGATED (Karen is the promotion judge).
+- ★ TWO OPEN QUESTIONS for Jack (flagged, NOT auto-resolved):
+  1. **`refresh` (POST /farm/{cat}/refresh/{wallet}) is currently UNGATED**, grouped with Analyze as judging-support
+     (the reviewed design named exactly promote/attach/demote as admin-only). It re-pulls a whale's history (network
+     spend, writes stats) but changes no roster/promotion state. If "Farm League read-only for Karen except Analyze"
+     should also bar refresh, say so and I gate it (one line).
+  2. **403-vs-404 for a non-visible account.** I return **403** (matches this doc). A **404** would be
+     least-disclosure (Karen could not tell Jack's account exists). Both are fail-closed for ACCESS; only existence
+     disclosure differs. Say the word and I switch `_load_account`'s `_FORBIDDEN` branch to reuse the 404 page.
 - REMAINS (deploy, ENV-LEADS + HALT): confirm the live `Remote-User` value; set `PM_ADMIN_IDENTITIES`; the karen
   owner_identity DB write. NEEDS from Jack: his + Karen's Authelia usernames.
-- This is part of the pm_web BATCH (M3-display + M4 + M5) -> one restart.
+- The gate/scoping TestClient suite (`test_m4_gates.py`) runs at Gate-A on the box (fastapi present); locally the
+  pure `test_authz_s.py` (6) + a subdivision owner_identity check pass. This is part of the pm_web BATCH
+  (M3-display + M4 + M5) -> one restart.
