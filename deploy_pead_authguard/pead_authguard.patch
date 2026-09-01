@@ -1,0 +1,37 @@
+diff --git a/trading_corp/agents/strategies/pead_strategy.py b/trading_corp/agents/strategies/pead_strategy.py
+index 8153ea2..996b3c3 100644
+--- a/trading_corp/agents/strategies/pead_strategy.py
++++ b/trading_corp/agents/strategies/pead_strategy.py
+@@ -423,7 +423,14 @@ class PEADStrategy:
+             log.info("pead_strategy.scan: no candidates cleared screen+SUE")
+             return []
+ 
+-        snap = await broker.snapshot()
++        try:
++            snap = await broker.snapshot()
++        except Exception as e:  # noqa: BLE001 -- dead/failed shared RH session: skip THIS scan
++            # (no entries against a session we cannot price) and resume next cycle. Same guard
++            # as manage()'s snapshot skip; scan returns a list, so return [].
++            log.warning("pead_strategy.scan: broker.snapshot() failed (%s) -- "
++                        "skipping this scan, retry next cycle", e)
++            return []
+         equity = float(getattr(snap, "equity", 0.0) or 0.0)
+         available_bp = getattr(snap, "buying_power", None)  # portfolio-profile BP (settled-cash fallback only)
+         # ── DERIVED, SELF-BALANCING, FLOORED SIZING (Part A + $ floor) ───────
+@@ -643,7 +650,15 @@ class PEADStrategy:
+         if window == "closed":
+             return [], cadence
+         today = datetime.now(timezone.utc).date()
+-        snap = await broker.snapshot()
++        try:
++            snap = await broker.snapshot()
++        except Exception as e:  # noqa: BLE001 -- dead/failed shared RH session (401 / stale
++            # pickle / mid-reauth): skip THIS exit tick and resume next cadence. Sibling of the
++            # per-symbol QuoteSymbolUnresolved skip below -- but a dead session fails the whole
++            # tick (before the loop), so RETURN, not continue. Never throw the manage loop dead.
++            log.warning("pead_strategy.manage: broker.snapshot() failed (%s) -- "
++                        "skipping this exit tick, retry next cadence", e)
++            return [], cadence
+         equity = float(getattr(snap, "equity", 0.0) or 0.0)
+ 
+         exits: list[ProposedOrder] = []
