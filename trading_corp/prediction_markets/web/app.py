@@ -358,7 +358,9 @@ def _load_accounts_overview(identity: str | None = None, is_admin_flag: bool = F
             a["shard_snap"] = shard_snapshot.read_latest(conn, a["account_id"])   # None -> tile omits balance (honest)
     for a in accounts:
         _annotate_pnl(a, floor)
-    return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor}
+    # is_admin gates the HONEST cross-console arm link (M5): the arm/disarm CONTROL lives on the ENGINE console
+    # (trading.jacksumner.com/pm/arm), NOT here -- pm_web only DISPLAYS the arm state (R4). Non-admins never see the link.
+    return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor, "is_admin": is_admin_flag}
 
 
 def _load_account(account_id: str, identity: str | None = None, is_admin_flag: bool = False):

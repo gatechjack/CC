@@ -7,15 +7,25 @@
     <p class="pm-sub">Per-account Prediction Markets activity. Read-only &mdash; this view places nothing and changes no arm state.</p>
   </div>
 
-  {# GLOBAL ARM STATE -- READ-ONLY (R4). The CONTROL is admin-only + a later phase (M5); this only SHOWS whether
-     PM is live. The authoritative arm/disarm is the CLI (pm_cli live-disarm --global), never dependent on this UI. #}
+  {# GLOBAL ARM STATE -- READ-ONLY HERE (R4). pm_web only DISPLAYS the arm state; the admin CONTROL lives on the
+     ENGINE console (M5), because the arm WRITE must be on the side that owns the engine + legacy DB (pm_web is
+     isolation-guarded and must never write arm state). The authoritative kill path is the CLI, never any UI. #}
   <div class="pm-arm-state">
     {% if global_arm.global_armed %}
     <span class="pm-badge pm-badge-armed" title="The global PM kill-switch is ARMED. Read-only indicator; the authoritative control is the CLI.">GLOBAL ARM &middot; ARMED</span>
     {% else %}
     <span class="pm-badge pm-badge-disarmed" title="The global PM kill-switch is DISARMED -- no division trades. Read-only indicator.">GLOBAL ARM &middot; DISARMED</span>
     {% endif %}
-    <span class="pm-muted">read-only &middot; arm/disarm is a CLI action (an admin UI control is a later phase)</span>
+    <span class="pm-muted">read-only here &middot;
+      {% if is_admin %}
+      {# HONEST cross-console link (Jack ruled): it LEAVES the PM console for the ENGINE console -- an external-link
+         arrow + explicit wording, NOT a disguised in-page control. Arming on that page still requires a confirm. #}
+      <a class="pm-xlink" href="https://trading.jacksumner.com/pm/arm"
+         title="Opens the ENGINE console (a separate app) where the admin arm/disarm control lives. Arming there requires a confirmation. The CLI stays the authoritative kill path.">manage arm state on the engine console &nearr;</a>
+      {% else %}
+      arm/disarm is an admin action; the control lives on the engine console
+      {% endif %}
+    </span>
   </div>
 
   {% if accounts %}

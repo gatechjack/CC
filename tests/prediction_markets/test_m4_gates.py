@@ -89,6 +89,16 @@ def test_account_page_unknown_is_404_not_403(monkeypatch, tmp_path):
     assert cl.get("/account/nope", headers={"Remote-User": "jack"}).status_code == 404
 
 
+def test_overview_arm_link_is_admin_only(monkeypatch, tmp_path):
+    # M5: the HONEST cross-console arm link (-> the engine console) shows ONLY for admins; a non-admin never sees a
+    # link to a control they cannot use. It is a navigation link, not an in-page control.
+    cl = _client(monkeypatch, tmp_path)
+    admin_html = cl.get("/", headers={"Remote-User": "jack"}).text
+    assert "trading.jacksumner.com/pm/arm" in admin_html and "engine console" in admin_html
+    karen_html = cl.get("/", headers={"Remote-User": "karen"}).text
+    assert "trading.jacksumner.com/pm/arm" not in karen_html
+
+
 # ── THE WRITE-ACTION ADMIN GATE -- Karen POSTs directly and is REFUSED, server-side ──────────────────────────
 def test_promote_as_karen_forbidden(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path)
