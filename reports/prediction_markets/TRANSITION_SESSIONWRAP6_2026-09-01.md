@@ -1,4 +1,7 @@
 # ★ SESSION WRAP 6 — 2026-09-01 (~18:31Z). SUPERSEDES SW5. FIRST-READ for the next agent.
+> ⛔ SUPERSEDED 2026-09-01 by `TRANSITION_SESSIONWRAP7_2026-09-01.md` — READ THAT FIRST. Since SW6: WHALE ATTRIBUTION
+> on /live DEPLOYED (pm_web restart 19:11, pm_web PID now 145927); the app.py DRIFT HAZARD (HEAD app.py carries M5
+> is_admin not on the box → graft, never wholesale-copy) is documented in SW7. SW6's live numbers are the 18:31Z snapshot.
 > SW5 (2026-08-31) is superseded by this doc. The multi-account phase is now DEPLOYED LIVE, not just built.
 
 ---
