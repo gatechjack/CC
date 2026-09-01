@@ -636,7 +636,10 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
                                                       shard_balances=shard_bal, legacy_db_path=legacy_db_path, log=log)
                 if summ["placed"] or summ["errors"]:
-                    log.info("pm_live_driver cycle: %s", summ)
+                    # ★ str(summ): a lone non-empty dict as the sole %-logging arg is treated by stdlib logging as a
+                    # %-MAPPING, not a value -> "TypeError: not all arguments converted" and the line is EATEN, exactly
+                    # on active cycles (placed/errors truthy) when the summary matters most. Wrapping in str() defuses it.
+                    log.info("pm_live_driver cycle: %s", str(summ))
                 # ★ SUSTAINED shard-underfunding alarm (SURFACED, not latched): a funding gap persisting across N
                 # cycles with ZERO placements means the auto-rebalancer has not refilled the market's shard -> a human
                 # must move funds or set/adjust target_balance_allocation. Resets the moment anything places or the gap
