@@ -273,10 +273,10 @@ th.pm-primary{color:var(--mono)}
 .pm-analyze-cost strong{color:var(--mono)}
 .pm-analyze-prov{margin-left:auto}
 
-/* ── Stage 2 phase 1: navigation skeleton (dashboard shell -> farm-league tiles -> per-category shell) ──
-   ADDITIVE ONLY. These classes are referenced solely by the new pm_shell hierarchy (pm_dashboard.html,
-   pm_farm_league.html, pm_farm_category.html, pm_category_404.html). The legacy pages (pm_scoreboard.html,
-   pm_farm.html) do NOT use them, so appending this block leaves their rendering byte-for-byte unchanged.
+/* ── Stage 2 phase 1: navigation skeleton (accounts shell -> farm-league tiles -> per-category shell) ──
+   ADDITIVE ONLY. These classes are referenced solely by the new pm_shell hierarchy (pm_accounts.html + M2's
+   pm_account.html, pm_farm_league.html, pm_farm_category.html, pm_category_404.html). The legacy pages
+   (pm_scoreboard.html, pm_farm.html) do NOT use them, so appending this block leaves their rendering unchanged.
    Retired together with those templates when phase 3 repoints /dashboard->/ and /farm-league->/farm. */
 
 /* dashboard menu cards (Live sub-divisions [P3, disabled] + Farm League) */
