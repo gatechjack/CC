@@ -34,6 +34,24 @@ security precondition that must be settled before M5 puts the money-gate control
 - **Parallel check owed for the pm_web batch:** `authz.py` ASSERTS "pm_web is loopback-only", but that is an assertion,
   not an observation (grep-is-not-a-state-check). Verify :8081's ACTUAL bind + NSG before the M4 deploy too.
 
+## ★ PORT-EXPOSURE RESOLUTION (2026-09-01, `cc\pm_port_exposure_probe_ro` + local reachability probe) -- EFFECTIVELY CLOSED
+- **:8081 (pm_web) = `127.0.0.1:8081` -- loopback-only, VERIFIED BY OBSERVATION.** The M4 `authz.py` "pm_web is
+  loopback-only" assertion is now confirmed, not assumed -> the M4 pm_web trust model holds; that owed check is CLEARED.
+  (:9091 Authelia is also loopback-only; :80/:443 Caddy are public, correct.)
+- **:8000 (engine web) = `0.0.0.0:8000`** but **the public Internet CANNOT reach it.** In-box `az` is NOT installed,
+  so the NSG rule text was not readable from the box; instead an EFFECTIVE-RESULT probe from a public vantage:
+  `443 OPEN, 22 OPEN` (sanity -- host reachable, probe valid), **`8000 FILTERED/timeout`** (SYN dropped, no RST --
+  the signature of an NSG/edge DROP on a port that IS listening), `8081/9091` also filtered. So inbound :8000 is
+  dropped at the Azure edge; the `0.0.0.0` bind is HARMLESS in practice. No established non-local peer was on :8000
+  either (a localhost bind would break nothing, but is unnecessary).
+- **Caveat (honest):** the probe is a SINGLE public vantage testing the effective result, not the NSG rule TEXT. It
+  definitively rules out the `0.0.0.0/0 -> :8000` case (the spoofing risk), but a narrow SOURCE-SCOPED allow rule
+  would not show from one vantage. **Recommend Jack eyeball the Portal NSG inbound rules for :8000 once** (the
+  authoritative "read the rules" -- I could not, no in-box az) -- a 30-second confirm, not a blocker.
+- **Verdict:** both ports effectively closed -> per the ruling, **M5 proceeds.** The exposure only bites at M5 DEPLOY
+  time (when arm/disarm goes on :8000); the build is safe now and the deploy is HALT-gated, so a Portal surprise is
+  still catchable before M5 ships.
+
 ## Q2 -- does M5 fit the engine bundle (opposed-memory + M3-writer + mig-016 + M5)? RECOMMEND: NO, keep the bundle as-is
 - The three bundle items are BUILT + READY (waiting only on the PEAD restart window). M5 is UNBUILT.
 - M5 drags two deploy preconditions the other three do NOT: (a) the :8000 exposure must be confirmed closed, (b) the
