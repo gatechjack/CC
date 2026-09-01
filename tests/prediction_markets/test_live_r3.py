@@ -139,6 +139,24 @@ def test_live_subdivision_shows_real_filled_order(monkeypatch, tmp_path):
     assert "not a live venue read" in html
 
 
+def test_live_shows_plain_language_description_and_keeps_raw_ticker(monkeypatch, tmp_path):
+    """★ Interim item a (2026-09-01): the /live table renders a PLAIN-LANGUAGE market description (describe_market)
+    for each trade + held position, keyed off the held/outcome leg -- WITHOUT dropping the raw ticker (translated
+    + raw = honest, and the raw stays for precision). The default fixture ticker is Reds@Cubs, YES=Cubs; a TOTAL
+    fixture exercises the over/under phrasing."""
+    total_order = {"ticker": "KXMLBTOTAL-26AUG311940DETMIN-9", "outcome_leg": "yes", "condition_id": "0xtot",
+                   "client_order_id": "tot-coid", "signal_id": "totsig"}
+    cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[{}, dict(total_order)])
+    html = cl.get("/live/kalshi_jack/mlb").text
+    # moneyline: the YES-side team named to win, both clubs present
+    assert "Chicago Cubs to win" in html and "Cincinnati Reds" in html
+    # total: YES = Over, strike N-0.5, teams resolved from the stem
+    assert "Over 8.5 runs" in html and "Detroit Tigers" in html
+    # the RAW ticker is STILL shown (not replaced) -- translated + raw
+    assert "KXMLBGAME-26AUG301920CINCHC-CHC" in html
+    assert "KXMLBTOTAL-26AUG311940DETMIN-9" in html
+
+
 # the Cubs settlement-close, field-for-field (id=8 on live 2026-08-31): is_exit=1 but close_source='settlement',
 # NO order was placed (broker_order_id/client_order_id None, no submitted/fill price/fee/TIF), realized -0.6084 lost.
 _SETTLEMENT = {

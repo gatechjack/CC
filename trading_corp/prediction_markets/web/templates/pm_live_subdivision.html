@@ -42,7 +42,7 @@
     <tbody>
     {% for p in positions %}
       <tr>
-        <td>{{ p.ticker }}</td>
+        <td>{{ describe_market(p.ticker, p.held_leg) }}<br><span class="pm-muted pm-ticker-raw">{{ p.ticker }}</span></td>
         <td>{{ p.market_type }}</td>
         <td>{{ p.held_leg|upper }}</td>
         <td class="pm-num">{{ '%g'|format(p.contracts) }}</td>
@@ -77,7 +77,7 @@
       {% set settled = (o.close_source == 'settlement') %}
       <tr class="{% if settled %}pm-row-settled{% endif %}">
         <td>{{ (o.response_ts or o.submitted_ts)|utcdt }}</td>
-        <td>{{ o.ticker }}</td>
+        <td>{{ describe_market(o.ticker, o.outcome_leg) }}<br><span class="pm-muted pm-ticker-raw">{{ o.ticker }}</span></td>
         <td>{{ o.market_type }}</td>
         <td>{{ o.outcome_leg|upper }}</td>
         <td>{% if settled %}SETTLED{% if o.won == 1 %} <span class="pm-won-y">won</span>{% elif o.won == 0 %} <span class="pm-won-n">lost</span>{% endif %}{% elif o.close_source == 'opposed' %}<span title="cancellation-by-disagreement: two whales took opposite sides, so we closed the position -- off the books">OPPOSED</span>{% elif o.is_exit %}EXIT{% else %}ENTRY{% endif %}</td>

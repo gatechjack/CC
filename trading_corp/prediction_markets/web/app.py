@@ -31,6 +31,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..db import connect
 from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding
+from ..market_describe import describe_market
 from ..category import NON_SINGLE_GAME_CATEGORIES, derive_category_from_slug
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ templates.env.globals["non_single_game_categories"] = sorted(NON_SINGLE_GAME_CAT
 # fallback) is likewise the ruled constant -- a candidate with n_resolved < floor is thin-sample by construction.
 templates.env.globals["loss_omission_caveat"] = search.LOSS_OMISSION_CAVEAT
 templates.env.globals["thin_sample_floor"] = search.DEFAULT_MIN_RESOLVED_FLOOR
+# Plain-language market descriptions (interim item a): translate a Kalshi ticker (+ held leg) to a human sentence
+# in the /live table. Pure/standalone -- market_describe imports only the data-layer team map + ticker parsers.
+# The RAW ticker stays shown beneath it (translated + raw -- honest, and the raw is still there for precision).
+templates.env.globals["describe_market"] = describe_market
 
 
 def _utcdate(ts) -> str:

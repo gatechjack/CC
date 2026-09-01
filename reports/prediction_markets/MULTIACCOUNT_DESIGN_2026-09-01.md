@@ -84,6 +84,28 @@ existing visual language (same `pm.css` components), not a visual rewrite.
 
 ---
 
+## ★ RULINGS — FINAL (Jack, 2026-09-01) — these BIND the build; recommendations above are superseded where they differ
+- **R1 = REPLACE, minimally.** `/` becomes the accounts overview; per-account → sub-divisions supersedes the Live
+  list; Farm stays a nav peer. Same visual language — NOT the deferred rewrite.
+- **R2 = REALIZED-ONLY + open-at-cost.** Both already in the journal, neither needs creds. Mark-to-market rides M3.
+- **R3 = Karen RUNS ANALYZE.** (Adjusted from the rec.) Analyze is the promotion JUDGE — how anyone decides a whale
+  is worth copying; locking Karen out makes her account something Jack operates, not something she OWNS. Spend is
+  bounded by the existing **$20/day cap** (the control that already exists for this). **Promote + attach STAY
+  admin-only** (they move money). **★ FLAG, do NOT build unasked:** if Jack later wants Analyze spend attributable,
+  per-identity tracking against the cap is a small addition — offer it, don't build it.
+- **R4 = Karen SEES the global arm STATE (read-only); the CONTROL is admin-only.** (Adjusted.) "No PM subdivision
+  today" is the kind of *true-today* that goes silently wrong — the global arm is GLOBAL; if she ever gets a
+  subdivision, a state she can't see governs whether it trades. Visibility costs nothing; a hidden global switch is
+  a nasty surprise later. Show state, hide the toggle.
+- **R5 = `PM_ADMIN_IDENTITIES` vs the Authelia header. ★ FAIL CLOSED.** Header absent OR config unset → **NOT-ADMIN**,
+  never admin. An unwired identity layer defaulting to admin is the worst possible default, and this is first-time
+  plumbing — the default must be deny.
+- **R6 = engine writes `pm_shard_balance_snapshot`, pm_web reads the latest. ★ THE DISPLAY MUST SHOW THE SNAPSHOT'S
+  AGE.** A stale balance shown as current is the exact shape that killed Karen's division — surface "as of Nmin ago"
+  and stale-band it (green/amber/red on age), never present a stale number as live.
+
+---
+
 ## Interim items (folded in, cost almost nothing here)
 - **Plain-language market descriptions** — `market_describe.py`: `KXMLBGAME` → "Padres vs Reds — Padres to win
   (Aug 31)"; `KXMLBTOTAL-…-9` → "Padres vs Reds — Over 8.5"; `KXMLBSPREAD-…-SD2` → "Padres −1.5"; anything else →
