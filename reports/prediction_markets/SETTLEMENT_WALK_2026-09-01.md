@@ -78,9 +78,17 @@ on the record; it is not a defect and not a sharding failure.
 |---|---|---|---|
 | **SDCIN moneyline** | ✅ settled | SD +2.0080 / CIN −2.1425 | **−0.1345 (13.5¢)** |
 | **MIAWSH** | ✅ settled | WSH +2.5065 / MIA −2.5935 | **−0.0870 (8.7¢)** |
-| **BALCOL** | ⏳ OPEN (2040 game) | BAL +5 / COL +5 held | pending |
+| **BALCOL** | ✅ settled (2026-09-01 05:14Z) | BAL +2.2565 / COL −2.3435 (ids 48/50) | **−0.0870 (8.7¢)** |
 
-**TOTAL across the two SETTLED pairs = −$0.2215 (22.2¢).** BALCOL still open — re-run the walk once it settles to fold
-it into the total. **Doc correction (Jack):** the SW5 doc's "BALCOL ~8.7¢" was mis-attributed — 8.7¢ is **MIAWSH's**;
-SDCIN cost 13.5¢. The measured cost of the requirements-miss is **higher** than the single-pair estimate implied,
-which **strengthens** the case for the opposing-side guard.
+**★ TOTAL across all THREE settled pairs = −$0.3085 (30.85¢) — [C] CLOSED.** This is the measured cost of the
+requirements-miss (the three opposing pairs that formed before the guard shipped). (BALCOL-11 total lost −2.793
+separately — a same-side bet, NOT part of the moneyline pair.) **Doc correction (Jack):** the SW5 doc's "BALCOL ~8.7¢"
+was mis-attributed — 8.7¢ is **MIAWSH's** *and* (coincidentally) BALCOL's realized; SDCIN cost 13.5¢. The measured
+cost is **higher** than the single-pair estimate implied, which **strengthens** the case for the opposing-side guard.
+
+## Post-note (2026-09-01): the FIRST NO position + a 4th (guard-handled) opposing pair
+- **NO-leg PROVEN:** the copy engine copied a whale's Under (`KXMLBTOTAL-…SDCIN-10`, leg=no, 5ct) — the platform's
+  first NO position. Authenticated venue read: **position_fp = −5.00** == journal −5 → **NO=negative CONFIRMED on real
+  data**; boot_reconcile's NO branch is no longer inference (it will reconcile −5==−5 clean, not false-latch).
+- **A 4th opposing pair** (SDCIN Sept-1 moneyline, `0x19a016da`) was CLOSED by the guard to flat (not left to settle,
+  unlike the 3 pre-existing). It exposed a bounded-churn / fee-loop question — see `OPPOSING_GUARD_CHURN_2026-09-01.md`.
