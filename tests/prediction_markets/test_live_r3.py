@@ -62,7 +62,11 @@ def _client(monkeypatch, tmp_path, *, schema=10, seed=False, stake=5.0, orders=N
             for o in (orders or []):
                 _insert_order(conn, **o)
     from trading_corp.prediction_markets.web.app import app
-    return TestClient(app)
+    # M4: the accounts overview (/) is scoped -> the operator authenticates as admin so a seeded account is visible
+    # (the /live pages themselves are not scoped; this header is inert there). Scoping semantics live in test_m4_gates.py.
+    monkeypatch.setenv("PM_ADMIN_IDENTITIES", "jack")
+    cl = TestClient(app); cl.headers.update({"Remote-User": "jack"})
+    return cl
 
 
 def test_live_list_honest_empty_when_tables_absent_schema9(monkeypatch, tmp_path):

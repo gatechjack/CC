@@ -38,10 +38,16 @@ def _seed(conn):
 
 def _client(monkeypatch, tmp_path):
     p = str(tmp_path / "pm.db"); monkeypatch.setenv("PM_DB_PATH", p); db.init_db(p)
+    # M4: account scoping is now enforced -> the operator viewing these pages must be an authenticated ADMIN, else
+    # the fail-closed filter shows nothing. These M2 display tests assume the console operator (admin); the SCOPING
+    # semantics themselves (admin sees all / Karen sees only hers / no-identity sees nothing) are proven in
+    # test_m4_gates.py, not re-litigated here.
+    monkeypatch.setenv("PM_ADMIN_IDENTITIES", "jack")
     with db.connect(p) as conn:
         _seed(conn)
     from trading_corp.prediction_markets.web.app import app
-    return TestClient(app)
+    cl = TestClient(app); cl.headers.update({"Remote-User": "jack"})
+    return cl
 
 
 def test_accounts_overview_lists_both_with_honest_pnl(monkeypatch, tmp_path):

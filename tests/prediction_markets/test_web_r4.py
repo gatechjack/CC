@@ -23,7 +23,11 @@ def _mk(monkeypatch, tmp_path):
         conn.execute("INSERT INTO pm_watchlist(wallet,category,status,active,added_ts,updated_ts) "
                      "VALUES('0xpinnedwhale','mlb',?,1,1,1)", (farm.PINNED,))
     from trading_corp.prediction_markets.web.app import app
-    return TestClient(app), p
+    # M4: Promote is now ADMIN-gated server-side. This prospects-screen suite runs as the authenticated admin
+    # operator so the promote path is exercised; the non-admin DENY is proven in test_m4_gates.py.
+    monkeypatch.setenv("PM_ADMIN_IDENTITIES", "jack")
+    cl = TestClient(app); cl.headers.update({"Remote-User": "jack"})
+    return cl, p
 
 
 def _add_cand(p, wallet, *, roi=0.2, n=60, last_ts=NOW, complete=1, name="Cand"):

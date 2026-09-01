@@ -14,8 +14,9 @@ R3 can deploy on a pm_web restart INDEPENDENTLY of the migration-010 deploy; til
 account/sub-division exists. Tile-on-CREATE (Jack's ruling): a sub-division row's mere existence yields a tile,
 before it ever trades -- so the empty state reads as information ("created, never traded"), not as an error.
 
-Never selects a secret VALUE. `secret_ref` (a KeyVault NAME, not a value) and `owner_identity` (P3) are not read
-here -- the read-only tile needs neither.
+Never selects a secret VALUE. `secret_ref` (a KeyVault NAME, not a value) is NEVER read here. `owner_identity` IS
+read as of M4 (active_accounts/accounts_overview) -- it is a SCOPING field (the account's owning Authelia
+username, consumed by web.authz.visible_account_ids), NOT a secret; the fail-closed account filter needs it.
 """
 from __future__ import annotations
 
@@ -23,6 +24,16 @@ from __future__ import annotations
 def _table_exists(conn, name: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+def _column_exists(conn, table: str, column: str) -> bool:
+    """Is `column` present on `table`? Used so a SELECT can be DEFENSIVE about a column that a not-yet-deployed
+    migration adds (e.g. owner_identity on pm_account) -- absent -> the caller substitutes NULL, never a 500.
+    Tolerates the table being absent too (PRAGMA yields no rows)."""
+    try:
+        return any(str(r[1]) == column for r in conn.execute("PRAGMA table_info(%s)" % table).fetchall())
+    except Exception:
+        return False
 
 
 def _ready(conn) -> bool:
@@ -68,11 +79,19 @@ def list_subdivisions(conn) -> list[dict]:
 def active_accounts(conn) -> list[dict]:
     """The ACTIVE accounts = the promote-to-LIVE TARGETS. Because promote-to-live AUTO-CREATES the (account,
     category) sub-division on demand (ruling 1), the operator promotes to an ACCOUNT, not to a pre-existing
-    sub-division. Empty if pm_account is absent (pre-migration-010). Read-only; never selects a secret value."""
+    sub-division. Empty if pm_account is absent (pre-migration-010). Read-only; never selects a secret value.
+
+    ** owner_identity IS selected here (M4) -- it is a SCOPING field (the Authelia username that OWNS the account),
+    NOT a secret. authz.visible_account_ids keys the fail-closed account filter on it, so every path that decides
+    visibility MUST carry it. `secret_ref` (a KeyVault NAME) is still NEVER selected -- that would be a value the
+    credential-free pm_web has no business reading. owner_identity is defensive: COALESCE to NULL if the column
+    predates its migration, and a NULL owner is admin-only downstream. **"""
     if not _table_exists(conn, "pm_account"):
         return []
+    has_owner = _column_exists(conn, "pm_account", "owner_identity")
+    owner_sel = "owner_identity" if has_owner else "NULL AS owner_identity"
     rows = conn.execute(
-        "SELECT account_id, COALESCE(label, account_id) AS account_label, venue "
+        "SELECT account_id, COALESCE(label, account_id) AS account_label, venue, " + owner_sel + " "
         "FROM pm_account WHERE active=1 ORDER BY account_label").fetchall()
     return [dict(r) for r in rows]
 
@@ -305,5 +324,6 @@ def accounts_overview(conn) -> list[dict]:
         agg = account_pnl(conn, a["account_id"])
         agg["account_label"] = a.get("account_label")
         agg["venue"] = a.get("venue")
+        agg["owner_identity"] = a.get("owner_identity")   # M4 scoping key -- the account filter reads this
         out.append(agg)
     return out

@@ -27,7 +27,12 @@ def _mk(monkeypatch, tmp_path):
         conn.execute("INSERT INTO pm_subdivision(account_id,category,label,sizing_mode,fixed_stake_usd,active,created_ts) "
                      "VALUES('kalshi_jack','mlb','Jack MLB','fixed',5.0,1,1)")
     from trading_corp.prediction_markets.web.app import app
-    return TestClient(app), p
+    # M4: the promote/demote/attach POST routes are now ADMIN-gated server-side. These R6 tests exercise the ACTION
+    # mechanics (303/idempotency/no-op), so they run as the authenticated admin operator; the DENY (Karen refused)
+    # is proven in test_m4_gates.py.
+    monkeypatch.setenv("PM_ADMIN_IDENTITIES", "jack")
+    cl = TestClient(app); cl.headers.update({"Remote-User": "jack"})
+    return cl, p
 
 
 def _status(p, wallet, category):

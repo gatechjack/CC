@@ -26,12 +26,13 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
 from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot
+from . import authz   # M4: fail-closed identity/admin resolution + account-visibility scoping (reads headers+env only)
 from ..market_describe import describe_market
 from ..category import NON_SINGLE_GAME_CATEGORIES, derive_category_from_slug
 
@@ -334,13 +335,25 @@ def _annotate_pnl(a: dict, floor: int) -> None:
     a["thin_sample"] = a.get("n_closed", 0) < floor
 
 
-def _load_accounts_overview() -> dict:
-    """Every active account with its PM realized P&L / win-loss / sample size / open-at-cost + whether PM trades it,
-    a COMPACT balance (latest snapshot total + age band), plus the GLOBAL arm state (read-only, R4). OFF the loop;
-    PM DB + a read-only legacy agent_state read. NEVER a venue read (pm_web is credential-free)."""
+# M4 account SCOPING: the overview + the account page are filtered by web.authz.visible_account_ids (fail-closed --
+# admin sees all; a non-admin sees ONLY accounts whose owner_identity == their Authelia identity; a NULL owner is
+# admin-only; no identity -> nothing). identity + admin are resolved ON the loop from the request (headers+env, cheap)
+# and passed into the OFF-loop loader, so the thread never touches the request object. _FORBIDDEN distinguishes an
+# account that EXISTS but this identity may not see (403) from one that does not exist (None -> 404).
+_FORBIDDEN = object()
+
+
+def _load_accounts_overview(identity: str | None = None, is_admin_flag: bool = False) -> dict:
+    """Every VISIBLE active account with its PM realized P&L / win-loss / sample size / open-at-cost + whether PM
+    trades it, a COMPACT balance (latest snapshot total + age band), plus the GLOBAL arm state (read-only, R4). The
+    account set is SCOPED to `identity`/`is_admin_flag` (fail-closed) BEFORE any balance read -- a non-admin never
+    sees, nor loads a balance for, an account that is not theirs. OFF the loop; PM DB + a read-only legacy
+    agent_state read. NEVER a venue read (pm_web is credential-free)."""
     floor = search.DEFAULT_MIN_RESOLVED_FLOOR
     with connect() as conn:
-        accounts = subdivision.accounts_overview(conn)
+        accounts = subdivision.accounts_overview(conn)                    # each row carries owner_identity (M4)
+        visible = authz.visible_account_ids(identity, is_admin_flag, accounts)
+        accounts = [a for a in accounts if a["account_id"] in visible]    # SCOPE first -> then read balances
         for a in accounts:
             a["shard_snap"] = shard_snapshot.read_latest(conn, a["account_id"])   # None -> tile omits balance (honest)
     for a in accounts:
@@ -348,14 +361,17 @@ def _load_accounts_overview() -> dict:
     return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor}
 
 
-def _load_account(account_id: str):
+def _load_account(account_id: str, identity: str | None = None, is_admin_flag: bool = False):
     """One account's per-sub-division P&L breakdown + the global arm state (read-only). None -> 404 (account absent
-    or inactive). The display-only note is data-driven (0 sub-divisions -> PM does not trade it)."""
+    or inactive); `_FORBIDDEN` -> 403 (account EXISTS but this identity may not see it -- fail-closed scoping). The
+    display-only note is data-driven (0 sub-divisions -> PM does not trade it)."""
     floor = search.DEFAULT_MIN_RESOLVED_FLOOR
     with connect() as conn:
-        accts = {a["account_id"]: a for a in subdivision.active_accounts(conn)}
+        accts = {a["account_id"]: a for a in subdivision.active_accounts(conn)}   # carries owner_identity (M4)
         if account_id not in accts:
-            return None
+            return None                                                  # does not exist -> 404
+        if account_id not in authz.visible_account_ids(identity, is_admin_flag, accts.values()):
+            return _FORBIDDEN                                            # exists but not yours -> 403
         agg = subdivision.account_pnl(conn, account_id)
     meta = accts[account_id]
     agg["account_label"] = meta.get("account_label")
@@ -376,20 +392,26 @@ def _load_account(account_id: str):
 @app.get("/", response_class=HTMLResponse)
 async def accounts_overview_page(request: Request):
     """The ACCOUNTS OVERVIEW -- the top of the hierarchy (R1: replaces the old 2-card dashboard). Per-account PM
-    P&L, whether PM trades each account, and the global arm state (read-only). Read-only; no arm/attach control."""
-    data = await asyncio.to_thread(_load_accounts_overview)
+    P&L, whether PM trades each account, and the global arm state (read-only). Read-only; no arm/attach control.
+    SCOPED (M4): the list shows only the accounts the requester may see (admin -> all)."""
+    identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
+    data = await asyncio.to_thread(_load_accounts_overview, identity, is_admin_flag)
     return templates.TemplateResponse(request, "pm_accounts.html", {"request": request, **data})
 
 
 @app.get("/account/{account_id}", response_class=HTMLResponse)
 async def account_page(request: Request, account_id: str):
     """One account's PM sub-divisions with per-sub-division P&L (realized / win-loss / sample / open-at-cost). A
-    display-only account (0 PM sub-divisions) states its limitation in the copy. Unknown/inactive -> 404. Read-only."""
+    display-only account (0 PM sub-divisions) states its limitation in the copy. Unknown/inactive -> 404; an account
+    that exists but is not the requester's (and they are not admin) -> 403 (M4 scoping). Read-only."""
     account_id = (account_id or "").strip()
-    data = await asyncio.to_thread(_load_account, account_id)
+    identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
+    data = await asyncio.to_thread(_load_account, account_id, identity, is_admin_flag)
     if data is None:
         return templates.TemplateResponse(request, "pm_account_404.html",
                                           {"request": request, "account_id": account_id}, status_code=404)
+    if data is _FORBIDDEN:
+        return PlainTextResponse("forbidden: not your account", status_code=403)
     return templates.TemplateResponse(request, "pm_account.html", {"request": request, **data})
 
 
@@ -416,14 +438,26 @@ async def farm_league_category(request: Request, category: str):
 
 
 # ── THE THREE FARM ACTIONS (Stage 3 R6) -- the FIRST mutating POST routes besides Analyze ────────────────────
-# WHAT PROTECTS THESE: Authelia at the reverse proxy (identity); the app has NO authz layer by design (ruling:
-# NO pm_user/pm_role/pm_grant -- Authelia owns identity). WHAT DOES NOT: there is no CSRF token and no per-user
-# permission check in the app -- anyone Authelia lets through can POST. Mitigations that ARE in place: every
-# action is IDEMPOTENT (a double-submit / concurrent click is a no-op, never a duplicate); mutation is POST-ONLY
-# (no GET mutates -- a crawler/prefetch/refresh cannot demote a whale); and NONE of these reaches the execution
-# chokepoint (promote-to-live writes an ATTACHMENT row, never an order; pm_web imports no broker). Pattern =
-# Post/Redirect/Get: the write runs OFF the loop, then a 303 redirect to the GET page (a browser refresh re-GETs,
-# never re-POSTs -> double-submit-safe at the transport layer too).
+# WHAT PROTECTS THESE: Authelia at the reverse proxy (identity) + the M4 ADMIN GATE below (authorization). The app
+# has NO pm_user/pm_role/pm_grant table (Authelia owns identity); the gate is a single fail-closed check --
+# `_forbid_if_not_admin` -- enforced SERVER-SIDE at the top of each mutating route. This is the boundary, NOT the
+# hidden button: a non-admin who POSTs directly (curl, replay, a stale tab) is REFUSED here regardless of what the
+# UI rendered. Analyze is deliberately NOT gated (Karen may run it -- the promotion judge, spend-capped). WHAT IS
+# STILL NOT COVERED: there is no CSRF token -- but every action is IDEMPOTENT (a double-submit / concurrent click is
+# a no-op, never a duplicate); mutation is POST-ONLY (no GET mutates -- a crawler/prefetch/refresh cannot demote a
+# whale); and NONE of these reaches the execution chokepoint (promote-to-live writes an ATTACHMENT row, never an
+# order; pm_web imports no broker). Pattern = Post/Redirect/Get: the write runs OFF the loop, then a 303 redirect to
+# the GET page (a browser refresh re-GETs, never re-POSTs -> double-submit-safe at the transport layer too).
+
+def _forbid_if_not_admin(request: Request):
+    """M4 SERVER-SIDE admin gate for the mutating farm/live POST routes. Returns a 403 PlainTextResponse if the
+    requester is NOT an admin (fail-closed: no identity, or PM_ADMIN_IDENTITIES unset -> not admin), else None so the
+    caller proceeds. Hiding the button is a UI HINT, not the gate -- THIS is the boundary; a direct POST from a
+    non-admin (e.g. Karen) is refused here, server-side, whatever the page rendered. Analyze is NOT gated with this."""
+    if not authz.is_admin(request):
+        return PlainTextResponse("forbidden: admin only", status_code=403)
+    return None
+
 
 def _promote_watchlist(wallet: str, category: str, now_ts: int) -> dict:
     with connect() as conn:
@@ -443,7 +477,10 @@ def _promote_live(account_id: str, category: str, wallet: str, now_ts: int) -> d
 @app.post("/farm/{category}/promote/{wallet}")
 async def promote_watchlist_action(request: Request, category: str, wallet: str):
     """PROMOTE-TO-WATCHLIST (Prospect -> Watchlist): candidate -> pinned. Idempotent; writes ONLY pm_watchlist.
-    303 back to the category page (PRG)."""
+    303 back to the category page (PRG). ADMIN-ONLY (M4, server-side)."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
     category = (category or "").strip().lower()
     await asyncio.to_thread(_promote_watchlist, (wallet or "").lower(), category, int(time.time()))
     return RedirectResponse("/farm/%s" % category, status_code=303)
@@ -452,7 +489,10 @@ async def promote_watchlist_action(request: Request, category: str, wallet: str)
 @app.post("/farm/{category}/demote/{wallet}")
 async def demote_action(request: Request, category: str, wallet: str):
     """DEMOTE (Watchlist -> Prospect): pinned -> candidate. Idempotent; writes ONLY pm_watchlist -- pm_paper_trade
-    rows are PRESERVED (F-5). 303 back to the category page."""
+    rows are PRESERVED (F-5). 303 back to the category page. ADMIN-ONLY (M4, server-side)."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
     category = (category or "").strip().lower()
     await asyncio.to_thread(_demote_prospect, (wallet or "").lower(), category, int(time.time()))
     return RedirectResponse("/farm/%s" % category, status_code=303)
@@ -516,7 +556,12 @@ async def refresh_action(request: Request, category: str, wallet: str):
 async def promote_to_live_action(request: Request, account_id: str, category: str, wallet: str):
     """PROMOTE-TO-LIVE: attach a pinned pair to the (account_id, category) sub-division (joined ON CATEGORY).
     Creates the ATTACHMENT and nothing else -- NEVER an order. Idempotent (no duplicate attachment). 303 to the
-    sub-division page so the operator SEES the whale now in its copy list; a bad target is a no-op (honest)."""
+    sub-division page so the operator SEES the whale now in its copy list; a bad target is a no-op (honest).
+    ADMIN-ONLY (M4, server-side) -- attach is the highest-stakes farm action (it is what makes an account copy a
+    whale), so the gate matters most here; a non-admin POST is refused before any write."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
     # account_id is an EXACT-MATCH slug PK (strip-only, NOT lowercased) -- consistent with R3's /live/{account_id}
     # route; wallet/category are normalized because they are case-insensitive by nature, a slug is not. A mixed-case
     # account_id simply misses -> honest no_such_subdivision no-op (never a wrong write).
