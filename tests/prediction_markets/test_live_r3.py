@@ -212,12 +212,15 @@ def test_live_subdivision_config_visible(monkeypatch, tmp_path):
 
 
 def test_dashboard_card_enabled(monkeypatch, tmp_path):
+    # M2 R1: / is now the ACCOUNTS OVERVIEW (replaces the old 2-card dashboard). seed=True -> kalshi_jack is a
+    # PM-traded account (1 subdivision), so it renders a tile linking to its page, with the global arm state.
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True)
     r = cl.get("/")
     assert r.status_code == 200
-    assert 'href="/live"' in r.text                 # card + nav now link out
-    assert "coming in P3" not in r.text             # the disabled card is gone
-    assert "arrive in Phase 3" not in r.text        # stale future-wording gone (they arrived AND traded)
+    assert ">Accounts</a>" in r.text                     # the new top-of-hierarchy nav
+    assert 'href="/account/kalshi_jack"' in r.text       # the seeded account links to its per-account page
+    assert "GLOBAL ARM" in r.text                        # R4: global arm state visible (read-only)
+    assert "coming in P3" not in r.text
 
 
 def test_live_is_read_only_no_order_path_even_with_a_fill(monkeypatch, tmp_path):
@@ -237,7 +240,7 @@ def test_vocabulary_no_internal_name_leak(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[{}])
     for path in ("/live", "/live/kalshi_jack/mlb"):
         html = cl.get(path).text
-        assert "Live sub-divisions" in html
+        assert ">Accounts</a>" in html                 # M2 R1: renders under the pm_shell (Accounts nav), one shell
         for leak in ("pm_subdivision", "pm_account", "secret_ref", "owner_identity", "'pinned'", "'candidate'"):
             assert leak not in html, (path, leak)
 

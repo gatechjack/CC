@@ -1,0 +1,53 @@
+{% extends "pm_shell.html" %}
+{% block title %}Accounts &middot; Prediction Markets{% endblock %}
+{% block content %}
+<section>
+  <div class="pm-section-head">
+    <h1 class="pm-h1">Accounts</h1>
+    <p class="pm-sub">Per-account Prediction Markets activity. Read-only &mdash; this view places nothing and changes no arm state.</p>
+  </div>
+
+  {# GLOBAL ARM STATE -- READ-ONLY (R4). The CONTROL is admin-only + a later phase (M5); this only SHOWS whether
+     PM is live. The authoritative arm/disarm is the CLI (pm_cli live-disarm --global), never dependent on this UI. #}
+  <div class="pm-arm-state">
+    {% if global_arm.global_armed %}
+    <span class="pm-badge pm-badge-armed" title="The global PM kill-switch is ARMED. Read-only indicator; the authoritative control is the CLI.">GLOBAL ARM &middot; ARMED</span>
+    {% else %}
+    <span class="pm-badge pm-badge-disarmed" title="The global PM kill-switch is DISARMED -- no division trades. Read-only indicator.">GLOBAL ARM &middot; DISARMED</span>
+    {% endif %}
+    <span class="pm-muted">read-only &middot; arm/disarm is a CLI action (an admin UI control is a later phase)</span>
+  </div>
+
+  {% if accounts %}
+  <div class="pm-tilegrid">
+    {% for a in accounts %}
+    <a href="/account/{{ a.account_id }}" class="pm-menu-card">
+      <div class="pm-menu-title">{{ a.account_label or a.account_id }} &rarr;</div>
+      {% if a.pm_traded %}
+      <p class="pm-menu-sub"><span class="pm-region-count">{{ a.n_subdivisions }}</span>
+        PM sub-division{{ '' if a.n_subdivisions == 1 else 's' }} &middot; {{ a.venue or 'kalshi' }}</p>
+      {# realized / win-loss / SAMPLE / open-at-cost, shown SEPARATELY -- never one aggregate (R2c discipline). #}
+      <ul class="pm-kv pm-sub">
+        <li>Realized: <span class="{% if a.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.2f'|format(a.realized_pnl) }}</span>
+          over <span class="pm-primary">{{ a.n_closed }}</span> settled ({{ a.wins }}W / {{ a.losses }}L)</li>
+        <li>Open (at cost): ${{ '%.2f'|format(a.open_cost_usd) }} &middot;
+          {{ a.n_open }} position{{ '' if a.n_open == 1 else 's' }} / {{ '%g'|format(a.open_contracts) }} ct</li>
+      </ul>
+      {# the caveat travels WITH the number, not at page bottom (R2c). #}
+      {% if a.thin_sample %}
+      <p class="pm-flag pm-flag-thin">&#9888; thin sample ({{ a.n_closed }} settled) &mdash; not evidence of edge</p>
+      {% else %}
+      <p class="pm-muted">{{ a.n_closed }}-settled sample &mdash; P&amp;L is outcome, not proven edge</p>
+      {% endif %}
+      {% else %}
+      <p class="pm-menu-sub pm-empty-inline">No PM sub-divisions &mdash; <strong>not traded by Prediction Markets</strong>.
+        Display-only; any trading on this account is by another system (e.g. the legacy copy-trader).</p>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="pm-empty">No accounts yet. An account appears here once provisioned (a pm_account row).</div>
+  {% endif %}
+</section>
+{% endblock %}

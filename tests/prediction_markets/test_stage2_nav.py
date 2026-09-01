@@ -51,13 +51,11 @@ def test_dashboard_route_resolves(tmp_path, monkeypatch):
     r = client.get("/")
     assert r.status_code == 200
     body = r.text
-    assert "Farm League" in body
-    assert 'href="/farm"' in body                 # the menu option links into the hierarchy
-    # Live sub-divisions -> Stage 3 R3 ENABLED the read-only card + nav link (was disabled 'coming in P3')
-    assert "Live sub-divisions" in body and 'href="/live"' in body
-    # DELIBERATE REVERSAL (Jack 2026-08-30): the dashboard category count = the LEAGUE allowlist (15), matching the
-    # /farm tile count -- NOT the pinned-driven count (pre-fix this asserted 2, the two seeded pinned categories).
-    assert 'pm-region-count">15<' in body
+    # M2 R1: / is the ACCOUNTS OVERVIEW; Farm League stays a nav peer; the flat "Live sub-divisions" nav item is
+    # superseded by per-account -> sub-divisions. No pm_account seeded here (schema 9) -> honest-empty accounts.
+    assert "Farm League" in body and 'href="/farm"' in body
+    assert ">Accounts</a>" in body                 # the new top-of-hierarchy
+    assert "No accounts yet" in body               # no pm_account seeded -> honest-empty (never an error)
 
 
 # (phase 3) The legacy alongside-resolves test was removed: the flat scoreboard + farm pages are RETIRED.

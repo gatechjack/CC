@@ -6,8 +6,9 @@ STANDALONE by construction: imports ONLY fastapi + the PM package (db / stats / 
 Reads/writes ONLY data/prediction_markets.db (prediction_markets.db._assert_not_legacy hard-guards the path).
 Reuses the engine web IDIOM (FastAPI + the off-loop `asyncio.to_thread` read pattern, mace_view) but not the process.
 
-ROUTES (Stage 2 phase 3 -- the Farm-League hierarchy IS the app; the flat scoreboard/farm pages were RETIRED):
-  GET  /                              -> the main Predictions-Market Dashboard (pm_dashboard.html)
+ROUTES (M2 2026-09-01: multi-account -- / is the ACCOUNTS OVERVIEW, the new top of the hierarchy, R1):
+  GET  /                              -> accounts overview (pm_accounts.html): per-account PM P&L, DISPLAY-ONLY
+  GET  /account/{account_id}         -> one account's per-sub-division P&L (pm_account.html); display-only note if untraded
   GET  /farm                          -> the Farm-League category tiles (pm_farm_league.html)
   GET  /farm/{category}               -> the per-category page: Watchlist (paper) + Prospects (completed)
   GET  /whale/{wallet}[/{category}]   -> a PROSPECT / completed drill-through (reuses pm_position_rows.html)
@@ -30,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding
+from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm
 from ..market_describe import describe_market
 from ..category import NON_SINGLE_GAME_CATEGORIES, derive_category_from_slug
 
@@ -270,19 +271,6 @@ async def farm_analyze(request: Request, wallet: str, category: str, force: str 
 # bases by construction: Watchlist(pinned) -> pm_paper_category_stats (paper); Prospects(candidate) ->
 # query_scoreboard over pm_category_stats (completed). The three-lists / three-bases invariant holds on one page.
 
-def _load_dashboard() -> dict:
-    """Dashboard read: the active Farm-League category COUNT + the LIVE sub-division COUNT (both data-driven,
-    honest-empty; 0 sub-divisions pre-migration-010 since the tables are absent -> honest, not an error). The Live
-    section carries NO live-trade data (P3). OFF the loop, PM DB only."""
-    # n_categories = the LEAGUE category set (the ruled allowlist), so the dashboard count matches the /farm tile
-    # count (both labelled "Kalshi-copyable categories"). NOT the pinned-data count -- a category exists by allowlist
-    # membership, not by having pinned whales (Jack 2026-08-30, the tile-vanish fix).
-    n_categories = len(farm.league_categories())
-    with connect() as conn:
-        n_subdivisions = len(subdivision.list_subdivisions(conn))
-    return {"n_categories": n_categories, "n_subdivisions": n_subdivisions}
-
-
 def _load_farm_league() -> dict:
     """Farm-League tile read. Tiles = `farm.league_categories()` = the RULED 15-category allowlist (Jack
     2026-08-30, the tile-vanish fix). A category EXISTS iff it is in the allowlist and not deactivated (deactivated
@@ -334,13 +322,65 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
             "live_accounts": live_accounts}
 
 
+# ── Multi-account (M2, 2026-09-01): the accounts overview (the new top of the hierarchy, R1) + per-account page. ──
+# DISPLAY-ONLY (ruled): these render PM's journal-derived P&L per account; they carry NO arm/attach control (R4:
+# the global arm STATE is visible read-only, the CONTROL is admin-only + M5). An account with 0 PM sub-divisions is
+# NOT traded by PM -- the page states that in the copy, never an empty frame implying it will fill (per-account
+# TRADING is a filed, gated phase -- NOT_SCOPED_REVIEW_2026-09-01.md). realized/win-loss/SAMPLE/open-at-cost are
+# shown SEPARATELY with the thin-sample caveat travelling WITH the number (the R2c display discipline).
+
+def _annotate_pnl(a: dict, floor: int) -> None:
+    a["pm_traded"] = a.get("n_subdivisions", 0) > 0
+    a["thin_sample"] = a.get("n_closed", 0) < floor
+
+
+def _load_accounts_overview() -> dict:
+    """Every active account with its PM realized P&L / win-loss / sample size / open-at-cost + whether PM trades it,
+    plus the GLOBAL arm state (read-only, R4). OFF the loop; PM DB + a read-only legacy agent_state read."""
+    floor = search.DEFAULT_MIN_RESOLVED_FLOOR
+    with connect() as conn:
+        accounts = subdivision.accounts_overview(conn)
+    for a in accounts:
+        _annotate_pnl(a, floor)
+    return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor}
+
+
+def _load_account(account_id: str):
+    """One account's per-sub-division P&L breakdown + the global arm state (read-only). None -> 404 (account absent
+    or inactive). The display-only note is data-driven (0 sub-divisions -> PM does not trade it)."""
+    floor = search.DEFAULT_MIN_RESOLVED_FLOOR
+    with connect() as conn:
+        accts = {a["account_id"]: a for a in subdivision.active_accounts(conn)}
+        if account_id not in accts:
+            return None
+        agg = subdivision.account_pnl(conn, account_id)
+    meta = accts[account_id]
+    agg["account_label"] = meta.get("account_label")
+    agg["venue"] = meta.get("venue")
+    _annotate_pnl(agg, floor)
+    for b in agg["subdivisions"]:
+        _annotate_pnl(b, floor)
+    return {"account": agg, "global_arm": arm.read_status(), "thin_floor": floor}
+
+
 @app.get("/", response_class=HTMLResponse)
-async def dashboard_page(request: Request):
-    """The main Predictions-Market Dashboard: the Live sub-division menu option (P3, visibly disabled) + the Farm
-    League menu option. (Phase 3 repointed this from the temporary /dashboard onto the root; the flat scoreboard
-    page that used to live here was retired.)"""
-    data = await asyncio.to_thread(_load_dashboard)
-    return templates.TemplateResponse(request, "pm_dashboard.html", {"request": request, **data})
+async def accounts_overview_page(request: Request):
+    """The ACCOUNTS OVERVIEW -- the top of the hierarchy (R1: replaces the old 2-card dashboard). Per-account PM
+    P&L, whether PM trades each account, and the global arm state (read-only). Read-only; no arm/attach control."""
+    data = await asyncio.to_thread(_load_accounts_overview)
+    return templates.TemplateResponse(request, "pm_accounts.html", {"request": request, **data})
+
+
+@app.get("/account/{account_id}", response_class=HTMLResponse)
+async def account_page(request: Request, account_id: str):
+    """One account's PM sub-divisions with per-sub-division P&L (realized / win-loss / sample / open-at-cost). A
+    display-only account (0 PM sub-divisions) states its limitation in the copy. Unknown/inactive -> 404. Read-only."""
+    account_id = (account_id or "").strip()
+    data = await asyncio.to_thread(_load_account, account_id)
+    if data is None:
+        return templates.TemplateResponse(request, "pm_account_404.html",
+                                          {"request": request, "account_id": account_id}, status_code=404)
+    return templates.TemplateResponse(request, "pm_account.html", {"request": request, **data})
 
 
 @app.get("/farm", response_class=HTMLResponse)

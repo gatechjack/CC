@@ -43,10 +43,9 @@ def test_root_serves_dashboard(tmp_path, monkeypatch):
     r = client.get("/")
     assert r.status_code == 200
     body = r.text
-    assert "pm-menu-card" in body                          # the DASHBOARD menu (not the retired scoreboard table)
-    assert "Live sub-divisions" in body and 'href="/live"' in body   # Stage 3 R3 enabled the LIVE card
-    assert 'href="/farm"' in body                          # the Farm League menu option links to the tiles
-    assert 'pm-region-count">15<' in body                  # league category count = the ruled allowlist (Jack 2026-08-30)
+    # M2 R1: / is the ACCOUNTS OVERVIEW; Farm League a nav peer. No pm_account seeded -> honest-empty accounts.
+    assert ">Accounts</a>" in body and 'href="/farm"' in body
+    assert "No accounts yet" in body
 
 
 def test_farm_serves_tile_grid(tmp_path, monkeypatch):
@@ -111,8 +110,8 @@ def test_whale_pages_render_under_one_shell(tmp_path, monkeypatch):
         r = client.get(path)
         assert r.status_code == 200                          # renders => no dangling `extends pm_base.html` (else 500)
         body = r.text
-        # the pm_shell nav (Dashboard / Farm League / Live sub-divisions) proves ONE shell, not the old pm_base nav
-        assert ">Dashboard</a>" in body and 'href="/farm"' in body and "Live sub-divisions" in body
+        # the pm_shell nav (M2 R1: Accounts / Farm League) proves ONE shell, not the old pm_base nav
+        assert ">Accounts</a>" in body and 'href="/farm"' in body
 
 
 # ── every internal link points at the hierarchy, never the temp/legacy paths ──────────────────────

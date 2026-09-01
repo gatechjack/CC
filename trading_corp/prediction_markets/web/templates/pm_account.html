@@ -1,0 +1,68 @@
+{% extends "pm_shell.html" %}
+{% block title %}{{ account.account_label or account.account_id }} &middot; Account{% endblock %}
+{% block content %}
+<section>
+  <nav class="pm-crumb"><a href="/">Accounts</a> &rsaquo; {{ account.account_label or account.account_id }}</nav>
+  <div class="pm-section-head">
+    <h1 class="pm-h1">{{ account.account_label or account.account_id }}</h1>
+    <p class="pm-sub">Prediction Markets activity for this account. Read-only &mdash; no arm or attach control here.</p>
+  </div>
+
+  {# GLOBAL ARM STATE -- read-only (R4). CONTROL is admin-only + M5; the CLI stays authoritative. #}
+  <div class="pm-arm-state">
+    {% if global_arm.global_armed %}<span class="pm-badge pm-badge-armed">GLOBAL ARM &middot; ARMED</span>
+    {% else %}<span class="pm-badge pm-badge-disarmed">GLOBAL ARM &middot; DISARMED</span>{% endif %}
+    <span class="pm-muted">read-only &middot; arm/disarm is a CLI action</span>
+  </div>
+
+  {% if not account.pm_traded %}
+  {# DISPLAY-ONLY account: the limitation is the CONTENT, not a footnote -- never an empty frame implying it fills. #}
+  <div class="pm-empty">
+    <p><strong>This account has no Prediction Markets sub-divisions</strong>, so Prediction Markets does not trade it
+      &mdash; this view is <strong>display-only</strong>.</p>
+    <p class="pm-muted">Any trading on this account is by another system (e.g. the legacy copy-trader). A PM
+      sub-division (an attached whale on a category) is what makes PM trade an account; none exists here.</p>
+  </div>
+  {% else %}
+  {# ACCOUNT TOTAL -- realized / win-loss / SAMPLE / open-at-cost SEPARATELY; caveat travels with the number. #}
+  <div class="pm-section-head"><h2 class="pm-h2">Account total (Prediction Markets)</h2></div>
+  <ul class="pm-kv pm-sub">
+    <li>Realized: <span class="{% if account.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.2f'|format(account.realized_pnl) }}</span>
+      over <span class="pm-primary">{{ account.n_closed }}</span> settled ({{ account.wins }}W / {{ account.losses }}L)
+      {% if account.thin_sample %}<span class="pm-flag pm-flag-thin">&#9888; thin sample &mdash; not evidence of edge</span>{% endif %}</li>
+    <li>Open (at cost): ${{ '%.2f'|format(account.open_cost_usd) }} &middot;
+      {{ account.n_open }} position{{ '' if account.n_open == 1 else 's' }} / {{ '%g'|format(account.open_contracts) }} ct
+      <span class="pm-muted">(cost basis, not marked to market)</span></li>
+  </ul>
+
+  <div class="pm-section-head"><h2 class="pm-h2">Sub-divisions</h2></div>
+  <div class="pm-table-scroll">
+  <table class="pm-table">
+    <thead><tr><th>Category</th><th class="pm-num">Realized</th><th class="pm-num">Settled</th>
+      <th class="pm-num">W / L</th><th class="pm-num">Open (cost)</th><th class="pm-num">Open ct</th><th></th></tr></thead>
+    <tbody>
+    {% for b in account.subdivisions %}
+      <tr>
+        <td>{{ b.category|upper }}</td>
+        <td class="pm-num {% if b.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.2f'|format(b.realized_pnl) }}</td>
+        <td class="pm-num">{{ b.n_closed }}{% if b.thin_sample %} <span class="pm-flag-thin" title="thin sample -- not evidence of edge">&#9888;</span>{% endif %}</td>
+        <td class="pm-num">{{ b.wins }} / {{ b.losses }}</td>
+        <td class="pm-num">${{ '%.2f'|format(b.open_cost_usd) }}</td>
+        <td class="pm-num">{{ '%g'|format(b.open_contracts) }}</td>
+        <td><a class="pm-btn pm-btn-sm" href="/live/{{ account.account_id }}/{{ b.category }}">Live &rarr;</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="pm-muted">Realized is booked at settlement/exit; open positions are shown at cost basis (a live venue mark
+    is a later phase). The settled sample size is shown so a small count is never read as edge.</p>
+  {% endif %}
+
+  {# BALANCE -- placeholder until M3 (pm_web holds NO venue creds by design; the engine will persist per-shard
+     balance snapshots WITH their age for this read-only view). #}
+  <div class="pm-section-head"><h2 class="pm-h2">Balance</h2></div>
+  <div class="pm-empty">Shard-aware balance is a later phase (M3): the engine will persist per-shard balance
+    snapshots (shown with their age) here. pm_web holds no venue credentials by design, so it never reads the venue directly.</div>
+</section>
+{% endblock %}
