@@ -1,5 +1,10 @@
 # PM TRANSITION — SESSION WRAP 5 (2026-08-31, ~22:15Z)
 
+> ⛔ SUPERSEDED 2026-09-01 by `TRANSITION_SESSIONWRAP6_2026-09-01.md` — READ THAT FIRST. Since SW5, the ENGINE BUNDLE
+> (opposed-memory + shard-snapshot writer + migration 016) and the pm_web BATCH (M3-display + M4 scoping/gates +
+> PM_ADMIN_IDENTITIES=jack + Karen's owner_identity) were DEPLOYED LIVE. The multi-account phase is deployed, not
+> just built; engine PID is now 144229. SW5's live numbers below are the 2026-08-31 snapshot and are stale.
+
 > ★★★ THIS SUPERSEDES `TRANSITION_SESSIONWRAP4_2026-08-31.md`. Read THIS first. SW4 predates the OPPOSING-SIDE GUARD
 > deploy, the caps raise to 50/$150/$150, and the count_ceiling latch+clear. Everything below is observed read-only
 > at ~22:15Z. NO polling monitor is running — the next agent discovers state by READING, not by inheriting a watch.
