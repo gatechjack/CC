@@ -1575,6 +1575,41 @@ async def run(argv: list[str] | None = None) -> int:
         except Exception as _pm_exc:  # noqa: BLE001 — never break engine boot
             log.exception("PM live driver wiring FAILED (engine continues): %s", _pm_exc)
 
+        # ── M3 (2026-09-01): per-account SHARD-BALANCE SNAPSHOTS (5-min timer) -> pm_web shows the split + AGE,
+        # credential-free. DELIBERATELY separate from the driver's per-cycle funding-gate balance read (that GATES
+        # orders; this INFORMS a display + a history). Reads EACH active pm_account with ITS OWN keys
+        # (secret_ref -> keypair), so Karen's balance is captured even though her keys are separate. Fail-safe
+        # wiring (never breaks boot); fail-soft per account inside the loop. Needs pm_shard_balance_snapshot
+        # (migration 016) -- the deploy applies 016 BEFORE this restart (migration leads); the writer also
+        # fail-softs if the table is somehow absent.
+        try:
+            from trading_corp.brokers.kalshi_live import KalshiLiveBroker as _KLB_snap
+            from trading_corp.prediction_markets import shard_snapshot_task as _sst, db as _snap_db
+            _snap_demo = os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")
+            _snap_brokers = {}
+            with _snap_db.connect(_snap_db.pm_db_path()) as _sc:
+                _has_acct = _sc.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pm_account'").fetchone() is not None
+                _acct_rows = _sc.execute("SELECT account_id, secret_ref FROM pm_account WHERE active=1").fetchall() if _has_acct else []
+            for _ar in _acct_rows:
+                _aid, _ref = _ar[0], _ar[1]
+                _kid, _pem = _sst.resolve_kalshi_keys(_ref, secrets)
+                if not _kid or not _pem:
+                    log.warning("M3 shard-snapshot: no keys for account %s (secret_ref=%s) — skipping", _aid, _ref)
+                    continue
+                _sbr = _KLB_snap(api_key_id=_kid, private_key_pem=_pem, demo=_snap_demo, order_type="ioc")
+                await _sbr.connect()
+                _snap_brokers[_aid] = _sbr
+            if _snap_brokers:
+                shard_snapshot_task_handle = asyncio.create_task(
+                    _sst.scheduled_shard_snapshot_loop(_snap_db.pm_db_path(), _snap_brokers))
+                log.info("M3 shard-snapshot writer WIRED (%d account(s): %s; 5-min timer)",
+                         len(_snap_brokers), sorted(_snap_brokers))
+            else:
+                log.info("M3 shard-snapshot writer: no credentialed pm_account — not wired")
+        except Exception as _snap_exc:  # noqa: BLE001 — never break engine boot
+            log.exception("M3 shard-snapshot wiring FAILED (engine continues): %s", _snap_exc)
+
         # --- Phase 2a boot invariant: live ∩ paper rosters must be disjoint ---
         # Log-loud-and-continue (see assert_roster_invariant_boot): detection +
         # alerting only — the live loop + paper read-time subtract are what
