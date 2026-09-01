@@ -62,6 +62,30 @@ def test_reads_are_defensive():
     assert ss.age_band(0) == "fresh" and ss.age_band(20 * 60) == "stale" and ss.age_band(2 * 3600) == "very_stale"
 
 
+def test_table_present_distinguishes_absent_from_empty():
+    # migration 016 applied by init_db -> the table is PRESENT even with 0 rows; read_latest is None. The page uses
+    # table_present to tell "no snapshot yet" (present+empty) from "arrives with the writer" (absent).
+    p = _db()
+    with db.connect(p) as c:
+        assert ss.table_present(c) is True
+        assert ss.read_latest(c, "kalshi_jack") is None
+
+
+def test_shard_direction_returning_rising_building():
+    p = _db()
+    with db.connect(p) as c:
+        ss.write_snapshot(c, "one", ShardBalances(100.0, {0: 0.01, 3: 100.0}, True), 1000)
+        assert ss.shard_direction(c, "one").verdict == "building"                          # <2 snapshots
+        ss.write_snapshot(c, "one", ShardBalances(120.0, {0: 0.01, 3: 120.0}, True), 1000 + 7200)   # +2h, shard-0 flat
+        assert ss.shard_direction(c, "one").verdict == "returning"                         # flat -> return-to-3
+        ss.write_snapshot(c, "sweep", ShardBalances(50.0, {0: 0.01, 3: 50.0}, True), 2000)
+        ss.write_snapshot(c, "sweep", ShardBalances(50.0, {0: 5.00, 3: 45.0}, True), 2000 + 7200)   # shard-0 +$4.99
+        assert ss.shard_direction(c, "sweep").verdict == "rising"                          # sweeping to shard 0
+        ss.write_snapshot(c, "short", ShardBalances(10.0, {0: 0.01}, True), 3000)
+        ss.write_snapshot(c, "short", ShardBalances(10.0, {0: 9.0}, True), 3000 + 600)     # big move but only +10m
+        assert ss.shard_direction(c, "short").verdict == "building"                        # span < 1h -> not judged yet
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for f in fns:

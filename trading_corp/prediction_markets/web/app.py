@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm
+from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot
 from ..market_describe import describe_market
 from ..category import NON_SINGLE_GAME_CATEGORIES, derive_category_from_slug
 
@@ -336,10 +336,13 @@ def _annotate_pnl(a: dict, floor: int) -> None:
 
 def _load_accounts_overview() -> dict:
     """Every active account with its PM realized P&L / win-loss / sample size / open-at-cost + whether PM trades it,
-    plus the GLOBAL arm state (read-only, R4). OFF the loop; PM DB + a read-only legacy agent_state read."""
+    a COMPACT balance (latest snapshot total + age band), plus the GLOBAL arm state (read-only, R4). OFF the loop;
+    PM DB + a read-only legacy agent_state read. NEVER a venue read (pm_web is credential-free)."""
     floor = search.DEFAULT_MIN_RESOLVED_FLOOR
     with connect() as conn:
         accounts = subdivision.accounts_overview(conn)
+        for a in accounts:
+            a["shard_snap"] = shard_snapshot.read_latest(conn, a["account_id"])   # None -> tile omits balance (honest)
     for a in accounts:
         _annotate_pnl(a, floor)
     return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor}
@@ -360,7 +363,14 @@ def _load_account(account_id: str):
     _annotate_pnl(agg, floor)
     for b in agg["subdivisions"]:
         _annotate_pnl(b, floor)
-    return {"account": agg, "global_arm": arm.read_status(), "thin_floor": floor}
+    # M3 balance: the LATEST per-shard snapshot (+ its age band) + the two distinct honest-empty states (table absent
+    # vs present-but-empty) + the shard-0-direction line (return-to-3 vs sweeping). All from the snapshot -- never the venue.
+    with connect() as conn:
+        snap = shard_snapshot.read_latest(conn, account_id)
+        snap_table = shard_snapshot.table_present(conn)
+        snap_dir = shard_snapshot.shard_direction(conn, account_id)
+    return {"account": agg, "global_arm": arm.read_status(), "thin_floor": floor,
+            "shard_snap": snap, "shard_snap_table": snap_table, "shard_dir": snap_dir}
 
 
 @app.get("/", response_class=HTMLResponse)

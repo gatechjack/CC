@@ -63,6 +63,47 @@ def age_band(age_sec: int) -> str:
     return "very_stale"
 
 
+def table_present(conn) -> bool:
+    """Whether pm_shard_balance_snapshot EXISTS. The page needs to distinguish TWO honest-empty states: the table
+    ABSENT (migration 016 not applied -> 'arrives with the engine writer') vs PRESENT-but-empty (016 applied,
+    engine has not written yet -> 'no snapshot yet, the engine writes every 5 min'). A blank reads the same for
+    both; these do not."""
+    return _table_exists(conn)
+
+
+@dataclass(frozen=True)
+class ShardDirection:
+    verdict: str                  # 'returning' | 'rising' | 'building' (building = not enough history to judge)
+    n_snapshots: int
+    shard0_first: float
+    shard0_last: float
+    span_sec: int
+
+
+def shard_direction(conn, account_id: str, *, rise_dollars: float = 0.50, min_span_sec: int = 3600):
+    """Is shard-0 RISING (proceeds sweeping to shard 0 -- Karen's silent-death shape) or FLAT (return-to-3, proven
+    by arithmetic 2026-09-01)? The one LINE the page shows so the standing check is read daily, not only via the
+    runner. Reads the account's snapshot HISTORY. 'building' when <2 snapshots or the span is < ~1h (too short to
+    judge). None if the table is absent. Read-only, defensive."""
+    if not _table_exists(conn):
+        return None
+    rows = conn.execute(
+        "SELECT snapshot_ts, by_shard_json FROM %s WHERE account_id = ? ORDER BY snapshot_ts" % _TABLE,
+        (account_id,)).fetchall()
+    def _s0(r):
+        try:
+            return float((json.loads(r[1]) or {}).get("0", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    if len(rows) < 2:
+        return ShardDirection("building", len(rows), _s0(rows[0]) if rows else 0.0, _s0(rows[-1]) if rows else 0.0, 0)
+    f0, l0 = _s0(rows[0]), _s0(rows[-1])
+    span = int(rows[-1][0]) - int(rows[0][0])
+    if span < min_span_sec:
+        return ShardDirection("building", len(rows), f0, l0, span)
+    return ShardDirection("rising" if (l0 - f0) > rise_dollars else "returning", len(rows), f0, l0, span)
+
+
 def read_latest(conn, account_id: str, *, now_ts: int | None = None) -> "SnapshotView | None":
     """pm_web-side: the LATEST snapshot for one account, with its AGE + staleness band, or None if none exists / the
     table is absent (pre-migration-016 -> honest-empty). Never touches the venue. Position-indexed so it works with

@@ -43,6 +43,11 @@
       <p class="pm-menu-sub pm-empty-inline">No PM sub-divisions &mdash; <strong>not traded by Prediction Markets</strong>.
         Display-only; any trading on this account is by another system (e.g. the legacy copy-trader).</p>
       {% endif %}
+      {# compact balance (the real number even for a display-only account -- legacy spends it) + its AGE band. #}
+      {% if a.shard_snap %}
+      <p class="pm-sub">Balance: <span class="pm-primary">{% if a.shard_snap.has_breakdown %}${{ '%.2f'|format(a.shard_snap.total_dollars) }}{% else %}${{ '%.2f'|format(a.shard_snap.total_dollars) }} <span class="pm-muted">(split unknown)</span>{% endif %}</span>
+        <span class="pm-badge pm-age-{{ a.shard_snap.age_band }}">{{ a.shard_snap.age_band|replace('_',' ') }}</span></p>
+      {% endif %}
     </a>
     {% endfor %}
   </div>

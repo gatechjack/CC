@@ -98,3 +98,36 @@ def test_account_pages_are_read_only(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path)
     assert cl.post("/account/kalshi_jack").status_code == 405
     assert cl.post("/").status_code == 405
+
+
+# ── M3 balance display (2026-09-01): per-shard split + banded age + the shard-0-direction line + honest-empty ──
+def _write_snap(tmp_path, account_id, by_shard, has_breakdown=True, total=None, ts=None):
+    import time
+    from trading_corp.prediction_markets import shard_snapshot as ss
+    from trading_corp.prediction_markets.shard_balance import ShardBalances
+    tot = total if total is not None else sum(by_shard.values())
+    with db.connect(str(tmp_path / "pm.db")) as c:
+        ss.write_snapshot(c, account_id, ShardBalances(tot, by_shard, has_breakdown), int(ts if ts is not None else time.time()))
+
+
+def test_balance_section_renders_split_and_age_band(monkeypatch, tmp_path):
+    cl = _client(monkeypatch, tmp_path)
+    _write_snap(tmp_path, "kalshi_jack", {0: 0.0081, 3: 473.5897})
+    html = cl.get("/account/kalshi_jack").text
+    assert "Balance (per shard)" in html
+    assert "Shard 3" in html and "473.59" in html                    # the per-shard split (the point, not the total)
+    assert "pm-age-fresh" in html and "min ago" in html              # the age band is obvious, not a raw timestamp
+
+
+def test_balance_honest_empty_present_but_no_snapshot(monkeypatch, tmp_path):
+    cl = _client(monkeypatch, tmp_path)                              # schema 16 -> table present, no rows written
+    html = cl.get("/account/kalshi_jack").text
+    assert "No balance snapshot yet" in html and "every 5 minutes" in html   # DISTINCT from the table being absent
+
+
+def test_balance_unknown_breakdown_never_rendered_as_zero(monkeypatch, tmp_path):
+    cl = _client(monkeypatch, tmp_path)
+    _write_snap(tmp_path, "kalshi_karen", {}, has_breakdown=False, total=50.0)   # subaccount-restricted key
+    html = cl.get("/account/kalshi_karen").text
+    assert "unknown" in html.lower() and "50.00" in html
+    assert "Shard 0" not in html                                     # an unknown split is NEVER shown as per-shard $0

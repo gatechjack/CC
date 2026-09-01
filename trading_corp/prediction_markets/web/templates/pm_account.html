@@ -59,10 +59,50 @@
     is a later phase). The settled sample size is shown so a small count is never read as edge.</p>
   {% endif %}
 
-  {# BALANCE -- placeholder until M3 (pm_web holds NO venue creds by design; the engine will persist per-shard
-     balance snapshots WITH their age for this read-only view). #}
-  <div class="pm-section-head"><h2 class="pm-h2">Balance</h2></div>
-  <div class="pm-empty">Shard-aware balance is a later phase (M3): the engine will persist per-shard balance
-    snapshots (shown with their age) here. pm_web holds no venue credentials by design, so it never reads the venue directly.</div>
+  {# BALANCE (M3) -- per-shard, from the engine's snapshot (pm_web never reads the venue). The AGE is BANDED so a
+     stale number looks wrong at a glance (the Karen-death failure was a healthy-looking number hours old). #}
+  <div class="pm-section-head"><h2 class="pm-h2">Balance (per shard)</h2></div>
+  {% if shard_snap %}
+  <div class="pm-arm-state">
+    <span class="pm-badge pm-age-{{ shard_snap.age_band }}" title="Engine snapshot age. fresh <=15m / stale <=1h / very_stale >1h. A stale balance shown as current is what killed Karen's division.">as of {{ (shard_snap.age_sec // 60) }} min ago &middot; {{ shard_snap.age_band|replace('_',' ') }}</span>
+    <span class="pm-muted">engine snapshot &middot; pm_web reads it (no venue call)</span>
+  </div>
+  {% if shard_snap.has_breakdown %}
+  <div class="pm-table-scroll">
+  <table class="pm-table">
+    <thead><tr><th>Shard</th><th class="pm-num">Balance</th></tr></thead>
+    <tbody>
+    {% for idx, dollars in shard_snap.by_shard|dictsort %}
+      <tr><td>Shard {{ idx }}{% if idx == 3 %} <span class="pm-muted">(MLB/baseball funding)</span>{% elif idx == 0 %} <span class="pm-muted">(default)</span>{% endif %}</td>
+        <td class="pm-num">${{ '%.2f'|format(dollars) }}</td></tr>
+    {% endfor %}
+      <tr><td class="pm-muted">Total</td><td class="pm-num pm-muted">${{ '%.2f'|format(shard_snap.total_dollars) }}</td></tr>
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  {# has_breakdown=False -> the split is UNKNOWN (subaccount-restricted key). Show the total + 'unknown', NEVER $0 per shard. #}
+  <div class="pm-empty">Per-shard split <strong>unknown</strong> for this key (subaccount-restricted) &mdash; total
+    ${{ '%.2f'|format(shard_snap.total_dollars) }}. The split is not shown as $0 when it is unknown.</div>
+  {% endif %}
+  {# THE STANDING CHECK, on the page: is shard-0 rising? (return-to-3 vs sweeping) -- one line, not a chart. #}
+  {% if shard_dir %}
+    {% if shard_dir.verdict == 'returning' %}
+    <p class="pm-gain">&#10003; Proceeds returning to shard 3 &mdash; shard-0 flat, the funding shard self-sustains.</p>
+    {% elif shard_dir.verdict == 'rising' %}
+    <p class="pm-loss">&#9888; Shard-0 rising (+${{ '%.2f'|format(shard_dir.shard0_last - shard_dir.shard0_first) }}) &mdash; proceeds may be SWEEPING to shard 0. Revisit caps + a shard top-up becomes a daily task.</p>
+    {% else %}
+    <p class="pm-muted">Shard-0 direction: building history ({{ shard_dir.n_snapshots }} snapshot{{ '' if shard_dir.n_snapshots == 1 else 's' }}) &mdash; will read &ldquo;returning to shard 3&rdquo; vs &ldquo;sweeping&rdquo; once ~1h of snapshots exist.</p>
+    {% endif %}
+  {% endif %}
+  {% elif shard_snap_table %}
+  {# table exists (migration 016 applied) but the engine has not written yet -- DISTINCT from the table being absent. #}
+  <div class="pm-empty">No balance snapshot yet &mdash; the engine writes these every 5 minutes (it holds the venue
+    keys; pm_web reads the snapshot). It will appear shortly after the engine restart.</div>
+  {% else %}
+  {# table absent -- migration 016 not applied yet. #}
+  <div class="pm-empty">Shard-aware balance arrives with the engine snapshot writer (migration 016 + the 5-minute
+    timer). pm_web holds no venue credentials by design, so it never reads the venue directly.</div>
+  {% endif %}
 </section>
 {% endblock %}
