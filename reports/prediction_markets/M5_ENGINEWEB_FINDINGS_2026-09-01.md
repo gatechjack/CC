@@ -77,8 +77,32 @@ security precondition that must be settled before M5 puts the money-gate control
   latch** -- only `arm(require_latch_clear=True)` clears one, and that stays CLI-only (a human must SEE the trigger).
   The CLI stays the authoritative kill path (R7.d) in every case.
 
-## Decisions needed
-1. The :8000 exposure -- confirm the NSG blocks external :8000, or bind to localhost first? (I can write a read-only
-   NSG/bind check; a bind change is an engine restart.)
-2. Bundle sequencing -- confirm DON'T bundle (ship the ready three; M5 next window)?
-3. The UI-on-engine-web same-origin shape above -- good, or do you want the control on the PM UI (cross-domain)?
+## Decisions needed -- ALL RULED by Jack 2026-09-01
+1. The :8000 exposure -> CHECK FIRST (done): effectively closed (see PORT-EXPOSURE RESOLUTION). Portal rule-confirm recommended.
+2. Bundle sequencing -> DON'T bundle (confirmed). Ship opposed-memory + M3-writer + mig-016 next window; M5 a later one.
+3. Shape -> engine-web same-origin (confirmed). Two riders: UI never clears a latch; CLI authoritative. Link honest.
+
+## ★ BUILD COMPLETE (2026-09-01) -- committed, pushed, tested; NOT deployed (HALT-gated)
+- **Engine control** (`4620e5b`): `trading_corp/web/pm_arm_view.py` (all logic) + a 2-line additive graft in
+  `routes.py` + `templates/pm_arm.html` (extends base.html). Admin-only fail-closed via `authz`; GLOBAL master
+  arm/disarm; runs in-process so the write is same-process-consistent with the driver's read. Riders enforced: the
+  UI calls `arm.arm()` WITHOUT `require_latch_clear` (LatchedError -> refuse, never clear); the CLI-authoritative
+  kill note is always shown. 12 tests (DENY proven by POSTing as a non-admin; the global invocation; latch-refusal;
+  rendered states).
+- **PM-side honest link** (`61b2e8f`): `pm_accounts.html` shows an ADMIN-ONLY link that plainly LEAVES the PM console
+  for the engine console (external-arrow + wording, not a disguised control); `app.py` passes `is_admin`; `.pm-xlink`
+  in pm.css. Test: admin sees the link, a non-admin never does.
+- **Tests:** 84/84 green locally across M5 + M4 + the updated pre-M4 pm_web suites (a `.venv-webtest` layered over
+  the walletops packages -- fastapi/jinja2/httpx/pytest/python-multipart/python-dotenv; walletops itself untouched).
+  All run at Gate-A on the box too.
+
+## M5 DEPLOY PLAN (two surfaces, both HALT-gated; NOT bundled with the ready three)
+1. **Engine control -> an engine/PEAD window (engine restart).** Preconditions, in order (env-leads): (a) confirm the
+   Portal NSG blocks external :8000; (b) SET `PM_ADMIN_IDENTITIES=<jack>` on **`trading-corp.service`** AND confirm
+   `Remote-User` arrives at :8000 on a live request; (c) reconcile `routes.py` FILE-BY-FILE against the box (additive
+   graft only -- never a wholesale advance) + `pm_arm_view.py`/`pm_arm.html` as new files; (d) Gate-A; (e) restart.
+   Unset env -> the control is INERT (fail-closed), not a lockout; the CLI arms regardless.
+2. **PM-side link -> the pm_web batch.** ★ ORDERING: the link targets `trading.jacksumner.com/pm/arm`, which 404s
+   until the engine control is live. So the link must NOT ship before engine M5. Options: hold the link out of the
+   M3-display+M4 batch and ship it in the next pm_web restart AFTER engine M5, OR accept a temporary admin-only 404.
+   Recommend the former (a clean, trivial follow-on). This is the one M5 piece that touches the pm_web batch.
