@@ -56,9 +56,10 @@ def test_accounts_overview_lists_both_with_honest_pnl(monkeypatch, tmp_path):
     # karen: display-only -> the limitation is in the COPY, not an empty frame
     assert 'href="/account/kalshi_karen"' in html and "Karen" in html
     assert "not traded by Prediction Markets" in html
-    # R4: global arm state visible (read-only), NO control
+    # R4: global arm state visible (read-only), NO control. Check for actual control ELEMENTS/endpoints -- NOT the
+    # bare word "disarm", which legitimately appears in the read-only copy "arm/disarm is a CLI action".
     assert "GLOBAL ARM" in html
-    for tok in ("hx-post", "disarm", "/attach/", "place order", "<form"):
+    for tok in ("hx-post", "<form", "<button", "<input", "/attach/"):
         assert tok not in html.lower(), tok
 
 
@@ -71,8 +72,8 @@ def test_account_page_jack_shows_subdivision_pnl(monkeypatch, tmp_path):
     assert 'href="/live/kalshi_jack/mlb"' in html                     # links down to the live sub-division
     assert "cost basis" in html.lower()                               # open at cost, not mark
     assert "GLOBAL ARM" in html
-    # read-only: no controls
-    for tok in ("hx-post", "disarm", "/attach/", "<form"):
+    # read-only: no control ELEMENTS ("disarm" as a word is fine -- it is in the read-only "arm/disarm is a CLI action" copy)
+    for tok in ("hx-post", "<form", "<button", "<input", "/attach/"):
         assert tok not in html.lower(), tok
 
 
