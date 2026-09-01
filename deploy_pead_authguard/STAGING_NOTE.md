@@ -66,3 +66,13 @@ They fail identically with and without this patch. Worth a separate look; out of
   future shared change Gate-A's against box `ecf5457e`, not prod-live).
 - Restart via the canonical `restart_tc.ps1` (az-root `systemctl restart trading-corp`).
 - NOT deployed, NOT restarted by this staging session.
+
+## DEPLOYED LIVE 2026-09-01 (with the off-hours test-fixture fix)
+Both shipped in ONE az-root all-divisions restart. Base was current box `28eb62be` (unchanged from
+staging) -> `909d3f56`; robinhood.py unchanged `ecf5457e`. Engine PID 127578 -> **132470**,
+NRestarts=0, 0 tracebacks, all 6 core divisions paper=False, PEAD 33-book intact, guard live in
+running code. The 2 previously-red single-outcome tests PASS on the deployed tree (fixture fix =
+`test_pead_offhours_single_outcome.fixed.py`, a 1-line `quote(self, symbol, *, strict=False)`).
+Backups on box: `pead_strategy.py.bak_authguard_20260901T035943Z`,
+`tests/test_pead_offhours_single_outcome.py.bak_fixture_20260901T035943Z`. Full record in
+`runbooks/deploy_log.md` (2026-09-01 entry, main-wip @ `8fd95d1`).
