@@ -241,3 +241,69 @@ def live_positions(conn, account_id: str, category: str) -> list[dict]:
                     "contracts": contracts, "cost_basis_usd": cost, "avg_price": avg, "fees_usd": a["fees"]})
     out.sort(key=lambda x: x["ticker"])
     return out
+
+
+# ── P&L / win-loss aggregation across sub-divisions (multi-account foundation, 2026-09-01) ──────────────────────
+# REALIZED-ONLY basis (the credential-free basis, R2 ruling): pm_web holds no venue keys, so open positions are
+# shown at COST (live_positions), NEVER marked-to-market -- a mark would need a live venue read pm_web cannot do.
+# Realized P&L + win/loss come from the terminal-close rows the engine books (is_exit=1: settlement OR whale-exit
+# OR opposed). Realized is booked ONLY at close (is_exit=1), so summing there is complete AND never double-counts
+# an entry. Read-only, journal-only -- the standalone guard holds.
+
+def subdivision_pnl(conn, account_id: str, category: str) -> dict:
+    """Realized P&L + win/loss + open exposure for ONE sub-division. `realized_pnl`/`wins`/`losses`/`n_closed`
+    from terminal closes (is_exit=1, dry_run=0, filled); a close with won IS NULL (e.g. a void) counts in
+    n_closed but as neither win nor loss (honest). `n_open`/`open_contracts`/`open_cost_usd` from the
+    journal-derived held positions, at COST. Zeroes if the order journal is absent (pre-migration-010)."""
+    out = {"account_id": account_id, "category": category, "realized_pnl": 0.0,
+           "wins": 0, "losses": 0, "n_closed": 0, "n_open": 0, "open_contracts": 0.0, "open_cost_usd": 0.0}
+    if _table_exists(conn, "pm_subdivision_order"):
+        r = conn.execute(
+            "SELECT COALESCE(SUM(realized_pnl), 0) rp, "
+            "       SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) wins, "
+            "       SUM(CASE WHEN won = 0 THEN 1 ELSE 0 END) losses, COUNT(*) n "
+            "FROM pm_subdivision_order "
+            "WHERE account_id = ? AND category = ? AND dry_run = 0 AND is_exit = 1 AND outcome_status = 'filled'",
+            (account_id, category)).fetchone()
+        out["realized_pnl"] = float(r["rp"] or 0.0)
+        out["wins"] = int(r["wins"] or 0)
+        out["losses"] = int(r["losses"] or 0)
+        out["n_closed"] = int(r["n"] or 0)
+    held = live_positions(conn, account_id, category)
+    out["n_open"] = len(held)
+    out["open_contracts"] = sum(float(h["contracts"]) for h in held)
+    out["open_cost_usd"] = sum(float(h["cost_basis_usd"]) for h in held)
+    return out
+
+
+def account_pnl(conn, account_id: str) -> dict:
+    """Aggregate the above across ALL of an account's ACTIVE sub-divisions + carry the per-sub-division breakdown
+    (the account page shows both the account total and a row per sub-division). Read-only; zeroed/empty if the
+    money tables are absent (pre-010)."""
+    cats = []
+    if _ready(conn):
+        cats = [dict(r)["category"] for r in conn.execute(
+            "SELECT category FROM pm_subdivision WHERE account_id = ? AND active = 1 ORDER BY category",
+            (account_id,)).fetchall()]
+    breakdown = [subdivision_pnl(conn, account_id, c) for c in cats]
+    return {
+        "account_id": account_id, "n_subdivisions": len(breakdown),
+        "realized_pnl": sum(b["realized_pnl"] for b in breakdown),
+        "wins": sum(b["wins"] for b in breakdown), "losses": sum(b["losses"] for b in breakdown),
+        "n_closed": sum(b["n_closed"] for b in breakdown), "n_open": sum(b["n_open"] for b in breakdown),
+        "open_contracts": sum(b["open_contracts"] for b in breakdown),
+        "open_cost_usd": sum(b["open_cost_usd"] for b in breakdown),
+        "subdivisions": breakdown,
+    }
+
+
+def accounts_overview(conn) -> list[dict]:
+    """Every ACTIVE account with its aggregate realized P&L / win-loss / open exposure -- the /accounts landing.
+    Read-only; empty if pm_account is absent (pre-010). Never selects a secret value."""
+    out = []
+    for a in active_accounts(conn):
+        agg = account_pnl(conn, a["account_id"])
+        agg["account_label"] = a.get("account_label")
+        agg["venue"] = a.get("venue")
+        out.append(agg)
+    return out
