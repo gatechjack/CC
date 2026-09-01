@@ -31,17 +31,20 @@
   <div class="pm-empty">No whales attached yet. Promote a pinned whale to this sub-division from its Watchlist row.</div>
   {% endif %}
 
-  {# CURRENTLY HELD: journal-derived open positions (net signed fills per ticker). NOT a live venue read -- pm_web
-     is standalone; the engine's boot reconcile cross-checks this against the exchange. Honest-empty when flat. #}
-  <div class="pm-section-head"><h2 class="pm-h2">Currently held</h2></div>
+  {# CURRENTLY HELD, per (ticker, WHALE): journal-derived open positions split by the copied whale, so a ticker
+     stacked by several whales (same-side stacking is the design) shows one row EACH -- which answers "which whale
+     is this trade from". NOT a live venue read -- pm_web is standalone; the engine's boot reconcile cross-checks
+     this against the exchange. Honest-empty when flat. #}
+  <div class="pm-section-head"><h2 class="pm-h2">Currently held <span class="pm-muted">&middot; per whale</span></h2></div>
   {% if positions %}
   <div class="pm-table-scroll">
   <table class="pm-table pm-positions">
-    <thead><tr><th>Ticker</th><th>Market</th><th>Leg</th><th class="pm-num">Contracts</th>
+    <thead><tr><th>Whale</th><th>Ticker</th><th>Market</th><th>Leg</th><th class="pm-num">Contracts</th>
       <th class="pm-num">Avg price</th><th class="pm-num">Cost basis</th><th class="pm-num">Fees</th></tr></thead>
     <tbody>
     {% for p in positions %}
       <tr>
+        <td><a href="/watchlist/{{ p.wallet }}/{{ sub.category }}">{{ p.user_name or (p.wallet[:10] ~ '…') }}</a></td>
         <td>{{ describe_market(p.ticker, p.held_leg) }}<br><span class="pm-muted pm-ticker-raw">{{ p.ticker }}</span></td>
         <td>{{ p.market_type }}</td>
         <td>{{ p.held_leg|upper }}</td>
@@ -54,10 +57,51 @@
     </tbody>
   </table>
   </div>
-  <p class="pm-muted">Derived from this sub-division's filled orders (the order journal), not a live venue read.
-    The execution engine's boot reconcile is what cross-checks these against the exchange.</p>
+  <p class="pm-muted">One row per whale per ticker (same-side stacking means a ticker can be held via several whales).
+    Derived from this sub-division's filled orders, not a live venue read; the engine's boot reconcile cross-checks
+    these against the exchange.</p>
   {% else %}
   <div class="pm-empty">No open positions. A filled entry copy that has not been exited shows here.</div>
+  {% endif %}
+
+  {# ★ LIVE-COPY RECORD PER WHALE -- the ONLY record that answers "is copying THIS whale actually working for me".
+     REAL money placed on the venue. Explicitly NOT the paper-trade record ("would it have") and NOT the prospect
+     screen ("did it historically") -- both key on the same whales but a different basis. Honesty discipline:
+     realized / settled-W-L / SAMPLE / open shown SEPARATELY; thin-sample travels with the number; opposed-closes
+     (guard flattens) counted separately, never as W/L or realized. #}
+  <div class="pm-section-head"><h2 class="pm-h2">Live-copy record <span class="pm-muted">&middot; per whale &middot; real money</span></h2></div>
+  <p class="pm-sub">Real copies placed on the venue for this sub-division, per whale. This is the one record that says
+    whether copying a whale is <em>actually working here</em> &mdash; it is <strong>not</strong> the paper-trade record
+    (&ldquo;would it have&rdquo;) and <strong>not</strong> the prospect screen (&ldquo;did it historically&rdquo;);
+    those key on the same whales on a different basis. Samples are tiny &mdash; read the count, not the ratio.</p>
+  {% if copies_by_whale %}
+  <div class="pm-table-scroll">
+  <table class="pm-table">
+    <thead><tr><th>Whale</th><th class="pm-num">Copies</th><th class="pm-num">Settled W/L</th>
+      <th class="pm-num">Realized</th><th class="pm-num">Open (at cost)</th><th></th></tr></thead>
+    <tbody>
+    {% for w in copies_by_whale %}
+      <tr>
+        <td><a href="/watchlist/{{ w.wallet }}/{{ sub.category }}">{{ w.user_name or (w.wallet[:10] ~ '…') }}</a>
+          {% if not w.attached %}<span class="pm-muted" title="not currently attached; this record is its past live copies">&middot; detached</span>{% endif %}</td>
+        <td class="pm-num">{{ w.copies }}</td>
+        <td class="pm-num">{% if w.n_settled %}{{ w.settled_w }} / {{ w.settled_l }}
+          <span class="pm-muted">({{ w.n_settled }} settled)</span>{% else %}<span class="pm-muted">&mdash; none settled</span>{% endif %}</td>
+        <td class="pm-num">{% if w.n_settled %}<span class="{% if w.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.2f'|format(w.realized_pnl) }}</span>{% else %}<span class="pm-muted">&mdash;</span>{% endif %}</td>
+        <td class="pm-num">{% if w.n_open %}${{ '%.2f'|format(w.open_cost_usd) }} <span class="pm-muted">&middot; {{ '%g'|format(w.open_contracts) }} ct</span>{% else %}<span class="pm-muted">&mdash;</span>{% endif %}</td>
+        <td>{% if w.n_settled and w.thin_sample %}<span class="pm-flag pm-flag-thin" title="thin sample -- not evidence of edge">&#9888; thin ({{ w.n_settled }})</span>{% endif %}
+          {% if w.opposed_closed %}<span class="pm-muted" title="closed by the opposing-guard (two whales took opposite sides) -- a guard flatten, not a settled win/loss; its P&amp;L is not booked as realized">{{ w.opposed_closed }} opposed-closed</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="pm-muted">Realized + W/L come from <strong>settlements</strong> only; open is at cost (no venue mark).
+    <strong>Opposed-closed</strong> = positions the opposing-guard flattened (two whales, opposite sides) &mdash;
+    counted here but never as a win, a loss, or realized P&amp;L (a guard flatten is not a settled outcome). Attribution
+    is by the whale recorded on each order row, including on the close.</p>
+  {% else %}
+  <div class="pm-empty">No live copies yet. Once this sub-division fills a copy, a per-whale record appears here.</div>
   {% endif %}
 
   {# LIVE TRADES: the real order journal for this sub-division, newest first. Dry-runs are excluded (not live). #}
@@ -65,7 +109,7 @@
   {% if orders %}
   <div class="pm-table-scroll">
   <table class="pm-table pm-positions">
-    <thead><tr><th>When (UTC)</th><th>Ticker</th><th>Market</th><th>Leg</th><th>Type</th>
+    <thead><tr><th>When (UTC)</th><th>Whale</th><th>Ticker</th><th>Market</th><th>Leg</th><th>Type</th>
       <th class="pm-num">Count</th><th class="pm-num">Submitted</th><th class="pm-num">Fill</th>
       <th class="pm-num">Fee</th><th>TIF</th><th>Status</th></tr></thead>
     <tbody>
@@ -77,6 +121,7 @@
       {% set settled = (o.close_source == 'settlement') %}
       <tr class="{% if settled %}pm-row-settled{% endif %}">
         <td>{{ (o.response_ts or o.submitted_ts)|utcdt }}</td>
+        <td>{% if o.wallet %}<a href="/watchlist/{{ o.wallet }}/{{ sub.category }}">{{ o.user_name or (o.wallet[:10] ~ '…') }}</a>{% else %}<span class="pm-muted">&mdash;</span>{% endif %}</td>
         <td>{{ describe_market(o.ticker, o.outcome_leg) }}<br><span class="pm-muted pm-ticker-raw">{{ o.ticker }}</span></td>
         <td>{{ o.market_type }}</td>
         <td>{{ o.outcome_leg|upper }}</td>

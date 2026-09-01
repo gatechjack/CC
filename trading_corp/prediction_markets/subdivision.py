@@ -182,13 +182,21 @@ def live_orders(conn, account_id: str, category: str, *, limit: int = 200) -> li
     Empty if the journal table is absent (pre-migration-010) -> honest-empty, never a 500. Read-only."""
     if not _table_exists(conn, "pm_subdivision_order"):
         return []
+    # WHALE ON EVERY ROW (2026-09-01): each order row carries `wallet` (the copied whale) -- confirmed present on
+    # entries AND all close rows (settlement/opposed) on the box, 0 NULL. Join pm_whale for a display name; the
+    # template renders `user_name or wallet` (matching the "Copies these whales" list). Defensive: no join if
+    # pm_whale is somehow absent -> user_name NULL, never a 500.
+    has_whale = _table_exists(conn, "pm_whale")
+    name_sel = "w.user_name" if has_whale else "NULL AS user_name"
+    join = "LEFT JOIN pm_whale w ON w.wallet = o.wallet " if has_whale else ""
     rows = conn.execute(
-        "SELECT id, ticker, order_side, outcome_leg, is_exit, submitted_count, submitted_price, time_in_force, "
-        "       outcome_status, fill_count, fill_price, remaining_count, fee, error_detail, submitted_ts, response_ts, "
-        "       close_source, realized_pnl, won, settled_ts "   # close_source distinguishes a SETTLEMENT-close from a
-        "FROM pm_subdivision_order "                            # whale-EXIT (both is_exit=1); realized_pnl is the P&L a
-        "WHERE account_id = ? AND category = ? AND dry_run = 0 "  # settlement books in place of a submitted/fill price.
-        "ORDER BY COALESCE(response_ts, submitted_ts) DESC, id DESC LIMIT ?",
+        "SELECT o.id, o.ticker, o.order_side, o.outcome_leg, o.is_exit, o.submitted_count, o.submitted_price, "
+        "       o.time_in_force, o.outcome_status, o.fill_count, o.fill_price, o.remaining_count, o.fee, "
+        "       o.error_detail, o.submitted_ts, o.response_ts, o.close_source, o.realized_pnl, o.won, o.settled_ts, "
+        "       o.wallet, " + name_sel + " "   # close_source distinguishes a SETTLEMENT-close from a whale-EXIT
+        "FROM pm_subdivision_order o " + join +   # (both is_exit=1); realized_pnl is the P&L a settlement books.
+        "WHERE o.account_id = ? AND o.category = ? AND o.dry_run = 0 "
+        "ORDER BY COALESCE(o.response_ts, o.submitted_ts) DESC, o.id DESC LIMIT ?",
         (account_id, category, int(limit))).fetchall()
     out = []
     for r in rows:
@@ -260,6 +268,129 @@ def live_positions(conn, account_id: str, category: str) -> list[dict]:
                     "contracts": contracts, "cost_basis_usd": cost, "avg_price": avg, "fees_usd": a["fees"]})
     out.sort(key=lambda x: x["ticker"])
     return out
+
+
+# ── WHALE ATTRIBUTION ON THE HELD TABLE + THE PER-WHALE LIVE-COPY RECORD (2026-09-01) ─────────────────────────
+# Jack: "which whale is this trade from" + "is copying this whale actually working". SAME-SIDE STACKING is the
+# design (ten whales one side = fifty contracts), so ONE ticker can carry copies from several whales -> the held
+# view is keyed on (ticker, WALLET): one row PER WHALE per ticker, which is what answers the question. Attribution
+# is by the wallet ON EACH ROW (entries AND closes carry it), NEVER a close->entry join -- a settlement with NULL
+# cid/oidx (the first Cubs close, id=8) would be lost by a join but its wallet is present.
+
+def live_positions_by_whale(conn, account_id: str, category: str) -> list[dict]:
+    """CURRENTLY HELD, split PER (ticker, whale) -- the same journal-derived net as live_positions() but grouped by
+    wallet too, so a ticker stacked by 2-3 whales shows one row each (answers 'which whale is this trade from').
+    Net signed contracts = sum over that whale's FILLED rows of sign(leg)*sign(entry/exit)*fill_count (the
+    boot_reconcile convention). A (ticker, wallet) whose net rounds to 0 is dropped (that whale's copy is flat).
+    Read-only, journal-only. NB: summing these back over whales equals live_positions()'s per-ticker net (unless two
+    whales sit on OPPOSITE legs of one ticker -- a pre-guard opposing pair -- where the per-whale rows are the honest
+    view and the per-ticker net partially cancels)."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return []
+    has_whale = _table_exists(conn, "pm_whale")
+    name_sel = "w.user_name" if has_whale else "NULL AS user_name"
+    join = "LEFT JOIN pm_whale w ON w.wallet = o.wallet " if has_whale else ""
+    rows = conn.execute(
+        "SELECT o.ticker, o.wallet, " + name_sel + ", o.outcome_leg, o.is_exit, o.fill_count, o.fill_price, o.fee "
+        "FROM pm_subdivision_order o " + join +
+        "WHERE o.account_id = ? AND o.category = ? AND o.dry_run = 0 AND o.outcome_status = 'filled' "
+        "      AND o.fill_count IS NOT NULL AND o.fill_count > 0 AND o.ticker IS NOT NULL",
+        (account_id, category)).fetchall()
+    agg: dict = {}
+    for r in rows:
+        d = dict(r)
+        tk = d.get("ticker") or ""
+        wal = d.get("wallet") or ""
+        leg = str(d.get("outcome_leg") or "").lower()
+        lsign = _LEG_SIGN.get(leg)
+        if lsign is None:
+            continue                      # unknown leg -> cannot sign it; skip rather than mis-sign
+        esign = -1 if d.get("is_exit") else 1
+        cnt = float(d.get("fill_count") or 0.0)
+        price = float(d.get("fill_price") or 0.0)
+        fee = float(d.get("fee") or 0.0)
+        a = agg.setdefault((tk, wal), {"net": 0.0, "cost_yes": 0.0, "cost_no": 0.0, "fees": 0.0,
+                                       "user_name": d.get("user_name")})
+        a["net"] += lsign * esign * cnt
+        a["cost_%s" % leg] += esign * price * cnt
+        a["fees"] += fee
+    out = []
+    for (tk, wal), a in agg.items():
+        net = a["net"]
+        if abs(net) < 1e-9:
+            continue
+        held_leg = "yes" if net > 0 else "no"
+        contracts = abs(net)
+        cost = a["cost_yes"] if held_leg == "yes" else a["cost_no"]
+        out.append({"ticker": tk, "wallet": wal, "user_name": a["user_name"],
+                    "market_type": market_type_from_ticker(tk), "held_leg": held_leg, "contracts": contracts,
+                    "cost_basis_usd": cost, "avg_price": (cost / contracts) if contracts else 0.0, "fees_usd": a["fees"]})
+    out.sort(key=lambda x: (x["ticker"], x["wallet"]))
+    return out
+
+
+def live_copies_by_whale(conn, account_id: str, category: str, *, thin_floor: int = 10) -> list[dict]:
+    """★ THE PER-WHALE LIVE-COPY RECORD -- REAL money placed on the venue for this sub-division, per whale. This is
+    the ONE record that answers 'is copying this whale actually working for me': DISTINCT from the PAPER-TRADE record
+    ('would it have') and the PROSPECT-screen record ('did it historically'), both of which key on the same whales
+    but a DIFFERENT basis. LIVE COPIES ONLY.
+
+    Attribution is by the WALLET ON EACH ROW (never a close->entry join -- see the module note; the first Cubs
+    settlement id=8 has NULL cid/oidx and would be dropped by a join, but its wallet is present). HONESTY DISCIPLINE
+    (same as the account P&L): realized / settled-W-L / SAMPLE / open-at-cost shown SEPARATELY; n is tiny per whale
+    so the caller flags thin_sample. OPPOSED closes (the guard's flattens, realized_pnl NULL, won NULL) are counted
+    SEPARATELY as `opposed_closed` and NEVER folded into realized or W/L -- they are guard-terminated, not settled
+    outcomes. Read-only, journal-only. Includes every whale with >=1 filled row PLUS every currently-attached whale
+    (so an attached-but-not-yet-copied whale shows 0s, and a detached whale that DID copy still shows its record)."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return []
+    has_whale = _table_exists(conn, "pm_whale")
+    name_sel = "w.user_name" if has_whale else "NULL AS user_name"
+    join = "LEFT JOIN pm_whale w ON w.wallet = o.wallet " if has_whale else ""
+    rows = conn.execute(
+        "SELECT o.wallet, " + name_sel + ", "
+        "  SUM(CASE WHEN o.is_exit=0 THEN 1 ELSE 0 END) copies, "
+        "  SUM(CASE WHEN o.is_exit=1 AND o.close_source='settlement' AND o.won=1 THEN 1 ELSE 0 END) settled_w, "
+        "  SUM(CASE WHEN o.is_exit=1 AND o.close_source='settlement' AND o.won=0 THEN 1 ELSE 0 END) settled_l, "
+        "  SUM(CASE WHEN o.is_exit=1 AND o.close_source='settlement' THEN 1 ELSE 0 END) n_settled, "
+        "  SUM(CASE WHEN o.is_exit=1 AND o.close_source='opposed' THEN 1 ELSE 0 END) opposed_closed, "
+        "  SUM(CASE WHEN o.is_exit=1 THEN 1 ELSE 0 END) n_closed, "
+        "  COALESCE(SUM(CASE WHEN o.is_exit=1 THEN o.realized_pnl END), 0) realized "
+        "FROM pm_subdivision_order o " + join +
+        "WHERE o.account_id = ? AND o.category = ? AND o.dry_run = 0 AND o.outcome_status = 'filled' "
+        "GROUP BY o.wallet", (account_id, category)).fetchall()
+    rec: dict = {}
+    for r in rows:
+        d = dict(r); wal = d.get("wallet") or ""
+        rec[wal] = {"wallet": wal, "user_name": d.get("user_name"), "attached": False,
+                    "copies": int(d["copies"] or 0), "settled_w": int(d["settled_w"] or 0),
+                    "settled_l": int(d["settled_l"] or 0), "n_settled": int(d["n_settled"] or 0),
+                    "opposed_closed": int(d["opposed_closed"] or 0), "n_closed": int(d["n_closed"] or 0),
+                    "realized_pnl": float(d["realized"] or 0.0),
+                    "open_contracts": 0.0, "open_cost_usd": 0.0, "n_open": 0}
+    # open-at-cost per whale, from the per-(ticker,wallet) held rows
+    for h in live_positions_by_whale(conn, account_id, category):
+        wal = h.get("wallet") or ""
+        e = rec.setdefault(wal, {"wallet": wal, "user_name": h.get("user_name"), "attached": False, "copies": 0,
+                                 "settled_w": 0, "settled_l": 0, "n_settled": 0, "opposed_closed": 0, "n_closed": 0,
+                                 "realized_pnl": 0.0, "open_contracts": 0.0, "open_cost_usd": 0.0, "n_open": 0})
+        e["n_open"] += 1
+        e["open_contracts"] += float(h["contracts"]); e["open_cost_usd"] += float(h["cost_basis_usd"])
+        if e.get("user_name") is None:
+            e["user_name"] = h.get("user_name")
+    # fold in currently-attached whales that have no rows yet (attached, 0 copies) + mark the attached flag
+    for a in attached_whales(conn, account_id, category):
+        wal = a.get("wallet") or ""
+        e = rec.setdefault(wal, {"wallet": wal, "user_name": a.get("user_name"), "attached": True, "copies": 0,
+                                 "settled_w": 0, "settled_l": 0, "n_settled": 0, "opposed_closed": 0, "n_closed": 0,
+                                 "realized_pnl": 0.0, "open_contracts": 0.0, "open_cost_usd": 0.0, "n_open": 0})
+        e["attached"] = True
+        if e.get("user_name") is None:
+            e["user_name"] = a.get("user_name")
+    for e in rec.values():
+        e["thin_sample"] = e["n_settled"] < int(thin_floor)
+    # attached first, then by copies desc, then wallet
+    return sorted(rec.values(), key=lambda x: (not x["attached"], -x["copies"], x["wallet"]))
 
 
 # ── P&L / win-loss aggregation across sub-divisions (multi-account foundation, 2026-09-01) ──────────────────────
