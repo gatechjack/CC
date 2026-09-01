@@ -49,6 +49,37 @@ def test_is_admin_request_wiring(monkeypatch=None):
     assert authz.is_admin(_Req({"Remote-User": "jack"})) is False
 
 
+def test_visible_account_ids_scoping_fail_closed():
+    accts = [{"account_id": "kalshi_jack", "owner_identity": None},        # unowned -> admin-only
+             {"account_id": "kalshi_karen", "owner_identity": "karen"}]    # owned by karen
+    # ADMIN sees ALL (incl the unowned)
+    assert authz.visible_account_ids("jack", True, accts) == {"kalshi_jack", "kalshi_karen"}
+    # non-admin KAREN sees ONLY her account (the NULL-owner jack account is admin-only)
+    assert authz.visible_account_ids("karen", False, accts) == {"kalshi_karen"}
+    # a non-admin nobody-owns-for -> nothing
+    assert authz.visible_account_ids("mallory", False, accts) == set()
+    # ★ the fail-closed forks:
+    assert authz.visible_account_ids(None, False, accts) == set()          # no identity -> nothing
+    assert authz.visible_account_ids("", False, accts) == set()            # empty identity -> nothing
+    assert authz.visible_account_ids("karen", False, []) == set()          # no accounts -> nothing
+    # a NULL-owner account is NEVER visible to a non-admin even if their identity is also None-ish
+    assert authz.visible_account_ids(None, False, [{"account_id": "x", "owner_identity": None}]) == set()
+
+
+def test_visible_accounts_request_wrapper():
+    os_env = __import__("os").environ
+    os_env["PM_ADMIN_IDENTITIES"] = "jack"
+    accts = [{"account_id": "kalshi_jack", "owner_identity": None},
+             {"account_id": "kalshi_karen", "owner_identity": "karen"}]
+    assert authz.visible_accounts(_Req({"Remote-User": "jack"}), accts) == {"kalshi_jack", "kalshi_karen"}   # admin: all
+    assert authz.visible_accounts(_Req({"Remote-User": "karen"}), accts) == {"kalshi_karen"}                 # scoped
+    assert authz.visible_accounts(_Req({}), accts) == set()                                                  # no header -> nothing
+    os_env.pop("PM_ADMIN_IDENTITIES", None)
+    # ★ config unset -> jack is NOT admin -> he owns no account (his has NULL owner) -> sees NOTHING. This IS the
+    # lockout risk: the admin env MUST be set (with jack's identity) BEFORE the scoping enforces, or he loses the console.
+    assert authz.visible_accounts(_Req({"Remote-User": "jack"}), accts) == set()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for f in fns:

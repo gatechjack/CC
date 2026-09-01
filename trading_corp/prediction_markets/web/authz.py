@@ -69,3 +69,24 @@ def is_admin(request) -> bool:
     """Is the requester an admin? Fail-closed: no header -> no identity -> not admin; PM_ADMIN_IDENTITIES unset
     -> empty set -> not admin. The CLI remains the authoritative kill path irrespective of this."""
     return is_admin_identity(current_identity(request), parse_admin_identities(os.getenv(_ADMIN_ENV)))
+
+
+# ── ACCOUNT SCOPING (M4) -- which accounts an identity may SEE. Inherits the fail-closed default above. ─────────
+def visible_account_ids(identity: str | None, is_admin_flag: bool, accounts) -> set:
+    """The account_ids an identity may SEE, given `accounts` = iterable of {account_id, owner_identity}. FAIL CLOSED:
+    an ADMIN sees ALL; a non-admin sees ONLY accounts whose owner_identity EQUALS their identity; a NULL/empty
+    owner_identity is ADMIN-ONLY (an unowned account is never visible to a non-admin); NO identity (header absent)
+    sees NOTHING. There is deliberately no branch that grants on absence -- the worst first-wiring default is one
+    that defaults open, so this defaults DENY at every fork."""
+    if is_admin_flag:
+        return {a["account_id"] for a in accounts}
+    if not identity:
+        return set()                                   # no identity -> no access
+    return {a["account_id"] for a in accounts
+            if a.get("owner_identity") and a.get("owner_identity") == identity}
+
+
+def visible_accounts(request, accounts) -> set:
+    """Request wrapper: the visible account_ids for THIS request (identity from Remote-User, admin from
+    PM_ADMIN_IDENTITIES). `accounts` must carry owner_identity per row."""
+    return visible_account_ids(current_identity(request), is_admin(request), accounts)
