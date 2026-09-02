@@ -20,10 +20,18 @@ Commits (oldest first):
 - `57688e6` empty-card suppression + verification harness + screenshots
 - `8177f48` Scope B: accounts overview + account page rewrite
 
-27 files, +2719/-322. New pm_web modules: feed_mlb.py, marks.py, ui_cache.py, poller.py, live_view.py.
-New static: pm_desk.css, pm_live.js. Rewritten templates: pm_shell, pm_accounts, pm_account,
-pm_live_subdivision, + new partials/pm_trade_drawer.html. Tests: test_feed_mlb, test_marks, test_ui_poller,
-test_live_view (+ 1-line update to test_web_r6, explained in §3). Full suite: 67 passed.
+New pm_web modules: feed_mlb.py, marks.py, ui_cache.py, poller.py, live_view.py. New static: pm_desk.css,
+pm_live.js. Rewritten templates: pm_shell, pm_accounts, pm_account, pm_live_subdivision, + new
+partials/pm_trade_drawer.html. New tests: test_feed_mlb (14), test_marks (6), test_ui_poller (6),
+test_live_view (9). Pre-existing pm_web page tests reconciled to the redesign (see §3): test_web_r6, test_live_r3,
+test_stage2_nav, test_stage2_phase3, test_accounts_m2.
+
+Test state (full `tests/prediction_markets/` suite): every pm_web / UI test PASSES. The only remaining failures
+are the PRE-EXISTING env-gap baseline, unchanged by this work and failing identically on the base commit: the
+ENGINE-driver tests (test_live_driver_r7c, test_kill_switch_r7d, test_shard_gate_r2, test_liquidity_floor_r7f,
+test_sizing_contracts_r8) fail/ERROR on `No module named 'pykalshi'` (the broker lib is not installed in the
+`.venv-webtest`), and test_search_r1::test_schema_head_is_15 is stale (base is schema 17). None of these touch
+pm_web or any file I changed.
 
 --------------------------------------------------------------------------------------------------------------
 ## 2. Probe results
@@ -104,13 +112,22 @@ Progressive enhancement: server-rendered base works with JS off (Active/Complete
 is native <details>, ages stamped server-side). `pm_live.js` adds a per-second age ticker, a 60s
 fetch-and-swap refresh (no white flash), row expansion, value flash.
 
-Tests: 67 passed (feed 14, marks 6, cache/poller 6, live_view 9, web healthz/r4/r6/analyze/keyvault 32).
 Standalone-import guard holds: none of the new modules pull trading_corp.brokers/main/web/agents.
 
-`test_web_r6` one-line change: the `/live` read-only guard forbade the substring "disarm", which now collides
-with the design-mandated read-only ARM STATUS badge ("DISARMED"). Tightened to forbid an arm/disarm ACTION
-endpoint ("/arm") instead; the <form / hx-post / submit / /order tokens still guarantee no real control (and
-pm_web has no arm route at all). Safety intent preserved.
+TEST RECONCILIATION (the redesign replaced the old /live table + shell, so page-render tests written for the old
+markup had to be updated — done honestly, preserving every safety/honesty property, and restoring genuine
+features the first cut of the redesign had dropped):
+ - RESTORED to the page: the /live sizing-behaviour + config line (the '$0.01 stake = 1 contract, not a cent'
+   honesty + market_types/sizing_mode visibility); the account display-only limitation copy; the balance
+   cadence hint. The account aggregate figs are now gated on pm_traded (a display-only account shows the
+   limitation, not a zeroed P&L frame implying it will fill).
+ - UPDATED assertions where wording/markup legitimately changed to the copy-desk design: the read-only guard
+   forbids an arm/disarm ACTION endpoint ('/arm') instead of the substring 'disarm' (which now collides with the
+   mandated read-only 'DISARMED' status badge — the <form/hx-post/submit/order tokens still guarantee no
+   control, and pm_web has no arm route at all); the nav wraps its label in <b> ('>Accounts</b>'); the global
+   arm badge reads 'GLOBAL DISARMED'; labels 'at cost' / 'Cash by shard'; settlement-vs-exit is asserted on the
+   status CELL markup ('>SETTLED</td>' / '>EXIT</td>') because the drawer footer legitimately EXPLAINS all four
+   states; the balance age is shown as a chip. No safety or honesty check was weakened.
 
 --------------------------------------------------------------------------------------------------------------
 ## 4. Stopped-on items — what Jack must decide / the engine agent must provide
