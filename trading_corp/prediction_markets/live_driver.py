@@ -317,6 +317,29 @@ def _is_auth_failure(e) -> bool:
     return False
 
 
+def account_active_categories(conn, account_id: str, *, fallback_category: str | None = None) -> list:
+    """EVERY active category on an account (from pm_subdivision, active=1) so a KEYPAIR-WIDE failure latches the
+    WHOLE account, not just the caller's category. M2 (auth 401/403: the dead keypair is dead for every category)
+    and M3 (a full-account boot-reconcile mismatch is the whole book) both need this: N distinct accounts are safe,
+    but a 2nd category on ONE account shares the keypair, so a per-category latch leaves the sibling POSTing/arming
+    on a failure that is account-wide. FAIL-SAFE: on ANY read error return just [fallback_category] -- never [] and
+    never fail-OPEN (an auth-latch that could not read the category list must still latch the caller). Unions the
+    fallback so a just-created sub is covered even if the read races it. Deterministic (sorted)."""
+    cats: set = set()
+    if fallback_category:
+        cats.add(fallback_category)
+    try:
+        for r in conn.execute("SELECT DISTINCT category FROM pm_subdivision WHERE account_id=? AND active=1",
+                              (account_id,)):
+            c = r[0]
+            if c:
+                cats.add(c)
+    except Exception as e:  # noqa: BLE001 -- fail-SAFE: latch at least the caller's category (never fail-open)
+        _LOG.warning("account_active_categories(%s): pm_subdivision read failed -> latching fallback category only "
+                     "(fail-safe, never fewer): %s", account_id, e)
+    return sorted(cats)
+
+
 # ── the durable live-order journal (dry_run=0): PENDING insert (pre-POST) + finalize (post-POST) ───────
 def _record_order(conn, sub, signal, decision, *, outcome_status, fill=None, error_detail=None, now_ts):
     """INSERT the live-order row (dry_run=0). Called PRE-POST with outcome_status='submitting' (no fill) so the coid
@@ -416,9 +439,16 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
             errors += 1; consec_err += 1
             _finalize_order(conn, d.client_order_id, "error", error_detail=repr(e)[:400], now_ts=now_ts)
             if _is_auth_failure(e):
-                arm.latch_auth_failure(sub.account_id, [sub.category],
-                                       detail="order-path auth failure: %s" % repr(e)[:200], legacy_db_path=legacy_db_path)
-                break                                                   # account disarmed; stop the cycle
+                # M2 (2026-09-02): a 401/403 is the KEYPAIR dead -> latch EVERY active category on the account, not
+                # just this one. With one category per account this is a no-op; with a 2nd category on one account
+                # it stops the sibling from POSTing on the same dead auth. arm.latch_auth_failure already loops the
+                # list; the only gap was the caller passing [sub.category]. account_active_categories fail-SAFEs to
+                # [sub.category] if the sub-list read fails, so a latch can never latch FEWER than the caller.
+                cats = account_active_categories(conn, sub.account_id, fallback_category=sub.category)
+                arm.latch_auth_failure(sub.account_id, cats,
+                                       detail="order-path auth failure (dead keypair; latching %d account categ.: %s): %s"
+                                              % (len(cats), ",".join(cats), repr(e)[:150]), legacy_db_path=legacy_db_path)
+                break                                                   # WHOLE account disarmed; stop the cycle
             if consec_err >= 3:
                 arm.latch_consecutive_errors(sub.account_id, sub.category, n=consec_err, legacy_db_path=legacy_db_path)
                 break

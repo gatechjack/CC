@@ -282,6 +282,48 @@ async def test_auth_failure_latches_whole_account_and_stops(tmp_path):
     assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is False
 
 
+# ── M2 (2026-09-02): a 401/403 is the KEYPAIR dead -> latch EVERY active category on the account, not just the
+# caller's. With a 2nd category on ONE shared-keypair account, a per-category latch would leave the SIBLING armed
+# and POSTing on dead auth. arm.latch_auth_failure already loops the list; the fix is the call site passing the
+# account's whole category list (account_active_categories). ──
+@pytest.mark.asyncio
+async def test_auth_failure_latches_ALL_account_categories(tmp_path):
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:                                          # TWO categories on ONE account
+        conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, 'mlb')", (ACCT,))
+        conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, 'ufc')", (ACCT,))
+        conn.commit()
+    arm.arm(global_=True, require_latch_clear=True, legacy_db_path=leg)
+    arm.arm(ACCT, "mlb", require_latch_clear=True, legacy_db_path=leg)
+    arm.arm(ACCT, "ufc", require_latch_clear=True, legacy_db_path=leg)
+    assert arm.is_armed(ACCT, "ufc", legacy_db_path=leg) is True         # sibling ARMED before the failure
+    async def auth_fail(d):
+        raise L.OrderPlacementError("kalshi V2 POST rejected: 403 forbidden")
+    with db.connect(p) as conn:                                          # the FAILING cycle is mlb's
+        j = ex.Journal(conn, [ACCT], NOW)
+        summ = await L.run_live_arm_gated_cycle(conn, _sub(category="mlb"), [_sig("Toronto Blue Jays", "m1")],
+                                                _ctx(), j, NOW, place_fn=auth_fail, legacy_db_path=leg)
+    assert summ["errors"] == 1
+    for cat in ("mlb", "ufc"):                                           # ★ BOTH categories latch on the ONE 403
+        row = arm.current_row(ACCT, cat, legacy_db_path=leg)
+        assert row["latched"] is True and row["auto_trigger"] == arm.AUTO_AUTH_FAILURE
+        assert row["manual_exit_required"] is True
+        assert arm.is_armed(ACCT, cat, legacy_db_path=leg) is False      # the SIBLING ufc is disarmed too
+
+
+def test_account_active_categories_failsafe_and_union(tmp_path):
+    # fail-SAFE: a table-read error (no pm_subdivision table at all) -> just [fallback], never [] and never wider
+    leg_missing = sqlite3.connect(":memory:")
+    assert L.account_active_categories(leg_missing, ACCT, fallback_category="mlb") == ["mlb"]
+    # UNION: the fallback is always included even if the DB read races a just-created sub
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, 'ufc')", (ACCT,))
+        conn.execute("INSERT INTO pm_subdivision (account_id, category, active) VALUES (?, 'nba', 0)", (ACCT,))  # inactive -> excluded
+        conn.commit()
+        assert L.account_active_categories(conn, ACCT, fallback_category="mlb") == ["mlb", "ufc"]   # active only + fallback
+
+
 @pytest.mark.asyncio
 async def test_consecutive_errors_latch_after_three(tmp_path):
     leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
