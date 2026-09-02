@@ -174,8 +174,8 @@ launchers were classifier-blocked — see the queue's "Runner honesty" note.)
 
 ## DEPLOY QUEUE (authorize one at a time; I reconstruct nothing)
 > **Order:** Rung 0 (read-only, any time) → **Rung 2+R7 bundled** (one engine restart) → Rung 4 (Karen DB write) →
-> Rung 5 (engine restart, picks up Karen) → Rung 6 (arm Karen). Every commit is on `pm-per-account-trading-2026-09-02`
-> @ `4cf59e3` (pushed). Base of the branch is `f1e28cc` (== the box's engine bundle), so each manifest is a clean
+> Rung 5 (engine restart, picks up Karen) → Rung 6 (arm Karen). Branch `pm-per-account-trading-2026-09-02` @
+> **`3d539c2`** (pushed, local==origin). Base is `f1e28cc` (== the box's engine bundle), so each manifest is a clean
 > file-by-file graft off what the box already runs. NO migration in any rung.
 >
 > **★ Runner honesty:** the classifier blocked me from writing/validating the ssh-launcher `.ps1` files and from
@@ -195,14 +195,14 @@ launchers were classifier-blocked — see the queue's "Runner honesty" note.)
   connects. **This gates Rung 4's exact content and confirms N3.**
 
 ### Rung 2 + R7 — ENGINE DEPLOY (bundle; ONE restart) — HALT
-- **Manifest (6 files, LF-blob sha256 first-16; graft `git checkout 4cf59e3 -- <file>` OR stream the LF blob, then
-  `sha256sum` must match):**
+- **Manifest (6 files, LF-blob sha256 first-16 @ `3d539c2`; graft `git checkout 3d539c2 -- <file>` OR stream the LF
+  blob, then `sha256sum` must match):**
   - `trading_corp/main.py` — `fff75b0b085ffae0`  (N2 wiring)
   - `trading_corp/prediction_markets/driver_roster.py` — `802c9a824b4803ac`  (NEW)
   - `trading_corp/prediction_markets/shard_snapshot_task.py` — `956f13c363801a7e`  (N1 whitelist)
-  - `trading_corp/prediction_markets/venue_exposure.py` — `5f3e2d98cf8853b9`  (NEW, R7)
+  - `trading_corp/prediction_markets/venue_exposure.py` — `b891a18362b1d3af`  (NEW, R7 — dual-field)
   - `trading_corp/prediction_markets/execution.py` — `bc806bc4eb289072`  (R7 gate 6)
-  - `trading_corp/prediction_markets/live_driver.py` — `371eee0cd1c535f1`  (R7 per-cycle read + threading)
+  - `trading_corp/prediction_markets/live_driver.py` — `a99139832970fd61`  (R7 per-cycle read + threading + log fix)
 - **Import closure:** complete within the 6 files — `driver_roster` imports only stdlib; `venue_exposure` only
   stdlib; `execution` does NOT import `venue_exposure` (duck-typed param); `main.py`/`live_driver.py` import the two
   new modules (both in the manifest). No other engine file changes.
