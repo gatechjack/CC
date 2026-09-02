@@ -51,3 +51,34 @@ def test_effective_unavailable_if_either_scope_unreadable(tmp_path):
     # sub row says armed False -> effective disarmed (a REAL disarm)
     _write_row(p, "arm:kalshi_jack:mlb", {"armed": False, "ts": "2026-09-02T12:06:00+00:00"})
     assert arm.read_display("kalshi_jack", "mlb", legacy_db_path=p)["effective_state"] == "disarmed"
+
+
+# ── the BADGE rendering (post-deploy item 3): absent -> 'NEVER ARMED', its own state, no age chip ──────────────
+def _badge_html(state, age, prefix="GLOBAL "):
+    """Render the real read-only arm badge macro through a minimal Jinja2 env (jinja2 only; no fastapi/engine).
+    The macro body is a comment + one macro def -> accessing `.module` is side-effect-free."""
+    import pathlib
+
+    import jinja2
+    tdir = pathlib.Path(arm.__file__).resolve().parent / "web" / "templates"
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(tdir)), autoescape=True)
+    env.filters["agefmt"] = lambda s: "" if s is None else ("%ds" % int(s))
+    return str(env.get_template("partials/pm_arm_badge.html").module.arm_badge(state, age, prefix))
+
+
+def test_badge_absent_renders_never_armed_no_chip():
+    # An ABSENT arm row (a scope that never wrote a row) renders 'NEVER ARMED' -- DISTINCT from DISARMED (a row
+    # that exists and says off) and UNAVAILABLE (an unreadable read) -- and carries NO age chip (no ts to age).
+    html = _badge_html("absent", None)
+    assert "NEVER ARMED" in html
+    assert "DISARMED" not in html and "UNAVAILABLE" not in html      # not collapsed into either sibling state
+    assert "chip" not in html                                        # a state with no timestamp shows no age chip
+    assert "badge never" in html                                     # its own visual class, not 'disarmed'
+
+
+def test_badge_states_render_distinct_labels():
+    # the four display states render four distinct labels; only the timestamped states carry an age chip.
+    assert "GLOBAL ARMED" in _badge_html("armed", 12) and "chip" in _badge_html("armed", 12)
+    assert "GLOBAL DISARMED" in _badge_html("disarmed", 30) and "chip" in _badge_html("disarmed", 30)
+    assert "GLOBAL STATE UNAVAILABLE" in _badge_html("unavailable", None)
+    assert "NEVER ARMED" in _badge_html("absent", None)

@@ -8,10 +8,13 @@
   <span class="chip {% if stale %}stale{% endif %}" data-age0="{{ age_sec if age_sec is not none else '' }}" data-stale="{{ stale_after if stale_after is not none else '' }}">{{ age_sec|agefmt }}{% if stale %} &middot; stale{% endif %}</span>
 {%- endmacro %}
 
+{# current value ALWAYS carries its mark coverage (Jack's ruling): 'N of M priced' under every figure -- neutral
+   at full coverage, amber when partial or none, '0 positions' when there is nothing to price. #}
 {% macro openvalue(ov, as_of) %}
-  {%- if ov and ov.known -%}
-    {{ ov.value|money }}{% if not ov.complete %} <span class="wsm">(partial: {{ ov.n_priced }} of {{ ov.n_total }} priced)</span>{% endif %}
-  {%- else -%}<span class="wsm">no mark</span>{%- endif -%}
+  {%- if not ov or ov.n_total == 0 -%}{{ 0.0|money }} <span class="dim">(0 positions)</span>
+  {%- elif ov.n_priced == 0 -%}<span class="wsm">no mark</span> <span class="wsm">(0 of {{ ov.n_total }} priced)</span>
+  {%- else -%}{{ ov.value|money }} {% if ov.complete %}<span class="dim">({{ ov.n_priced }} of {{ ov.n_total }} priced)</span>{% else %}<span class="wsm">(partial: {{ ov.n_priced }} of {{ ov.n_total }} priced)</span>{% endif %}
+  {%- endif -%}
 {% endmacro %}
 
 {% macro shardtable(snap) %}

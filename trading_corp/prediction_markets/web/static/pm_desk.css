@@ -27,6 +27,7 @@ header.top{position:sticky;top:0;z-index:20;background:rgba(7,11,18,.94);backdro
 .badge .dot{width:7px;height:7px;border-radius:50%}
 .badge.armed{color:var(--won);border-color:#1d5a41}.badge.armed .dot{background:var(--won);box-shadow:0 0 8px #3ddc9199}
 .badge.disarmed{color:var(--off)}.badge.disarmed .dot{background:var(--off)}
+.badge.never{color:var(--off)}.badge.never .dot{background:transparent;border:1px solid var(--off)}
 .badge.unavailable{color:var(--stale);border-color:#6b4a1c}.badge.unavailable .dot{background:var(--stale);box-shadow:0 0 8px #f0a94c66}
 .nav{display:flex;align-self:stretch;margin:-12px 0 -13px}
 .ni{display:grid;gap:0;align-content:center;padding:8px 15px;border-bottom:2px solid transparent;color:var(--dim);text-decoration:none}

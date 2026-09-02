@@ -379,6 +379,10 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
     live_cost = sum(c["open_cost"] for c in cards)
     live_val_known = any(c["value_known"] for c in cards)
     live_val = sum((c["open_value"] or 0.0) for c in cards if c["value_known"]) if live_val_known else None
+    # mark COVERAGE (always shown, per Jack): how many OPEN bet-slots across the board have a bid vs the total.
+    open_slots = [s for c in cards for s in c["slots_by_kind"].values() if s and not s["settled"]]
+    unsettled_total = len(open_slots)
+    unsettled_priced = sum(1 for s in open_slots if s["value_known"])
     today = _et_date(now_ts)
     realized_today = sum(c["realized"] for c in cards if c["date_iso"] == today)
     settled_today = sum(c["n_settled"] for c in cards if c["date_iso"] == today)
@@ -389,6 +393,7 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
         "cards": cards,
         "summary": {"n_active": n_active, "n_complete": n_complete, "unsettled_cost": live_cost,
                     "unsettled_value": live_val, "unsettled_value_known": live_val_known,
+                    "unsettled_priced": unsettled_priced, "unsettled_total": unsettled_total,
                     "realized_today": realized_today, "settled_today": settled_today},
         "trades": trades,
         "feed_meta": {"ready": slate is not None, "source": (slate.source if slate else None),

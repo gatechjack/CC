@@ -63,8 +63,9 @@ def test_accounts_overview_lists_both_with_honest_pnl(monkeypatch, tmp_path):
     # accounts are trading accounts, and kalshi_karen/mlb is live).
     assert 'href="/account/kalshi_karen"' in html and "Karen" in html
     assert "display-only" not in html.lower() and "not traded by Prediction Markets" not in html
-    # R4: global arm state visible (read-only), NO control.
-    assert "GLOBAL DISARMED" in html                                  # R4: global arm state visible (read-only; no arm rows -> disarmed)
+    # R4: global arm state visible (read-only), NO control. No arm row was ever written -> 'absent' -> NEVER ARMED
+    # (distinct from DISARMED, which means a row exists and says off; post-deploy item 3).
+    assert "GLOBAL NEVER ARMED" in html                               # R4: global arm state visible (read-only; no arm rows -> never armed)
     for tok in ("hx-post", "<form", "<button", "<input", "/attach/"):
         assert tok not in html.lower(), tok
 
@@ -77,7 +78,7 @@ def test_account_page_jack_shows_subdivision_pnl(monkeypatch, tmp_path):
     assert "settled" in html.lower()                                  # sample size shown
     assert 'href="/live/kalshi_jack/mlb"' in html                     # links down to the live sub-division
     assert "at cost" in html.lower()                                  # open at cost, not mark
-    assert "GLOBAL DISARMED" in html                                  # R4: global arm state visible (read-only; no arm rows -> disarmed)
+    assert "GLOBAL NEVER ARMED" in html                               # R4: global arm state visible (read-only; no arm rows -> never armed)
     # read-only: no control ELEMENTS ("disarm" as a word is fine -- it is in the read-only "arm/disarm is a CLI action" copy)
     for tok in ("hx-post", "<form", "<button", "<input", "/attach/"):
         assert tok not in html.lower(), tok
@@ -106,6 +107,29 @@ def test_account_pages_are_read_only(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path)
     assert cl.post("/account/kalshi_jack").status_code == 405
     assert cl.post("/").status_code == 405
+
+
+def test_mark_coverage_label_shown_at_full_coverage(monkeypatch, tmp_path):
+    """Post-deploy item 1: the 'N of M priced' mark-coverage label is shown under EVERY current-value figure --
+    including when N == M (full coverage, neutral) and when M == 0 ('0 positions'), never only in the partial
+    case. Jack has exactly one OPEN position (ticker SDCIN-SD, yes leg); we prime the ONE ui_cache both the
+    accounts (_cache_marks) and division (build_from_cache) paths read so it prices -> full coverage. Karen holds
+    nothing -> '0 positions'. Scoped via monkeypatch so the primed singleton never leaks into another test."""
+    from trading_corp.prediction_markets.web import marks as marks_mod, ui_cache
+    cl = _client(monkeypatch, tmp_path)
+    # jack's single OPEN position nets to the SDCIN-CIN NO leg, 5 contracts (c1+c2 YES net flat; c3 leaves held NO).
+    T = "KXMLBGAME-26AUG311840SDCIN-CIN"                                  # the seeded OPEN position's ticker (NO leg)
+    mk = marks_mod.Mark(T, yes_bid=0.60, no_bid=0.38, yes_ask=0.64, no_ask=0.40, last=0.61, status="active", as_of=1788200000)
+    primed = ui_cache.UICache()
+    primed.update(slates={}, marks=marks_mod.MarksResult(marks={T: mk}, ok=True, as_of=1788200000), refreshed_ts=1788200000)
+    monkeypatch.setattr(ui_cache, "cache", lambda: primed)
+    overview = cl.get("/").text
+    assert "1 of 1 priced" in overview                                   # jack: full coverage -> neutral 'N of M priced' shown
+    assert "0 positions" in overview                                     # karen: nothing to price -> '0 positions', still labelled
+    assert "partial:" not in overview                                    # full coverage is NOT flagged partial
+    acct = cl.get("/account/kalshi_jack").text
+    assert "1 of 1 priced" in acct                                       # aggregate current-value figure carries it too
+    assert "partial:" not in acct
 
 
 # ── M3 balance display (2026-09-01): per-shard split + banded age + the shard-0-direction line + honest-empty ──

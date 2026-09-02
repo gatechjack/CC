@@ -170,8 +170,10 @@
     <div class="cell"><div class="u">Unsettled &mdash; at cost</div><div class="val">{{ summary.unsettled_cost|money }}</div>
       <div class="caveat">What we paid. Not what it is worth.</div></div>
     <div class="cell"><div class="u">Unsettled &mdash; current value</div>
-      <div class="val" style="color:var(--live)">{% if summary.unsettled_value_known %}{{ summary.unsettled_value|money }}{% else %}no mark{% endif %}</div>
-      <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if feed_meta.as_of %}, {{ agechip(now_ts - feed_meta.as_of, 180) }}{% endif %} refreshed on the {{ poll_interval }}s poll.</div></div>
+      <div class="val" style="color:var(--live)">{% if summary.unsettled_total == 0 %}{{ 0.0|money }}{% elif summary.unsettled_priced == 0 %}no mark{% else %}{{ summary.unsettled_value|money }}{% endif %}</div>
+      {# mark coverage ALWAYS shown (Jack's ruling): N of M priced under every current-value figure, incl. full coverage and 0 positions. #}
+      <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if feed_meta.as_of %}, {{ agechip(now_ts - feed_meta.as_of, 180) }}{% endif %} refreshed on the {{ poll_interval }}s poll. &middot;
+        {% if summary.unsettled_total == 0 %}<span class="dim">0 positions</span>{% elif summary.unsettled_priced == summary.unsettled_total %}<span class="dim">{{ summary.unsettled_priced }} of {{ summary.unsettled_total }} priced</span>{% else %}<span class="wsm">partial: {{ summary.unsettled_priced }} of {{ summary.unsettled_total }} priced</span>{% endif %}</div></div>
     <div class="cell"><div class="u">Realized today</div><div class="val {{ summary.realized_today|pnlcls }}">{{ summary.realized_today|signed }}</div>
       <div class="caveat">{{ summary.settled_today }} position{{ '' if summary.settled_today == 1 else 's' }} settled today. One day is not a result.</div></div>
   </div>

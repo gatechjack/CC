@@ -363,3 +363,134 @@ Committed `9c2eeb3`; re-shipped + restarted; verified `&amp;middot;` = 0 live.
 main.py was deliberately NOT copied (it carries the live per-account driver wiring). No package was installed, no
 venv/systemd change was made, no engine file was touched. Rollback was available at every step (backups above)
 and never needed.
+
+---
+
+# POST-DEPLOY PASS -- 2026-09-02 (build + test ONLY; NOTHING deployed, NOTHING restarted)
+
+Board follow-up on the deployed UI (branch `pm-ui-rewrite-2026-09-02`, from the deployed code `9c2eeb3`).
+Four items, all built + tested locally. **No restart, no deploy -- those remain Board decisions. The engine
+(trading-corp PID 163519, ARMED, trading two accounts unattended) was not touched.** The one box action was a
+single READ-ONLY check (`pm_postdeploy_ro.sh`): it reads box files, the PM DB `mode=ro`, and Kalshi's PUBLIC
+market endpoint via `marks.py` (no creds, no orders) -- it writes nothing and restarts nothing. That check
+re-confirmed: trading-corp PID **163519**, **NRestarts=0**, ActiveState=active; pm_web PID 166025 unchanged.
+
+## Item 1 -- mark-coverage label shown under EVERY current-value figure (incl. full coverage and 0 positions)
+The `N of M priced` coverage label now travels with every current-value figure, not only the partial case:
+- **`live_view.build_live_context`** now emits `unsettled_priced` / `unsettled_total` on `summary` (counted over
+  the open, unsettled bet-slots across the board).
+- **`pm_accounts.html` + `pm_account.html`** -- the `openvalue` macro renders four honest states: `$0.00
+  (0 positions)` when M==0; `no mark (0 of N priced)` when nothing is priced; `$V (N of M priced)` NEUTRAL
+  (`dim`) at full coverage (N==M); `$V (partial: N of M priced)` AMBER (`wsm`) when 0 < N < M.
+- **`pm_live_subdivision.html`** -- the "Unsettled -- current value" strip cell carries the same label always
+  (`0 positions` / `N of M priced` neutral / `partial: N of M priced` amber). The value shown is unchanged from
+  before (priced==0 -> "no mark"; total==0 -> "$0.00"); only the coverage label was added. Full != partial is
+  visually distinct (neutral grey vs amber).
+
+**Full-coverage render (regenerated locally, marks primed so every position prices):**
+```
+/ (accounts overview) : jack  $0.62 (1 of 1 priced)   karen  $0.00 (0 positions)
+/account/kalshi_jack  : aggregate $0.62 (1 of 1 priced) ; subdivision row open $0.60 at cost / $0.62 (1 of 1 priced) value
+/live/kalshi_jack/mlb : division strip  1 of 1 priced   (partial: absent -> not flagged partial)
+```
+Durable full-coverage tests added: `test_accounts_m2::test_mark_coverage_label_shown_at_full_coverage`
+(asserts `1 of 1 priced` on `/` and `/account`, `0 positions` for karen, and NO `partial:`), and
+`test_live_r3::test_division_strip_coverage_label_shown_at_full_coverage` (division strip `1 of 1 priced`, no
+`partial:`). Both green.
+
+## Item 2 -- per-account mark coverage (open tickers with a bid vs total; unpriced named)
+Read from `marks.py` read-only (a fresh fetch of Kalshi's public market endpoint -- the exact reader pm_web's
+poller uses; no creds) joined to the journal-derived open positions (PM DB `mode=ro`, `subdivision.live_positions`).
+Fetch at the 2026-09-02T16:31:20Z run: `ok=True`, `as_of=1788366680`, 335 open MLB markets, no error.
+
+| Account | Category | Open tickers priced | Unpriced tickers |
+|---|---|---|---|
+| kalshi_jack | mlb | **8 of 8** | none -- fully priced |
+| kalshi_karen | mlb | **6 of 6** | none -- fully priced |
+
+Both accounts are fully priced at read time, so there are no unpriced tickers to name. (Coverage is a live,
+market-dependent quantity: a ticker goes unpriced only when Kalshi has no resting bid on the held leg -- e.g. a
+suspended/late market -- at which point the UI shows the honest `partial: N of M priced` / `no mark`, never a $0.)
+
+## Item 3 -- absent arm row renders "NEVER ARMED" (distinct from DISARMED and STATE UNAVAILABLE)
+`read_display()` already distinguishes `absent` (table read cleanly, no row -> cold start) from `disarmed` (a
+row that says off) and `unavailable` (an indeterminate mode=ro read). The BADGE macro (`pm_arm_badge.html`) now
+renders each as its own label:
+- `armed` -> ARMED (green, age chip)   `disarmed` -> DISARMED (grey, age chip)
+- `unavailable` -> STATE UNAVAILABLE (amber)   **`absent` -> NEVER ARMED (grey, hollow-dot `badge never`, NO age chip)**
+
+`absent` carries no timestamp, so no age chip is drawn (guarded on `state != 'absent'` as well as `age is not
+none`). The gate/read_status() fail-safe semantics are UNCHANGED -- this is display-only; the CLI stays the
+authoritative kill path, and the badge remains a plain `<span>` with no control. New unit tests render the real
+macro through a minimal Jinja env: `test_badge_absent_renders_never_armed_no_chip` (asserts NEVER ARMED, no
+`chip`, `badge never`, and NOT collapsed to DISARMED/UNAVAILABLE) and `test_badge_states_render_distinct_labels`.
+The three no-row page-render assertions that previously read "GLOBAL DISARMED" were corrected to "GLOBAL NEVER
+ARMED" (test_accounts_m2 x2, test_live_r3 x1). `test_pm_arm_view_m5::test_page_renders_disarmed` was left as
+"DISARMED": it seeds an explicit `armed:False` row (a real disarm), which is correctly still DISARMED.
+
+## Item 4 -- box <-> branch drift check (box files hashed CR-stripped; compared to `9c2eeb3`)
+The 15 shipped files, box CR-stripped sha256 (first 16) vs the deployed commit `9c2eeb3` (both sides CR-stripped,
+Measurement Rule). **14 identical; app.py differs ONLY by the known M5 hunk. No other drift -> no STOP.**
+
+| File | box sha16 | branch `9c2eeb3` sha16 | match |
+|---|---|---|---|
+| arm.py | 60f447207d52694a | 60f447207d52694a | yes |
+| web/app.py | **8b7d35ca88432603** | 2a1c341d2e855ee2 | **grafted (M5 hunk only)** |
+| web/feed_mlb.py | 7f05607bb887bb51 | 7f05607bb887bb51 | yes |
+| web/marks.py | 46ca99a80f7d2827 | 46ca99a80f7d2827 | yes |
+| web/ui_cache.py | e116ee8ae07e8112 | e116ee8ae07e8112 | yes |
+| web/poller.py | 44a6b51da0ad36dd | 44a6b51da0ad36dd | yes |
+| web/live_view.py | ec9ef0fb791537e7 | ec9ef0fb791537e7 | yes |
+| static/pm_desk.css | abb6affb3ca4987e | abb6affb3ca4987e | yes |
+| static/pm_live.js | b4c557fcf4e341e8 | b4c557fcf4e341e8 | yes |
+| partials/pm_arm_badge.html | 1f743caebca30541 | 1f743caebca30541 | yes |
+| partials/pm_trade_drawer.html | 118e54bca0255682 | 118e54bca0255682 | yes |
+| pm_shell.html | c3ddce77a5fb4f9c | c3ddce77a5fb4f9c | yes |
+| pm_accounts.html | e5d99d0c4f9c80b8 | e5d99d0c4f9c80b8 | yes |
+| pm_account.html | b3fba25a18245d1e | b3fba25a18245d1e | yes |
+| pm_live_subdivision.html | 4c15633d805dc52d | 4c15633d805dc52d | yes |
+
+**app.py difference characterized:** box `web/app.py` == the GRAFTED M4 target deployed on 2026-09-02
+(`8b7d35ca88432603`); `9c2eeb3`'s app.py is the M5 HEAD (`2a1c341d2e855ee2`). Concrete markers confirm the diff
+is exactly the M5 hunk and nothing else: box app.py has `is_admin` x10 and `/pm/arm` x0 (the M4 state), where
+M5 HEAD has `is_admin` x12 and `/pm/arm` x1. This is the intended, documented graft (M5 must not leak to prod
+before its window), not drift.
+
+**File-count clarification:** this is **15 UNIQUE shipped files** (14 identical + app.py). The DEPLOY section's
+"16" counted WRITE OPERATIONS -- three templates (`pm_account.html`, `pm_live_subdivision.html`,
+`pm_trade_drawer.html`) were written twice, once in the main graft and once in the entity-fix. The drift check
+is over the 15 unique files; the box carries the entity-fixed versions of those three (shas above).
+
+## Verification -- full suite unchanged; the "18" was approximate, the true baseline is 19
+`tests/prediction_markets/` (offline, `.venv-webtest`, `-p no:pytest_ethereum`):
+- **Clean baseline (my edits stashed): 19 failed**, 1 skipped, ~777 passed.
+- **This branch (edits restored): the SAME 19 failed** (byte-identical set), +4 net tests, ALL of the new/updated
+  tests green. Zero regressions introduced by any UI change.
+
+The 19 are all pre-existing env-gap / schema-drift, none touching a UI file:
+- **17x** `ModuleNotFoundError: No module named 'pykalshi'` (the engine driver dep, absent locally): 2 in
+  test_idempotency_r7h, 4 in test_kill_switch_r7d, 7 in test_live_driver_r7c, 4 in test_shard_gate_r2.
+- **1x** `test_search_r1::test_schema_head_is_15` -- asserts head 15 but the box/local schema is now **17**
+  (migrations 016 + 017 landed in prior deploys). Schema drift in a stale assertion, unrelated to the UI.
+- **1x** `test_web_healthz::test_pm_web_imports_no_engine` -- the import-closure guard spawns `python -c "import
+  trading_corp..."` in a bare subprocess that has no package on `sys.path` locally (`No module named
+  'trading_corp'`); it passes on the box, where the package is importable. Env-gap, not a real leak.
+
+The brief expected "18"; the measured baseline is 19 and my edits leave it exactly 19 (the delta is a
+baseline-count approximation, not a new failure -- proven by stashing the edits and re-running: same 19).
+
+## Files that WOULD need to ship for this pass (pm_web-only; NO app.py, NO main.py this time)
+Six pm_web files changed (working-tree sha16 -> was, at `9c2eeb3`). **None is app.py** -- so unlike the initial
+deploy, this pass needs NO app.py graft; and main.py is untouched as always.
+```
+df57a85732fbd9f6  (was ec9ef0fb791537e7)  web/live_view.py
+8ffe129198a5eed5  (was abb6affb3ca4987e)  web/static/pm_desk.css
+6bb019840c5e2b2a  (was 1f743caebca30541)  web/templates/partials/pm_arm_badge.html
+014c03bafe3005e5  (was e5d99d0c4f9c80b8)  web/templates/pm_accounts.html
+a5f39df0b53dedb4  (was b3fba25a18245d1e)  web/templates/pm_account.html
+e1edc02f54aaa369  (was 4c15633d805dc52d)  web/templates/pm_live_subdivision.html
+```
+Test-only (not shipped to the box): `test_accounts_m2.py`, `test_live_r3.py`, `test_arm_display_fixpass.py`.
+These edits are on the branch WORKING TREE (uncommitted); nothing was committed, deployed, or restarted in this
+pass. A deploy, if the Board authorises one, would be pm_web-only (these 6 files), one pm_web restart, engine
+untouched -- the app.py M4/M5 graft hazard does NOT apply to this set (app.py is unchanged).

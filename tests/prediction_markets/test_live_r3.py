@@ -215,7 +215,7 @@ def test_dashboard_card_enabled(monkeypatch, tmp_path):
     assert r.status_code == 200
     assert ">Accounts</b>" in r.text                     # the new top-of-hierarchy nav
     assert 'href="/account/kalshi_jack"' in r.text       # the seeded account links to its per-account page
-    assert "GLOBAL DISARMED" in r.text                   # R4: global arm state visible (read-only; no arm rows -> disarmed)
+    assert "GLOBAL NEVER ARMED" in r.text                # R4: global arm state visible (read-only; no arm rows -> never armed, distinct from disarmed)
     assert "coming in P3" not in r.text
 
 
@@ -292,6 +292,23 @@ def test_live_tile_count_increments_with_two_orders(monkeypatch, tmp_path):
     r = cl.get("/live")
     assert r.status_code == 200
     assert "2 live trades" in r.text
+
+
+def test_division_strip_coverage_label_shown_at_full_coverage(monkeypatch, tmp_path):
+    """Post-deploy item 1: the division summary strip's 'Unsettled -- current value' cell ALWAYS carries the
+    'N of M priced' coverage label, including at FULL coverage. One open position (the real CINCHC-CHC YES fill);
+    prime the ui_cache both the accounts and division paths read so its slot prices -> unsettled 1 of 1 priced,
+    neutral (never flagged 'partial'). Scoped via monkeypatch so the primed singleton never leaks."""
+    from trading_corp.prediction_markets.web import marks as marks_mod, ui_cache
+    cl = _client(monkeypatch, tmp_path, schema=10, seed=True, orders=[{}])
+    T = "KXMLBGAME-26AUG301920CINCHC-CHC"                                 # the seeded open position's ticker (yes leg)
+    mk = marks_mod.Mark(T, yes_bid=0.62, no_bid=0.36, yes_ask=0.64, no_ask=0.38, last=0.61, status="active", as_of=1788128200)
+    primed = ui_cache.UICache()
+    primed.update(slates={}, marks=marks_mod.MarksResult(marks={T: mk}, ok=True, as_of=1788128200), refreshed_ts=1788128200)
+    monkeypatch.setattr(ui_cache, "cache", lambda: primed)
+    html = cl.get("/live/kalshi_jack/mlb").text
+    assert "1 of 1 priced" in html                                       # full coverage -> neutral label present
+    assert "partial:" not in html                                        # not flagged partial when every slot is priced
 
 
 def test_live_positions_ignores_null_ticker_rows(tmp_path):
