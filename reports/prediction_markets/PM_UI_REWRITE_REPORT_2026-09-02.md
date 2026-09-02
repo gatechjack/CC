@@ -494,3 +494,103 @@ Test-only (not shipped to the box): `test_accounts_m2.py`, `test_live_r3.py`, `t
 These edits are on the branch WORKING TREE (uncommitted); nothing was committed, deployed, or restarted in this
 pass. A deploy, if the Board authorises one, would be pm_web-only (these 6 files), one pm_web restart, engine
 untouched -- the app.py M4/M5 graft hazard does NOT apply to this set (app.py is unchanged).
+
+> The post-deploy pass was subsequently COMMITTED as `f55bca6` (from `b8fdf30`) before the pre-deploy additions
+> below; it was still never deployed or restarted.
+
+---
+
+# PRE-DEPLOY ADDITIONS -- 2026-09-02 (build + test ONLY; NOTHING deployed, NOTHING restarted)
+
+Board follow-up on Jack's live screenshot (four card-level fixes). Built + tested on branch
+`pm-ui-rewrite-2026-09-02`, committed **`2c7077b`** (parent `f55bca6`). **No restart, no deploy -- Board
+decisions. The engine (trading-corp PID 163519, ARMED, trading two accounts unattended) was not touched; no box
+action was taken in this pass at all (pure local build + test).**
+
+## Item 1 -- game DATE and TIME on every card
+A scheduled-first-pitch line now sits under the matchup on every game card: `Wed Sep 2 · 6:40 PM ET`, compact,
+same mono/dim styling as the header chips. It is **sourced from the Kalshi ticker's ET date + HHMM**
+(`live_view._fmt_et_datetime`, fed by `card.start_display`), so it renders even when the sports feed is down --
+and it is ALWAYS present (em-dash if a ticker carries no time), so card height is uniform across cards.
+- Mismatch, never silent: when the JOINED StatsAPI game carries a DIFFERENT scheduled time, the card shows the
+  FEED's time and `card.time_mismatch` records both. That flag rides each affected trade row into the drawer:
+  a `†` marker on the always-visible main row plus a "Scheduled start -- feed vs ticker" detail note giving both
+  times and the source. `_trade_rows` now joins via `match_in_slate` (tolerant), so the matchup and the flag
+  resolve even under the skew.
+
+Regenerated render (one /live page carrying a card per state) -- the start line is present on ALL cards,
+including the feed-unavailable one:
+```
+Wed Sep 2 · 1:10 PM ET   (SEA@BOS suspended)      Wed Sep 2 · 7:05 PM ET   (ATL@WSH in-progress)
+Wed Sep 2 · 4:10 PM ET   (ATH@TEX final)          Wed Sep 2 · 8:10 PM ET   (HOU@SEA, feed 20:10 vs ticker 20:07 -> †)
+Wed Sep 2 · 6:10 PM ET   (TOR@CLE delayed)        Wed Sep 2 · 9:40 PM ET   (PHI@AZ postponed)
+Wed Sep 2 · 6:40 PM ET   (SD@CIN preview)         Wed Sep 2 · 10:10 PM ET  (NYY@LAA FEED N/A -- still shows the ticker time)
+```
+
+## Item 2 -- pre-game state is now honest (not "game over", no phantom score)
+The screenshot's PREVIEW cards read "no count / game over" and showed "0 0". A game that has not started is not
+over and is not 0-0. Fixed:
+- `_feed_block` gains `started` (true only once the game has produced play: status in in_progress/final/suspended,
+  or any linescore cell present). `linerow` renders a score digit ONLY when `feed.started` -- a pre-game 0-0 (or
+  a feed that reports 0) renders BLANK, not "0". One honest rendering applied to every pre-game card.
+- `metacol` count area is now state-specific: `preview` -> "not started"; `final` -> "no count / game over";
+  `postponed` / `suspended` / `delayed` -> their own labels; feed-down -> "count unavailable". The status chip
+  and inning slot label Postponed/Suspended/Delayed as their own states (amber), never as pre-game and never as
+  over. Mapping is StatsAPI `detailedState`/`abstractGameState` (already normalized in `feed_mlb._map_status`).
+
+Regenerated render (count-area label per state):
+```
+preview -> "not started"      final -> "no count / game over"      postponed -> "postponed"
+suspended -> "suspended"      delayed -> "delayed"                 feed N/A -> "count unavailable"
+```
+A pre-game card seeded with a feed 0-0 renders NO score digit (`<span class="r">0</span>` absent from the HTML).
+
+## Item 3 -- bet-slot shorthand carries direction
+`_short_label` rewritten (strike = N - 0.5, the Kalshi convention):
+- TOTAL: over/under as a sign on the strike -- **`+8.5` (Over = the YES leg) / `-8.5` (Under = the NO leg)**.
+- SPREAD: sign + the team backed -- **`-1.5 ATL` (YES = the anchor team lays the spread) / `+1.5 SD` (NO = the
+  other team gets it)** (`_spread_other` resolves the opponent from the ticker stem).
+- A SETTLED slot (held leg unknown) shows the line/anchor WITHOUT a fabricated direction (`8.5`, `-1.5 SD`).
+- MONEYLINE unchanged (the YES club abbr).
+
+Tested four cases: `+8.5` / `-8.5` / `-1.5 ATL` / `+1.5 SD`. Live render confirms the TOT slots show `+8.5`.
+
+## Item 4 -- the toggle buttons no longer run together
+Root cause: the Active/Complete toggles are `<a>` anchors, but the padding/divider CSS targeted `<button>` only
+(`.toggle button` / `button.mini`), so the anchors rendered as bare inline text -- "Active (6)Complete (11)".
+Fixed by giving the toggle its own anchor class `.tgl` with padding + a `+`-divider and the pressed state
+(`.toggle .tgl`), scoped so nothing else (the "Poll now" `.mini` link) is affected. Render confirms two separate
+segmented anchors (`class="tgl"` x2).
+
+## Verification
+- Full `tests/prediction_markets/` (offline, `.venv-webtest`): **19 failed = the SAME env-gap/schema baseline**
+  (17× pykalshi `ModuleNotFoundError`, 1× `test_schema_head_is_15` [schema is 17], 1× `test_pm_web_imports_no_engine`
+  [bare-subprocess import; passes on the box]). **+12 new tests, all green; zero regressions** -- the existing
+  live-page / read-only-guard / nav tests still pass with the template changes.
+- New `test_live_card_states_predeploy.py` (12): directional short-labels (4 cases), datetime shapes,
+  `_feed_block` per state incl. the pre-game-0-0 case, `build_live_context` start_display / time_mismatch /
+  slot direction, and a TestClient render of pre-game/final/feed-down + the mismatch drawer flag.
+- Regenerated the live render across all states -- pre-game, in-progress, final-unsettled, postponed, suspended,
+  delayed, feed-unavailable, and time-mismatch -- with the date/time line present on every card.
+
+## Shippable file list (pm_web-only; NO app.py, NO main.py)
+`git diff --name-only 9c2eeb3 HEAD` over `web/` and `arm.py` -> **app.py and main.py are NOT in the diff**, so the
+app.py M4/M5 graft hazard does NOT apply to any deploy of this branch tip. A deploy would ship the 7 pm_web files
+below (the union of the post-deploy pass + these additions), CR-stripped sha16 -> (box `9c2eeb3`):
+```
+3144f4267243a55f  (box ec9ef0fb791537e7)  web/live_view.py                          [both passes]
+2681180ca6a423b8  (box abb6affb3ca4987e)  web/static/pm_desk.css                    [both passes]
+6bb019840c5e2b2a  (box 1f743caebca30541)  web/templates/partials/pm_arm_badge.html  [post-deploy pass]
+48d579db5c2deb65  (box 118e54bca0255682)  web/templates/partials/pm_trade_drawer.html [pre-deploy]
+a5f39df0b53dedb4  (box b3fba25a18245d1e)  web/templates/pm_account.html             [post-deploy pass]
+014c03bafe3005e5  (box e5d99d0c4f9c80b8)  web/templates/pm_accounts.html            [post-deploy pass]
+769044d17363e73c  (box 4c15633d805dc52d)  web/templates/pm_live_subdivision.html    [both passes]
+```
+The four files THIS pass changed: `live_view.py`, `static/pm_desk.css`, `templates/partials/pm_trade_drawer.html`,
+`templates/pm_live_subdivision.html`. Test-only (not shipped): `test_live_card_states_predeploy.py`.
+
+## Nothing was deployed or restarted
+Pure local build + test. No box action was taken in this pass. The engine (trading-corp PID 163519, ARMED) was
+not touched, no pm_web restart, no schema/venv/systemd change. Committed on the branch at `2c7077b`; prod-live and
+main-wip are NOT advanced (box-is-truth). Commits this session: `f55bca6` (post-deploy pass), `2c7077b`
+(pre-deploy additions).
