@@ -173,11 +173,12 @@ def _ticker_settlement(orders: list) -> dict:
     for o in orders:
         if o.get("is_exit") and o.get("close_source") in _SETTLE_SOURCES:
             t = o.get("ticker")
-            r = out.setdefault(t, {"realized": 0.0, "won": None, "settled_ts": None, "has": True})
+            r = out.setdefault(t, {"realized": 0.0, "won": None, "settled_ts": None, "contracts": 0.0})
             if o.get("realized_pnl") is not None:
                 r["realized"] += float(o.get("realized_pnl"))
             if o.get("won") is not None:
                 r["won"] = bool(o.get("won"))
+            r["contracts"] += float(o.get("fill_count") or 0.0)   # settled quantity -> payout value on the card
             r["settled_ts"] = o.get("settled_ts") or o.get("response_ts")
     return out
 
@@ -199,12 +200,16 @@ def _build_slot(ticker, kind, open_pos, settle, mark):
                 "bid": bid}
     if settle is not None:
         won = settle.get("won")
+        contracts = settle.get("contracts")
+        # a settled position's card value is its PAYOUT: $1.00 per contract if won, $0.00 if lost (realized P&L is
+        # a distinct number, shown in the drawer). value_known only when we actually know the win/loss.
+        payout = (contracts if won else 0.0) if (won is not None and contracts is not None) else None
         return {"kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
                 "short": _short_label(ticker, kind, None), "desc": describe_market(ticker, None),
-                "ticker": ticker, "held_leg": None, "contracts": None, "avg_fill": None, "cost": None,
+                "ticker": ticker, "held_leg": None, "contracts": contracts, "avg_fill": None, "cost": None,
                 "fee": None, "settled": True, "won": won, "realized": settle.get("realized"),
-                "settled_at": settle.get("settled_ts"), "current_value": None, "value_known": False,
-                "bid": None}
+                "settled_at": settle.get("settled_ts"), "current_value": payout,
+                "value_known": payout is not None, "bid": None}
     return None
 
 
@@ -233,7 +238,24 @@ def _retain_anchor_ts(slots: list, gs) -> int | None:
     return max(tss) if tss else None
 
 
+def _ordered_teams(ticker: str):
+    """(away_code, home_code) from a ticker's stem blob (away+home order), or (None, None). Lets the card show the
+    matchup from the TICKER even when the sports feed is down (the teams are ticker-derived, not feed-derived)."""
+    parts = str(ticker or "").split("-")
+    if len(parts) < 2:
+        return (None, None)
+    m = _STEM_RE.match(parts[1])
+    if not m:
+        return (None, None)
+    blob = m.group(3)
+    gm = re.search(r"G(\d)$", blob)
+    if gm:
+        blob = blob[:gm.start()]
+    return _split_team_blob(blob) or (None, None)
+
+
 def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts):
+    away_code, home_code = _ordered_teams(sorted(tickers)[0]) if tickers else (None, None)
     slots = []
     by_kind = {}
     for tk in sorted(tickers):
@@ -257,6 +279,7 @@ def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker,
         drops_in_h = max(0, round((anchor + RETENTION_HOURS * 3600 - now_ts) / 3600.0))
     return {"key": list(game_key), "feed": _feed_block(gs, now_ts),
             "slots_by_kind": {KIND_LABEL[k]: by_kind.get(k) for k in KINDS},
+            "matchup_away": away_code, "matchup_home": home_code,
             "start_hhmm": _et_hhmm_from_key(game_key[1]), "date_iso": game_key[0],
             "n_settled": n_settled, "n_live": n_live, "mixed": n_settled > 0 and n_live > 0,
             "complete": complete, "drops_in_h": drops_in_h,

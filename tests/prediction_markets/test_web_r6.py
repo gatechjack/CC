@@ -121,6 +121,9 @@ def test_live_pages_stay_read_only(monkeypatch, tmp_path):
     cl.post("/live/kalshi_jack/mlb/attach/%s" % WALLET, follow_redirects=False)         # attach so the list renders
     for path in ("/live", "/live/kalshi_jack/mlb"):
         html = cl.get(path).text.lower()
-        for token in ("<form", "hx-post", "place order", "/order", "disarm", 'type="submit"'):
+        # No mutating CONTROL / order path. NB: the read-only ARM STATUS badge ('DISARMED') is a DISPLAY the
+        # design mandates on the division page -- so we forbid an arm/disarm ACTION endpoint ('/arm'), not the
+        # status word 'disarm'. The <form / hx-post / submit / order tokens still guard against any real control.
+        for token in ("<form", "hx-post", "place order", "/order", "/arm", 'type="submit"'):
             assert token not in html, (path, token)                                     # detach is CLI -> /live has no form
     assert cl.post("/live").status_code == 405                                          # still no POST on the list

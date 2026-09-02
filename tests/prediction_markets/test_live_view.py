@@ -81,6 +81,7 @@ def test_card_open_settled_opposed_states():
     assert ml and not ml["settled"] and ml["current_value"] == 5 * 0.58 and ml["value_known"]
     assert ml["cost"] == 2.60 and ml["bid"] == 0.58
     assert tot and tot["settled"] and tot["won"] is True and tot["realized"] == 2.81
+    assert tot["current_value"] == 5 and tot["value_known"]        # settled payout = contracts x $1 (won)
     assert spr is None                       # opposed position comes off the CARD (it's in the drawer)
     assert card["mixed"] and card["n_settled"] == 1 and card["n_live"] == 1
     assert card["open_cost"] == 2.60 and card["open_value"] == 5 * 0.58 and not card["complete"]

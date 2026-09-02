@@ -1,147 +1,212 @@
 {% extends "pm_shell.html" %}
-{% block title %}{{ sub.account_label }} &middot; {{ sub.category|upper }} &middot; Live{% endblock %}
-{% block content %}
-<section>
-  <nav class="pm-crumb"><a href="/">Accounts</a> &rsaquo; <a href="/account/{{ sub.account_id }}">{{ sub.account_label }}</a>
-    &rsaquo; {{ sub.category|upper }}</nav>
-  <div class="pm-section-head">
-    <h1 class="pm-h1">{{ sub.account_label }} &middot; {{ sub.category|upper }}</h1>
-    <p class="pm-sub">A live Account-Category sub-division. Read-only view &mdash; it places nothing here.</p>
+{% block title %}{{ sub.account_label or account_id }} MLB &middot; Prediction Markets{% endblock %}
+{% block main_class %}class="wrap desk"{% endblock %}
+
+{% block header_extras %}
+  <span class="badge {{ 'armed' if arm.get('global_armed') else 'disarmed' }}"><span class="dot"></span>{{ 'ARMED' if arm.get('global_armed') else 'DISARMED' }}</span>
+  <div class="poll">
+    <span id="pollage" data-age0="{{ (now_ts - feed_meta.as_of) if feed_meta.as_of else '' }}" data-interval="{{ poll_interval }}">updated {{ (now_ts - feed_meta.as_of)|agefmt if feed_meta.as_of else 'never' }}</span>
+    <a class="mini" id="refresh" style="text-decoration:none" href="{{ request.url.path }}{% if tab == 'complete' %}?tab=complete{% endif %}">Poll now</a>
   </div>
-
-  <ul class="pm-sub pm-kv">
-    <li>Venue: {{ sub.venue or 'kalshi' }}</li>
-    <li>Market types: {{ sub.market_types }}</li>
-    <li>Sizing: {{ sizing_summary }}</li>
-    <li>Created: {{ sub.created_ts|utcdate }}</li>
-  </ul>
-
-  {# COPIES THESE WHALES (R6): the ACTIVE attachments -- which pinned whales this sub-division copies. READ-ONLY
-     (no form, no detach button here -- /live stays read-only; detach is a CLI action). Honest-empty until a
-     whale is promoted to this sub-division. #}
-  <div class="pm-section-head"><h2 class="pm-h2">Copies these whales</h2></div>
-  {% if attached %}
-  <ul class="pm-sub pm-kv">
-    {% for a in attached %}
-    <li><a href="/watchlist/{{ a.wallet }}/{{ a.category }}">{{ a.user_name or a.wallet }}</a>
-        {% if a.user_name %}<span class="pm-muted">&middot; {{ a.wallet[:10] }}…</span>{% endif %}</li>
-    {% endfor %}
-  </ul>
-  {% else %}
-  <div class="pm-empty">No whales attached yet. Promote a pinned whale to this sub-division from its Watchlist row.</div>
-  {% endif %}
-
-  {# CURRENTLY HELD, per (ticker, WHALE): journal-derived open positions split by the copied whale, so a ticker
-     stacked by several whales (same-side stacking is the design) shows one row EACH -- which answers "which whale
-     is this trade from". NOT a live venue read -- pm_web is standalone; the engine's boot reconcile cross-checks
-     this against the exchange. Honest-empty when flat. #}
-  <div class="pm-section-head"><h2 class="pm-h2">Currently held <span class="pm-muted">&middot; per whale</span></h2></div>
-  {% if positions %}
-  <div class="pm-table-scroll">
-  <table class="pm-table pm-positions">
-    <thead><tr><th>Whale</th><th>Ticker</th><th>Market</th><th>Leg</th><th class="pm-num">Contracts</th>
-      <th class="pm-num">Avg price</th><th class="pm-num">Cost basis</th><th class="pm-num">Fees</th></tr></thead>
-    <tbody>
-    {% for p in positions %}
-      <tr>
-        <td><a href="/watchlist/{{ p.wallet }}/{{ sub.category }}">{{ p.user_name or (p.wallet[:10] ~ '…') }}</a></td>
-        <td>{{ describe_market(p.ticker, p.held_leg) }}<br><span class="pm-muted pm-ticker-raw">{{ p.ticker }}</span></td>
-        <td>{{ p.market_type }}</td>
-        <td>{{ p.held_leg|upper }}</td>
-        <td class="pm-num">{{ '%g'|format(p.contracts) }}</td>
-        <td class="pm-num">${{ '%.2f'|format(p.avg_price) }}</td>
-        <td class="pm-num">${{ '%.2f'|format(p.cost_basis_usd) }}</td>
-        <td class="pm-num">${{ '%.4f'|format(p.fees_usd) }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  <p class="pm-muted">One row per whale per ticker (same-side stacking means a ticker can be held via several whales).
-    Derived from this sub-division's filled orders, not a live venue read; the engine's boot reconcile cross-checks
-    these against the exchange.</p>
-  {% else %}
-  <div class="pm-empty">No open positions. A filled entry copy that has not been exited shows here.</div>
-  {% endif %}
-
-  {# ★ LIVE-COPY RECORD PER WHALE -- the ONLY record that answers "is copying THIS whale actually working for me".
-     REAL money placed on the venue. Explicitly NOT the paper-trade record ("would it have") and NOT the prospect
-     screen ("did it historically") -- both key on the same whales but a different basis. Honesty discipline:
-     realized / settled-W-L / SAMPLE / open shown SEPARATELY; thin-sample travels with the number; opposed-closes
-     (guard flattens) counted separately, never as W/L or realized. #}
-  <div class="pm-section-head"><h2 class="pm-h2">Live-copy record <span class="pm-muted">&middot; per whale &middot; real money</span></h2></div>
-  <p class="pm-sub">Real copies placed on the venue for this sub-division, per whale. This is the one record that says
-    whether copying a whale is <em>actually working here</em> &mdash; it is <strong>not</strong> the paper-trade record
-    (&ldquo;would it have&rdquo;) and <strong>not</strong> the prospect screen (&ldquo;did it historically&rdquo;);
-    those key on the same whales on a different basis. Samples are tiny &mdash; read the count, not the ratio.</p>
-  {% if copies_by_whale %}
-  <div class="pm-table-scroll">
-  <table class="pm-table">
-    <thead><tr><th>Whale</th><th class="pm-num">Copies</th><th class="pm-num">Settled W/L</th>
-      <th class="pm-num">Realized</th><th class="pm-num">Open (at cost)</th><th></th></tr></thead>
-    <tbody>
-    {% for w in copies_by_whale %}
-      <tr>
-        <td><a href="/watchlist/{{ w.wallet }}/{{ sub.category }}">{{ w.user_name or (w.wallet[:10] ~ '…') }}</a>
-          {% if not w.attached %}<span class="pm-muted" title="not currently attached; this record is its past live copies">&middot; detached</span>{% endif %}</td>
-        <td class="pm-num">{{ w.copies }}</td>
-        <td class="pm-num">{% if w.n_settled %}{{ w.settled_w }} / {{ w.settled_l }}
-          <span class="pm-muted">({{ w.n_settled }} settled)</span>{% else %}<span class="pm-muted">&mdash; none settled</span>{% endif %}</td>
-        <td class="pm-num">{% if w.n_settled %}<span class="{% if w.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.2f'|format(w.realized_pnl) }}</span>{% else %}<span class="pm-muted">&mdash;</span>{% endif %}</td>
-        <td class="pm-num">{% if w.n_open %}${{ '%.2f'|format(w.open_cost_usd) }} <span class="pm-muted">&middot; {{ '%g'|format(w.open_contracts) }} ct</span>{% else %}<span class="pm-muted">&mdash;</span>{% endif %}</td>
-        <td>{% if w.n_settled and w.thin_sample %}<span class="pm-flag pm-flag-thin" title="thin sample -- not evidence of edge">&#9888; thin ({{ w.n_settled }})</span>{% endif %}
-          {% if w.opposed_closed %}<span class="pm-muted" title="closed by the opposing-guard (two whales took opposite sides) -- a guard flatten, not a settled win/loss; its P&amp;L is not booked as realized">{{ w.opposed_closed }} opposed-closed</span>{% endif %}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  <p class="pm-muted">Realized + W/L come from <strong>settlements</strong> only; open is at cost (no venue mark).
-    <strong>Opposed-closed</strong> = positions the opposing-guard flattened (two whales, opposite sides) &mdash;
-    counted here but never as a win, a loss, or realized P&amp;L (a guard flatten is not a settled outcome). Attribution
-    is by the whale recorded on each order row, including on the close.</p>
-  {% else %}
-  <div class="pm-empty">No live copies yet. Once this sub-division fills a copy, a per-whale record appears here.</div>
-  {% endif %}
-
-  {# LIVE TRADES: the real order journal for this sub-division, newest first. Dry-runs are excluded (not live). #}
-  <div class="pm-section-head"><h2 class="pm-h2">Live trades</h2></div>
-  {% if orders %}
-  <div class="pm-table-scroll">
-  <table class="pm-table pm-positions">
-    <thead><tr><th>When (UTC)</th><th>Whale</th><th>Ticker</th><th>Market</th><th>Leg</th><th>Type</th>
-      <th class="pm-num">Count</th><th class="pm-num">Submitted</th><th class="pm-num">Fill</th>
-      <th class="pm-num">Fee</th><th>TIF</th><th>Status</th></tr></thead>
-    <tbody>
-    {# A row is a SETTLEMENT-close (close_source='settlement', no order was placed) or a real ORDER (entry / whale-exit).
-       A settlement has NO submitted price, fill price, fee or TIF -- it books a realized P&L instead. Rendering it as
-       'EXIT' with $0.00 fill conflated a game ENDING with a whale getting OUT (the two things Option D distinguishes),
-       so settlements render as SETTLED (won/lost) with the realized P&L in place of the blank price. #}
-    {% for o in orders %}
-      {% set settled = (o.close_source == 'settlement') %}
-      <tr class="{% if settled %}pm-row-settled{% endif %}">
-        <td>{{ (o.response_ts or o.submitted_ts)|utcdt }}</td>
-        <td>{% if o.wallet %}<a href="/watchlist/{{ o.wallet }}/{{ sub.category }}">{{ o.user_name or (o.wallet[:10] ~ '…') }}</a>{% else %}<span class="pm-muted">&mdash;</span>{% endif %}</td>
-        <td>{{ describe_market(o.ticker, o.outcome_leg) }}<br><span class="pm-muted pm-ticker-raw">{{ o.ticker }}</span></td>
-        <td>{{ o.market_type }}</td>
-        <td>{{ o.outcome_leg|upper }}</td>
-        <td>{% if settled %}SETTLED{% if o.won == 1 %} <span class="pm-won-y">won</span>{% elif o.won == 0 %} <span class="pm-won-n">lost</span>{% endif %}{% elif o.close_source == 'opposed' %}<span title="cancellation-by-disagreement: two whales took opposite sides, so we closed the position -- off the books">OPPOSED</span>{% elif o.is_exit %}EXIT{% else %}ENTRY{% endif %}</td>
-        <td class="pm-num">{{ o.submitted_count if o.submitted_count is not none else '—' }}{% if o.fill_count is not none %} &middot; {{ 'settled' if settled else 'filled' }} {{ '%g'|format(o.fill_count) }}{% endif %}</td>
-        <td class="pm-num">{% if settled %}&mdash;{% elif o.submitted_price is not none %}${{ '%.2f'|format(o.submitted_price) }}{% else %}&mdash;{% endif %}</td>
-        <td class="pm-num">{% if settled %}{% if o.realized_pnl is not none %}<span class="{% if o.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.4f'|format(o.realized_pnl) }}</span> <span class="pm-muted">realized</span>{% else %}&mdash;{% endif %}{% elif o.fill_price is not none %}${{ '%.2f'|format(o.fill_price) }}{% else %}&mdash;{% endif %}</td>
-        <td class="pm-num">{% if settled %}&mdash;{% elif o.fee is not none %}${{ '%.4f'|format(o.fee) }}{% else %}&mdash;{% endif %}</td>
-        <td>{% if settled %}&mdash;{% else %}{{ o.time_in_force or '—' }}{% endif %}</td>
-        <td>{% if settled %}settled{% else %}{{ o.outcome_status or '—' }}{% endif %}{% if o.error_detail %} <span class="pm-muted">&middot; {{ o.error_detail }}</span>{% endif %}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  {% if n_live_trades and n_live_trades > orders|length %}
-  <p class="pm-muted">Showing the latest {{ orders|length }} of {{ n_live_trades }} live trades.</p>
-  {% endif %}
-  {% else %}
-  <div class="pm-empty">No live trades yet. Copies appear here once this sub-division fills an order.</div>
-  {% endif %}
-</section>
 {% endblock %}
+
+{# ---------- age chip: renders age server-side + carries data-age0 (seconds at render) so JS ticks it up
+   using elapsed-since-load, immune to client/server clock skew. stale_after=None => never stale (finals). ---------- #}
+{% macro agechip(age_sec, stale_after=180) %}
+  {%- set stale = age_sec is not none and stale_after is not none and age_sec > stale_after -%}
+  <span class="chip {% if stale %}stale{% endif %}" data-age0="{{ age_sec if age_sec is not none else '' }}" data-stale="{{ stale_after if stale_after is not none else '' }}">{{ age_sec|agefmt }}{% if stale %} &middot; stale{% endif %}</span>
+{%- endmacro %}
+
+{# ---------- three fixed bet slots (ML/TOT/SPR). Not held => dimmed. Open => live bid-value or 'no mark'.
+   Settled => won (green, payout) / lost (red, $0). Cost basis is NOT shown here; it is a different number. ---------- #}
+{% macro betline(slot, label, idx) %}
+  {%- if not slot -%}
+    <div class="bet"><span class="bl">{{ label }}</span><span class="bt">not held</span><span class="bv">&mdash;</span></div>
+  {%- else -%}
+    {%- set cls = ('won' if slot.won else 'lost') if slot.settled else 'live' -%}
+    <div class="bet {{ cls }}">
+      <span class="bl">{{ label }}</span>
+      <span class="bt" title="{{ slot.desc }}">{{ slot.short }}{% if slot.settled %}{{ ' &#10003;'|safe if slot.won else ' &#10007;'|safe }}{% endif %}</span>
+      <span class="bv"{% if not slot.settled %} data-val="{{ idx }}|{{ label }}"{% endif %}>{{ slot.current_value|money if slot.value_known else 'no mark' }}</span>
+    </div>
+  {%- endif -%}
+{% endmacro %}
+
+{% macro bets(card, idx) %}
+  <div class="bets">
+    {{ betline(card.slots_by_kind.ML, 'ML', idx) }}
+    {{ betline(card.slots_by_kind.TOT, 'TOT', idx) }}
+    {{ betline(card.slots_by_kind.SPR, 'SPR', idx) }}
+  </div>
+{% endmacro %}
+
+{# ---------- one line-score row; current half-inning highlighted, unplayed cells dimmed, extra innings ---------- #}
+{% macro linerow(feed, side, n) %}
+  {%- set L = feed.linescore_away if side == 'away' else feed.linescore_home -%}
+  {%- set abbr = feed.away.abbr if side == 'away' else feed.home.abbr -%}
+  {%- set score = feed.away.score if side == 'away' else feed.home.score -%}
+  {%- set fin = feed.status == 'final' -%}
+  {%- set lead = (feed.away.score is not none and feed.home.score is not none) and ((feed.away.score > feed.home.score) if side == 'away' else (feed.home.score > feed.away.score)) -%}
+  {%- set curIdx = (feed.inning - 1) if (not fin and feed.inning and feed.half == ('TOP' if side == 'away' else 'BOT')) else -1 -%}
+  {%- set cw = 11 if n <= 9 else (10 if n == 10 else 9) -%}
+  <div class="ls {% if lead %}lead{% endif %} {% if n > 9 %}xi{% endif %}" style="grid-template-columns:19px repeat({{ n }},{{ cw }}px) 17px">
+    <span class="ab">{{ abbr or '&mdash;' }}</span>
+    {%- for i in range(n) -%}
+      {%- set v = L[i] if i < L|length else none -%}
+      <span class="i {% if i == curIdx %}cur{% endif %} {% if v is none %}fut{% endif %}{% if i == 9 %} ext{% endif %}">{{ v if v is not none else '&middot;'|safe }}</span>
+    {%- endfor -%}
+    <span class="r">{{ score if score is not none else '' }}</span>
+  </div>
+{% endmacro %}
+
+{% macro diamond(card, idx) %}
+  {%- set feed = card.feed -%}
+  {%- if not feed.available -%}
+    <div class="dia dead">
+      <div class="sq"></div>
+      <div class="base b2"></div><div class="base b1"></div><div class="base b3"></div><div class="hp"></div>
+      <div class="inner"><div class="navtx">FEED<br>UNAVAILABLE</div></div>
+      {{ bets(card, idx) }}
+    </div>
+  {%- else -%}
+    {%- set fin = feed.status == 'final' -%}
+    {%- set n = [9, feed.linescore_away|length, feed.linescore_home|length, feed.inning or 0]|max -%}
+    <div class="dia">
+      <div class="sq"></div>
+      <div class="base b2 {% if not fin and feed.bases and feed.bases[1] %}on{% endif %}"></div>
+      <div class="base b1 {% if not fin and feed.bases and feed.bases[0] %}on{% endif %}"></div>
+      <div class="base b3 {% if not fin and feed.bases and feed.bases[2] %}on{% endif %}"></div>
+      <div class="hp"></div>
+      <div class="inner">
+        {{ linerow(feed, 'away', n) }}
+        {{ linerow(feed, 'home', n) }}
+        {% if fin %}<div class="fin">FINAL</div>{% endif %}
+      </div>
+      {{ bets(card, idx) }}
+    </div>
+  {%- endif -%}
+{% endmacro %}
+
+{% macro metacol(feed) %}
+  {%- set play = feed.available and feed.status == 'in_progress' -%}
+  <div class="meta">
+    <div class="inn {% if not feed.available %}na{% endif %}">{% if not feed.available %}NO FEED{% elif feed.status == 'final' %}FINAL{% elif play %}{{ feed.half }} {{ feed.inning }}{% else %}{{ feed.status|upper }}{% endif %}</div>
+    {%- if play -%}
+      <div class="bs">
+        <div class="bsr B"><span class="k">B</span>{% for i in range(3) %}<span class="pip {% if feed.balls and i < feed.balls %}on{% endif %}"></span>{% endfor %}</div>
+        <div class="bsr S"><span class="k">S</span>{% for i in range(2) %}<span class="pip {% if feed.strikes and i < feed.strikes %}on{% endif %}"></span>{% endfor %}</div>
+        <div class="bsr O"><span class="k">O</span>{% for i in range(2) %}<span class="pip {% if feed.outs and i < feed.outs %}on{% endif %}"></span>{% endfor %}</div>
+      </div>
+    {%- elif feed.available -%}
+      <div class="nocount">no count<br>game over</div>
+    {%- else -%}
+      <div class="nocount na">count<br>unavailable</div>
+    {%- endif -%}
+  </div>
+{% endmacro %}
+
+{% macro bnote(card) %}
+  {%- if not card.feed.available -%}feed unavailable{% if feed_meta.marks_ok %} &middot; Kalshi values current{% endif %}
+  {%- elif card.n_settled == 0 -%}live value = contracts &times; bid
+  {%- else -%}settled &middot; $1.00 per winning contract{%- endif -%}
+{% endmacro %}
+
+{% macro gamecard(card, idx) %}
+  {%- set feed = card.feed -%}
+  {%- set aw = feed.away.abbr if (feed.available and feed.away.abbr) else card.matchup_away -%}
+  {%- set hm = feed.home.abbr if (feed.available and feed.home.abbr) else card.matchup_home -%}
+  <article class="g {% if card.mixed %}mx{% endif %}">
+    <div class="ghd">
+      {% if not feed.available %}<span class="st na">FEED N/A</span>
+      {% elif feed.status == 'final' %}<span class="st">FINAL</span>
+      {% elif feed.status == 'in_progress' %}<span class="st on">LIVE</span>
+      {% else %}<span class="st">{{ feed.status|upper }}</span>{% endif %}
+      <span class="mu">{{ aw or '&mdash;' }} @ {{ hm or '&mdash;' }}</span>
+      {% if card.mixed %}<span class="mxn">{{ card.n_settled }} SETTLED &middot; {{ card.n_live }} LIVE</span>{% endif %}
+      {% if card.drops_in_h is not none %}<span class="chip" style="font-size:9px">drops in {{ card.drops_in_h }}h</span>{% endif %}
+      <div class="r">
+        <span class="caveat" style="font-size:9.5px">feed</span>
+        {% if feed.available %}{{ agechip(feed.age_sec, none if feed.status == 'final' else 120) }}{% else %}<span class="chip gone">unavailable</span>{% endif %}
+      </div>
+    </div>
+    <div class="field">
+      <div class="diawrap">
+        {{ diamond(card, idx) }}
+        <div class="lp2 {% if not feed.available %}na{% endif %}">{% if feed.available %}{{ feed.last_play or '' }}{% else %}{{ feed.note }}{% endif %}</div>
+        <div class="bnote">{{ bnote(card) }}</div>
+      </div>
+      {{ metacol(feed) }}
+    </div>
+  </article>
+{% endmacro %}
+
+{% block content %}
+  <div class="crumb"><a href="/">Accounts</a> / <a href="/account/{{ account_id }}">{{ sub.account_label or account_id }}</a> / {{ category|upper }}</div>
+  <div style="display:flex;align-items:center;gap:14px;margin-top:4px;flex-wrap:wrap">
+    <h1>{{ sub.sub_label or ((sub.account_label or account_id) ~ ' &middot; ' ~ category|upper) }}</h1>
+    <span class="badge {{ 'armed' if arm.get('effective_armed') else 'disarmed' }}"><span class="dot"></span>{{ 'ARMED' if arm.get('effective_armed') else 'DISARMED' }}</span>
+    <span class="caveat">read-only &mdash; arming is done from the service, not here</span>
+  </div>
+
+  {% if warming %}
+  <p class="caveat" style="margin-top:14px">Feed cache is warming up (first {{ poll_interval }}s poll not yet complete) &mdash; current values and scores appear once the poller has run.</p>
+  {% endif %}
+
+  {% if attached %}
+  <div class="panel pad" style="margin-top:16px">
+    <div class="u">Copies these whales</div>
+    <p class="caveat" style="margin:6px 0 0">
+      {% for w in attached %}<a href="/watchlist/{{ w.wallet }}/{{ category }}">{{ w.user_name or w.wallet }}</a>{% if not w.user_name %} <span class="dim">(wallet only)</span>{% endif %}{% if not loop.last %} &middot; {% endif %}{% endfor %}
+      &mdash; real-money copies. Per-trade whale attribution is in the trade drawer below.
+    </p>
+  </div>
+  {% endif %}
+
+  <div class="strip" style="margin-top:20px">
+    <div class="cell"><div class="u">Games held</div>
+      <div class="val">{{ summary.n_active }}<span class="dim" style="font-size:13px"> active &middot; {{ summary.n_complete }} complete</span></div>
+      <div class="caveat">Only games with a position appear. A finished game stays active until every position settles.</div></div>
+    <div class="cell"><div class="u">Unsettled &mdash; at cost</div><div class="val">{{ summary.unsettled_cost|money }}</div>
+      <div class="caveat">What we paid. Not what it is worth.</div></div>
+    <div class="cell"><div class="u">Unsettled &mdash; current value</div>
+      <div class="val" style="color:var(--live)">{% if summary.unsettled_value_known %}{{ summary.unsettled_value|money }}{% else %}no mark{% endif %}</div>
+      <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if feed_meta.as_of %}, {{ agechip(now_ts - feed_meta.as_of, 180) }}{% endif %} refreshed on the {{ poll_interval }}s poll.</div></div>
+    <div class="cell"><div class="u">Realized today</div><div class="val {{ summary.realized_today|pnlcls }}">{{ summary.realized_today|signed }}</div>
+      <div class="caveat">{{ summary.settled_today }} position{{ '' if summary.settled_today == 1 else 's' }} settled today. One day is not a result.</div></div>
+  </div>
+
+  {% set active_cards = cards | selectattr('complete', 'equalto', False) | list %}
+  {% set complete_cards = cards | selectattr('complete', 'equalto', True) | list %}
+  {% set shown = complete_cards if tab == 'complete' else active_cards %}
+  <div style="display:flex;align-items:center;gap:16px;margin:32px 0 12px;flex-wrap:wrap">
+    <div class="toggle">
+      <a class="mini" style="text-decoration:none;border:0;{% if tab != 'complete' %}background:var(--panel2);color:var(--text){% endif %}" href="{{ request.url.path }}" role="button" aria-pressed="{{ 'true' if tab != 'complete' else 'false' }}">Active ({{ active_cards|length }})</a>
+      <a class="mini" style="text-decoration:none;border:0;{% if tab == 'complete' %}background:var(--panel2);color:var(--text){% endif %}" href="{{ request.url.path }}?tab=complete" role="button" aria-pressed="{{ 'true' if tab == 'complete' else 'false' }}">Complete ({{ complete_cards|length }})</a>
+    </div>
+    <span class="caveat">{% if tab != 'complete' %}Any card with at least one unsettled position &mdash; including finished games Kalshi has not resolved.{% else %}Every position on the card has settled. Cards drop {{ retention_hours }}h after the game ends or its last settlement.{% endif %}</span>
+  </div>
+
+  {% if shown %}
+  <div class="cards">
+    {% for card in shown %}{{ gamecard(card, loop.index0) }}{% endfor %}
+  </div>
+  {% else %}
+  <div class="panel pad"><p class="caveat" style="margin:0">{% if tab == 'complete' %}No completed games on the board right now.{% elif not feed_meta.ready %}No cards yet &mdash; the poller has not run, or this sub-division holds no games.{% else %}No active games held right now.{% endif %}</p></div>
+  {% endif %}
+
+  <div class="legend" style="margin-top:14px">
+    <span><i style="background:var(--live)"></i>live bet &mdash; value moves</span>
+    <span><i style="background:var(--won)"></i>settled won &middot; $1.00/contract</span>
+    <span><i style="background:var(--lost)"></i>settled lost &middot; $0.00</span>
+    <span><i style="background:#26364a"></i>bet not held</span>
+    <span><i style="background:var(--stale)"></i>feed stale or unavailable</span>
+    <span><i style="background:var(--text)"></i>runner on base</span>
+    <span><i style="background:var(--lampB)"></i>ball <i style="background:var(--lampS);margin-left:8px"></i>strike <i style="background:var(--lampO);margin-left:8px"></i>out</span>
+    <span class="dim">values are contracts &times; <b>bid</b>; the count column is lamps, not money.</span>
+  </div>
+
+  <h2>Trade detail</h2>
+  {% include "partials/pm_trade_drawer.html" %}
+{% endblock %}
+
+{% block scripts %}<script src="/static/pm_live.js" defer></script>{% endblock %}

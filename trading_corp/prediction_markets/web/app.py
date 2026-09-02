@@ -33,6 +33,7 @@ from fastapi.templating import Jinja2Templates
 from ..db import connect
 from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot
 from . import authz   # M4: fail-closed identity/admin resolution + account-visibility scoping (reads headers+env only)
+from . import live_view, poller, ui_cache   # UI rewrite: game-card assembly + the 60s feed/marks poller + its cache
 from ..market_describe import describe_market
 from ..category import NON_SINGLE_GAME_CATEGORIES, derive_category_from_slug
 
@@ -82,6 +83,96 @@ def _utcdatetime(ts) -> str:
 
 
 templates.env.filters["utcdt"] = _utcdatetime
+
+
+# ── UI-rewrite display filters (money / signed / p&l class / relative age). Cost basis and current value are
+# ALWAYS distinct strings, and a None value renders an em-dash, never $0.00 (unknown is not zero). ──────────────
+def _money(v) -> str:
+    if v is None:
+        return "—"
+    return ("-$%.2f" % abs(v)) if v < 0 else ("$%.2f" % v)
+
+
+def _signed(v) -> str:
+    if v is None:
+        return "—"
+    return ("+$%.2f" % v) if v >= 0 else ("-$%.2f" % abs(v))
+
+
+def _pnlcls(v) -> str:
+    if v is None or v == 0:
+        return ""
+    return "pos" if v > 0 else "neg"
+
+
+def _agefmt(sec) -> str:
+    """Relative age for a feed value. None -> 'unknown' (a value with no age is not a current value)."""
+    if sec is None:
+        return "unknown"
+    sec = max(0, int(sec))
+    if sec < 60:
+        return "%ds ago" % sec
+    if sec < 3600:
+        return "%dm ago" % (sec // 60)
+    return "%dh %dm ago" % (sec // 3600, (sec % 3600) // 60)
+
+
+def _et(ts):
+    from datetime import datetime, timezone
+    if not ts:
+        return None
+    return live_view.feed_mlb.utc_to_eastern(datetime.fromtimestamp(int(ts), tz=timezone.utc))
+
+
+def _ettime(ts) -> str:
+    """unix ts -> 'HH:MM:SS' Eastern (the timezone MLB games + Kalshi tickers use); em-dash for missing."""
+    et = _et(ts)
+    return et.strftime("%H:%M:%S") if et else "—"
+
+
+def _etdate(ts) -> str:
+    et = _et(ts)
+    return et.strftime("%Y-%m-%d") if et else "—"
+
+
+def _etdt(ts) -> str:
+    et = _et(ts)
+    return et.strftime("%m-%d %H:%M ET") if et else "—"
+
+
+templates.env.filters["money"] = _money
+templates.env.filters["signed"] = _signed
+templates.env.filters["pnlcls"] = _pnlcls
+templates.env.filters["agefmt"] = _agefmt
+templates.env.filters["ettime"] = _ettime
+templates.env.filters["etdate"] = _etdate
+templates.env.filters["etdt"] = _etdt
+
+
+# ── the 60s feed/marks poller: ONE background task, started with the app, writing ui_cache (single-worker
+# uvicorn). It does no DB access and reaches no order path -- purely network-into-cache. Guarded so a double
+# startup (e.g. a test harness) never spawns two loops. ────────────────────────────────────────────────────────
+_poller_task = None
+
+
+@app.on_event("startup")
+async def _start_poller() -> None:
+    global _poller_task
+    if _poller_task is None or _poller_task.done():
+        _poller_task = asyncio.create_task(poller.poll_loop(ui_cache.cache()))
+        log.info("pm_web: feed/marks poller started")
+
+
+@app.on_event("shutdown")
+async def _stop_poller() -> None:
+    global _poller_task
+    if _poller_task is not None and not _poller_task.done():
+        _poller_task.cancel()
+        try:
+            await _poller_task
+        except (asyncio.CancelledError, Exception):   # noqa: BLE001 -- shutdown must not raise
+            pass
+        _poller_task = None
 
 
 def _pm_db_schema_version() -> int | None:
@@ -640,13 +731,13 @@ def _load_live_list() -> dict:
     return {"subdivisions": subdivisions}
 
 
-def _load_live_subdivision(account_id: str, category: str) -> dict | None:
-    """Per-sub-division read: its config + the whales it copies (R6 attachments) + the REAL live-trade journal
-    (pm_subdivision_order, newest first) + the journal-derived open positions, or None -> 404. The live-trade
-    section is now wired to real data (it was hardcoded honest-empty in R3, when the engine did not yet trade);
-    it renders honest-empty only when this sub-division truly has no orders. Read-only -- no form, no order path,
-    no arm control (detach is a CLI action, so /live stays read-only). `sizing_summary` states per-copy BEHAVIOUR
-    (contracts), not just the stored stake (which floors to 1 contract at $0.01 and misleads about cost)."""
+def _load_live_subdivision(account_id: str, category: str, now_ts: int) -> dict | None:
+    """Per-sub-division read for the GAME-CARD view (UI rewrite): its config + copied whales + the journal, joined
+    to the cached sports feed + Kalshi marks into game cards. None -> 404. Read-only -- no form, no order path, no
+    arm control (arming is CLI/engine-console; /live only DISPLAYS the arm state). The DB reads run here (off the
+    loop); the feed/marks come from ui_cache (written by the background poller), so the render never blocks on the
+    network. The cards degrade honestly: feed-unavailable renders nothing feed-derived, a position with no mark
+    renders 'no mark', and cost basis is always distinct from current value."""
     with connect() as conn:
         sub = subdivision.get_subdivision(conn, account_id, category)
         if sub is None:
@@ -654,14 +745,17 @@ def _load_live_subdivision(account_id: str, category: str) -> dict | None:
         attached = subdivision.attached_whales(conn, account_id, category)
         orders = subdivision.live_orders(conn, account_id, category)
         n_live_trades = subdivision.live_order_count(conn, account_id, category)   # uncapped -> honest 'N of M' when truncated
-        # WHALE ATTRIBUTION (2026-09-01): the held table split PER (ticker, whale) so a stacked ticker shows which
-        # whale each copy is from; and the LIVE-COPY record per whale (distinct from paper/prospect -- real money).
-        positions_by_whale = subdivision.live_positions_by_whale(conn, account_id, category)
+        open_positions = subdivision.live_positions(conn, account_id, category)           # net-open per ticker (marks target)
+        positions_by_whale = subdivision.live_positions_by_whale(conn, account_id, category)   # open per (ticker, whale)
         floor = search.DEFAULT_MIN_RESOLVED_FLOOR
         copies_by_whale = subdivision.live_copies_by_whale(conn, account_id, category, thin_floor=floor)
-    return {"sub": sub, "attached": attached, "orders": orders, "n_live_trades": n_live_trades,
-            "positions": positions_by_whale, "copies_by_whale": copies_by_whale, "thin_floor": floor,
-            "sizing_summary": subdivision.sizing_summary(sub)}
+    ctx = live_view.build_from_cache(orders=orders, open_positions=open_positions,
+                                     open_positions_by_whale=positions_by_whale,
+                                     cache=ui_cache.cache(), now_ts=now_ts)
+    return {"sub": sub, "attached": attached, "n_live_trades": n_live_trades,
+            "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
+            "account_id": account_id, "category": category, "arm": arm.read_status(account_id, category),
+            "sizing_summary": subdivision.sizing_summary(sub), **ctx}
 
 
 @app.get("/live", response_class=HTMLResponse)
@@ -673,17 +767,19 @@ async def live_list_page(request: Request):
 
 
 @app.get("/live/{account_id}/{category}", response_class=HTMLResponse)
-async def live_subdivision_page(request: Request, account_id: str, category: str):
-    """One Account-Category sub-division: its config + what it currently holds + its live-trade journal (real
-    orders, newest first). Honest-empty ('no live trades yet') only when it truly has not traded -- the engine
-    exists and its fills land here. A sub-division that doesn't exist -> 404. READ-ONLY (no order path)."""
+async def live_subdivision_page(request: Request, account_id: str, category: str, tab: str | None = None):
+    """One Account-Category sub-division as the GAME-CARD page: a card per game we hold, with the box score
+    (cached sports feed), three fixed bet slots valued at contracts x BID (cached Kalshi marks), and a trade
+    drawer. `?tab=complete` shows settled cards (server-rendered so it works JS-off). A sub-division that doesn't
+    exist -> 404. READ-ONLY (no order path). SAME template/code path for EVERY account -- nothing hardcodes jack."""
     account_id = (account_id or "").strip()
     category = (category or "").strip().lower()
-    data = await asyncio.to_thread(_load_live_subdivision, account_id, category)
+    data = await asyncio.to_thread(_load_live_subdivision, account_id, category, int(time.time()))
     if data is None:
         return templates.TemplateResponse(
             request, "pm_live_404.html",
             {"request": request, "account_id": account_id, "category": category}, status_code=404)
+    data["tab"] = "complete" if (tab or "").strip().lower() == "complete" else "active"
     return templates.TemplateResponse(request, "pm_live_subdivision.html", {"request": request, **data})
 
 

@@ -5,37 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}Prediction Markets{% endblock %}</title>
   {# VENDORED, loopback-served assets ONLY (NO CDN on this network-exposed host, no build step).
-     pm_shell is THE base for the whole Prediction Markets app -- Dashboard (/) / Farm League (/farm) /
-     per-category (/farm/{cat}) / the whale + watchlist details. Stage 2 phase 3 retired the flat scoreboard
-     and farm pages and the old pm_base.html, and repointed the hierarchy onto the good URLs. #}
+     pm.css keeps the Farm-League / whale pages' styling; pm_desk.css (loaded after) is the copy-desk design
+     system for the Accounts / Account / Live pages + the shared shell. Bare h1/h2/a in pm_desk are scoped
+     under .desk so they never restyle the farm pages. #}
   <link rel="stylesheet" href="/static/pm.css" />
+  <link rel="stylesheet" href="/static/pm_desk.css" />
   <script src="/static/htmx.min.js" defer></script>
 </head>
 <body class="pm-body">
-  <header class="pm-header">
-    <div class="pm-header-inner">
-      <a href="/" class="pm-brand">
-        <span class="pm-logo">PM</span>
-        <span class="pm-brand-txt">Prediction Markets<span class="pm-brand-sub">dashboard</span></span>
-      </a>
-      {# THE navigation hierarchy (M2, R1): Accounts=/ (the new top -- per-account -> sub-divisions supersedes the
-         flat Live list) and Farm League=/farm (a peer). /live pages stay reachable UNDER an account, so an /live
-         path keeps Accounts active. #}
-      <nav class="pm-nav">
+  <header class="top">
+    <div class="in">
+      <a href="/" class="brand" style="text-decoration:none;color:var(--text)">Prediction Markets <span>&mdash;</span> Live Copy</a>
+      {# THE navigation hierarchy: Accounts (money is watched) / Farm League (whales are found) / Live
+         Sub-divisions (positions run). An /account path keeps Accounts active; /live keeps Live active. #}
+      <nav class="nav">
         {% set path = request.url.path %}
-        <a href="/" class="pm-nav-link {% if path == '/' or path.startswith('/account') or path.startswith('/live') %}pm-nav-active{% endif %}">Accounts</a>
-        <a href="/farm" class="pm-nav-link {% if path.startswith('/farm') %}pm-nav-active{% endif %}">Farm League</a>
+        <a class="ni" href="/" {% if path == '/' or path.startswith('/account') %}aria-current="page"{% endif %}><b>Accounts</b><em>where money is watched</em></a>
+        <a class="ni" href="/farm" {% if path.startswith('/farm') %}aria-current="page"{% endif %}><b>Farm League</b><em>where whales are found</em></a>
+        <a class="ni" href="/live" {% if path.startswith('/live') %}aria-current="page"{% endif %}><b>Live Sub-divisions</b><em>where positions run</em></a>
       </nav>
-      <div class="pm-header-right">{% block header_extras %}{% endblock %}</div>
+      <div class="right">{% block header_extras %}{% endblock %}</div>
     </div>
   </header>
 
-  <main class="pm-main">{% block content %}{% endblock %}</main>
-
-  <footer class="pm-footer">
-    <span>pm_web &middot; farm-league navigation (Stage 2 &middot; phase 1 skeleton)</span>
-    <span class="pm-footer-right">bias down, never up &middot; caveats travel with the number</span>
-  </footer>
+  <main {% block main_class %}class="pm-main"{% endblock %}>{% block content %}{% endblock %}</main>
 
   {% block scripts %}{% endblock %}
 </body>

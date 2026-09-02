@@ -1,0 +1,79 @@
+{# Trade drawer -- native <details> disclosure (works with JS off). Every honesty-critical value lives in the
+   always-visible MAIN row (value 'unavailable' when no mark, realized '— not booked' for an opposed close, cost
+   basis distinct from value). The detail row is enrichment (order id, ticker, slippage) toggled by JS; hidden JS
+   -off, which never hides a load-bearing number. Whale attribution: user_name or the wallet (unknown != a name). #}
+<details class="drawer">
+  <summary style="padding:14px 18px;cursor:pointer;color:var(--text);font-family:var(--dmono);font-size:12px;letter-spacing:.1em;text-transform:uppercase">
+    Trades in this window ({{ trades|length }}) &mdash; whale, submitted, fill, fee, timestamps, realized
+  </summary>
+  <div class="tblscroll"><table class="tr">
+    <thead><tr>
+      <th>Time ET</th><th>Date</th><th>Game</th><th>Type</th><th>Copied from</th>
+      <th class="n">Qty</th><th class="n">Submitted</th><th class="n">Fill</th><th class="n">Fee</th>
+      <th class="n">Value now</th><th>Status</th><th class="n">Realized</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for t in trades %}
+      <tr class="main" data-row="{{ t.order_id }}">
+        <td class="pri">{{ t.entry_ts|ettime }}</td>
+        <td>{{ t.entry_ts|etdate }}</td>
+        <td class="pri">{{ t.matchup or '&mdash;' }}</td>
+        <td>{{ t.kind_label }}</td>
+        <td class="pri">{{ t.whale_label or '&mdash;' }}</td>
+        <td class="n">{{ '%g'|format(t.contracts) }}</td>
+        <td class="n">{% if t.submitted is not none %}${{ '%.2f'|format(t.submitted) }}{% else %}&mdash;{% endif %}</td>
+        <td class="n pri">{% if t.fill is not none %}${{ '%.2f'|format(t.fill) }}{% else %}&mdash;{% endif %}</td>
+        <td class="n">{% if t.fee is not none %}${{ '%.2f'|format(t.fee) }}{% else %}&mdash;{% endif %}</td>
+        <td class="n" style="{% if t.status == 'open' %}color:var(--live){% endif %}">
+          {%- if t.status != 'open' -%}&mdash;{%- elif t.value_known -%}{{ t.value_now|money }}{%- else -%}<span class="wsm">unavailable</span>{%- endif -%}</td>
+        <td style="{% if t.status == 'open' %}color:var(--live){% endif %}">{{ t.status|upper }}</td>
+        <td class="n {{ t.realized|pnlcls }}">
+          {%- if t.status == 'open' -%}&mdash;
+          {%- elif not t.realized_booked -%}<span class="wsm">&mdash; not booked</span>
+          {%- elif t.realized is not none -%}{{ t.realized|signed }}
+          {%- else -%}&mdash;{%- endif -%}</td>
+        <td style="color:var(--dimmer)" class="arw-cell">&#9656;</td>
+      </tr>
+      <tr class="det" data-detrow="{{ t.order_id }}" hidden><td colspan="13"><div class="detgrid">
+        <div><div class="lbl">Order id</div><div class="mono">{{ t.order_id }}</div></div>
+        <div><div class="lbl">Ticker</div><div class="mono" style="word-break:break-all">{{ t.ticker }}</div></div>
+        <div><div class="lbl">Market</div><div class="mono">{{ t.desc }}</div></div>
+        <div><div class="lbl">Side</div><div class="mono">{{ t.leg|upper }} &middot; {{ '%g'|format(t.contracts) }} contracts</div></div>
+        <div><div class="lbl">Copied from</div><div class="mono">{{ t.whale_label }}</div>
+          <div class="caveat">{% if t.whale_name %}{{ t.whale_wallet }}{% else %}wallet only &mdash; no display name{% endif %}</div></div>
+        {% if t.submitted is not none and t.fill is not none %}
+        <div><div class="lbl">Submitted / fill</div><div class="mono">${{ '%.2f'|format(t.submitted) }} &rarr; ${{ '%.2f'|format(t.fill) }}</div>
+          <div class="caveat">slippage {{ t.slippage_cents }}&cent; per contract</div></div>
+        {% endif %}
+        {% if t.fill is not none %}
+        <div><div class="lbl">Cost basis</div><div class="mono">${{ '%.2f'|format(t.fill * t.contracts + (t.fee or 0)) }}</div>
+          <div class="caveat">what we paid, not what it is worth</div></div>
+        {% endif %}
+        <div><div class="lbl">Entry</div><div class="mono">{{ t.entry_ts|etdt }}</div></div>
+        {% if t.status in ('exit', 'opposed') %}
+        <div><div class="lbl">{{ 'Closed' if t.status == 'opposed' else 'Exit' }}</div>
+          <div class="mono">{{ t.exit_ts|etdt }}{% if t.exit_price is not none %} @ ${{ '%.2f'|format(t.exit_price) }}{% endif %}</div></div>
+        {% endif %}
+        <div><div class="lbl">Settled</div><div class="mono">{% if t.settled_ts %}{{ t.settled_ts|etdt }}{% elif t.status == 'open' %}not yet settled{% else %}never settled{% endif %}</div></div>
+        <div><div class="lbl">{{ 'Current position value' if t.status == 'open' else 'Realized P&amp;L' }}</div>
+          {%- if t.status == 'open' -%}
+            {%- if t.value_known -%}
+              <div class="mono" style="color:var(--live);font-size:15px">{{ '%g'|format(t.contracts) }} &times; bid = {{ t.value_now|money }}</div>
+              <div class="caveat">contracts &times; current <b>bid</b>, refreshed on the {{ poll_interval }}s poll. Unrealized &mdash; not P&amp;L, and not the cost basis above.</div>
+            {%- else -%}
+              <div class="mono wsm" style="font-size:15px">unavailable</div><div class="caveat">no current mark for this position</div>
+            {%- endif -%}
+          {%- elif not t.realized_booked -%}
+            <div class="mono wsm" style="font-size:15px">&mdash; not booked</div>
+            <div class="caveat">The close was real and so is its P&amp;L, but only the settlement path writes realized values. Opposed closes are not computed by the engine, so no number is shown rather than a wrong one.</div>
+          {%- elif t.realized is not none -%}
+            <div class="mono {{ t.realized|pnlcls }}" style="font-size:15px">{{ t.realized|signed }}</div><div class="caveat">value fixed at settlement</div>
+          {%- else -%}<div class="mono">&mdash;</div>{%- endif -%}
+        </div>
+      </div></td></tr>
+    {% endfor %}
+    {% if not trades %}<tr><td colspan="13" class="caveat" style="padding:16px 12px">No live trades yet in this window.</td></tr>{% endif %}
+    </tbody>
+  </table></div>
+  <div class="pad caveat">Covers the games currently on this page &mdash; the {{ retention_hours }}h card window; the account's full settled history is not all listed here.<br><br>Four terminal states: <b>OPEN</b> still on the books (the row's value is contracts &times; bid); <b>SETTLED</b> Kalshi resolved the market; <b>EXIT</b> we followed a whale out before settlement; <b>OPPOSED</b> two whales took opposite sides and the guard closed the position &mdash; a real P&amp;L the engine does not book, shown as &ldquo;not booked&rdquo; rather than guessed. Rows expand for order id, ticker, slippage and cost basis.</div>
+</details>
