@@ -101,6 +101,15 @@ def test_trades_cover_all_states_with_honest_realized():
     assert trades[1]["whale_label"] == "Kingfish" and trades[2]["whale_label"] == "0xb"   # unknown -> wallet
 
 
+def test_opposed_only_game_has_no_card_but_shows_in_drawer():
+    orders = [_order(id=6, ticker=ML, wallet="0xz", user_name="Zed"),
+              _order(id=7, ticker=ML, is_exit=1, close_source="opposed", wallet="0xz")]
+    ctx = lv.build_live_context(orders=orders, open_positions=[], open_positions_by_whale=[],
+                                slate=_live_slate(), marks_result=_marks(), now_ts=6000)
+    assert ctx["cards"] == []                                  # every slot off the books -> no empty card
+    assert len(ctx["trades"]) == 1 and ctx["trades"][0]["status"] == "opposed"   # the trade is still in the drawer
+
+
 def test_no_mark_degrades_value_never_zero():
     ctx = lv.build_live_context(orders=_orders(), open_positions=_open_positions(),
                                 open_positions_by_whale=_by_whale(), slate=_live_slate(),
