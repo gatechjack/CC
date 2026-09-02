@@ -29,6 +29,38 @@ arms, or prod-live advances. The live jack-mlb division is trading, untouched.
   that I built tonight depends on its results.
 - Global STOP (unchanged): `PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global`
 
+## ★★ RUNG 0 EXECUTED (Jack ran it, 2026-09-02 10:52Z) — RESULTS + RE-SEQUENCE
+- **[ITEM 1] Karen FLAT — venue-CONFIRMED (twice, 10:47Z + 10:52Z): 0 open positions, portfolio_value 0.** Her
+  `secret_ref→keypair` **authenticated and read her book** — the credential path Ruling 2 rests on is PROVEN live.
+  **Jack's claim confirmed; N3 CLOSED; Rung 4 unblocked.** Karen shard-3 = $461.28 (funded), snapshot age ~4min.
+- **★★ [ITEM 2/3] Karen IS ALREADY SET UP — this KILLS the "inert until Karen" property.** `pm_subdivision`
+  `kalshi_karen/mlb` EXISTS (created 2026-09-02) AND all **3 named whales are LIVE ACTIVE ATTACHMENTS** on it
+  (`0x684baa57` [also on jack — fine, COID carries the division], `0xd6966eb1`, `0xdb859a55`), not merely pinned. So
+  the driver roster query returns **BOTH** `(kalshi_jack,mlb)` AND `(kalshi_karen,mlb)`. **The N2 deploy is NOT inert
+  — its restart will SPAWN Karen's task immediately** (DISARMED — she has no arm row, `effective_armed=False`). The
+  current box engine ignores her only because it is hardcoded to jack; my N2 is what turns her task on.
+- **★ [ITEM 3] Karen's caps are ALL NULL + `sizing_mode='fixed'`** → they resolve to CONFIG_DEFAULTS (sizing fixed
+  $5, per_order $25, daily $50, open $100, 25/day) — SAFE (no crash; NULL `fixed_stake_usd`→5.0) but **NOT Ruling 2.**
+  **Rung 4 = SET her caps (not create the sub):** `sizing_mode='contracts', per_order_usd_cap=5.5, daily_usd_cap=150,
+  max_open_usd=150, max_orders_per_day=50, max_slippage_cents=2, liquidity_ratio=0.75` (contracts already 5). Do this
+  BEFORE arming; cleanest BEFORE the N2 deploy so her task comes up with Ruling-2 caps, not the defaults.
+- **★ [R7 pre-check] STILL DEFERRED — jack's position settled overnight, so BOTH accounts are flat now** (jack
+  open_positions=0). I could not observe the live `market_exposure` field/unit. The R7 dual-field code
+  (`market_exposure_dollars` else `market_exposure`/100) is the safety net; **verify at the R7 deploy when a position
+  exists** (the deploy post-check).
+- **[ITEM 5/6] confirmed:** engine 144229, pm_web 155543, schema 17; jack armed (scope=both, latched=False), Karen
+  DISARMED (scope=sub, latched=False → no arm row); boot-reconcile clean. `poly_kalshi_mlb.enabled=True` in config but
+  HALTED via the `[G-halt]` DB gate (`ed2e6c0`) — N3 rests on that halt persisting.
+
+### ★ RE-SEQUENCED DEPLOY (supersedes the queue below where they differ):
+1. **Rung 4 — SET Karen's Ruling-2 caps** (live PM-DB UPDATE of the existing `kalshi_karen/mlb` row; no restart). HALT.
+2. **Rung 2+R7 — engine deploy + ONE restart.** Post-check now expects **TWO** tasks: `(kalshi_jack,mlb)` armed +
+   `(kalshi_karen,mlb)` DISARMED, Karen boot-reconcile **CLEAN** (proves N3 end-to-end). Run the R7 field cross-check
+   here (needs a held position). HALT.
+3. **Rung 6 — arm Karen.** Her first order fires at FULL size (Ruling 2). HALT.
+   **★ Rung 5 (separate restart to pick up Karen) is ELIMINATED** — her subdivision already exists, so the Rung-2
+   restart picks her up directly.
+
 ---
 
 ## RUNGS
