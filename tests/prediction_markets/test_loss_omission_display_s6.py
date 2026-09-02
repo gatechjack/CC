@@ -64,7 +64,24 @@ def test_loss_omission_cell_none_is_unknown_never_zero(monkeypatch, tmp_path):
          "honest_losses": 52, "activity_truncated": 1, "grounded_ts": NOW - 2 * 86400}
     c = appmod._loss_omission_cell(e, NOW)
     assert c["known"] and c["omission_pct"] == 0.94 and c["coverage_pct"] == 0.96 and c["truncated"] is True
-    assert abs(c["age_days"] - 2.0) < 1e-6
+    assert c["floor"] is True and abs(c["age_days"] - 2.0) < 1e-6   # truncated -> floor
+    # floor keys on truncation OR low coverage, independently:
+    assert appmod._loss_omission_cell({"coverage_pct": 0.31, "activity_truncated": 0, "grounded_ts": NOW}, NOW)["floor"] is True
+    assert appmod._loss_omission_cell({"coverage_pct": 0.98, "activity_truncated": 0, "grounded_ts": NOW}, NOW)["floor"] is False
+
+
+def test_report_loss_is_floor_property(tmp_path):
+    """The report's loss_is_floor recomputes from stored fields (survives the cache round-trip) and keys on truncation
+    OR low coverage -- NOT truncation alone."""
+    import dataclasses as dc
+    from trading_corp.prediction_markets import analyze, db
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as c:
+        base = analyze.build_pm_analysis(c, "0xw", "mlb", now_ts=NOW)          # ungrounded base report
+    assert dc.replace(base, loss_grounded=False).loss_is_floor is False
+    assert dc.replace(base, loss_grounded=True, loss_completeness="complete(x)", loss_coverage_pct=0.98).loss_is_floor is False
+    assert dc.replace(base, loss_grounded=True, loss_completeness="complete(x)", loss_coverage_pct=0.31).loss_is_floor is True
+    assert dc.replace(base, loss_grounded=True, loss_completeness="windowed(lower bound)", loss_coverage_pct=1.0).loss_is_floor is True
 
 
 # ── the Prospects LIST render ───────────────────────────────────────────────────────────────────────────
@@ -87,12 +104,32 @@ def test_prospects_material_omission_carries_coverage_not_flattened(monkeypatch,
     _add_cand(p, "0xhicov", roi=0.30, n=60, name="HiCov")
     _add_cand(p, "0xlocov", roi=0.20, n=60, name="LoCov")
     _ground_row(p, "0xhicov", omission=0.94, coverage=0.96, a_only=47, trunc=0)
-    _ground_row(p, "0xlocov", omission=0.94, coverage=0.31, a_only=47, trunc=1)
+    _ground_row(p, "0xlocov", omission=0.94, coverage=0.31, a_only=47, trunc=0)
     html = cl.get("/farm/mlb").text
     assert "94%&nbsp;losses" in html                      # the omission figure beside win%
     assert "@96%cov" in html and "@31%cov" in html        # coverage carried -> two claims NOT flattened
-    assert "(floor)" in html and "pm-omit-floor" in html  # the windowed low-coverage one is a FLOOR, not a measurement
     assert "pm-omit-bad" in html
+
+
+def test_prospects_low_coverage_is_a_floor_even_when_not_truncated(monkeypatch, tmp_path):
+    """The floor marker must key on LOW COVERAGE, not truncation alone: a whale whose /activity did NOT hit the page
+    ceiling but only re-found 31% of its closed era is a FLOOR (older losers lie beyond the window), not a full
+    measurement. (Regression for the review's Attack #3.)"""
+    cl, p = _mk(monkeypatch, tmp_path)
+    _add_cand(p, CAND)
+    _ground_row(p, CAND, omission=0.94, coverage=0.31, a_only=47, trunc=0)   # UNtruncated, but under-covered
+    html = cl.get("/farm/mlb").text
+    assert "@31%cov" in html and "pm-omit-floor" in html and "(floor)" in html
+
+
+def test_prospects_well_covered_untruncated_is_not_a_floor(monkeypatch, tmp_path):
+    """The mirror: a well-covered (>=90%), untruncated omission is a MEASUREMENT, not a floor -- no floor marker."""
+    cl, p = _mk(monkeypatch, tmp_path)
+    _add_cand(p, CAND)
+    _ground_row(p, CAND, omission=0.60, coverage=0.98, a_only=30, trunc=0)
+    html = cl.get("/farm/mlb").text
+    assert "@98%cov" in html and "pm-omit-bad" in html
+    assert "pm-omit-floor" not in html and "(floor)" not in html
 
 
 def test_prospects_verified_zero_is_distinct_from_unknown(monkeypatch, tmp_path):

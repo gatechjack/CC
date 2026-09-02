@@ -55,6 +55,11 @@ PM_ANALYZE_MODEL = "claude-haiku-4-5-20251001"   # was get_model_for('polymarket
 PM_ANALYZE_MAX_OUTPUT_TOKENS = 220
 PM_ANALYZE_DAILY_CAP_USD = 20.00                 # Jack ruling 2026-08-25 (legacy code=$1.00; §7.4 doc said $2)
 PM_ANALYZE_SKILL_VERSION = "3"                   # bump on ANY prompt/model/report-shape change -> cache miss
+# Below this /activity-window coverage a grounded omission is a FLOOR, not a measurement (older losers lie beyond the
+# window) -> the UI marks it "(floor)". 0.90 matches the 'well-covered' bar the price-bucket re-grounding used. The
+# floor is EITHER truncation (hit the page ceiling) OR low coverage -- the two are NOT the same signal (a whale can be
+# under-covered without hitting the ceiling), so both must gate the marker.
+LOSS_COVERAGE_FLOOR = 0.90
 #   "1"->"2" (2026-08-31, Stage 5 R2b): PMAnalysisReport gained the loss-completeness fields (re-grounded loss set).
 #   "2"->"3" (2026-08-31, Stage 5 R2c + prompt rung): the re-grounded loss set now FLOWS into the narrator prompt
 #     (a top caveat tier + the honest win/loss lines), so the promotion-judge verdict itself reasons about the F-1
@@ -177,6 +182,17 @@ class PMAnalysisReport:
     @property
     def null_reason_label(self) -> str | None:
         return NULL_REASON_LABELS.get(self.null_reason) if self.null_reason else None
+
+    @property
+    def loss_is_floor(self) -> bool:
+        """A grounded omission is a FLOOR (lower bound) when /activity truncated OR coverage is below the well-covered
+        bar -- either way older held-to-worthless losers may lie beyond the window. Recomputed from stored fields, so
+        it survives the cache round-trip. False when not grounded (nothing to bound)."""
+        if not self.loss_grounded:
+            return False
+        if "lower bound" in (self.loss_completeness or ""):
+            return True
+        return self.loss_coverage_pct is not None and self.loss_coverage_pct < LOSS_COVERAGE_FLOOR
 
 
 @dataclass(frozen=True)

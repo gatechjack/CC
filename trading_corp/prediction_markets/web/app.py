@@ -231,9 +231,14 @@ def _loss_omission_cell(entry: dict | None, now_ts: int) -> dict:
     if not entry:
         return {"known": False}
     ts = entry.get("grounded_ts") or 0
-    return {"known": True, "omission_pct": entry.get("loss_omission_pct"), "coverage_pct": entry.get("coverage_pct"),
+    cov = entry.get("coverage_pct")
+    truncated = bool(entry.get("activity_truncated"))
+    return {"known": True, "omission_pct": entry.get("loss_omission_pct"), "coverage_pct": cov,
             "a_only_losses": entry.get("a_only_losses"), "honest_wins": entry.get("honest_wins"),
-            "honest_losses": entry.get("honest_losses"), "truncated": bool(entry.get("activity_truncated")),
+            "honest_losses": entry.get("honest_losses"), "truncated": truncated,
+            # FLOOR = truncated OR under-covered (older losers beyond the window) -- NOT truncation alone, so a
+            # low-coverage-but-untruncated omission is not shown as a full measurement.
+            "floor": bool(truncated or (cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)),
             "age_days": ((now_ts - ts) / 86400.0) if ts else None}
 
 
