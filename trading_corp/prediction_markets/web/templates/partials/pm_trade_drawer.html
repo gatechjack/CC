@@ -17,7 +17,7 @@
       <tr class="main" data-row="{{ t.order_id }}">
         <td class="pri">{{ t.entry_ts|ettime }}</td>
         <td>{{ t.entry_ts|etdate }}</td>
-        <td class="pri">{{ t.matchup or '&mdash;'|safe }}</td>
+        <td class="pri">{{ t.matchup or '&mdash;'|safe }}{% if t.time_mismatch %} <span class="wsm" title="feed and ticker disagree on the scheduled start time -- see the row detail">&dagger;</span>{% endif %}</td>
         <td>{{ t.kind_label }}</td>
         <td class="pri">{{ t.whale_label or '&mdash;'|safe }}</td>
         <td class="n">{{ '%g'|format(t.contracts) }}</td>
@@ -48,6 +48,11 @@
         {% if t.fill is not none %}
         <div><div class="lbl">Cost basis</div><div class="mono">${{ '%.2f'|format(t.fill * t.contracts + (t.fee or 0)) }}</div>
           <div class="caveat">what we paid, not what it is worth</div></div>
+        {% endif %}
+        {% if t.time_mismatch %}
+        <div><div class="lbl">Scheduled start &mdash; feed vs ticker</div>
+          <div class="mono wsm">feed {{ t.time_mismatch.feed or '&mdash;'|safe }} &middot; ticker {{ t.time_mismatch.ticker or '&mdash;'|safe }}</div>
+          <div class="caveat">The {{ t.time_mismatch.source or 'sports feed' }} scheduled time for the joined game differs from the Kalshi ticker's. The card shows the feed's time; both are recorded here rather than silently picking one.</div></div>
         {% endif %}
         <div><div class="lbl">Entry</div><div class="mono">{{ t.entry_ts|etdt }}</div></div>
         {% if t.status in ('exit', 'opposed') %}

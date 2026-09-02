@@ -47,7 +47,8 @@
   {%- set abbr = feed.away.abbr if side == 'away' else feed.home.abbr -%}
   {%- set score = feed.away.score if side == 'away' else feed.home.score -%}
   {%- set fin = feed.status == 'final' -%}
-  {%- set lead = (feed.away.score is not none and feed.home.score is not none) and ((feed.away.score > feed.home.score) if side == 'away' else (feed.home.score > feed.away.score)) -%}
+  {# no score digits until the game has STARTED (item 2): a pre-game / postponed game is not 0-0, it is blank. #}
+  {%- set lead = feed.started and (feed.away.score is not none and feed.home.score is not none) and ((feed.away.score > feed.home.score) if side == 'away' else (feed.home.score > feed.away.score)) -%}
   {%- set curIdx = (feed.inning - 1) if (not fin and feed.inning and feed.half == ('TOP' if side == 'away' else 'BOT')) else -1 -%}
   {%- set cw = 11 if n <= 9 else (10 if n == 10 else 9) -%}
   <div class="ls {% if lead %}lead{% endif %} {% if n > 9 %}xi{% endif %}" style="grid-template-columns:19px repeat({{ n }},{{ cw }}px) 17px">
@@ -56,7 +57,7 @@
       {%- set v = L[i] if i < L|length else none -%}
       <span class="i {% if i == curIdx %}cur{% endif %} {% if v is none %}fut{% endif %}{% if i == 9 %} ext{% endif %}">{{ v if v is not none else '&middot;'|safe }}</span>
     {%- endfor -%}
-    <span class="r">{{ score if score is not none else '' }}</span>
+    <span class="r">{{ score if (feed.started and score is not none) else '' }}</span>
   </div>
 {% endmacro %}
 
@@ -91,15 +92,22 @@
 {% macro metacol(feed) %}
   {%- set play = feed.available and feed.status == 'in_progress' -%}
   <div class="meta">
-    <div class="inn {% if not feed.available %}na{% endif %}">{% if not feed.available %}NO FEED{% elif feed.status == 'final' %}FINAL{% elif play %}{{ feed.half }} {{ feed.inning }}{% else %}{{ feed.status|upper }}{% endif %}</div>
+    <div class="inn {% if not feed.available or feed.status in ('postponed', 'suspended', 'delayed') %}na{% endif %}">{% if not feed.available %}NO FEED{% elif feed.status == 'final' %}FINAL{% elif play %}{{ feed.half }} {{ feed.inning }}{% else %}{{ feed.status|upper }}{% endif %}</div>
     {%- if play -%}
       <div class="bs">
         <div class="bsr B"><span class="k">B</span>{% for i in range(3) %}<span class="pip {% if feed.balls and i < feed.balls %}on{% endif %}"></span>{% endfor %}</div>
         <div class="bsr S"><span class="k">S</span>{% for i in range(2) %}<span class="pip {% if feed.strikes and i < feed.strikes %}on{% endif %}"></span>{% endfor %}</div>
         <div class="bsr O"><span class="k">O</span>{% for i in range(2) %}<span class="pip {% if feed.outs and i < feed.outs %}on{% endif %}"></span>{% endfor %}</div>
       </div>
-    {%- elif feed.available -%}
+    {# distinct count states (item 2): a game that has not started is NOT over. #}
+    {%- elif feed.status == 'final' -%}
       <div class="nocount">no count<br>game over</div>
+    {%- elif feed.status == 'preview' -%}
+      <div class="nocount">not started</div>
+    {%- elif feed.status in ('postponed', 'suspended', 'delayed') -%}
+      <div class="nocount na">{{ feed.status }}</div>
+    {%- elif feed.available -%}
+      <div class="nocount">no count</div>
     {%- else -%}
       <div class="nocount na">count<br>unavailable</div>
     {%- endif -%}
@@ -121,6 +129,7 @@
       {% if not feed.available %}<span class="st na">FEED N/A</span>
       {% elif feed.status == 'final' %}<span class="st">FINAL</span>
       {% elif feed.status == 'in_progress' %}<span class="st on">LIVE</span>
+      {% elif feed.status in ('postponed', 'suspended', 'delayed') %}<span class="st na">{{ feed.status|upper }}</span>
       {% else %}<span class="st">{{ feed.status|upper }}</span>{% endif %}
       <span class="mu">{{ aw or '&mdash;'|safe }} @ {{ hm or '&mdash;'|safe }}</span>
       {% if card.mixed %}<span class="mxn">{{ card.n_settled }} SETTLED &middot; {{ card.n_live }} LIVE</span>{% endif %}
@@ -129,6 +138,8 @@
         <span class="caveat" style="font-size:9.5px">feed</span>
         {% if feed.available %}{{ agechip(feed.age_sec, none if feed.status == 'final' else 120) }}{% else %}<span class="chip gone">unavailable</span>{% endif %}
       </div>
+      {# scheduled first pitch (item 1): ticker-sourced (renders feed-down); ALWAYS present so card height is uniform. #}
+      <div class="gdt">{{ card.start_display or '&mdash;'|safe }}</div>
     </div>
     <div class="field">
       <div class="diawrap">
@@ -182,9 +193,11 @@
   {% set complete_cards = cards | selectattr('complete', 'equalto', True) | list %}
   {% set shown = complete_cards if tab == 'complete' else active_cards %}
   <div style="display:flex;align-items:center;gap:16px;margin:32px 0 12px;flex-wrap:wrap">
+    {# item 4: the two toggles are separate segmented buttons -- padding + a divider come from CSS (.toggle .tgl),
+       not from '.mini' which is button-only, so the anchors no longer run together as one string. #}
     <div class="toggle">
-      <a class="mini" style="text-decoration:none;border:0;{% if tab != 'complete' %}background:var(--panel2);color:var(--text){% endif %}" href="{{ request.url.path }}" role="button" aria-pressed="{{ 'true' if tab != 'complete' else 'false' }}">Active ({{ active_cards|length }})</a>
-      <a class="mini" style="text-decoration:none;border:0;{% if tab == 'complete' %}background:var(--panel2);color:var(--text){% endif %}" href="{{ request.url.path }}?tab=complete" role="button" aria-pressed="{{ 'true' if tab == 'complete' else 'false' }}">Complete ({{ complete_cards|length }})</a>
+      <a class="tgl" href="{{ request.url.path }}" role="button" aria-pressed="{{ 'true' if tab != 'complete' else 'false' }}">Active ({{ active_cards|length }})</a>
+      <a class="tgl" href="{{ request.url.path }}?tab=complete" role="button" aria-pressed="{{ 'true' if tab == 'complete' else 'false' }}">Complete ({{ complete_cards|length }})</a>
     </div>
     <span class="caveat">{% if tab != 'complete' %}Any card with at least one unsettled position &mdash; including finished games Kalshi has not resolved.{% else %}Every position on the card has settled. Cards drop {{ retention_hours }}h after the game ends or its last settlement.{% endif %}</span>
   </div>

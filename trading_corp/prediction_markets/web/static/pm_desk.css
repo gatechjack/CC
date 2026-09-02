@@ -72,8 +72,10 @@ table.sh tr:not(.baseball) td{color:var(--dimmer)}
 .strip .val{font-family:var(--dmono);font-size:22px;letter-spacing:-.02em}
 
 .toggle{display:inline-flex;border:1px solid var(--line2);border-radius:2px;overflow:hidden}
-.toggle button{font-family:var(--dmono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;background:transparent;color:var(--dim);border:0;padding:7px 14px;cursor:pointer;white-space:nowrap}
-.toggle button[aria-pressed="true"]{background:var(--panel2);color:var(--text)}
+.toggle button,.toggle .tgl{font-family:var(--dmono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;background:transparent;color:var(--dim);border:0;padding:7px 14px;cursor:pointer;white-space:nowrap;text-decoration:none;display:inline-block;line-height:1}
+.toggle .tgl+.tgl{border-left:1px solid var(--line2)}
+.toggle button[aria-pressed="true"],.toggle .tgl[aria-pressed="true"]{background:var(--panel2);color:var(--text)}
+.toggle .tgl:hover{color:var(--text);text-decoration:none}
 
 /* ================= GAME CARD ================= */
 /* always three games per row on desktop, whatever the window width */
@@ -89,6 +91,7 @@ table.sh tr:not(.baseball) td{color:var(--dimmer)}
 .st.na{color:var(--stale);border-color:#6b4a1c}
 .g .ghd .r{margin-left:auto;display:flex;align-items:center;gap:8px}
 .mxn{font-family:var(--dmono);font-size:9.5px;letter-spacing:.1em;color:var(--won);white-space:nowrap}
+.g .gdt{width:100%;font-family:var(--dmono);font-size:9.5px;letter-spacing:.04em;color:var(--dim);margin-top:1px}
 
 /* three fixed bet lines, seated over home plate -- identical shape on every card */
 .bets{position:absolute;left:50%;top:calc(50% + 80px);transform:translateX(-50%);width:190px;display:grid;gap:1px;background:#070b12;padding:1px;border-radius:2px;z-index:2}

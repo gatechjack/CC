@@ -87,19 +87,49 @@ def _kind(ticker: str) -> str:
     return series.lower()
 
 
+def _spread_other(ticker: str, team_code: str) -> str | None:
+    """The OTHER club's code on a spread ticker (the one that is NOT the anchor `team_code`), or None. Used to
+    name the underdog side we back when we hold the NO leg of a spread."""
+    a, h = _ordered_teams(ticker)
+    if team_code == a:
+        return h
+    if team_code == h:
+        return a
+    return None
+
+
 def _short_label(ticker: str, kind: str, held_leg: str | None) -> str:
-    """A compact bet label for the card slot (honest, derived from the outcome suffix). ML -> the club abbr we
-    are on; TOTAL -> 'O 8.5'/'U 8.5'; SPREAD -> 'SD +1.5' style. Falls back to the raw suffix."""
+    """A compact bet label for the card slot, DERIVED FROM THE TICKER + HELD LEG and carrying DIRECTION (Jack's
+    ruling): TOTAL shows over/under as a sign on the strike -- '+8.5' (Over, the YES leg) / '-8.5' (Under, the NO
+    leg); SPREAD shows the sign + the team backed -- '-1.5 ATL' (YES = the anchor team lays the spread) /
+    '+1.5 SD' (NO = the other team gets it); MONEYLINE shows the YES club abbr. strike = N - 0.5 (the Kalshi
+    total/spread convention, see market_describe). leg is None on a SETTLED slot -> the line/anchor is shown
+    WITHOUT a fabricated side. Falls back to the raw suffix when the ticker does not parse."""
     parts = str(ticker or "").split("-")
     suffix = parts[2] if len(parts) > 2 else ""
+    leg = str(held_leg).lower() if held_leg else None
     if kind == "total":
-        mt = re.match(r"^([OU])([0-9.]+)$", suffix)
+        mt = re.match(r"^(\d+)$", suffix)
         if mt:
-            return ("Over " if mt.group(1) == "O" else "Under ") + mt.group(2)
+            strike = "%.1f" % (int(mt.group(1)) - 0.5)
+            if leg == "yes":
+                return "+" + strike                       # Over (YES)
+            if leg == "no":
+                return "-" + strike                       # Under (NO)
+            return strike                                 # settled/unknown side -> line only, no fabricated direction
+        # legacy 'O8.5'/'U8.5' suffix form, if ever present
+        mo = re.match(r"^([OU])([0-9.]+)$", suffix)
+        if mo:
+            return ("+" if mo.group(1) == "O" else "-") + mo.group(2)
     if kind == "spread":
-        ms = re.match(r"^([A-Z]{2,3})([0-9.]+)$", suffix)
+        ms = re.match(r"^([A-Z]{2,3})(\d+)$", suffix)
         if ms:
-            return "%s %s" % (ms.group(1), ms.group(2))
+            team_code, n = ms.group(1), int(ms.group(2))
+            strike = "%.1f" % (n - 0.5)
+            other = _spread_other(ticker, team_code)
+            if leg == "no" and other:
+                return "+%s %s" % (strike, other)         # the OTHER team gets +strike (the underdog side)
+            return "-%s %s" % (strike, team_code)         # yes/None -> the anchor team lays -strike (favourite)
     if kind == "moneyline":
         # the suffix is the YES club; if we hold the NO leg the bet is the OTHER club -- describe_market resolves it.
         return (suffix or "").upper()
@@ -117,6 +147,32 @@ def _et_hhmm_from_key(hhmm: str | None) -> str | None:
     if not hhmm or len(hhmm) != 4:
         return None
     return "%s:%s ET" % (hhmm[:2], hhmm[2:])
+
+
+_WK = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MON = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _fmt_et_datetime(date_iso: str | None, hhmm: str | None) -> str | None:
+    """Scheduled first pitch as 'Wed Sep 2 · 6:40 PM ET' -- from the Kalshi ticker's ET date + HHMM (so it
+    renders even with the sports feed down). Date-only if HHMM is missing; time-only if the date does not parse;
+    None if neither is usable."""
+    d = None
+    if date_iso:
+        try:
+            dt = datetime.strptime(str(date_iso), "%Y-%m-%d")
+            d = "%s %s %d" % (_WK[dt.weekday()], _MON[dt.month - 1], dt.day)
+        except (ValueError, TypeError):
+            d = None
+    t = None
+    s = str(hhmm or "")
+    if len(s) == 4 and s.isdigit():
+        h, mi = int(s[:2]), int(s[2:])
+        if h <= 23 and mi <= 59:
+            t = "%d:%02d %s ET" % (h % 12 or 12, mi, "AM" if h < 12 else "PM")
+    if d and t:
+        return "%s · %s" % (d, t)
+    return d or t or None
 
 
 # ── per-(ticker, wallet) copy aggregate: terminal state + realized ──────────────────────────────────────────
@@ -218,10 +274,15 @@ def _feed_block(gs, now_ts: int) -> dict:
     """Render-ready feed block from a feed_mlb.GameState (or None -> unavailable). Live-only fields are None when
     not in progress. `age_sec` lets the template band freshness; a final game never goes stale."""
     if gs is None:
-        return {"available": False, "status": "unavailable", "source": None, "age_sec": None,
+        return {"available": False, "status": "unavailable", "source": None, "age_sec": None, "started": False,
                 "note": "Sports feed unavailable -- no score, inning or count is shown, because none is current."}
     live = gs.is_live
-    return {"available": True, "status": gs.status, "source": gs.source,
+    # STARTED = the game has actually produced play (score/innings). Pre-game (preview/postponed/delayed that has
+    # not begun) is NOT started, so no score digits are rendered -- 'not started' is not 'game over'. A suspended
+    # game HAS started (it carries a partial score), so it counts as started.
+    started = (gs.status in ("in_progress", "final", "suspended")
+               or any(x is not None for x in (list(gs.linescore_away) + list(gs.linescore_home))))
+    return {"available": True, "status": gs.status, "source": gs.source, "started": started,
             "age_sec": max(0, now_ts - gs.fetched_ts), "final": gs.is_final, "live": live,
             "inning": gs.inning, "half": gs.half, "outs": gs.outs, "balls": gs.balls, "strikes": gs.strikes,
             "bases": list(gs.bases) if gs.bases else [], "last_play": gs.last_play,
@@ -277,10 +338,23 @@ def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker,
     drops_in_h = None
     if complete and anchor:
         drops_in_h = max(0, round((anchor + RETENTION_HOURS * 3600 - now_ts) / 3600.0))
+    # scheduled first pitch (item 1): the ticker's ET date+HHMM is the source (renders feed-down). If the JOINED
+    # feed game carries a DIFFERENT scheduled time, we show the FEED's time and flag the mismatch for the drawer --
+    # never silently overriding one with the other.
+    tk_date, tk_hhmm = game_key[0], game_key[1]
+    feed_date = gs.date_iso if gs else None
+    feed_hhmm = gs.hhmm_et if gs else None
+    use_feed = bool(gs and feed_hhmm)
+    start_display = _fmt_et_datetime(feed_date if use_feed else tk_date, feed_hhmm if use_feed else tk_hhmm)
+    time_mismatch = None
+    if gs and feed_hhmm and tk_hhmm and (feed_hhmm != tk_hhmm or (feed_date and tk_date and feed_date != tk_date)):
+        time_mismatch = {"ticker": _fmt_et_datetime(tk_date, tk_hhmm),
+                         "feed": _fmt_et_datetime(feed_date, feed_hhmm), "source": gs.source}
     return {"key": list(game_key), "feed": _feed_block(gs, now_ts),
             "slots_by_kind": {KIND_LABEL[k]: by_kind.get(k) for k in KINDS},
             "matchup_away": away_code, "matchup_home": home_code,
             "start_hhmm": _et_hhmm_from_key(game_key[1]), "date_iso": game_key[0],
+            "start_display": start_display, "time_mismatch": time_mismatch,
             "n_settled": n_settled, "n_live": n_live, "mixed": n_settled > 0 and n_live > 0,
             "complete": complete, "drops_in_h": drops_in_h,
             "open_cost": open_cost, "open_value": open_value, "value_known": value_known,
@@ -294,7 +368,7 @@ def _dropped(card, now_ts: int) -> bool:
 
 
 # ── trade drawer rows (one per ENTRY fill; realized attributed pro-rata across a copy's entries) ─────────────
-def _trade_rows(orders: list, agg: dict, marks: dict, feed_by_key: dict, now_ts: int) -> list:
+def _trade_rows(orders: list, agg: dict, marks: dict, slate_games: dict, mismatch_by_gk: dict, now_ts: int) -> list:
     rows = []
     for o in orders:
         if o.get("is_exit") or o.get("outcome_status") != "filled":
@@ -313,7 +387,9 @@ def _trade_rows(orders: list, agg: dict, marks: dict, feed_by_key: dict, now_ts:
         if state == "open":
             bid = marks_mod.bid_for_leg((marks or {}).get(tk), leg)
             value_now = (contracts * bid) if bid is not None else None
-        gs = feed_by_key.get(gk) if gk else None
+        # tolerant join (match_in_slate), so the matchup resolves even when the feed's start time skews from the
+        # ticker's; the per-game feed<->ticker time mismatch (item 1) rides on the row so the drawer flags it.
+        gs = feed_mlb.match_in_slate(slate_games, gk[0], gk[3], gk[1], gk[2]) if (gk and slate_games) else None
         matchup = ("%s @ %s" % (gs.away.abbr, gs.home.abbr)) if gs else None
         rows.append({
             "order_id": o.get("id"), "ticker": tk, "kind": _kind(tk),
@@ -327,6 +403,7 @@ def _trade_rows(orders: list, agg: dict, marks: dict, feed_by_key: dict, now_ts:
             "exit_ts": a.get("exit_ts"), "exit_price": a.get("exit_price"), "settled_ts": a.get("settled_ts"),
             "status": state, "won": a.get("won"),
             "value_now": value_now, "value_known": value_now is not None,
+            "time_mismatch": mismatch_by_gk.get(gk) if gk else None,
             "realized": realized, "realized_booked": state != "opposed",
             "slippage_cents": (round((float(o["fill_price"]) - float(o["submitted_price"])) * 100)
                                if o.get("fill_price") is not None and o.get("submitted_price") is not None else None),
@@ -359,11 +436,13 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
             tickers_by_game.setdefault(gk, set()).add(tk)
     # a settled/open ticker with no order? tickers come only from orders, so all are covered.
 
-    feed_by_key = {k: v for k, v in slate_games.items()}
     cards = []
+    mismatch_by_gk: dict = {}
     for gk, tks in tickers_by_game.items():
         gs = feed_mlb.match_in_slate(slate_games, gk[0], gk[3], gk[1], gk[2]) if slate_games else None
         card = _card(gk, tks, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts)
+        if card["time_mismatch"]:                    # per-game feed<->ticker start-time skew -> flagged in the drawer
+            mismatch_by_gk[gk] = card["time_mismatch"]
         # INTENTIONAL (board-accepted 2026-09-02, fix-pass item 7 -- do NOT "fix" this back): a game whose
         # positions are ALL off the books (every copy exited or opposed-closed, none still open or settled) has
         # no card-worthy slot, so it is NOT drawn as an empty "not held" card. Its trades still appear in the
@@ -387,7 +466,7 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
     realized_today = sum(c["realized"] for c in cards if c["date_iso"] == today)
     settled_today = sum(c["n_settled"] for c in cards if c["date_iso"] == today)
 
-    trades = _trade_rows(orders or [], agg, marks, feed_by_key, now_ts)
+    trades = _trade_rows(orders or [], agg, marks, slate_games, mismatch_by_gk, now_ts)
 
     return {
         "cards": cards,
