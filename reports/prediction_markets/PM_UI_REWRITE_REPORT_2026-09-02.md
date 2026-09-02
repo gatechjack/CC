@@ -191,3 +191,103 @@ verified reachable from the box, all public/keyless). No new secret, no Key Vaul
 
 **Recommended pre-restart gate:** run the pm_web test subset on the box venv (carry `-p no:pytest_ethereum`)
 and a boot smoke of `GET /healthz`, `GET /`, `GET /live/<acct>/mlb` before advancing.
+
+==============================================================================================================
+# FIX PASS — 2026-09-02 (board review corrections 1-4, refinements 5-7, reconciliation)
+
+Same branch `pm-ui-rewrite-2026-09-02`. Fix-pass commits: merge `e764eb5` (item 3) + `c5abd3e` (items 1/2/4-7).
+NOT deployed, NOT restarted. Both accounts remain armed and trading unattended; nothing on the box was touched.
+
+## Item 1 — display-only mode REMOVED entirely
+- `pm_accounts.html`: dropped the `{% if a.pm_traded %} … {% else %}…not traded by Prediction Markets / Display-
+  only…{% endif %}` gate — every account panel now renders the same figs (Realized / Open-at-cost / Open value).
+- `pm_account.html`: dropped the `{% if not account.pm_traded %}…display-only…` gate on Aggregate performance and
+  the "no Prediction Markets sub-divisions / display-only" note; the empty sub-divisions case is now a neutral
+  "No sub-divisions on this account yet."
+- Tests rewritten to expect NO display-only state: `test_accounts_m2::test_account_page_karen_states_display_only`
+  -> `…_same_path_no_display_only` (asserts figs render + `display-only`/`not traded` ABSENT); the accounts-overview
+  test drops the "not traded" assertion and asserts the absence of display-only wording.
+- Evidence: `grep -c display-only reports/prediction_markets/ui_verify/06_account.html` -> `0`. Commit `c5abd3e`.
+
+## Item 2 — arm badge reads the PERSISTED rows; false-disarm fixed; ts as age chip
+- WHAT IT READ BEFORE: `arm.read_status()` -> `_row_armed(_load_row(GLOBAL_KEY))`, and `_load_row` COLLAPSES an
+  INDETERMINATE mode=ro read ('error': locked / missing table / io error) to `None` -> DISARMED. That is exactly
+  the false-disarm the engine team flagged: a status read near a restart shows a false DISARMED.
+- FIX: new `arm.read_display()` (trading_corp/prediction_markets/arm.py) DISTINGUISHES armed / disarmed / absent /
+  **unavailable**; an INDETERMINATE read is 'unavailable' (shown as a distinct amber "STATE UNAVAILABLE" badge),
+  NEVER 'disarmed'. The persisted row + its `ts` are the truth; the row `ts` is rendered as the badge age chip
+  (like every other feed value). Shared `partials/pm_arm_badge.html` macro renders a plain `<span>`.
+- THE EXACT QUERY the badge now runs (per scope), on a `mode=ro` sqlite open of the legacy DB
+  (`$PM_LEGACY_DB_PATH` else `data/trading_corp.db`):
+      SELECT value_json FROM agent_state WHERE agent = 'pm_live' AND key = 'arm:global'
+  and, for the live page's EFFECTIVE (sub) state:
+      SELECT value_json FROM agent_state WHERE agent = 'pm_live' AND key = 'arm:kalshi_<acct>:<category>'
+  A clean read with no row -> 'absent' (disarmed-by-absence); a read error -> 'unavailable'; `armed` is
+  `value_json.armed is True` (strict); the age is `now - value_json.ts`. effective_state is 'armed' only if BOTH
+  global and sub rows read OK+armed, and 'unavailable' if EITHER read errors.
+- Evidence: `tests/prediction_markets/test_arm_display_fixpass.py` (4 tests) — absent != unavailable, an
+  indeterminate read is 'unavailable' not 'disarmed', armed/disarmed rows read their true state + ts. Commit `c5abd3e`.
+
+## Item 3 — branch base verified; per-account driver wiring MERGED IN (conflict-free)
+- Evidence (all main.py hashes CR-STRIPPED per the Measurement Rule — `git show <c>:file | tr -d '\r' | sha256sum`):
+    merge-base(HEAD, per-account tip `81d9938`) = `f1e28cc`
+    main.py:  f1e28cc `cc733a17…`  ==  e95e638 `cc733a17…`  ==  my HEAD (pre-merge) `cc733a17…`   (I never touched it)
+              per-account tip 81d9938 `9e8da82…`   (the ONLY one that added driver_roster)
+  So my base e95e638 had ONLY the single-account `scheduled_pm_live_loop` (main.py:1561); the per-account tip has
+  `driver_roster.active_driver_subdivisions` spawning both accounts. My branch's main.py == the merge-base, and the
+  two branches touch DISJOINT files (`comm -12` of their changed-file lists is empty; the per-account branch touches
+  main.py + engine drivers + driver_roster.py/venue_exposure.py + 3 engine tests, ZERO pm_web files).
+- ACTION: merged the deployed per-account tip `81d9938` into the UI branch (commit `e764eb5`) — conflict-free
+  (disjoint change sets), no main.py editing. My branch's main.py is now `9e8da82…` (driver-wired,
+  `driver_roster.active_driver_subdivisions` present, `driver_roster.py` on disk), so the branch carries Karen's
+  wiring and cannot regress it under either a git merge or a wholesale graft.
+- NOTE: the earlier "main.py VC gap" (box hash matching no commit) was itself a CRLF artifact — the per-account
+  branch's own SW9 wrap says the same; CR-stripping resolves it, matching the Measurement Rule.
+
+## Item 4 — read-only guard strengthened; arm link removed
+- Removed the M5 admin cross-console link (`trading.jacksumner.com/pm/arm`) from `pm_accounts.html` — the design
+  says "arming is done from the service, not here" (no link), and item 4 forbids any LINK reaching an arm action.
+- New strong guard `tests/prediction_markets/test_web_r6::test_pm_web_display_pages_have_no_arm_control` over `/`,
+  `/account/{id}`, `/live/{acct}/mlb`: asserts NO `<form`/`<button`/`type="submit"`/`hx-post|put|delete|patch`;
+  NO `href|action|hx-*` attribute reaches an `/arm` or `/disarm` route (anchored on the `/arm` PATH segment so
+  `/farm` is not a false positive); and the arm badge is a plain `<span class="badge …">`, never `<a>`/`<button>`.
+  `test_m4_gates` arm-link test updated to assert the link is gone for everyone. Commit `c5abd3e`.
+
+## Item 5 — sizing/config line moved into the trade-drawer footer
+- Removed from the live page's h1 area; added to `partials/pm_trade_drawer.html` footer
+  ("Markets: … · sizing: …"). Still in the page HTML, so `test_live_r3::test_sizing_display_*` /
+  `test_config_visible` still find it (now in the drawer). Evidence: render grep shows
+  "sizing: fixed · max(1, floor($5.00 / price)) …" in the drawer. Commit `c5abd3e`.
+
+## Item 6 — zoneinfo replaces the hand-rolled DST rule
+- `feed_mlb.py`: `_ET = ZoneInfo("America/New_York")`; `utc_to_eastern` = `dt.astimezone(_ET)`. Removed
+  `_nth_sunday`/`_eastern_is_dst`. The Linux box has the system IANA tz db; the Windows test venv got `tzdata`
+  (pure-data package; NOT a prod dependency — the box uses its system tzdb). The existing DST/rollover tests
+  (`test_feed_mlb`: EDT, EST, and the 02:10Z-Sep3 -> 22:10 ET-Sep2 rollover) pass unchanged against zoneinfo. Commit `c5abd3e`.
+
+## Item 7 — empty-card suppression comment
+- `live_view.py`: the suppression is now commented "INTENTIONAL (board-accepted 2026-09-02, fix-pass item 7 -- do
+  NOT 'fix' this back)" with the reason (a game with every position off-book has no card-worthy slot; its trades
+  stay in the drawer). Commit `c5abd3e`.
+
+## Reconciliation — full `tests/prediction_markets/` run
+- All pm_web / UI tests PASS. 18 failures remain, ALL pre-existing env-gap, NONE from this work:
+    17 pykalshi (engine driver -- broker lib absent in `.venv-webtest`): test_live_driver_r7c (7),
+       test_kill_switch_r7d (4), test_shard_gate_r2 (4), test_liquidity_floor_r7f (1, ERROR at setup),
+       test_sizing_contracts_r8 (1, ERROR at setup)
+    1  stale schema: test_search_r1::test_schema_head_is_15 (base is schema 17, not 15)
+- CORRECTION to my prior report: the true baseline is 18, not 16 — I earlier under-counted by missing the two
+  collection-ERROR pykalshi tests (test_liquidity_floor_r7f, test_sizing_contracts_r8). The +2 is that under-count,
+  not new failures. The item-3 merge added 3 engine test files (test_per_account_driver_n2,
+  test_shard_snapshot_task_m3, test_venue_exposure_r7) — all PASS (not in the failing list). The one genuine
+  regression from this fix pass (test_m4_gates arm-link, a consequence of item 4) is FIXED.
+
+## Screenshots regenerated (item 1)
+- `reports/prediction_markets/ui_verify/{05_accounts,06_account}.png` (+ the 4 live states) regenerated after the
+  display-only removal + arm-badge change; harness still 14/14. 06_account shows the figs always rendered, the
+  read-only "GLOBAL DISARMED" badge, and "snapshots are written every 5 minutes"; no "display-only" anywhere.
+
+## NOT DEPLOYED, NOT RESTARTED
+Nothing on the box was touched. No service was deployed, restarted, or reloaded. No engine code, engine-owned
+table, or credential was modified (the item-3 merge INCORPORATED the already-deployed per-account engine code; it
+authored no engine change). The armed, trading accounts were not touched.
