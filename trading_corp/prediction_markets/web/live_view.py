@@ -239,9 +239,25 @@ def _ticker_settlement(orders: list) -> dict:
     return out
 
 
-def _build_slot(ticker, kind, open_pos, settle, mark):
+def _settled_leg(orders_for_ticker) -> str | None:
+    """The side we HELD into settlement, from the ENTRY fills' outcome_leg (the ticker leg we bought) -- the SAME
+    yes/no direction a live slot derives from its net position. None when no filled entry records a leg, or when
+    entries span BOTH legs (genuinely ambiguous) -> the settled slot then shows the line WITHOUT a fabricated
+    sign, never a guessed one."""
+    legs = set()
+    for o in (orders_for_ticker or []):
+        if not o.get("is_exit") and o.get("outcome_status") == "filled":
+            leg = str(o.get("outcome_leg") or "").lower()
+            if leg in ("yes", "no"):
+                legs.add(leg)
+    return next(iter(legs)) if len(legs) == 1 else None
+
+
+def _build_slot(ticker, kind, open_pos, settle, mark, settled_leg=None):
     """One card bet-slot: open (live value = contracts x held-leg bid) or settled (won/lost). open_pos is the
-    live_positions row for this ticker (or None); settle is the per-ticker settlement rollup (or None)."""
+    live_positions row for this ticker (or None); settle is the per-ticker settlement rollup (or None). settled_leg
+    is the side held into settlement (from _settled_leg) -> a settled slot carries the SAME directional shorthand
+    (over/under, spread sign+team) a live slot does; None -> the line without a sign."""
     if open_pos is not None:
         leg = open_pos.get("held_leg")
         bid = marks_mod.bid_for_leg(mark, leg)
@@ -261,8 +277,8 @@ def _build_slot(ticker, kind, open_pos, settle, mark):
         # a distinct number, shown in the drawer). value_known only when we actually know the win/loss.
         payout = (contracts if won else 0.0) if (won is not None and contracts is not None) else None
         return {"kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
-                "short": _short_label(ticker, kind, None), "desc": describe_market(ticker, None),
-                "ticker": ticker, "held_leg": None, "contracts": contracts, "avg_fill": None, "cost": None,
+                "short": _short_label(ticker, kind, settled_leg), "desc": describe_market(ticker, settled_leg),
+                "ticker": ticker, "held_leg": settled_leg, "contracts": contracts, "avg_fill": None, "cost": None,
                 "fee": None, "settled": True, "won": won, "realized": settle.get("realized"),
                 "settled_at": settle.get("settled_ts"), "current_value": payout,
                 "value_known": payout is not None, "bid": None}
@@ -322,7 +338,8 @@ def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker,
     for tk in sorted(tickers):
         kind = _kind(tk)
         slot = _build_slot(tk, kind, open_by_ticker.get(tk),
-                           settle_by_ticker.get(tk), (marks or {}).get(tk))
+                           settle_by_ticker.get(tk), (marks or {}).get(tk),
+                           _settled_leg(orders_by_ticker.get(tk)))
         if slot is not None and kind not in by_kind:   # one slot per kind on the card
             by_kind[kind] = slot
             slots.append(slot)

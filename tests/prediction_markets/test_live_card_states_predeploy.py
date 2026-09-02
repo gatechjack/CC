@@ -39,6 +39,16 @@ def test_short_label_moneyline_unchanged():
     assert LV._short_label("KXMLBGAME-26SEP021840SDCIN-SD", "moneyline", "yes") == "SD"
 
 
+def test_settled_leg_derivation():
+    def mk(leg, ex=0, st="filled"):
+        return {"outcome_leg": leg, "is_exit": ex, "outcome_status": st}
+    assert LV._settled_leg([mk("yes"), mk("yes", ex=1)]) == "yes"    # entry leg; the exit is ignored
+    assert LV._settled_leg([mk("no")]) == "no"
+    assert LV._settled_leg([mk("yes"), mk("no")]) is None            # entries on BOTH legs -> ambiguous, no sign
+    assert LV._settled_leg([mk("yes", st="pending")]) is None        # no FILLED entry records a leg
+    assert LV._settled_leg([]) is None
+
+
 # ── item 1: scheduled date/time formatting ────────────────────────────────────────────────────────────────────
 def test_fmt_et_datetime_shapes():
     assert LV._fmt_et_datetime("2026-09-02", "1840") == "Wed Sep 2 · 6:40 PM ET"
@@ -155,6 +165,48 @@ def test_no_mismatch_when_feed_matches_ticker():
     gs = _gs("in_progress", inning=1, half="TOP")
     ctx = _ctx([("KXMLBTOTAL-26SEP021840SDCIN-9", gs)])
     assert ctx["cards"][0]["time_mismatch"] is None
+
+
+# ── step 0: a SETTLED slot carries the same directional shorthand as a live slot ──────────────────────────────
+def _settled_orders(ticker, leg, won=1, realized=4.8):
+    entry = {"id": 1, "ticker": ticker, "wallet": "0xw", "user_name": "w", "outcome_leg": leg, "is_exit": 0,
+             "outcome_status": "filled", "fill_count": 10.0, "fill_price": 0.52, "submitted_price": 0.55,
+             "fee": 0.0, "response_ts": NOW, "submitted_ts": NOW}
+    settle = {"id": 2, "ticker": ticker, "wallet": "0xw", "user_name": "w", "outcome_leg": leg, "is_exit": 1,
+              "close_source": "settlement", "won": won, "realized_pnl": realized, "outcome_status": "filled",
+              "fill_count": 10.0, "fill_price": 1.0 if won else 0.0, "settled_ts": NOW, "response_ts": NOW}
+    return [entry, settle]
+
+
+def _settled_ctx(orders):
+    return LV.build_live_context(orders=orders, open_positions=[], open_positions_by_whale=[],
+                                 slate=F.SlateResult(DATE, {}, True, "statsapi", NOW),
+                                 marks_result=MK.MarksResult(marks={}, ok=True, as_of=NOW), now_ts=NOW)
+
+
+def test_settled_total_slot_carries_over_under_sign():
+    ctx = _settled_ctx(_settled_orders("KXMLBTOTAL-26SEP021840SDCIN-9", "yes"))     # held Over
+    slot = ctx["cards"][0]["slots_by_kind"]["TOT"]
+    assert slot["settled"] is True and slot["short"] == "+8.5"      # SAME directional label as a live Over slot
+    ctx2 = _settled_ctx(_settled_orders("KXMLBTOTAL-26SEP021840SDCIN-9", "no", won=0))
+    assert ctx2["cards"][0]["slots_by_kind"]["TOT"]["short"] == "-8.5"   # held Under, lost -> still labelled Under
+
+
+def test_settled_spread_slot_carries_sign_and_team():
+    ctx = _settled_ctx(_settled_orders("KXMLBSPREAD-26SEP021840SDCIN-SD2", "yes"))
+    assert ctx["cards"][0]["slots_by_kind"]["SPR"]["short"] == "-1.5 SD"      # anchor lays the spread
+    ctx2 = _settled_ctx(_settled_orders("KXMLBSPREAD-26SEP021840SDCIN-SD2", "no"))
+    assert ctx2["cards"][0]["slots_by_kind"]["SPR"]["short"] == "+1.5 CIN"    # the other team gets +strike
+
+
+def test_settled_slot_without_recorded_leg_shows_no_sign():
+    # entries on BOTH legs -> the held side is genuinely ambiguous -> the settled line shows WITHOUT a sign.
+    orders = _settled_orders("KXMLBTOTAL-26SEP021840SDCIN-9", "yes")
+    orders.append({"id": 3, "ticker": "KXMLBTOTAL-26SEP021840SDCIN-9", "wallet": "0xw", "outcome_leg": "no",
+                   "is_exit": 0, "outcome_status": "filled", "fill_count": 1.0, "fill_price": 0.4,
+                   "submitted_price": 0.4, "fee": 0.0, "response_ts": NOW, "submitted_ts": NOW})
+    slot = _settled_ctx(orders)["cards"][0]["slots_by_kind"]["TOT"]
+    assert slot["short"] == "8.5"      # line only, no fabricated direction
 
 
 # ── items 1/2/4 through the rendered template ─────────────────────────────────────────────────────────────────
