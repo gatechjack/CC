@@ -183,3 +183,27 @@ def test_analyze_ungrounded_writes_no_cache_row(tmp_path, monkeypatch):
     _client(tmp_path, monkeypatch, _Boom).post("/farm/analyze/%s/mlb" % W)
     with db.connect(db.pm_db_path()) as conn:
         assert conn.execute("SELECT COUNT(*) FROM pm_loss_grounding_cache WHERE wallet=?", (W,)).fetchone()[0] == 0
+
+
+# ── Prospects Analyze control (2026-09-02): the result carries an OOB fragment that updates the originating row ──
+def test_analyze_result_carries_oob_row_omission_update(tmp_path, monkeypatch):
+    """The loop closing on the LIST: the Analyze result includes an hx-swap-oob fragment keyed to the whale's row
+    omission cell (id pm-omit-<wallet>-<cat>) carrying the grounded figure -> the un-analyzed [Analyze] button on that
+    prospect row is replaced in place by the omission. _GroundClient -> omission 50%, so the OOB shows a material figure."""
+    html = _client(tmp_path, monkeypatch, _GroundClient).post("/farm/analyze/%s/mlb" % W).text
+    assert ('id="pm-omit-%s-mlb"' % W) in html and 'hx-swap-oob="true"' in html   # OOB updates the row cell in place
+    assert "losses" in html                                                       # the grounded omission rides in it
+    # and it must NOT still be an [Analyze] button (the row is now analyzed) -> the OOB carries the figure, not the CTA
+    oob = html.split('id="pm-omit-%s-mlb"' % W, 1)[1].split("</span>", 1)[0]
+    assert "pm-omit-analyze" not in oob
+
+
+def test_analyze_route_is_ungated_for_non_admin(tmp_path, monkeypatch):
+    """Analyze is UNGATED (Karen is a promotion judge too, R3): a non-admin POST to the analyze route succeeds and
+    still grounds/writes the omission -- adding the control must not have gated the route."""
+    cl = _client(tmp_path, monkeypatch, _GroundClient)
+    cl.headers.update({"Remote-User": "karen"})
+    r = cl.post("/farm/analyze/%s/mlb" % W)
+    assert r.status_code == 200 and 'data-loss-grounded="1"' in r.text
+    with db.connect(db.pm_db_path()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_loss_grounding_cache WHERE wallet=?", (W,)).fetchone()[0] == 1

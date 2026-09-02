@@ -364,3 +364,10 @@ th.pm-primary{color:var(--mono)}
 .pm-omit-unknown{color:var(--amber)}
 .pm-omit-ok{color:var(--green)}
 .pm-omit-floor{opacity:.85; font-weight:700}
+/* the un-analyzed omission caveat IS the ungated [Analyze] control -- a button reset to look like the caveat but
+   clearly clickable; only on un-analyzed rows (cost-safe), disables while the LLM call is in flight. */
+.pm-omit-analyze{background:none; border:none; padding:0; font-family:inherit; text-align:left; cursor:pointer;
+  text-decoration:underline dotted}
+.pm-omit-analyze:hover{filter:brightness(1.15)}
+.pm-omit-analyze .pm-omit-cta{font-weight:700; text-decoration:underline}
+.pm-omit-analyze[disabled]{cursor:progress; opacity:.6}

@@ -68,3 +68,28 @@
      hx-target="#pm-drill-panel" hx-swap="innerHTML" hx-push-url="true"
      title="drill to the {{ drill }} rows">{{ disp }}</a>
 {%- endmacro %}
+
+{# ── omission_cell(lo, wallet, category, oob) ──────────────────────────────────────────────────────
+   The per-whale F-1 loss-omission caveat that rides BESIDE win% on the Prospects row. THREE states, and the
+   UN-analyzed one IS the action: (a) not analyzed -> an UNGATED [Analyze] control right in the caveat, so the
+   instruction is actionable where it appears (Karen is a promotion judge too, R3 -> ungated; Promote/Refresh
+   stay admin-gated in the action cell, untouched). Analyze is an LLM call (~$0.001) against the $20/day cap;
+   hx-disabled-elt="this" stops a double-click double-spend; the control appears ONLY on un-analyzed rows (no
+   bulk / analyze-all, and an analyzed row shows the FIGURE, never a re-run invite). (b) analyzed + omission ->
+   the figure. (c) analyzed + none -> verified 0%. `oob=True` marks the wrapper hx-swap-oob so an Analyze RESULT
+   updates THIS row's cell in place (unknown+[Analyze] -> the grounded figure) -- the loop closing on the list.
+   ONE definition, shared by the row and the result's OOB fragment, so the two can never show a different number. #}
+{% macro omission_cell(lo, wallet, category, oob=False) -%}
+<span id="pm-omit-{{ wallet }}-{{ category }}" class="pm-omit-wrap"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {%- if not lo.known -%}
+    <button class="pm-omit pm-omit-unknown pm-omit-analyze" type="button"
+       title="Loss-omission NOT checked -- win% may be badly over-stated (/closed-positions drops held-to-worthless losses). Click to ANALYZE (LLM call, ~$0.001, against the $20/day cap); the omission then shows here."
+       hx-post="/farm/analyze/{{ wallet }}/{{ category }}" hx-target="#pm-analyze-panel" hx-swap="innerHTML"
+       hx-disabled-elt="this">omission&nbsp;unknown &middot; <span class="pm-omit-cta">Analyze</span></button>
+  {%- elif lo.omission_pct is not none and lo.omission_pct > 0 -%}
+    <span class="pm-omit pm-omit-bad" title="Re-grounded from /activity: {{ '%.0f'|format(lo.omission_pct * 100) }}% of this whale's losses were dropped by /closed-positions{% if lo.coverage_pct is not none %}, at {{ '%.0f'|format(lo.coverage_pct * 100) }}% coverage{% endif %}{% if lo.floor %} (a FLOOR -- window/coverage incomplete){% endif %}; honest {{ lo.honest_wins }}W/{{ lo.honest_losses }}L{% if lo.age_days is not none %}; grounded {{ '%.0f'|format(lo.age_days) }}d ago{% endif %}. Win% is OVER-STATED.">&minus;{{ '%.0f'|format(lo.omission_pct * 100) }}%&nbsp;losses{% if lo.coverage_pct is not none %} @{{ '%.0f'|format(lo.coverage_pct * 100) }}%cov{% endif %}{% if lo.floor %} <span class="pm-omit-floor">(floor)</span>{% endif %}</span>
+  {%- else -%}
+    <span class="pm-omit pm-omit-ok" title="Re-grounded from /activity: no held-to-worthless losses missing{% if lo.coverage_pct is not none %} at {{ '%.0f'|format(lo.coverage_pct * 100) }}% coverage{% endif %}; win% is not F-1-inflated.">omit&nbsp;0%&nbsp;verified</span>
+  {%- endif -%}
+</span>
+{%- endmacro %}

@@ -1,4 +1,9 @@
-{% from "pm_macros.html" import flag_badges, whale_label %}
+{% from "pm_macros.html" import flag_badges, whale_label, omission_cell %}
+{# ★ OOB row-update (the loop closing on the LIST): if this Analyze was launched from a Prospects row, refresh
+   THAT row's omission cell in place -- unknown+[Analyze] -> the grounded figure -- so analyze -> see the omission
+   ON THE ROW -> decide on promotion. Harmless no-op when Analyze came from anywhere else (no row with this id).
+   SAME macro as the row, so the row and the result can never show a different omission. #}
+{{ omission_cell({'known': report.loss_grounded, 'omission_pct': report.loss_omission_pct, 'coverage_pct': report.loss_coverage_pct, 'floor': report.loss_is_floor, 'honest_wins': report.honest_wins, 'honest_losses': report.honest_losses, 'age_days': none}, report.wallet, report.category, oob=True) }}
 {# CP3b-2 ANALYZE result (HTMX partial; swaps into #pm-analyze-panel). The deterministic report ALWAYS
    renders in full; the verdict is a SEPARATE block that is either the narration or a reasoned-null with its
    reason IN WORDS. Thinness travels with the verdict (a thin sample is marked; a zero-row slice refuses
