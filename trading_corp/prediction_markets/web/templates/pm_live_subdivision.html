@@ -51,7 +51,7 @@
   {%- set curIdx = (feed.inning - 1) if (not fin and feed.inning and feed.half == ('TOP' if side == 'away' else 'BOT')) else -1 -%}
   {%- set cw = 11 if n <= 9 else (10 if n == 10 else 9) -%}
   <div class="ls {% if lead %}lead{% endif %} {% if n > 9 %}xi{% endif %}" style="grid-template-columns:19px repeat({{ n }},{{ cw }}px) 17px">
-    <span class="ab">{{ abbr or '&mdash;' }}</span>
+    <span class="ab">{{ abbr or '&mdash;'|safe }}</span>
     {%- for i in range(n) -%}
       {%- set v = L[i] if i < L|length else none -%}
       <span class="i {% if i == curIdx %}cur{% endif %} {% if v is none %}fut{% endif %}{% if i == 9 %} ext{% endif %}">{{ v if v is not none else '&middot;'|safe }}</span>
@@ -122,7 +122,7 @@
       {% elif feed.status == 'final' %}<span class="st">FINAL</span>
       {% elif feed.status == 'in_progress' %}<span class="st on">LIVE</span>
       {% else %}<span class="st">{{ feed.status|upper }}</span>{% endif %}
-      <span class="mu">{{ aw or '&mdash;' }} @ {{ hm or '&mdash;' }}</span>
+      <span class="mu">{{ aw or '&mdash;'|safe }} @ {{ hm or '&mdash;'|safe }}</span>
       {% if card.mixed %}<span class="mxn">{{ card.n_settled }} SETTLED &middot; {{ card.n_live }} LIVE</span>{% endif %}
       {% if card.drops_in_h is not none %}<span class="chip" style="font-size:9px">drops in {{ card.drops_in_h }}h</span>{% endif %}
       <div class="r">
@@ -144,7 +144,7 @@
 {% block content %}
   <div class="crumb"><a href="/">Accounts</a> / <a href="/account/{{ account_id }}">{{ sub.account_label or account_id }}</a> / {{ category|upper }}</div>
   <div style="display:flex;align-items:center;gap:14px;margin-top:4px;flex-wrap:wrap">
-    <h1>{{ sub.sub_label or ((sub.account_label or account_id) ~ ' &middot; ' ~ category|upper) }}</h1>
+    <h1>{% if sub.sub_label %}{{ sub.sub_label }}{% else %}{{ sub.account_label or account_id }} &middot; {{ category|upper }}{% endif %}</h1>
     {{ armbadge(arm_badge.effective_state, arm_badge.effective_age) }}
     <span class="caveat">read-only &mdash; arming is done from the service, not here</span>
   </div>

@@ -64,7 +64,7 @@
   <div class="panel" style="margin-bottom:12px">
     <div class="pad" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
       <div>
-        <div style="font-family:var(--dmono);font-size:15px">{{ b.sub_label or (account.account_label ~ ' &middot; ' ~ b.category|upper) }}</div>
+        <div style="font-family:var(--dmono);font-size:15px">{% if b.sub_label %}{{ b.sub_label }}{% else %}{{ account.account_label }} &middot; {{ b.category|upper }}{% endif %}</div>
         <div class="caveat" style="margin-top:4px">
           {{ b.market_types or b.category|upper }}
           {% if b.n_whales is not none %} &middot; {{ b.n_whales }} whale{{ '' if b.n_whales == 1 else 's' }} followed{% endif %}

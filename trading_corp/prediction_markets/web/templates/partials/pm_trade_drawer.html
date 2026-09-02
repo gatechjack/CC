@@ -17,9 +17,9 @@
       <tr class="main" data-row="{{ t.order_id }}">
         <td class="pri">{{ t.entry_ts|ettime }}</td>
         <td>{{ t.entry_ts|etdate }}</td>
-        <td class="pri">{{ t.matchup or '&mdash;' }}</td>
+        <td class="pri">{{ t.matchup or '&mdash;'|safe }}</td>
         <td>{{ t.kind_label }}</td>
-        <td class="pri">{{ t.whale_label or '&mdash;' }}</td>
+        <td class="pri">{{ t.whale_label or '&mdash;'|safe }}</td>
         <td class="n">{{ '%g'|format(t.contracts) }}</td>
         <td class="n">{% if t.submitted is not none %}${{ '%.2f'|format(t.submitted) }}{% else %}&mdash;{% endif %}</td>
         <td class="n pri">{% if t.fill is not none %}${{ '%.2f'|format(t.fill) }}{% else %}&mdash;{% endif %}</td>
@@ -55,7 +55,7 @@
           <div class="mono">{{ t.exit_ts|etdt }}{% if t.exit_price is not none %} @ ${{ '%.2f'|format(t.exit_price) }}{% endif %}</div></div>
         {% endif %}
         <div><div class="lbl">Settled</div><div class="mono">{% if t.settled_ts %}{{ t.settled_ts|etdt }}{% elif t.status == 'open' %}not yet settled{% else %}never settled{% endif %}</div></div>
-        <div><div class="lbl">{{ 'Current position value' if t.status == 'open' else 'Realized P&amp;L' }}</div>
+        <div><div class="lbl">{{ 'Current position value' if t.status == 'open' else 'Realized P&L' }}</div>
           {%- if t.status == 'open' -%}
             {%- if t.value_known -%}
               <div class="mono" style="color:var(--live);font-size:15px">{{ '%g'|format(t.contracts) }} &times; bid = {{ t.value_now|money }}</div>
