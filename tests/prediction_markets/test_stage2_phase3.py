@@ -44,7 +44,7 @@ def test_root_serves_dashboard(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.text
     # M2 R1: / is the ACCOUNTS OVERVIEW; Farm League a nav peer. No pm_account seeded -> honest-empty accounts.
-    assert ">Accounts</a>" in body and 'href="/farm"' in body
+    assert ">Accounts</b>" in body and 'href="/farm"' in body
     assert "No accounts yet" in body
 
 
@@ -111,7 +111,7 @@ def test_whale_pages_render_under_one_shell(tmp_path, monkeypatch):
         assert r.status_code == 200                          # renders => no dangling `extends pm_base.html` (else 500)
         body = r.text
         # the pm_shell nav (M2 R1: Accounts / Farm League) proves ONE shell, not the old pm_base nav
-        assert ">Accounts</a>" in body and 'href="/farm"' in body
+        assert ">Accounts</b>" in body and 'href="/farm"' in body
 
 
 # ── every internal link points at the hierarchy, never the temp/legacy paths ──────────────────────

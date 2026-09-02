@@ -53,18 +53,18 @@ def _client(monkeypatch, tmp_path):
 def test_accounts_overview_lists_both_with_honest_pnl(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path)
     html = cl.get("/").text
-    assert ">Accounts</a>" in html                                    # the new top-of-hierarchy nav
+    assert ">Accounts</b>" in html                                    # the new top-of-hierarchy nav (copy-desk wraps label in <b>)
     # jack: PM-traded -> realized/win-loss/SAMPLE/open shown separately, caveat with the number
     assert 'href="/account/kalshi_jack"' in html and "Jack (KALSHI)" in html
     assert "Realized" in html and "settled" in html and "1W / 1L" in html   # W/L split (win + loss seeded)
-    assert "Open (at cost)" in html
-    assert "thin sample" in html or "settled sample" in html          # the caveat travels with the number
+    assert "at cost" in html                                          # open exposure at cost (design label)
+    assert "too small a sample" in html or "outcome, not proven edge" in html   # the thin-sample caveat travels with the number
     # karen: display-only -> the limitation is in the COPY, not an empty frame
     assert 'href="/account/kalshi_karen"' in html and "Karen" in html
     assert "not traded by Prediction Markets" in html
     # R4: global arm state visible (read-only), NO control. Check for actual control ELEMENTS/endpoints -- NOT the
     # bare word "disarm", which legitimately appears in the read-only copy "arm/disarm is a CLI action".
-    assert "GLOBAL ARM" in html
+    assert "GLOBAL DISARMED" in html                                  # R4: global arm state visible (read-only; no arm rows -> disarmed)
     for tok in ("hx-post", "<form", "<button", "<input", "/attach/"):
         assert tok not in html.lower(), tok
 
@@ -76,8 +76,8 @@ def test_account_page_jack_shows_subdivision_pnl(monkeypatch, tmp_path):
     assert "1 / 1" in html or "1W / 1L" in html                       # win/loss split visible
     assert "settled" in html.lower()                                  # sample size shown
     assert 'href="/live/kalshi_jack/mlb"' in html                     # links down to the live sub-division
-    assert "cost basis" in html.lower()                               # open at cost, not mark
-    assert "GLOBAL ARM" in html
+    assert "at cost" in html.lower()                                  # open at cost, not mark
+    assert "GLOBAL DISARMED" in html                                  # R4: global arm state visible (read-only; no arm rows -> disarmed)
     # read-only: no control ELEMENTS ("disarm" as a word is fine -- it is in the read-only "arm/disarm is a CLI action" copy)
     for tok in ("hx-post", "<form", "<button", "<input", "/attach/"):
         assert tok not in html.lower(), tok
@@ -120,9 +120,9 @@ def test_balance_section_renders_split_and_age_band(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path)
     _write_snap(tmp_path, "kalshi_jack", {0: 0.0081, 3: 473.5897})
     html = cl.get("/account/kalshi_jack").text
-    assert "Balance (per shard)" in html
+    assert "Cash by shard" in html                                   # the balance section (design heading)
     assert "Shard 3" in html and "473.59" in html                    # the per-shard split (the point, not the total)
-    assert "pm-age-fresh" in html and "min ago" in html              # the age band is obvious, not a raw timestamp
+    assert 'class="chip' in html and "ago" in html                   # the age band is an obvious chip, not a raw timestamp
 
 
 def test_balance_honest_empty_present_but_no_snapshot(monkeypatch, tmp_path):

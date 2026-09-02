@@ -54,7 +54,7 @@ def test_dashboard_route_resolves(tmp_path, monkeypatch):
     # M2 R1: / is the ACCOUNTS OVERVIEW; Farm League stays a nav peer; the flat "Live sub-divisions" nav item is
     # superseded by per-account -> sub-divisions. No pm_account seeded here (schema 9) -> honest-empty accounts.
     assert "Farm League" in body and 'href="/farm"' in body
-    assert ">Accounts</a>" in body                 # the new top-of-hierarchy
+    assert ">Accounts</b>" in body                 # the new top-of-hierarchy (copy-desk nav wraps the label in <b>)
     assert "No accounts yet" in body               # no pm_account seeded -> honest-empty (never an error)
 
 

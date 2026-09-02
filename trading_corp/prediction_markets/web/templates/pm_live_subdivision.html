@@ -147,6 +147,7 @@
     <span class="badge {{ 'armed' if arm.get('effective_armed') else 'disarmed' }}"><span class="dot"></span>{{ 'ARMED' if arm.get('effective_armed') else 'DISARMED' }}</span>
     <span class="caveat">read-only &mdash; arming is done from the service, not here</span>
   </div>
+  <p class="caveat" style="margin-top:6px">{{ sub.market_types or category|upper }} &middot; {{ sizing_summary }}</p>
 
   {% if warming %}
   <p class="caveat" style="margin-top:14px">Feed cache is warming up (first {{ poll_interval }}s poll not yet complete) &mdash; current values and scores appear once the poller has run.</p>

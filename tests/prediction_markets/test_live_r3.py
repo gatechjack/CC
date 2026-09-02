@@ -108,39 +108,32 @@ def test_live_tile_shows_trade_count_once_traded(monkeypatch, tmp_path):
 
 
 def test_live_subdivision_honest_empty_wording(monkeypatch, tmp_path):
-    """Honest-empty for a sub-division that truly has not traded -- but the wording must NOT imply the engine does
-    not exist (the old 'Live copies arrive with the execution engine' is gone)."""
+    """Honest-empty for a sub-division that truly has not traded, with no wording implying the engine does not
+    exist. (Redesign: no game cards + an empty trade drawer; the old table's 'No open positions' is now 'no games'.)"""
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True)   # no orders
     r = cl.get("/live/kalshi_jack/mlb")
     assert r.status_code == 200
-    assert "No live trades yet" in r.text
+    assert "No live trades yet" in r.text                       # the trade drawer's honest-empty
     assert "arrive with the execution engine" not in r.text
-    assert "No open positions" in r.text
+    assert "No active games held" in r.text                     # no game cards -> honest-empty, not an error
     # a sub-division that does not exist -> 404, never a fabricated page
     assert cl.get("/live/nope/mlb").status_code == 404
     assert cl.get("/live/kalshi_jack/nba").status_code == 404
 
 
 def test_live_subdivision_shows_real_filled_order(monkeypatch, tmp_path):
-    """★ THE DEFECT, DIRECT: a filled dry_run=0 order MUST render in the Live trades table AND as an open position.
-    Fixture mirrors the real first fill (KXMLBGAME YES, filled 1 @ 0.60)."""
+    """★ THE DEFECT, DIRECT: a filled dry_run=0 order MUST render -- in the trade drawer AND as an open card
+    bet-slot. Fixture mirrors the real first fill (KXMLBGAME YES, filled 1 @ 0.60). (Redesign: journal table ->
+    game card + drawer; the feed is unavailable in this offline test, so the matchup comes from the ticker and the
+    open value is an honest 'no mark' rather than a fabricated score/price.)"""
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[{}])
-    r = cl.get("/live/kalshi_jack/mlb")
-    assert r.status_code == 200
-    html = r.text
-    # the empty placeholder is GONE now that a trade exists
-    assert "No live trades yet" not in html
-    # the trade row: ticker, derived market type, leg, entry, submitted vs fill, fee, status
-    assert "KXMLBGAME-26AUG301920CINCHC-CHC" in html
-    assert "moneyline" in html                    # derived from the KXMLBGAME series
-    assert "YES" in html and "ENTRY" in html
-    assert "$0.62" in html and "$0.60" in html    # submitted vs fill (distinct)
-    assert "$0.0084" in html                       # fee
-    assert "filled" in html
-    # the OPEN POSITION: held 1 YES contract, cost basis $0.60, sourced from the journal (honestly labelled)
-    assert "Currently held" in html
-    assert "No open positions" not in html
-    assert "not a live venue read" in html
+    html = cl.get("/live/kalshi_jack/mlb").text
+    assert "No live trades yet" not in html                      # a trade exists -> drawer populated
+    assert "KXMLBGAME-26AUG301920CINCHC-CHC" in html             # the raw ticker (drawer row detail)
+    assert "$0.62" in html and "$0.60" in html                   # submitted vs fill, distinct
+    assert ">OPEN</td>" in html                                  # the entry's terminal status
+    assert "CIN @ CHC" in html                                   # matchup from the ticker (no fabricated feed score)
+    assert "no mark" in html                                     # no cached mark in the offline test -> honest 'no mark', never $0
 
 
 def test_live_shows_plain_language_description_and_keeps_raw_ticker(monkeypatch, tmp_path):
@@ -178,23 +171,22 @@ def test_settlement_close_renders_as_SETTLED_not_EXIT(monkeypatch, tmp_path):
     SETTLED (won/lost) with the REALIZED P&L in place of the blank submitted/fill price."""
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[{}, dict(_SETTLEMENT)])
     html = cl.get("/live/kalshi_jack/mlb").text
-    assert "SETTLED" in html                                   # the settlement is labelled distinctly
-    assert "lost" in html                                      # won=0 -> lost badge
-    assert "-0.6084" in html and "realized" in html            # the realized P&L IN PLACE OF a blank price
-    assert "ENTRY" in html                                     # the entry row still renders as ENTRY
-    # the settlement did NOT invent an order: it must not show a submitted/fill price or a TIF for that close
-    assert "immediate_or_cancel" in html                       # (the ENTRY row's TIF still shows -- present, not asserted-absent)
+    # the copy's terminal STATUS is SETTLED, NOT EXIT (the Cubs bug conflated the two). Key on the status CELL
+    # markup, not the bare words -- the drawer footer legitimately EXPLAINS all four states incl EXIT/SETTLED.
+    assert ">SETTLED</td>" in html and ">EXIT</td>" not in html
+    assert "-$0.61" in html                                    # the realized P&L (-0.6084 -> cents), not a blank price
 
 
 def test_real_whale_exit_still_renders_EXIT_not_settled(monkeypatch, tmp_path):
     """Guard the other side: a REAL whale-exit (is_exit=1 but close_source != 'settlement') keeps rendering EXIT,
     with its submitted/fill price -- only a settlement close is relabelled."""
-    exit_row = {"is_exit": 1, "close_source": "whale_exit", "client_order_id": "exit-coid",
+    # an ENTRY that the whale then exited (the drawer keys on the copy's entry, folding in its close state).
+    exit_row = {"is_exit": 1, "close_source": "whale_exit", "client_order_id": "exit-coid", "signal_id": "exsig",
                 "submitted_price": 0.41, "fill_price": 0.40, "fee": 0.006, "order_side": "ask"}
-    cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[dict(exit_row)])
+    cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[{}, dict(exit_row)])
     html = cl.get("/live/kalshi_jack/mlb").text
-    assert "EXIT" in html and "SETTLED" not in html            # a placed exit is EXIT, never SETTLED
-    assert "$0.40" in html                                     # its real fill price still shows
+    assert ">EXIT</td>" in html and ">SETTLED</td>" not in html   # a placed exit is EXIT, never SETTLED (status cell)
+    assert "$0.40" in html                                        # its exit fill price still shows (row detail)
 
 
 def test_sizing_display_states_behaviour_not_misleading_cent(monkeypatch, tmp_path):
@@ -221,9 +213,9 @@ def test_dashboard_card_enabled(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True)
     r = cl.get("/")
     assert r.status_code == 200
-    assert ">Accounts</a>" in r.text                     # the new top-of-hierarchy nav
+    assert ">Accounts</b>" in r.text                     # the new top-of-hierarchy nav
     assert 'href="/account/kalshi_jack"' in r.text       # the seeded account links to its per-account page
-    assert "GLOBAL ARM" in r.text                        # R4: global arm state visible (read-only)
+    assert "GLOBAL DISARMED" in r.text                   # R4: global arm state visible (read-only; no arm rows -> disarmed)
     assert "coming in P3" not in r.text
 
 
@@ -236,7 +228,9 @@ def test_live_is_read_only_no_order_path_even_with_a_fill(monkeypatch, tmp_path)
     assert cl.post("/live/kalshi_jack/mlb").status_code == 405
     for path in ("/live", "/live/kalshi_jack/mlb"):
         html = cl.get(path).text.lower()
-        for token in ("<form", "place order", "/order", 'type="submit"', "hx-post", "disarm"):
+        # read-only: no order path / no arm-disarm CONTROL. The redesign DISPLAYS the read-only arm STATUS
+        # ('DISARMED' badge), so we forbid an arm/disarm ACTION endpoint ('/arm'), not the status word.
+        for token in ("<form", "place order", "/order", 'type="submit"', "hx-post", "/arm"):
             assert token not in html, (path, token)
 
 
@@ -244,7 +238,7 @@ def test_vocabulary_no_internal_name_leak(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True, stake=0.01, orders=[{}])
     for path in ("/live", "/live/kalshi_jack/mlb"):
         html = cl.get(path).text
-        assert ">Accounts</a>" in html                 # M2 R1: renders under the pm_shell (Accounts nav), one shell
+        assert ">Accounts</b>" in html                 # M2 R1: renders under the pm_shell (Accounts nav), one shell
         for leak in ("pm_subdivision", "pm_account", "secret_ref", "owner_identity", "'pinned'", "'candidate'"):
             assert leak not in html, (path, leak)
 
