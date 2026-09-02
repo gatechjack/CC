@@ -64,6 +64,37 @@ arms, or prod-live advances. The live jack-mlb division is trading, untouched.
    **★ Rung 5 (separate restart to pick up Karen) is ELIMINATED** — her subdivision already exists, so the Rung-2
    restart picks her up directly.
 
+## ★★ RUNG 2+R7 RECON DONE (Jack ran `pm_r2_recon_ro.ps1`, 2026-09-02 11:30Z) — deploy is Jack's Board decision
+**The recon (box-is-truth pre-graft check) surfaced two things; the deploy/restart/arm are Jack's, so this is
+DOCUMENTED for his self-service, not driven by me:**
+- **★ ARM ANOMALY — verify before believing:** at Rung 4 (11:21Z) jack was `armed=True scope=both`; recon (11:30Z)
+  shows **both accounts `armed=False scope=global`** (the GLOBAL master reads disarmed). Either a deliberate global
+  disarm by Jack, OR the transient `mode=ro` fail-safe read (the standing lens). **Check the persisted `agent_state`
+  rows + their ts** (a real disarm stamps a new ts) before concluding jack stopped trading.
+- **★★ BOX DRIFT + graft mechanism (the deploy MUST honor this):**
+  - **The box is NOT a git repo** (`fatal: not a git repository`) → the graft is **base64-embed / stream, NOT
+    git-checkout.** Mirror the prior engine-bundle runner `cc\pm_bundle_step2_files.sh` (backup `.bak_$TS` + decode +
+    write + sha-verify + Gate-A py_compile/import-closure), then Jack's `restart_tc.ps1`.
+  - **Per-file graft strategy (verified against the box shas):**
+    - `execution.py` — box `851f4128` == base → **wholesale-write HEAD** `bc806bc4` (base + R7). Safe.
+    - `shard_snapshot_task.py` — box `4aaceeaf` == base → **wholesale-write HEAD** `956f13c3` (base + whitelist). Safe.
+    - `live_driver.py` — box `a2324005` == commit **`10c3692`** (a clean ancestor; box simply lacks the `:639` fix +
+      R7) → **wholesale-write HEAD** `a9913983`. Safe (no unknown box drift; brings `:639`+R7).
+    - `driver_roster.py` `802c9a82`, `venue_exposure.py` `b891a183` — **NEW files, write them.**
+    - **`main.py` — box `cc733a17` matches NO commit anywhere → a HAND-GRAFTED artifact. GRAFT the N2 hunk, NEVER
+      wholesale-copy** (a wholesale write clobbers the box's real content). Patch staged: **`cc\pm_r2_mainpy_n2.patch`**
+      (`git diff f1e28cc..HEAD -- main.py`, 110 lines). ★ PRE-GRAFT: `git apply --check` (or read) the box main.py to
+      confirm the single-account `pm_live_driver` block (`_pm_broker = KalshiLiveBroker` … `account_id=…"kalshi_jack"`)
+      is present verbatim; if the box drift is outside that block it applies cleanly; result must sha to `fff75b0b`.
+  - The 2-task roster post-check is staged: **`cc\pm_r2_postcheck_ro.sh`** (chain-of-custody 6 shas, roster log,
+    Karen boot-reconcile clean + disarmed, R7 field cross-check, exposure_unknown health).
+- **Staged runners for the deploy (all in `cc\`, Jack runs when he decides):** `pm_r2_recon_ro.{sh,ps1}` (done),
+  `pm_r2_mainpy_n2.patch` (main.py graft), `pm_r2_postcheck_ro.{sh,ps1}` (post-check). The graft runner itself
+  (base64-embed of the 5 package files + apply the patch) is NOT authored by me — build it from the
+  `pm_bundle_step2_files.sh` precedent, or I can prepare it on request. **I did not run any deploy/graft/restart.**
+- **Isolation:** a concurrent agent is building the PM new UI (pm_web). I am engine-side only, in my own worktree,
+  not deploying — no collision. The box pm_web may move; that is the UI agent's, not drift in my surface.
+
 ---
 
 ## RUNGS
