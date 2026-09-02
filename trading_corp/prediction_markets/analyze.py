@@ -162,6 +162,9 @@ class PMAnalysisReport:
     a_only_losses: int | None = None      # losses /closed-positions DROPPED (the F-1 omission, recovered)
     loss_omission_pct: float | None = None  # a_only_losses / honest_losses -- the MEASURED bias for THIS whale
     loss_completeness: str | None = None  # the measured bound ('complete...' | 'windowed(...lower bound)')
+    # DISPLAY-ONLY (not fed to the narrator -> narration byte-identical -> NO skill_version bump): the coverage BEHIND
+    # the omission % so the page cannot flatten '94% @ 96% cov' and '94% @ 31% cov (a floor)' into one number.
+    loss_coverage_pct: float | None = None  # |closed re-found in /activity window| / |closed|; None when ungrounded/no-closed
 
     @property
     def is_thin(self) -> bool:
@@ -319,7 +322,8 @@ def build_pm_analysis(conn, wallet: str, category: str, *, now_ts: int,
         honest_losses=(loss_grounding.honest_losses if loss_grounding is not None else None),
         a_only_losses=(loss_grounding.a_only_losses if loss_grounding is not None else None),
         loss_omission_pct=(loss_grounding.loss_omission_pct if loss_grounding is not None else None),
-        loss_completeness=(loss_grounding.completeness if loss_grounding is not None else None))
+        loss_completeness=(loss_grounding.completeness if loss_grounding is not None else None),
+        loss_coverage_pct=(loss_grounding.coverage_pct if loss_grounding is not None else None))
 
 
 def analysis_flags(rep: PMAnalysisReport) -> list[str]:

@@ -355,3 +355,12 @@ th.pm-primary{color:var(--mono)}
 .pm-btn-refresh.htmx-request{opacity:.6; cursor:progress}
 .pm-refresh-notice{margin:.2rem 0 .6rem; padding:.4rem .6rem; font-size:.8rem; color:var(--warn);
   background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.4); border-radius:5px}
+
+/* ── Stage 5: loss-omission % travels BESIDE win% (never a separate footnote; UNKNOWN, never a 0 that means unchecked) ── */
+.pm-winpct-cell{white-space:normal}
+.pm-winpct-caveated{text-decoration:underline dotted rgba(244,63,94,.55); text-underline-offset:2px}
+.pm-omit{display:block; margin-top:.12rem; font-size:.68rem; line-height:1.25; font-weight:600; white-space:normal}
+.pm-omit-bad{color:var(--red)}
+.pm-omit-unknown{color:var(--amber)}
+.pm-omit-ok{color:var(--green)}
+.pm-omit-floor{opacity:.85; font-weight:700}

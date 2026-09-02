@@ -94,10 +94,22 @@
       <div class="pm-stat-val {% if report.net_realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.0f'|format(report.net_realized_pnl) }}</div>
       <div class="pm-stat-hint">cost_basis {{ '%.0f'|format(report.cost_basis) }} USDC</div>
     </div>
-    <div class="pm-stat">
+    {# ★ win% carries its F-1 loss-omission caveat RIGHT HERE (Stage 5), not 40 lines below -- the caveat travels with
+       the number it corrupts. The win% number is shown (not struck/suppressed) but visibly caveated; ranking is
+       cost-ROI regardless. Ungrounded -> 'unchecked' (UNKNOWN), never an implied 0%. #}
+    <div class="pm-stat{% if report.loss_grounded and report.a_only_losses and report.a_only_losses > 0 %} pm-stat-bad{% endif %}">
       <div class="pm-stat-label">win%<sup>*</sup></div>
-      <div class="pm-stat-val">{% if report.win_rate is not none %}{{ '%.0f'|format(report.win_rate * 100) }}%{% else %}&mdash;{% endif %}</div>
-      <div class="pm-stat-hint">chalk indicator, never a rank key</div>
+      <div class="pm-stat-val{% if not report.loss_grounded or (report.a_only_losses and report.a_only_losses > 0) %} pm-winpct-caveated{% endif %}">{% if report.win_rate is not none %}{{ '%.0f'|format(report.win_rate * 100) }}%{% else %}&mdash;{% endif %}</div>
+      {% if report.loss_grounded %}
+        {% if report.a_only_losses and report.a_only_losses > 0 %}
+          <div class="pm-stat-hint pm-omit pm-omit-bad" title="Re-grounded from /activity: {{ '%.0f'|format(report.loss_omission_pct * 100) if report.loss_omission_pct is not none else '?' }}% of this whale's losses were dropped by /closed-positions{% if report.loss_coverage_pct is not none %}, at {{ '%.0f'|format(report.loss_coverage_pct * 100) }}% coverage of its closed era{% endif %}{% if 'lower bound' in (report.loss_completeness or '') %} (/activity windowed -> a FLOOR){% endif %}. The win% above is OVER-STATED; honest {{ report.honest_wins }}W/{{ report.honest_losses }}L.">
+            &minus;{{ '%.0f'|format(report.loss_omission_pct * 100) if report.loss_omission_pct is not none else '?' }}% losses missing{% if report.loss_coverage_pct is not none %} @ {{ '%.0f'|format(report.loss_coverage_pct * 100) }}% cov{% endif %}{% if 'lower bound' in (report.loss_completeness or '') %} <span class="pm-omit-floor">(floor)</span>{% endif %}</div>
+        {% else %}
+          <div class="pm-stat-hint pm-omit pm-omit-ok" title="Re-grounded from /activity: no held-to-worthless losses missing{% if report.loss_coverage_pct is not none %} at {{ '%.0f'|format(report.loss_coverage_pct * 100) }}% coverage{% endif %}; win% is not F-1-inflated for this whale.">omission 0% verified{% if report.loss_coverage_pct is not none %} @ {{ '%.0f'|format(report.loss_coverage_pct * 100) }}% cov{% endif %}</div>
+        {% endif %}
+      {% else %}
+        <div class="pm-stat-hint pm-omit pm-omit-unknown" title="Loss-omission NOT checked (grounding unavailable this run). /closed-positions drops held-to-worthless losses wallet-dependently, so win% may be over-stated. Re-analyze to re-ground.">omission unchecked &middot; not a rank key</div>
+      {% endif %}
     </div>
     <div class="pm-stat">
       <div class="pm-stat-label">avg win px</div>

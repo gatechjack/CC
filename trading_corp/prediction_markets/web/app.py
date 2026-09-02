@@ -207,6 +207,44 @@ def _row_category(row) -> str:
     return derive_category_from_slug(getattr(row, "event_slug", None), getattr(row, "slug", None))[0]
 
 
+# ── Stage 5 loss-omission SURFACING (2026-09-01): the omission % + its coverage travel BESIDE win% on both the ──────
+# Analyze result and the Prospects LIST. The figure is COMPUTED ON ANALYZE (which already pays the /activity + gamma
+# fetch) and CACHED per whale in pm_loss_grounding_cache with its own age; the LIST reads that cache -- grounding 131
+# rows on render is not viable, and a background job would hammer the shared prod IP. A whale never Analyzed has NO
+# cache row -> UNKNOWN, never 0% (a 0 that means 'nobody checked' is the safety-check-that-stops-checking shape).
+def _upsert_loss_grounding(conn, wallet: str, category: str, g, now_ts: int) -> None:
+    """Cache this whale's re-grounded loss omission so the Prospects LIST can show it without re-fetching. Written on
+    every Analyze (re)grounding; PK (wallet, category) -> one row per slice, grounded_ts = the figure's OWN age."""
+    conn.execute(
+        "INSERT OR REPLACE INTO pm_loss_grounding_cache(wallet, category, honest_wins, honest_losses, a_only_losses, "
+        "loss_omission_pct, coverage_pct, activity_truncated, n_activity_held_resolved, completeness, grounded_ts) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (wallet, category, g.honest_wins, g.honest_losses, g.a_only_losses, g.loss_omission_pct, g.coverage_pct,
+         1 if g.activity_truncated else 0, g.n_activity_held_resolved, g.completeness, int(now_ts)))
+    conn.commit()
+
+
+def _loss_omission_cell(entry: dict | None, now_ts: int) -> dict:
+    """Render-ready omission cell for a prospect row. entry=None (this whale was NEVER Analyzed) -> known=False =
+    UNKNOWN (the template shows 'omission unknown -- Analyze'), NEVER 0%. A 0 that means 'nobody looked' is exactly the
+    display Jack flagged as the worst possible: it reads as 'no omission' when it means 'unchecked'."""
+    if not entry:
+        return {"known": False}
+    ts = entry.get("grounded_ts") or 0
+    return {"known": True, "omission_pct": entry.get("loss_omission_pct"), "coverage_pct": entry.get("coverage_pct"),
+            "a_only_losses": entry.get("a_only_losses"), "honest_wins": entry.get("honest_wins"),
+            "honest_losses": entry.get("honest_losses"), "truncated": bool(entry.get("activity_truncated")),
+            "age_days": ((now_ts - ts) / 86400.0) if ts else None}
+
+
+def _load_loss_grounding_map(conn, category: str) -> dict:
+    """{wallet: <cache row dict>} for every Analyzed whale in this category. Absent wallets stay absent ->
+    _loss_omission_cell(None) = UNKNOWN. One scan of the per-category-indexed cache; ~O(candidates)."""
+    return {r["wallet"]: dict(r) for r in conn.execute(
+        "SELECT wallet, honest_wins, honest_losses, a_only_losses, loss_omission_pct, coverage_pct, "
+        "activity_truncated, grounded_ts FROM pm_loss_grounding_cache WHERE category=?", (category,)).fetchall()}
+
+
 def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grounding=None) -> dict:
     """Run Analyze on ONE short-lived connection, OFF the event loop. WRITES the PM DB (cache + cost ledger);
     reads/writes ONLY prediction_markets.db (db._assert_not_legacy guards the path). Sync (analyze narrates
@@ -214,6 +252,8 @@ def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grou
     is the re-grounded loss set the async route fetched on a miss; None -> the report renders ungrounded."""
     with connect() as conn:
         rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force, loss_grounding=loss_grounding)
+        if loss_grounding is not None:                        # (re)grounded THIS click -> cache the omission so the
+            _upsert_loss_grounding(conn, wallet, category, loss_grounding, now_ts)   # Prospects LIST can show it beside win%
         day = analyze._utc_day(now_ts)
         spent, n_calls = analyze.daily_cost(conn, day)
     return {"report": rep, "flags": analyze.analysis_flags(rep),
@@ -307,6 +347,7 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
         # ranker's own ORDER BY leads with score; here the SCREEN's default axis is cost-ROI (roi-None sorts last).
         # The client-side column sort re-orders on demand; this only sets the LOAD order.
         prospects.sort(key=lambda r: (r.get("roi") is None, -(r.get("roi") or 0.0)))
+        lg_map = _load_loss_grounding_map(conn, category)                               # per-whale omission cache (Analyze-fed)
         for r in prospects:
             r["flags"] = stats.scoreboard_flags(r)                                      # same tokens as CLI/scoreboard
             # THIN-SAMPLE (visible, not inferable): a candidate BELOW the N floor came in via the <10-qualifier
@@ -314,6 +355,9 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
             r["thin_sample"] = (r.get("n_resolved") or 0) < search.DEFAULT_MIN_RESOLVED_FLOOR
             # LAST-UPDATED per whale (on-demand ruling): staleness VISIBLE per-whale, never silent.
             r["last_refresh"] = stats.refresh_band_state(r.get("last_refresh_ts"), now_ts)
+            # ★ LOSS-OMISSION BESIDE win% (Stage 5): the caveat travels with the number it corrupts. UNKNOWN (not 0%)
+            # for a whale never Analyzed -- the omission is COMPUTED ON ANALYZE and cached, not grounded on list render.
+            r["loss_omission"] = _loss_omission_cell(lg_map.get(r["wallet"]), now_ts)
         refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
         # R6: the ACTIVE accounts = the promote-to-LIVE targets. Auto-create (ruling 1) makes the (account,
         # category) sub-division on demand, so a Watchlist row offers "promote to <account>", not a pre-existing

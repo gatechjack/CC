@@ -104,6 +104,12 @@ class LossGrounding:
     activity_truncated: bool      # /activity hit the ~5000-row ceiling -> a_only is a LOWER bound
     completeness: str             # human bound: 'complete' | 'windowed(activity truncated -- a_only is a lower bound)'
     n_activity_held_resolved: int
+    # ── the coverage BEHIND the omission % (so a display cannot flatten two different claims into one number) ──
+    n_closed: int = 0                  # /closed-positions decisions in this (wallet,category) slice = the coverage denominator
+    coverage_pct: float | None = None  # |closed re-found in the /activity window| / |closed|: how much of the whale's closed
+                                       # era the window actually reached. '94% omission @ 96% coverage' and '@ 31% coverage'
+                                       # are DIFFERENT claims -- a windowed low-coverage omission is a FLOOR, not a measurement.
+                                       # None when there are no closed decisions to cover.
 
 
 def ground_losses(activity_rows, closed_rows, resolutions: dict, *, activity_truncated: bool) -> LossGrounding:
@@ -114,6 +120,12 @@ def ground_losses(activity_rows, closed_rows, resolutions: dict, *, activity_tru
     rather than implying a precision it lacks."""
     ad = activity_decisions(activity_rows, resolutions)
     cd = closed_decisions(closed_rows)
+    # coverage = fraction of the /closed-positions decisions this /activity window actually reached (re-found). It is
+    # the BOUND on the omission %: high coverage -> the measured omission is near-complete; low coverage -> a_only is a
+    # floor (older losers lie beyond the window). Computed off ALL activity decisions (any held/resolved status), since
+    # merely SEEING a closed cid's trades in the window is what proves the window reached that far back.
+    cd_keys = set(cd)
+    coverage_pct = ((len(cd_keys & set(ad)) / len(cd_keys)) if cd_keys else None)
     aheld = {k: v for k, v in ad.items() if v["resolved"] and v["held"]}
     a_only = set(aheld) - set(cd)
     ao_w = sum(1 for k in a_only if aheld[k]["won"])
@@ -130,7 +142,7 @@ def ground_losses(activity_rows, closed_rows, resolutions: dict, *, activity_tru
         honest_wins=honest_w, honest_losses=honest_l,
         loss_omission_pct=((ao_l / honest_l) if honest_l > 0 else None),
         activity_truncated=bool(activity_truncated), completeness=completeness,
-        n_activity_held_resolved=len(aheld))
+        n_activity_held_resolved=len(aheld), n_closed=len(cd_keys), coverage_pct=coverage_pct)
 
 
 # ── the async ORCHESTRATOR: page /activity + /closed-positions + gamma, category-filter, ground (Stage 5 R2a) ──

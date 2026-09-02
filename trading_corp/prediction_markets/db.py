@@ -808,6 +808,29 @@ MIGRATION_016: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_shard_snapshot_acct_ts ON pm_shard_balance_snapshot(account_id, snapshot_ts DESC)",
 ]
 
+# Stage 5 loss-omission surfacing (2026-09-01): a per-whale cache of the re-grounded loss omission, POPULATED as a
+# by-product of Analyze (which already pays for the /activity + gamma fetch). The Prospects LIST reads it to show the
+# omission BESIDE win% WITHOUT grounding 131 rows on render; a whale with NO row here is 'unknown' (never a misleading
+# 0%). grounded_ts is the figure's OWN age (staleness travels with the number). PM-web only writes/reads this; the
+# engine never touches it (the CREATE is additive -> a running engine on the pre-17 db.py is unaffected).
+MIGRATION_017: list[str] = [
+    "CREATE TABLE IF NOT EXISTS pm_loss_grounding_cache ("
+    " wallet                   TEXT    NOT NULL,"
+    " category                 TEXT    NOT NULL,"
+    " honest_wins              INTEGER,"
+    " honest_losses            INTEGER,"
+    " a_only_losses            INTEGER,"
+    " loss_omission_pct        REAL,"          # NULL when honest_losses==0 (no losses -> no omission ratio)
+    " coverage_pct             REAL,"          # NULL when no closed decisions to cover
+    " activity_truncated       INTEGER NOT NULL,"
+    " n_activity_held_resolved INTEGER,"
+    " completeness             TEXT,"
+    " grounded_ts              INTEGER NOT NULL,"
+    " PRIMARY KEY (wallet, category)"
+    ")",
+    "CREATE INDEX IF NOT EXISTS ix_pm_lgc_category ON pm_loss_grounding_cache(category)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -825,6 +848,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (14, MIGRATION_014),
     (15, MIGRATION_015),
     (16, MIGRATION_016),
+    (17, MIGRATION_017),
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

@@ -148,3 +148,38 @@ def test_route_grounding_failure_is_fail_soft(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert 'data-loss-grounded="1"' not in r.text                   # no grounded block
     assert "roi (cost)" in r.text                                   # the deterministic report still renders in full
+
+
+# ── Stage 5 surfacing (2026-09-01): the omission travels BESIDE win%, and Analyze POPULATES the per-whale cache ──
+def test_analyze_win_card_carries_omission_beside_winpct(tmp_path, monkeypatch):
+    """The F-1 caveat must ride ON the win% stat (the caveat travels with the number), not only in the block 40 lines
+    below. _GroundClient recovers 1 dropped loss over 2 closed re-found in the window -> omission 50%, coverage 100%."""
+    html = _client(tmp_path, monkeypatch, _GroundClient).post("/farm/analyze/%s/mlb" % W).text
+    # the win% STAT CARD = from its label `win%<sup>` to the NEXT stat label (avg win px). Split on the label marker
+    # (unambiguous -- unlike bare "win%", which also occurs inside the caveat's title tooltip text).
+    wincard = html.split("win%<sup>", 1)[1].split("pm-stat-label", 1)[0]
+    assert "losses missing" in wincard                              # the omission rides IN the win% card
+    assert "@ 100% cov" in wincard                                  # coverage carried beside it (not flattened away)
+    assert "pm-winpct-caveated" in wincard                          # the win% number is visibly caveated (not struck/hidden)
+
+
+def test_analyze_writes_loss_grounding_cache(tmp_path, monkeypatch):
+    """Analyze is the ONE site that grounds; it must cache the omission per whale so the Prospects LIST can show it
+    without re-fetching. After a grounded Analyze the row exists with the measured omission + its coverage."""
+    _client(tmp_path, monkeypatch, _GroundClient).post("/farm/analyze/%s/mlb" % W)
+    with db.connect(db.pm_db_path()) as conn:
+        row = conn.execute("SELECT loss_omission_pct, coverage_pct, a_only_losses, activity_truncated "
+                           "FROM pm_loss_grounding_cache WHERE wallet=? AND category='mlb'", (W,)).fetchone()
+    assert row is not None and row["loss_omission_pct"] == 0.5 and row["coverage_pct"] == 1.0
+    assert row["a_only_losses"] == 1 and row["activity_truncated"] == 0
+
+
+def test_analyze_ungrounded_writes_no_cache_row(tmp_path, monkeypatch):
+    """A grounding FAILURE (ungrounded) must NOT write a cache row -> the Prospects list stays UNKNOWN for the whale,
+    never a fabricated 0%. (Fail-soft grounding returns None -> no upsert.)"""
+    class _Boom(_GroundClient):
+        async def fetch_activity(self, *a, **k):
+            raise RuntimeError("down")
+    _client(tmp_path, monkeypatch, _Boom).post("/farm/analyze/%s/mlb" % W)
+    with db.connect(db.pm_db_path()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_loss_grounding_cache WHERE wallet=?", (W,)).fetchone()[0] == 0

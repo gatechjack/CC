@@ -13,12 +13,14 @@ def _db():
     d = tempfile.mkdtemp(); p = os.path.join(d, "pm.db"); os.environ["PM_DB_PATH"] = p; db.init_db(p); return p
 
 
-def test_migration_016_creates_table_and_head_is_16():
+def test_migration_016_creates_table_and_db_reaches_head():
+    # (was ..._head_is_16; migration 017 loss-grounding-cache advanced the head, so this pin now TRACKS the SCHEMA_HEAD
+    #  constant per db.py's own guidance -- a per-migration head literal is exactly what that guidance says to avoid.)
     p = _db()
     with db.connect(p) as c:
-        assert c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 16
-        assert c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pm_shard_balance_snapshot'").fetchone()
-    assert db.SCHEMA_HEAD == 16
+        assert c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pm_shard_balance_snapshot'").fetchone()  # migration 016's own behaviour
+        assert c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == db.SCHEMA_HEAD                          # init reaches head
+    assert db.SCHEMA_HEAD >= 16
 
 
 def test_write_read_round_trip_preserves_per_shard_split():

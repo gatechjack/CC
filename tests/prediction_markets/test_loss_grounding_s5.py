@@ -61,6 +61,9 @@ def test_ground_losses_recovers_the_omitted_losses():
     assert g.loss_omission_pct == 0.5                                # 1 of 2 honest losses was omitted
     assert g.n_activity_held_resolved == 3
     assert g.activity_truncated is False and g.completeness.startswith("complete")
+    # coverage = the BOUND behind the omission: 1 of the 2 /closed decisions (in_both) was re-found in the /activity
+    # window (cw was not), so coverage=0.5 -- a DISTINCT claim from the omission %, and not flattenable into it.
+    assert g.n_closed == 2 and g.coverage_pct == 0.5
 
 
 def test_truncation_stamps_a_lower_bound_completeness():
