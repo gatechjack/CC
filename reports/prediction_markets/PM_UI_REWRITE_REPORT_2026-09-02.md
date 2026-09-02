@@ -594,3 +594,93 @@ Pure local build + test. No box action was taken in this pass. The engine (tradi
 not touched, no pm_web restart, no schema/venv/systemd change. Committed on the branch at `2c7077b`; prod-live and
 main-wip are NOT advanced (box-is-truth). Commits this session: `f55bca6` (post-deploy pass), `2c7077b`
 (pre-deploy additions).
+
+---
+
+# DEPLOY 2 -- 2026-09-02 (DEPLOYED LIVE; pm_web-only + ONE pm_web restart; engine never touched)
+
+Board-authorized deploy of the post-deploy pass + pre-deploy additions. **pm_web-ONLY, wholesale copy (no graft),
+one pm_web restart. The engine (trading-corp PID 163519, ARMED, trading two accounts unattended) was never
+restarted, reloaded, or touched -- verified PID 163519 / NRestarts 0 at every step.** Per-step board-authorized.
+
+## Step 0 -- settled bet slots now carry the same directional shorthand (deploy target `cafb132`)
+A settled TOT/SPR slot dropped the sign ("TOT 8.5" not "TOT +8.5"). Fix: `_settled_leg` derives the held side
+from the filled ENTRY rows' `outcome_leg` (the ticker leg we bought -- the SAME yes/no a live slot uses), and
+`_build_slot`'s settled branch labels via it (`short` + `desc`). Genuinely-unrecorded/ambiguous leg (entries on
+both legs, or no filled entry with a leg) -> the line WITHOUT a sign, never a guess. Tests added (`_settled_leg`
+derivation; settled TOT `+8.5`/`-8.5`; settled SPR `-1.5 SD`/`+1.5 CIN`; ambiguous -> no sign). Full suite: 19
+env-gap baseline unchanged, zero regressions. Commit **`cafb132`** (`cafb132523b26e9df00e8379dd21b11dba542bce`),
+parent `8ae3edf`. LIVE render (check 11) shows every held/settled TOT/SPR slot carrying a sign, 0 missing.
+
+## Source & scope
+Ship exactly the pm_web files that differ from the deployed `9c2eeb3`. `git diff --name-only 9c2eeb3 cafb132`
+over `web/` = 7 files; **app.py and main.py do NOT differ vs `9c2eeb3`** -> the graft rule does not apply
+(wholesale copy). Engine files on the branch (main.py, driver_roster.py, venue_exposure.py, engine tests) were
+NOT shipped.
+
+## Pre-deploy checks (all PASS -- `pm_deploy2_checks.sh`, 2026-09-02T17:29:14Z)
+1. Engine PID **163519**, NRestarts **0**, active; pm_web PID **166025**, active; PM schema head **17**. Arm rows
+   (agent_state / pm_live) all armed=True with ts: `arm:global` 2026-08-31T02:35:38Z, `arm:kalshi_jack:mlb`
+   2026-08-31T21:49:39Z, `arm:kalshi_karen:mlb` 2026-09-02T12:53:23Z.
+2. Each of the 7 box files, CR-stripped, EQUALS its `9c2eeb3` version -- **box == last deploy, zero drift**
+   (all 7 `[OK]`).
+3. Box app.py M4 markers: `is_admin` **=10**, `/pm/arm` **=0**.
+4. Backup of all 7 files -> **`/home/azureuser/pm_deploy2_backup_20260902T172914Z`** (7 files). Journal order
+   counts (dry_run=0): kalshi_jack **93**, kalshi_karen **6**.
+
+## Deploy (`pm_deploy2_apply.sh`, 17:30:29Z) -- 7 files, wholesale, sha-verified on the box
+Each file base64-embedded (LF, CR-stripped), written, and its CR-stripped sha16 re-checked == the `cafb132`
+target. Result: **ALL 7 OK**.
+```
+6d3b7b3300782d3e  web/live_view.py                          (box was ec9ef0fb791537e7)
+2681180ca6a423b8  web/static/pm_desk.css                    (box was abb6affb3ca4987e)
+6bb019840c5e2b2a  web/templates/partials/pm_arm_badge.html  (box was 1f743caebca30541)
+48d579db5c2deb65  web/templates/partials/pm_trade_drawer.html (box was 118e54bca0255682)
+014c03bafe3005e5  web/templates/pm_accounts.html            (box was e5d99d0c4f9c80b8)
+a5f39df0b53dedb4  web/templates/pm_account.html             (box was b3fba25a18245d1e)
+769044d17363e73c  web/templates/pm_live_subdivision.html    (box was 4c15633d805dc52d)
+```
+
+## Restart (pm_web ONLY, 17:30–17:31Z)
+The ssh path could not restart (systemctl needs root; `sudo` has no TTY in a streamed session -- it failed SAFE,
+changing nothing, pm_web PID stayed 166025). Restart was done via the proven pm_web path -- `az vm run-command`
+(runs as root): `systemctl restart prediction-markets-web`. pm_web **166025 -> 167940** (active, running);
+**engine trading-corp PID 163519 UNCHANGED, NRestarts 0** immediately after. No package/venv/unit-file change.
+
+## Post-deploy verification (`pm_deploy2_verify.sh`, after a 90s poll cycle, 17:35Z) -- checks 8–17 all PASS
+- **[8]** 7 pages 200: `/`, `/account/kalshi_jack`, `/account/kalshi_karen`, `/live/kalshi_jack/mlb`,
+  `/live/kalshi_karen/mlb`, `/farm`, `/farm/mlb`.
+- **[9]** date/time line on EVERY card: jack 6/6, karen 6/6. Sample: `Wed Sep 2 · 12:40 PM ET`, `· 1:05 PM ET`,
+  `· 2:35 PM ET` (real `·`, not a double-escaped entity).
+- **[10]** no pre-game card reads "game over" and none shows a score digit: jack 4 PREVIEW cards / karen 5, both
+  `game over`=0 and `score`=0; count-label = `not started`. No postponed/suspended/delayed cards on today's slate
+  (their labels are proven by test + the pre-deploy render harness).
+- **[11]** held TOT/SPR slots missing a direction sign: **0** on both live pages. LIVE samples: `-9.5`, `+7.5`,
+  `-8.5` (TOT), `+1.5 WSH` (SPR), `AZ` / `CLE` (ML) -- settled slots included (step 0 live).
+- **[12]** coverage label present on all five surfaces (`/`, both `/account`, both `/live`). marks fetch ok,
+  336 markets. **kalshi_jack 8 of 8 priced, kalshi_karen 6 of 6 priced -- no unpriced tickers.** Samples:
+  `8 of 8 priced`, `6 of 6 priced`, `0 positions`.
+- **[13]** arm badge = `class="badge armed"` -> `GLOBAL ARMED` on `/`; on BOTH live pages the GLOBAL badge AND
+  the effective badge read `ARMED`; **`DISARMED` / `STATE UNAVAILABLE` on live pages = 0; `NEVER ARMED` anywhere
+  = 0**. (Age chips render from the rows' ts.)
+- **[14]** Active/Complete toggles = two separate `.tgl` controls per live page (2 each).
+- **[15]** double-escaped entities: `&amp;middot;`=0, `&amp;mdash;`=0, `&amp;dagger;`=0, `&amp;ndash;`=0.
+- **[16]** engine: PID **163519** unchanged, NRestarts **0**, ERROR entries since the restart **0** (counted
+  actual lines, not the "No entries" message). Journal order counts **UNCHANGED** vs pre-deploy: kalshi_jack 93,
+  kalshi_karen 6 -- pm_web placed nothing (credential-free, imports no broker).
+- **[17]** Farm League unchanged: `/farm/mlb` Analyze occurrences **30**, loss-omission markers **87**.
+
+## Rollback
+Not needed -- checks 8–16 all passed. Backup retained at `/home/azureuser/pm_deploy2_backup_20260902T172914Z`
+(restore + pm_web-only restart via `pm_deploy2_rollback.sh` if ever required; DANGEROUS if restored later -- it
+reverts DEPLOY 2).
+
+## What was NOT done / notes
+- Engine NEVER restarted or touched (PID 163519 / NRestarts 0 at every step). No schema/venv/systemd change.
+- The direction sign uses ASCII `+`/`-` (e.g. `-8.5`), the trading convention, not the typographic minus in
+  Jack's example -- a one-character change if the board prefers `−`.
+- prod-live / main-wip pointers NOT advanced and the branch is NOT pushed (box-is-truth; the box is the deployed
+  truth, the branch is the record). Deploy target = branch `pm-ui-rewrite-2026-09-02` @ **`cafb132`**.
+- Runners in `cc/`: `pm_deploy2_checks`, `pm_deploy2_apply` (+ `gen_deploy2.py`), `pm_deploy2_restart_az.ps1`
+  (az/root -- the ssh `pm_deploy2_restart.*` variant failed-safe on the sudo-TTY limit), `pm_deploy2_verify`,
+  `pm_deploy2_evidence`, `pm_deploy2_rollback.sh`.
