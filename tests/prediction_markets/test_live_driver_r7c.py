@@ -668,3 +668,124 @@ async def test_boot_without_settlement_latches_rb_negative_control(tmp_path):
     row = arm.current_row(ACCT, CAT, legacy_db_path=leg)
     assert row["latched"] is True and row["auto_trigger"] == arm.AUTO_BOOT_RECONCILE   # R-b latched (JOURNAL_ONLY)
     assert arm.is_armed(ACCT, CAT, legacy_db_path=leg) is False                        # disarmed
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+# M1 / OPTION C (2026-09-02): ONE task per account iterating categories; shared per-cycle Journal enforces the
+# account open-cap JOINTLY (no two-task within-cycle race); per-category re-scopings (#14 alarm, #16 snapshots).
+# ══════════════════════════════════════════════════════════════════════════════════════════════════════
+async def _fake_ctx_builder(client, now_ts):
+    """A test ctx builder (injected via ctx_builders=) returning the canned MLB MarketContext with NO pykalshi
+    import, so the WHOLE loop restructure is provable in the local venv."""
+    return _ctx()
+
+
+class _FlatVenueClient(FakeKalshiClient):
+    """FakeKalshiClient whose /portfolio/positions returns a KNOWN-FLAT book (market_positions=[]) so venue_exp
+    has_data=True and gate 6 (exposure) PASSES -- letting an entry reach gate 6b. The base fake returns {} ->
+    has_data=False -> skip:exposure_unknown, which would mask gate 6b."""
+    async def get(self, path, *a, **k):
+        if "settlements" in str(path):
+            return self._settlements
+        if "positions" in str(path):
+            return {"market_positions": []}
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_m1_shared_journal_caps_account_open_across_categories(tmp_path):
+    """★ THE M1 CLAIM: two categories on ONE account share ONE per-cycle Journal, so the account open-cap (gate 6,
+    account-keyed) is enforced JOINTLY -- category B's evaluate sees category A's in-cycle commit. Plus the RACE the
+    two-task model has: two SEPARATE Journals each authorize against the same base -> over-place."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_both(leg)
+    arm.arm(ACCT, "ufc", require_latch_clear=True, legacy_db_path=leg)
+    async def ok(d):
+        return None
+    sub_mlb = _sub(category="mlb", max_open_usd=6.0)             # ONE ~$5 order fits; a SECOND does not
+    sub_ufc = _sub(category="ufc", max_open_usd=6.0)            # venue_exposure=None -> gate 6 uses journal.open_usd
+    with db.connect(p) as conn:                                 # SHARED Journal: mlb commits ~$5; ufc is then capped
+        shared = ex.Journal(conn, [ACCT], NOW)
+        s_mlb = await L.run_live_arm_gated_cycle(conn, sub_mlb, [_sig("Toronto Blue Jays", "m1")], _ctx(), shared,
+                                                 NOW, place_fn=ok, legacy_db_path=leg)
+        s_ufc = await L.run_live_arm_gated_cycle(conn, sub_ufc, [_sig("Seattle Mariners", "u1")], _ctx(), shared,
+                                                 NOW, place_fn=ok, legacy_db_path=leg)
+    assert s_mlb["placed"] == 1                                 # mlb fit under the account cap
+    assert s_ufc["placed"] == 0 and s_ufc["n_reject"] == 1      # ★ ufc capped by mlb in-cycle open (shared Journal)
+    # RACE DEMO on a FRESH db: two SEPARATE Journals, BOTH constructed at cycle start (blind to each other), then
+    # each authorizes ~$5 against the same clean base -> BOTH place -> the account reaches ~$10 > the $6 cap. This is
+    # exactly the two-task within-cycle over-place the shared Journal above eliminates.
+    p2 = str(tmp_path / "pm2.db"); db.init_db(p2)
+    with db.connect(p2) as conn:
+        j_mlb = ex.Journal(conn, [ACCT], NOW)                   # both built BEFORE either places (clean DB seed = 0)
+        j_ufc = ex.Journal(conn, [ACCT], NOW)                   # a second task's own Journal, blind to the first
+        r_mlb = await L.run_live_arm_gated_cycle(conn, sub_mlb, [_sig("Toronto Blue Jays", "m2")], _ctx(), j_mlb,
+                                                 NOW, place_fn=ok, legacy_db_path=leg)
+        r_ufc = await L.run_live_arm_gated_cycle(conn, sub_ufc, [_sig("Seattle Mariners", "u2")], _ctx(), j_ufc,
+                                                 NOW, place_fn=ok, legacy_db_path=leg)
+    assert r_mlb["placed"] == 1 and r_ufc["placed"] == 1        # ★ the RACE the shared Journal eliminates
+
+
+@pytest.mark.asyncio
+async def test_m1_loop_mlb_only_one_task_disarmed_both_param_forms(tmp_path):
+    """Option C mlb-only is BYTE-IDENTICAL: one account task, categories=['mlb'] (and legacy category='mlb'), a
+    clean boot-reconcile and ONE disarmed cycle -> ZERO real orders. Proves the restructure ships inertly."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, 'mlb')", (ACCT,)); conn.commit()
+    fake = FakeKalshiClient(positions=[])                       # flat -> boot-reconcile clean
+    for kwargs in ({"categories": ["mlb"]}, {"category": "mlb"}):
+        await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(FakeBook([])),
+                                       account_id=ACCT, poll_sec=0, legacy_db_path=leg,
+                                       ctx_builders={"mlb": _fake_ctx_builder}, _max_cycles=1, **kwargs)
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_order WHERE dry_run=0").fetchone()[0] == 0
+    assert arm.is_armed(ACCT, "mlb", legacy_db_path=leg) is False   # never armed; boot-reconcile clean (no latch)
+
+
+@pytest.mark.asyncio
+async def test_m1_prior_snapshots_keyed_by_category_wallet(tmp_path):
+    """★ #16 (SAFETY): under ONE task, a wallet attached to BOTH categories keeps SEPARATE exit snapshots -- keyed
+    (category, wallet), never wallet alone (which would MERGE the two books). Inspected via the _prior_snapshots seam."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    W = "0x16bb9951a36fce71e2ef57890b786145e0ba8492"
+    with db.connect(p) as conn:
+        for c in ("mlb", "ufc"):
+            conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, ?)", (ACCT, c))
+            conn.execute("INSERT INTO pm_subdivision_attachment (account_id, category, wallet) VALUES (?,?,?)",
+                         (ACCT, c, W))
+        conn.commit()
+    fake = FakeKalshiClient(positions=[])
+    book = FakeBook([FakePos("0xc_snap", 0, "Toronto Blue Jays")])   # one genuinely-open position for W
+    snaps = {}
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(book),
+                                   account_id=ACCT, categories=["mlb", "ufc"], poll_sec=0, legacy_db_path=leg,
+                                   ctx_builders={"mlb": _fake_ctx_builder, "ufc": _fake_ctx_builder},
+                                   _prior_snapshots=snaps, _max_cycles=1)
+    assert ("mlb", W) in snaps and ("ufc", W) in snaps          # ★ SEPARATE per-(category, wallet) snapshots
+    assert W not in snaps                                       # ★ NEVER keyed by wallet alone (the merge bug)
+
+
+@pytest.mark.asyncio
+async def test_m1_underfunded_alarm_is_per_category(tmp_path, caplog):
+    """★ #14 (SAFETY): the sustained-shard-underfunding ALARM counter is PER CATEGORY -- a starved mlb AND a starved
+    ufc each raise their OWN alarm. A shared counter would let one category's activity reset a sibling's alarm."""
+    import logging
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    W = "0x16bb9951a36fce71e2ef57890b786145e0ba8492"
+    with db.connect(p) as conn:
+        for c in ("mlb", "ufc"):
+            conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, ?)", (ACCT, c))
+            conn.execute("INSERT INTO pm_subdivision_attachment (account_id, category, wallet) VALUES (?,?,?)",
+                         (ACCT, c, W))
+        conn.commit()
+    fake = _FlatVenueClient(positions=[])                       # venue flat -> gate 6 passes -> gate 6b reached
+    book = FakeBook([FakePos("0xc_uf", 0, "Toronto Blue Jays")])  # matches T_TOR; ctx market has NO exchange_index ->
+    caplog.set_level(logging.WARNING)                           # gate 6b skip:shard_underfunded every cycle
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(book),
+                                   account_id=ACCT, categories=["mlb", "ufc"], poll_sec=0, legacy_db_path=leg,
+                                   ctx_builders={"mlb": _fake_ctx_builder, "ufc": _fake_ctx_builder},
+                                   _max_cycles=L._SHARD_UNDERFUNDED_ALARM_N)   # exactly N cycles -> each counter hits N
+    alarms = [r.getMessage() for r in caplog.records if "SUSTAINED SHARD UNDERFUNDING" in r.getMessage()]
+    assert any("/mlb" in m for m in alarms), alarms             # ★ mlb raised its OWN alarm
+    assert any("/ufc" in m for m in alarms), alarms             # ★ ufc raised its OWN alarm (per-category, not shared)

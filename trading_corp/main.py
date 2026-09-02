@@ -1594,18 +1594,28 @@ async def run(argv: list[str] | None = None) -> int:
                                   _sk["account_id"], _sk["category"])
                     else:
                         log.warning("PM driver: SKIP %s/%s (%s)", _sk["account_id"], _sk["category"], _sk["reason"])
-                _pm_tasks = []
+                # ★ M1 / Option C (2026-09-02): ONE task PER ACCOUNT, iterating that account's categories, so the
+                # account-level open-exposure cap (gate 6, account-keyed) is enforced JOINTLY by ONE shared per-cycle
+                # Journal + ONE venue read -- no two-task within-cycle over-place race, and no reliance on pykalshi's
+                # (un-vendored, unprovable) concurrent-POST safety. Group the guard-approved spawn list by account,
+                # preserving roster order. TODAY plan_driver_tasks still emits at most ONE category per account (the
+                # 2nd-category guard, relaxed only by M4's per-account opt-in), so each account gets one category ->
+                # ONE task with categories=[cat] == byte-identical to the prior one-task-per-(account,category) wiring.
+                _pm_by_account = {}
                 for _t in _pm_spawn:
+                    _pm_by_account.setdefault(_t["account_id"], []).append(_t["category"])
+                _pm_tasks = []
+                for _aid, _acats in _pm_by_account.items():
                     _pm_tasks.append(asyncio.create_task(
                         _pm_live_driver.scheduled_pm_live_loop(
-                            _pm_db.pm_db_path(), _pm_brokers[_t["account_id"]], _pm_positions_client,
-                            account_id=_t["account_id"], category=_t["category"],
+                            _pm_db.pm_db_path(), _pm_brokers[_aid], _pm_positions_client,
+                            account_id=_aid, categories=_acats,
                             poll_sec=float(_pm_cfg.get("poll_interval_sec", 7)),
                             index_refresh_sec=float(_pm_cfg.get("index_refresh_sec", 900)),
                             legacy_db_path=None,   # arm.resolve_legacy_db_path -> data/trading_corp.db
                         )))
-                log.info("PM LIVE DRIVER WIRED -- %d task(s): spawned=%s skipped=%s brokers=%s -- ARM STATE governs POSTs",
-                         len(_pm_tasks), [(t["account_id"], t["category"]) for t in _pm_spawn],
+                log.info("PM LIVE DRIVER WIRED -- %d account task(s): %s skipped=%s brokers=%s -- ARM STATE governs POSTs",
+                         len(_pm_tasks), {a: cs for a, cs in _pm_by_account.items()},
                          [(s["account_id"], s["category"], s["reason"]) for s in _pm_skips], sorted(_pm_brokers))
                 if not _pm_tasks:
                     log.info("PM live driver: enabled but NO active attached sub-divisions to trade -- idle (0 tasks)")

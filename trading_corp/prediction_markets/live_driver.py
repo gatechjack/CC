@@ -515,201 +515,248 @@ async def fetch_settlements(client) -> list:
     return settlement.parse_settlements(r)
 
 
+# ── category -> the async market-context builder for that category's Kalshi series. The driver body is otherwise
+# category-agnostic; the ONE category-specific thing a cycle needs is the right series catalog. mlb is registered
+# here; the UFC matcher (Workstream B) registers 'ufc'. Injectable into scheduled_pm_live_loop for tests (a fake
+# builder returns a canned MarketContext with NO pykalshi import). A category with NO builder is SKIPPED every cycle
+# (fail-SAFE: no catalog -> no signals -> nothing placed). ★ M1 (Option C) seam: this is what lets ONE account task
+# iterate N categories, each matched against its own catalog, while the account-level Journal/venue/shard reads are
+# shared once per cycle (the shared Journal is what enforces the account open-cap JOINTLY across categories).
+CATEGORY_CTX_BUILDERS = {"mlb": fetch_market_context}
+
+
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
-async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, account_id, category, poll_sec=7.0,
-                                 index_refresh_sec=900.0, legacy_db_path=None, log=None, _max_cycles=None):
-    """The engine-side driver task. `positions_client` (fetch_positions_book, the paper poller's read) is INJECTED by
-    the caller (the R7.e main.py block passes the real one; box-scratch a fake). BOOT: build the index + boot-reconcile
-    (comes up latched-if-mismatch; a boot-reconcile RAISE ALSO force-latches). STEADY: refresh the index when stale,
-    read each attached whale's /positions, run the async arm-gated cycle, sleep. A bad cycle is logged and NEVER kills
-    the loop. `_max_cycles` bounds the loop for box-scratch (None = forever)."""
+async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, account_id, categories=None,
+                                 category=None, poll_sec=7.0, index_refresh_sec=900.0, legacy_db_path=None,
+                                 log=None, ctx_builders=None, _prior_snapshots=None, _max_cycles=None):
+    """The engine-side driver task -- ONE task PER ACCOUNT, iterating that account's categories (M1/Option C, 2026-09-02).
+    `positions_client` (fetch_positions_book, the paper poller's read) is INJECTED by the caller (the main.py block
+    passes the real one; box-scratch a fake). `categories` is the account's category list (roster-ordered); the legacy
+    single `category=` is still accepted (== categories=[category]) so existing callers/tests do not change.
+
+    ★ WHY ONE TASK PER ACCOUNT (M1): the account open-exposure cap (gate 6) is ACCOUNT-keyed. Two SEPARATE tasks on
+    one account each build their own per-cycle Journal + venue read and cannot see each other's in-flight placements,
+    so they race the shared cap (up to ~2x over-place in one overlapping window). ONE task, iterating its categories
+    SEQUENTIALLY and sharing ONE per-cycle Journal + ONE venue-exposure read, enforces the account cap JOINTLY with NO
+    lock and NOTHING added to the order hot path (gate 6/evaluate/POST are unchanged): category B's evaluate sees
+    category A's commit_would_place via the shared account-keyed Journal. It also never POSTs two same-account orders
+    concurrently, so pykalshi's (un-vendored, unprovable) concurrent-POST safety is never relied on.
+
+    BOOT: per-category index build + per-category settlement scan, then ONE ACCOUNT-WIDE boot-reconcile that latches
+    EVERY category on a mismatch/fault (M3). STEADY: read the ACCOUNT-level shard + venue-exposure ONCE per cycle,
+    build ONE account Journal, then for EACH category refresh its catalog, read its whales, run the async arm-gated
+    cycle against the shared Journal, and surface its own sustained-underfunding alarm. A bad cycle is logged and
+    NEVER kills the loop. `_max_cycles` bounds the loop for box-scratch (None = forever)."""
     log = log or _LOG
+    cats = list(categories) if categories else ([category] if category else [])
+    if not cats:
+        log.error("pm_live_driver: scheduled_pm_live_loop for %s got NO categories -> nothing to drive (returning)",
+                  account_id)
+        return
+    builders = ctx_builders if ctx_builders is not None else CATEGORY_CTX_BUILDERS
     client = broker._read._client
-    ctx = None
-    last_idx = 0.0
-    try:
-        ctx = await fetch_market_context(client, int(_time.time())); last_idx = _time.time()
-    except Exception as e:  # noqa: BLE001
-        log.warning("pm_live_driver: boot index build failed: %s", e)
-    last_settle = 0.0                                          # R-d: throttle timer for the periodic settlement-scan
+    # ★ PER-CATEGORY state (M1 re-scopings): a single task must NOT share these across categories --
+    #   ctx/last_idx (#17, functional): each category needs its OWN Kalshi series catalog + refresh timer;
+    #   last_settle (#18, functional): a per-category settlement-scan throttle (a shared timer would let one
+    #     category's scan starve another's cadence);
+    #   consec_underfunded (#14, SAFETY): a per-category sustained-underfunding ALARM -- a SHARED counter would let
+    #     one category's placements silently reset a sibling's genuine shard-starvation alarm (a safety check that
+    #     stops checking); (consec_err (#15) is defended by construction -- it is a local INSIDE
+    #     run_live_arm_gated_cycle, invoked once per category, so it never shares.)
+    ctx_by_cat: dict = {c: None for c in cats}
+    last_idx_by_cat: dict = {c: 0.0 for c in cats}
+    last_settle_by_cat: dict = {c: 0.0 for c in cats}
+    consec_underfunded_by_cat: dict = {c: 0 for c in cats}
+    # ★ Option D (Fork A1): the PRIOR /positions snapshot, held IN MEMORY. ★ M1 re-scoping #16 (SAFETY): keyed by
+    # (category, wallet), NOT wallet alone -- one wallet may be attached to TWO categories on this account, and a
+    # wallet-only key would MERGE the two books under one task -> corrupt reduction/exit detection. EMPTY at boot, so
+    # cycle 1 emits NO reduction (nothing to diff) and seeds it; a restart re-derives (a straddling reduction = a
+    # MISSED exit, accepted). `_prior_snapshots` is a TEST seam (like `_max_cycles`): pass a dict to inspect the
+    # (category, wallet) keys after a bounded run; production leaves it None -> a fresh dict.
+    prior_snapshots: dict = _prior_snapshots if _prior_snapshots is not None else {}
+    # BOOT: per-category catalog build.
+    for c in cats:
+        _bld = builders.get(c)
+        if _bld is None:
+            log.warning("pm_live_driver: no market-context builder for category %r (account %s) -> that category is "
+                        "SKIPPED (fail-safe: no catalog, no signals). Register it before enabling.", c, account_id)
+            continue
+        try:
+            ctx_by_cat[c] = await _bld(client, int(_time.time())); last_idx_by_cat[c] = _time.time()
+        except Exception as e:  # noqa: BLE001
+            log.warning("pm_live_driver: boot index build failed for %s/%s: %s", account_id, c, e)
     with db.connect(pm_db_path) as conn:
-        sub = execution.sub_config_from_row(conn.execute(
-            "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, category)).fetchone())
-        # ★ R-d BOOT SETTLEMENT-SCAN -- runs BEFORE boot-reconcile so a position that SETTLED WHILE THE ENGINE WAS
-        # DOWN (the Cubs case) is booked FLAT on the way up, and boot-reconcile then comes up CLEAN instead of
-        # latching R-b. FAIL-SAFE: if the settlements fetch fails, nothing is booked -> boot-reconcile still latches
-        # R-b (the safe fallback, a human confirms + clears). Booking never places an order.
-        try:
-            bsumm = settlement.book_settlements(conn, account_id, category,
-                                                await fetch_settlements(client), now_ts=int(_time.time()))
-            if bsumm["n_booked"]:
-                log.info("pm_live_driver: BOOT settlement-scan booked %d terminal-close(s) -- inspect the first: %s",
-                         bsumm["n_booked"], bsumm["booked"])
-        except Exception as e:  # noqa: BLE001 -- a settlements-read failure must not stop boot; reconcile then latches R-b
-            log.warning("pm_live_driver: BOOT settlement-scan failed (nothing booked -> boot-reconcile may latch R-b, "
-                        "the safe fallback): %s", e)
-        last_settle = _time.time()                             # so the periodic scan waits a full interval after boot
-        try:
-            res = await run_boot_reconcile(conn, sub, client, legacy_db_path=legacy_db_path)
-            log.info("pm_live_driver: boot-reconcile reconciled=%s latched=%s", res.reconciled, res.latched)
-        except Exception as e:  # noqa: BLE001 -- our own DB read faulting is a SYSTEM FAULT: FORCE-LATCH (do NOT proceed armed)
-            log.error("pm_live_driver: boot-reconcile FAULTED (system fault) -- force-latching to DISARM: %s", e)
+        subs = {c: execution.sub_config_from_row(conn.execute(
+            "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, c)).fetchone()) for c in cats}
+        # ★ R-d BOOT SETTLEMENT-SCAN (per category) -- runs BEFORE the account-wide boot-reconcile so a position that
+        # SETTLED WHILE THE ENGINE WAS DOWN is booked FLAT on the way up and reconcile comes up CLEAN. FAIL-SAFE: a
+        # fetch failure books nothing -> reconcile latches R-b (the safe fallback). Booking never places an order.
+        for c in cats:
             try:
-                arm.latch_boot_reconcile_mismatch(account_id, category, detail="boot-reconcile system fault: %r" % e,
-                                                  legacy_db_path=legacy_db_path)
-            except Exception as e2:  # noqa: BLE001 -- RULING A (2026-08-31): a FAILED force-latch must NOT fall through
-                log.critical("pm_live_driver: could NOT latch after a boot-reconcile fault (%s) -- REFUSING to enter "
-                             "the trading loop: cannot confirm DISARM, and falling through would trade on an "
-                             "UNVERIFIED journal (a 'safety check that silently stops checking'): %s", e, e2)
+                bsumm = settlement.book_settlements(conn, account_id, c,
+                                                    await fetch_settlements(client), now_ts=int(_time.time()))
+                if bsumm["n_booked"]:
+                    log.info("pm_live_driver: BOOT settlement-scan booked %d terminal-close(s) for %s/%s -- first: %s",
+                             bsumm["n_booked"], account_id, c, bsumm["booked"])
+            except Exception as e:  # noqa: BLE001 -- a settlements-read failure must not stop boot; reconcile latches R-b
+                log.warning("pm_live_driver: BOOT settlement-scan failed for %s/%s (reconcile may latch R-b): %s",
+                            account_id, c, e)
+        _bootnow = _time.time()
+        for c in cats:
+            last_settle_by_cat[c] = _bootnow                   # periodic scan waits a full interval after boot
+        # ★ M3: ONE ACCOUNT-WIDE boot-reconcile. The comparison is account-wide (journal_signed_positions reads every
+        # category; the Kalshi side is the whole book); run_boot_reconcile passes account_active_categories so a
+        # mismatch/read-failure latches EVERY category on the shared keypair -- not just the one whose task ran it.
+        try:
+            res = await run_boot_reconcile(conn, subs[cats[0]], client, legacy_db_path=legacy_db_path)
+            log.info("pm_live_driver: boot-reconcile account=%s reconciled=%s latched=%s latched_categories=%s",
+                     account_id, res.reconciled, res.latched, res.latched_categories)
+        except Exception as e:  # noqa: BLE001 -- our own DB read faulting is a SYSTEM FAULT: FORCE-LATCH the WHOLE account
+            log.error("pm_live_driver: boot-reconcile FAULTED (system fault) for %s -- force-latching ALL categories "
+                      "to DISARM: %s", account_id, e)
+            try:
+                for c in cats:                                 # RULING A extended to the account (M3): latch every cat
+                    arm.latch_boot_reconcile_mismatch(account_id, c, detail="boot-reconcile system fault: %r" % e,
+                                                      legacy_db_path=legacy_db_path)
+            except Exception as e2:  # noqa: BLE001 -- RULING A: a FAILED force-latch must NOT fall through
+                log.critical("pm_live_driver: could NOT latch after a boot-reconcile fault (%s) for %s -- REFUSING to "
+                             "enter the trading loop (cannot confirm DISARM; falling through would trade an UNVERIFIED "
+                             "journal): %s", e, account_id, e2)
                 return                                 # ★ do NOT proceed into the (possibly-armed) cycle on a double fault
     cycles = 0
-    consec_underfunded = 0                                  # gate-6b sustained-underfunding alarm counter (cross-cycle)
-    # ★ Option D (Fork A1): the PRIOR /positions snapshot per whale, held IN MEMORY (NOT persisted -- the journal is
-    # the single source of truth for position state; a persisted snapshot would be a second one). {wallet ->
-    # snapshot_open_positions(...)}. EMPTY at boot, so cycle 1 emits NO reduction (nothing to diff against) and seeds
-    # it. A restart re-derives from /positions -- a reduction straddling the restart is a MISSED exit (accepted).
-    prior_snapshots: dict = {}
     while _max_cycles is None or cycles < _max_cycles:
         cycles += 1
-        # ★ fail-closed default, BOUND before anything can raise: even if a future refactor moved the placement call
-        # out of the fetch's protection, gate 6b would see an UNKNOWN split (skip), never None/stale (adversarial
-        # review, defensive). The per-cycle fetch below overwrites this on both success and failure.
+        # ★ M1: ACCOUNT-LEVEL reads happen ONCE per cycle and are SHARED across every category (fail-closed defaults
+        # BOUND before anything can raise). The shared venue-exposure read is the account-wide base gate 6 rebases
+        # onto; the shared Journal (below) accumulates every category's in-cycle placements against it.
         shard_bal = shard_balance.ShardBalances(total_dollars=0.0, by_shard={}, has_breakdown=False)
-        # ★ R7 gate-6 input, SAME fail-closed discipline as shard_bal: bound to an UNKNOWN (has_data False) before
-        # anything can raise, so gate 6 skips (never sizes against an unknown book) even on an early failure.
         venue_exp = venue_exposure.VenueExposure(total_dollars=0.0, has_data=False)
         try:
-            if ctx is None or (_time.time() - last_idx) > index_refresh_sec:
-                ctx = await fetch_market_context(client, int(_time.time())); last_idx = _time.time()
             now_ts = int(_time.time())
-            # ★ gate 6b input: read the PER-SHARD split FRESH every cycle (balances DEPLETE with trading; the 900s
-            # index cache would be stale). NEVER None on the live path -- a read FAILURE fails CLOSED to an UNKNOWN
-            # ShardBalances (has_breakdown False) so every entry skips rather than places blind. This is the one
-            # construction site that makes evaluate's gate-6b unbypassable on the live path.
+            # gate-6b input: the PER-SHARD split, FRESH each cycle (balances deplete). Account-wide (all shards).
+            # Fail-CLOSED to UNKNOWN (has_breakdown False -> every entry skip:shard_underfunded, never place blind).
             try:
                 shard_bal = await shard_balance.fetch_shard_balances(client)
             except Exception as e:  # noqa: BLE001 -- fail-CLOSED: cannot read the split -> UNKNOWN -> all entries skip
-                log.warning("pm_live_driver: shard-balance read FAILED -> UNKNOWN split (all entries skip:"
-                            "shard_underfunded this cycle -- NEVER place blind): %s", e)
+                log.warning("pm_live_driver: shard-balance read FAILED for %s -> UNKNOWN split (entries skip:"
+                            "shard_underfunded this cycle -- never place blind): %s", account_id, e)
                 shard_bal = shard_balance.ShardBalances(total_dollars=0.0, by_shard={}, has_breakdown=False)
-            # ★ R7 gate-6 input: read the ACCOUNT'S TRUE open exposure from the venue FRESH every cycle (a co-tenant
-            # can add exposure between cycles). NEVER None on the live path -- a read/parse failure fails CLOSED to an
-            # UNKNOWN VenueExposure (has_data False) so every entry skip:exposure_unknown rather than sizing against a
-            # journal-only (co-tenant-blind) base. This is the construction site that makes gate 6's rebase
-            # unbypassable on the live path (the paper/dry-run path passes venue_exposure=None -> journal base).
+            # ★ M1 gate-6 input: the ACCOUNT'S TRUE open exposure, read ONCE and SHARED across categories (a co-tenant
+            # OR a sibling category can add exposure between cycles). Fail-CLOSED to UNKNOWN (has_data False -> every
+            # entry skip:exposure_unknown, never size against an unknown book).
             try:
                 venue_exp = await venue_exposure.fetch_open_exposure(client)
             except Exception as e:  # noqa: BLE001 -- fail-CLOSED: cannot trust the venue exposure -> UNKNOWN -> entries skip
-                log.warning("pm_live_driver: venue open-exposure read FAILED -> UNKNOWN (entries skip:exposure_unknown "
-                            "this cycle -- NEVER size against an unknown book): %s", e)
+                log.warning("pm_live_driver: venue open-exposure read FAILED for %s -> UNKNOWN (entries skip:"
+                            "exposure_unknown this cycle -- never size against an unknown book): %s", account_id, e)
                 venue_exp = venue_exposure.VenueExposure(total_dollars=0.0, has_data=False)
             with db.connect(pm_db_path) as conn:
-                sub = execution.sub_config_from_row(conn.execute(
-                    "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, category)).fetchone())
-                # ★ R-d PERIODIC settlement-scan (throttled): book any position that settled since the last scan
-                # BEFORE this cycle's Journal + evaluate, so a settled position is netted flat first (a stale
-                # whale-exit for it then sees skip:not_held, and the exposure counters exclude it). A settled MLB
-                # game we hold resolves mid-session; this drops it from /live + net-open within the throttle window.
-                if (_time.time() - last_settle) > _SETTLE_SCAN_SEC:
-                    try:
-                        ssumm = settlement.book_settlements(conn, account_id, category,
-                                                            await fetch_settlements(client), now_ts=now_ts)
-                        if ssumm["n_booked"]:
-                            log.info("pm_live_driver: periodic settlement-scan booked %d terminal-close(s): %s",
-                                     ssumm["n_booked"], ssumm["booked"])
-                    except Exception as e:  # noqa: BLE001 -- a settlements-read failure just skips this scan (retried next window)
-                        log.warning("pm_live_driver: periodic settlement-scan failed (retried next window): %s", e)
-                    last_settle = _time.time()
+                # ★ M1: ONE account-keyed Journal per cycle, SHARED across every category. gate 6 (open_usd) is
+                # account-keyed, so a later category's evaluate sees an earlier category's in-cycle commit_would_place
+                # through this ONE Journal -> the account open-cap is enforced JOINTLY (no lock, nothing added to the
+                # order hot path). gate 5/8 (daily/count) remain (account, category)-keyed inside it, so each category
+                # keeps its own daily/order budget.
                 journal = execution.Journal(conn, [account_id], now_ts)
-                wallets = [r["wallet"] for r in conn.execute(
-                    "SELECT wallet FROM pm_subdivision_attachment WHERE account_id=? AND category=? AND active=1",
-                    (account_id, category)).fetchall()]
-                signals = []
-                for w in wallets:
-                    try:
-                        book = await positions_client.fetch_positions_book(w)
-                    except Exception as e:  # noqa: BLE001 -- per-whale isolation (a fetch error skips that whale)
-                        log.warning("pm_live_driver: /positions fetch failed for %s: %s", w[:12], e); continue
-                    if not getattr(book, "complete", False):
-                        continue                                        # never act on a partial book (also: do NOT
-                        # touch prior_snapshots on a partial -- a short book would look like a spurious reduction)
-                    signals += positions_to_entry_signals(book.rows, w)
-                    # ── Option D whale-EXIT detection: a /positions size-REDUCTION vs the prior snapshot, CONFIRMED by
-                    # an /activity SELL in-window (execution.detect_exit_signals: BOTH or MISSED). /activity is pulled
-                    # LAZILY -- ONLY when a reduction is actually seen -- so the ~7s cadence does not double the API
-                    # load; the reduction cannot appear before the sell it confirms (a sell precedes its own
-                    # position drop), so this misses nothing the window would have caught. Per-whale isolated.
-                    reds = detect_position_reductions(prior_snapshots.get(w, {}), book.rows, w, now_ts)
-                    confirmed = True
-                    if reds:
+                for c in cats:                                  # ★ M1: iterate the account's categories SEQUENTIALLY
+                    _bld = builders.get(c)
+                    if _bld is None:
+                        continue                                # no catalog builder -> no signals (fail-safe skip)
+                    if ctx_by_cat[c] is None or (_time.time() - last_idx_by_cat[c]) > index_refresh_sec:
                         try:
-                            acts = await positions_client.fetch_activity(w)
-                            sells = activity_sells_from_activity(acts, w)
-                            exits = execution.detect_exit_signals(sells, reds, window_sec=_EXIT_WINDOW_SEC)
-                            if exits:
-                                log.info("pm_live_driver: %d confirmed whale-EXIT signal(s) for %s (reductions=%d, "
-                                         "sells=%d)", len(exits), w[:12], len(reds), len(sells))
-                            signals += exits
-                        except Exception as e:  # noqa: BLE001 -- exit-confirm fetch FAILED -> no exit + RETRY next cycle
-                            confirmed = False    # do NOT advance the snapshot -> the reduction is RE-DETECTED next cycle
-                            log.warning("pm_live_driver: exit-confirm /activity fetch failed for %s (no exit this "
-                                        "cycle; the reduction is RE-CHECKED next cycle -- snapshot not advanced): %s",
-                                        w[:12], e)
-                    # ★ advance the prior snapshot ONLY after a COMPLETED diff (+ a successful confirm when a reduction
-                    # was seen). A failed /activity confirm keeps the OLD snapshot so the pending reduction retries
-                    # rather than being silently lost to a transient blip (a missed exit is accepted, but not for a
-                    # recoverable fetch error). No reduction seen -> confirmed stays True -> advance normally.
-                    if confirmed:
-                        prior_snapshots[w] = snapshot_open_positions(book.rows)
-                # ★ OPPOSING-PAIR GUARD: when two whales disagree on ONE market (same condition_id, different
-                # outcome_index), the bet comes OFF THE BOOKS -- CLOSE what we hold (close_source='opposed', ONE
-                # PER-WALLET close per holding whale -> the whole account flattens) and SKIP both incoming sides
-                # (place neither; signal ordering is not
-                # information). Same-side stacking (same cid+outcome_index) is NEVER contested -> untouched (agreement
-                # is conviction). The close is a reduce_only exit through the SAME chokepoint below -- DISARM still
-                # blocks it, and the net-open guard makes it idempotent against a co-occurring whale-exit (no double
-                # close). Detected on the SEMANTIC market identity, so 'opposing' is unambiguous across market types
-                # and a different LINE (a different condition_id) never false-fires.
-                _entries = [s for s in signals if not s.is_exit]
-                _exits = [s for s in signals if s.is_exit]        # whale-EXIT signals -- pass through untouched
-                # OPPOSED-MEMORY (2026-09-01): a cid EVER contested stays off the books for its life (survives a
-                # signal flicker; the enter-close churn fix). Keyed on the market being contested, not the coid, so
-                # it holds independently of gate-4 dedup (safe under the R7.h re-entry change).
-                _kept, _opposed, _contested, _preexisting = execution.detect_opposing_closes(
-                    _entries, execution.account_held_outcomes(conn, account_id, category),
-                    execution.account_opposed_cids(conn, account_id, category))
-                if _contested:
-                    log.warning("pm_live_driver: OPPOSING-PAIR guard -- %d NEWLY-contested market(s) -> FLAT (close "
-                                "held + skip both sides); opposed_closes=%d contested_cids=%s",
-                                len(_contested), len(_opposed), sorted(_contested))
-                if _preexisting:
-                    # a pair we ALREADY hold both sides of -> LEFT ALONE (the guard prevents NEW pairs, it does not
-                    # retroactively flatten; Jack RULED let a pre-existing pair settle). Logged for visibility.
-                    log.info("pm_live_driver: OPPOSING-PAIR guard -- %d PRE-EXISTING pair(s) LEFT to settle (NOT "
-                             "flattened): cids=%s", len(_preexisting), sorted(_preexisting))
-                signals = _kept + _exits + _opposed
-                place_fn = make_place_fn(client)
-                summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
-                                                      shard_balances=shard_bal, venue_exposure=venue_exp,
-                                                      legacy_db_path=legacy_db_path, log=log)
-                if summ["placed"] or summ["errors"]:
-                    # ★ str(summ): a lone non-empty dict as the sole %-logging arg is treated by stdlib logging as a
-                    # %-MAPPING, not a value -> "TypeError: not all arguments converted" and the line is EATEN, exactly
-                    # on active cycles (placed/errors truthy) when the summary matters most. Wrapping in str() defuses it.
-                    log.info("pm_live_driver cycle: %s", str(summ))
-                # ★ SUSTAINED shard-underfunding alarm (SURFACED, not latched): a funding gap persisting across N
-                # cycles with ZERO placements means the auto-rebalancer has not refilled the market's shard -> a human
-                # must move funds or set/adjust target_balance_allocation. Resets the moment anything places or the gap
-                # clears; re-fires every N cycles while sustained so it stays visible.
-                if summ.get("n_shard_underfunded", 0) > 0 and summ["placed"] == 0:
-                    consec_underfunded += 1
-                    if consec_underfunded % _SHARD_UNDERFUNDED_ALARM_N == 0:
-                        log.warning("pm_live_driver: ALARM -- SUSTAINED SHARD UNDERFUNDING: %d consecutive cycles with "
-                                    "a funding gap on the market's shard and ZERO placements (%s/%s). MOVE FUNDS to the "
-                                    "market's shard or set/adjust target_balance_allocation. SURFACED, not latched.",
-                                    consec_underfunded, account_id, category)
-                else:
-                    consec_underfunded = 0
+                            ctx_by_cat[c] = await _bld(client, int(_time.time())); last_idx_by_cat[c] = _time.time()
+                        except Exception as e:  # noqa: BLE001 -- refresh failure keeps the last catalog (or None -> skip)
+                            log.warning("pm_live_driver: index refresh failed for %s/%s: %s", account_id, c, e)
+                    ctx = ctx_by_cat[c]
+                    if ctx is None:
+                        continue                                # still no catalog this cycle -> skip this category
+                    sub = execution.sub_config_from_row(conn.execute(
+                        "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, c)).fetchone())
+                    # ★ R-d PERIODIC settlement-scan (throttled PER CATEGORY, #18): book any position that settled
+                    # since THIS category's last scan BEFORE evaluate, so a settled position is netted flat first (a
+                    # stale whale-exit then sees skip:not_held; the exposure counters exclude it).
+                    if (_time.time() - last_settle_by_cat[c]) > _SETTLE_SCAN_SEC:
+                        try:
+                            ssumm = settlement.book_settlements(conn, account_id, c,
+                                                                await fetch_settlements(client), now_ts=now_ts)
+                            if ssumm["n_booked"]:
+                                log.info("pm_live_driver: periodic settlement-scan booked %d for %s/%s: %s",
+                                         ssumm["n_booked"], account_id, c, ssumm["booked"])
+                        except Exception as e:  # noqa: BLE001 -- a settlements-read failure just skips this scan
+                            log.warning("pm_live_driver: periodic settlement-scan failed for %s/%s (retried next "
+                                        "window): %s", account_id, c, e)
+                        last_settle_by_cat[c] = _time.time()
+                    wallets = [r["wallet"] for r in conn.execute(
+                        "SELECT wallet FROM pm_subdivision_attachment WHERE account_id=? AND category=? AND active=1",
+                        (account_id, c)).fetchall()]
+                    signals = []
+                    for w in wallets:
+                        try:
+                            book = await positions_client.fetch_positions_book(w)
+                        except Exception as e:  # noqa: BLE001 -- per-whale isolation (a fetch error skips that whale)
+                            log.warning("pm_live_driver: /positions fetch failed for %s (%s): %s", w[:12], c, e); continue
+                        if not getattr(book, "complete", False):
+                            continue                            # never act on a partial book (nor touch the snapshot)
+                        signals += positions_to_entry_signals(book.rows, w)
+                        # Option D whale-EXIT detection: /positions size-REDUCTION vs the prior snapshot, CONFIRMED by
+                        # an /activity SELL in-window (BOTH or MISSED; /activity pulled LAZILY only on a reduction).
+                        # ★ #16: the prior snapshot is keyed (category, wallet) -- a wallet attached to TWO categories
+                        # must not have its two books merged under this one task.
+                        reds = detect_position_reductions(prior_snapshots.get((c, w), {}), book.rows, w, now_ts)
+                        confirmed = True
+                        if reds:
+                            try:
+                                acts = await positions_client.fetch_activity(w)
+                                sells = activity_sells_from_activity(acts, w)
+                                exits = execution.detect_exit_signals(sells, reds, window_sec=_EXIT_WINDOW_SEC)
+                                if exits:
+                                    log.info("pm_live_driver: %d confirmed whale-EXIT(s) for %s (%s; reductions=%d "
+                                             "sells=%d)", len(exits), w[:12], c, len(reds), len(sells))
+                                signals += exits
+                            except Exception as e:  # noqa: BLE001 -- exit-confirm fetch FAILED -> no exit + RETRY next cycle
+                                confirmed = False    # keep the OLD snapshot so the reduction re-checks next cycle
+                                log.warning("pm_live_driver: exit-confirm /activity fetch failed for %s (%s; no exit; "
+                                            "snapshot NOT advanced -> re-checked next cycle): %s", w[:12], c, e)
+                        if confirmed:
+                            prior_snapshots[(c, w)] = snapshot_open_positions(book.rows)   # ★ #16 keyed (category, wallet)
+                    # ★ OPPOSING-PAIR GUARD (per category -- cross-category markets never share a condition_id, so
+                    # per-category scoping is correct and a ufc market can never false-contest an mlb one). ONE
+                    # per-wallet close per holding whale flattens the account; both incoming sides skipped; same-side
+                    # stacking untouched. The close is a reduce_only exit through the SAME chokepoint (DISARM blocks it;
+                    # the net-open guard makes it idempotent vs a co-occurring whale-exit). OPPOSED-MEMORY: a cid ever
+                    # contested stays off the books for its life (keyed on the contested market, not the coid).
+                    _entries = [s for s in signals if not s.is_exit]
+                    _exits = [s for s in signals if s.is_exit]
+                    _kept, _opposed, _contested, _preexisting = execution.detect_opposing_closes(
+                        _entries, execution.account_held_outcomes(conn, account_id, c),
+                        execution.account_opposed_cids(conn, account_id, c))
+                    if _contested:
+                        log.warning("pm_live_driver: OPPOSING-PAIR guard %s/%s -- %d NEWLY-contested -> FLAT (close "
+                                    "held + skip both sides); opposed_closes=%d cids=%s",
+                                    account_id, c, len(_contested), len(_opposed), sorted(_contested))
+                    if _preexisting:
+                        log.info("pm_live_driver: OPPOSING-PAIR guard %s/%s -- %d PRE-EXISTING pair(s) LEFT to settle: "
+                                 "cids=%s", account_id, c, len(_preexisting), sorted(_preexisting))
+                    signals = _kept + _exits + _opposed
+                    place_fn = make_place_fn(client)
+                    # ★ M1: the SHARED account Journal is passed to EVERY category -> the account open-cap is JOINT.
+                    summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
+                                                          shard_balances=shard_bal, venue_exposure=venue_exp,
+                                                          legacy_db_path=legacy_db_path, log=log)
+                    if summ["placed"] or summ["errors"]:
+                        # str(summ): a lone non-empty dict as the sole %-arg is read as a %-MAPPING -> "not all args
+                        # converted" and the line is EATEN on active cycles; str() defuses it.
+                        log.info("pm_live_driver cycle %s/%s: %s", account_id, c, str(summ))
+                    # ★ #14 SAFETY: per-CATEGORY sustained shard-underfunding alarm -- a per-account counter would let
+                    # one category's placements silently reset a sibling's genuine shard-starvation alarm.
+                    if summ.get("n_shard_underfunded", 0) > 0 and summ["placed"] == 0:
+                        consec_underfunded_by_cat[c] += 1
+                        if consec_underfunded_by_cat[c] % _SHARD_UNDERFUNDED_ALARM_N == 0:
+                            log.warning("pm_live_driver: ALARM -- SUSTAINED SHARD UNDERFUNDING: %d consecutive cycles "
+                                        "with a funding gap + ZERO placements (%s/%s). MOVE FUNDS to the market's shard "
+                                        "or set/adjust target_balance_allocation. SURFACED, not latched.",
+                                        consec_underfunded_by_cat[c], account_id, c)
+                    else:
+                        consec_underfunded_by_cat[c] = 0
         except Exception as e:  # noqa: BLE001 -- a bad cycle must never kill the loop
             log.exception("pm_live_driver: cycle failed: %s", e)
         await _sleep(poll_sec)
