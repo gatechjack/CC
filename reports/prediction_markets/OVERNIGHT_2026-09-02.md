@@ -109,9 +109,11 @@ arms, or prod-live advances. The live jack-mlb division is trading, untouched.
   (÷100 → dollars). I could not confirm on the box (Rung 0 blocked). The deploy CROSS-CHECK must read jack's live
   venue exposure and confirm it ~matches his journal open_usd (~$13); a 100× unit error would be glaring. If it is a
   dollar STRING instead, change the `_CENTS_PER_DOLLAR` handling before restart. Documented in the module header.
-- **SHA:** [pending commit — after the full-suite confirm]
+- **SHA:** `4cf59e3` (pushed).
 
-### Rungs 2–6 — PREPARE runners only (deploy/DB-write/arm all HALT) — NOT STARTED
+### Rungs 2–6 — PREPARED (see DEPLOY QUEUE below): manifests + LF-blob hashes + post-checks + stop conditions
+All deploy/DB-write/arm steps are staged as specs in the DEPLOY QUEUE; NOTHING executed. (The runnable `.ps1`
+launchers were classifier-blocked — see the queue's "Runner honesty" note.)
 
 ---
 
@@ -160,15 +162,89 @@ arms, or prod-live advances. The live jack-mlb division is trading, untouched.
    against the box (it should be a clean diff off the multi-account engine bundle), not assume branch equality.
 
 ## DEPLOY QUEUE (authorize one at a time; I reconstruct nothing)
-> Order: Rung 0 (read-only, any time) -> Rung 2 (N1+N2 engine) -> R7 (engine) -> Rung 4 (Karen DB write) ->
-> Rung 5 (restart) -> Rung 6 (arm). Each engine deploy is a **file-graft, box-is-truth, LF-normalized**, then a
-> single engine restart via your canonical `restart_tc.ps1`. **[Populated as each rung is built; see below.]**
+> **Order:** Rung 0 (read-only, any time) → **Rung 2+R7 bundled** (one engine restart) → Rung 4 (Karen DB write) →
+> Rung 5 (engine restart, picks up Karen) → Rung 6 (arm Karen). Every commit is on `pm-per-account-trading-2026-09-02`
+> @ `4cf59e3` (pushed). Base of the branch is `f1e28cc` (== the box's engine bundle), so each manifest is a clean
+> file-by-file graft off what the box already runs. NO migration in any rung.
+>
+> **★ Runner honesty:** the classifier blocked me from writing/validating the ssh-launcher `.ps1` files and from
+> running any box command tonight, so I did NOT stage runnable `.ps1` launchers. Each entry below gives the exact
+> manifest (LF-blob sha256 = what must land on the box), graft approach, post-check, and stop conditions — build the
+> graft runner mirroring the last engine-bundle deploy runner (per-file `.bak` + `sha256sum` verify), which is your
+> established pattern. The `.ps1` launcher is the standard `pm_multiacct_audit_ro.ps1` boilerplate pointed at the
+> rung's `.sh`.
 
-- **[Rung 0 runner — READ-ONLY, run any time]** `cc\pm_r0_establish_ro.sh` is written. Launcher `.ps1` (classifier
-  blocked me writing it): create `cc\pm_r0_establish_ro.ps1` identical to `pm_multiacct_audit_ro.ps1` but with
-  `$sh = Join-Path $PSScriptRoot "pm_r0_establish_ro.sh"`, then run `powershell -ep bypass -f .\pm_r0_establish_ro.ps1`.
-  Touches nothing (GET-only + mode=ro). Post-check: read the output; confirm Karen flat + legacy off + roster =
-  `{(kalshi_jack,mlb)}` + Karen's secret_ref='kalshi_karen'.
+### Rung 0 — READ-ONLY establishment (run first, any time; touches nothing)
+- **Runner:** `cc\pm_r0_establish_ro.sh` (written). Launcher: create `cc\pm_r0_establish_ro.ps1` = the standard
+  streaming boilerplate with `$sh = Join-Path $PSScriptRoot "pm_r0_establish_ro.sh"`; run
+  `powershell -ep bypass -f .\pm_r0_establish_ro.ps1`. GET-only venue read + `mode=ro` DB + config read.
+- **Post-check / what to read:** (A) `poly_kalshi_mlb.enabled` = false on the box; (B) kalshi_karen has/hasn't a
+  `pm_subdivision`; **are the 3 whales ATTACHMENTS or only pinned?**; the proposed roster query = exactly
+  `{(kalshi_jack, mlb)}`; Karen shard-3 balance + age; (C) **Karen FLAT at the venue** + Karen's credential path
+  connects. **This gates Rung 4's exact content and confirms N3.**
+
+### Rung 2 + R7 — ENGINE DEPLOY (bundle; ONE restart) — HALT
+- **Manifest (6 files, LF-blob sha256 first-16; graft `git checkout 4cf59e3 -- <file>` OR stream the LF blob, then
+  `sha256sum` must match):**
+  - `trading_corp/main.py` — `fff75b0b085ffae0`  (N2 wiring)
+  - `trading_corp/prediction_markets/driver_roster.py` — `802c9a824b4803ac`  (NEW)
+  - `trading_corp/prediction_markets/shard_snapshot_task.py` — `956f13c363801a7e`  (N1 whitelist)
+  - `trading_corp/prediction_markets/venue_exposure.py` — `5f3e2d98cf8853b9`  (NEW, R7)
+  - `trading_corp/prediction_markets/execution.py` — `bc806bc4eb289072`  (R7 gate 6)
+  - `trading_corp/prediction_markets/live_driver.py` — `371eee0cd1c535f1`  (R7 per-cycle read + threading)
+- **Import closure:** complete within the 6 files — `driver_roster` imports only stdlib; `venue_exposure` only
+  stdlib; `execution` does NOT import `venue_exposure` (duck-typed param); `main.py`/`live_driver.py` import the two
+  new modules (both in the manifest). No other engine file changes.
+- **Touches:** the shared engine → **one restart via your canonical `restart_tc.ps1`**. No pm_web restart. No migration.
+- **★ PRE-CHECK before restart:** confirm the live `pm_account.secret_ref` for `kalshi_jack` is `KALSHI` (or
+  `kalshi_jack`) — it must be in the whitelist or jack's driver would not spawn. (Rung 0 [B1] reads this.)
+- **Post-check (prove BOTH the inert wiring AND the venue cap):**
+  1. Engine log: `PM LIVE DRIVER WIRED -- 1 task(s): spawned=[('kalshi_jack','mlb')] skipped=[] brokers=['kalshi_jack']`.
+     Exactly ONE task; NO Karen task (she has no attached subdivision yet). Boot-reconcile jack CLEAN.
+  2. jack still ARMED, trading, order count advancing as before (behavior unchanged for the driver).
+  3. **R7 unit cross-check:** in the engine log (or a follow-up read-only probe), jack's venue open-exposure this
+     cycle ≈ his journal `open_usd` (~$13, both small) — a ~1:1 match confirms `market_exposure` units are CENTS. A
+     ~100× gap ⇒ the unit assumption is WRONG: do NOT trust gate 6; roll back and fix `venue_exposure._CENTS_PER_DOLLAR`.
+  4. No `skip:exposure_unknown` storm (would mean the positions read is failing → gate 6 fail-closed blocking all entries).
+- **Stop conditions / rollback:** if the roster log shows >1 task or a Karen task, or jack's boot-reconcile latches,
+  or a `skip:exposure_unknown` storm, or the unit cross-check is ~100× off → restore the 6 `.bak` files + restart.
+  Global STOP available throughout. (Deploying inert-first means jack's risk here is the R7 gate-6 behavior change +
+  the unit assumption — the cross-check is the guard.)
+
+### Rung 4 — CREATE/CONFIRM KAREN'S SUBDIVISION + CAPS + ATTACHMENTS — HALT (LIVE PM-DB WRITE)
+- **Gated on Rung 0 + N3:** legacy OFF Karen's account AND Karen FLAT at the venue (else her boot-reconcile latches).
+- **Content depends on Rung 0's finding:**
+  - If NO `pm_subdivision` for kalshi_karen → CREATE `(kalshi_karen, mlb)` with **RULING 2 caps** and attach+activate
+    the 3 whales.
+  - If it EXISTS with the 3 attachments → SET the caps to RULING 2 and confirm the 3 attachments are `active=1`.
+  - If the 3 whales are only PINNED (watchlist), not attached → ATTACH+activate them on `(kalshi_karen, mlb)`.
+- **RULING 2 caps (identical to jack):** `max_orders_per_day=50, daily_usd_cap=150, max_open_usd=150,
+  per_order_usd_cap=5.50, contracts=5, sizing_mode='contracts', max_slippage_cents=2, liquidity_ratio=0.75,
+  market_types=(moneyline,total,spread)`. **★ NO place-one-and-inspect** (RULING 2, deliberate): her first order fires
+  at full production size; gate 8 will not stop after it. The weight is on the credential-path proof (Rung 1 tests +
+  Rung 2 inert log showing `brokers=['kalshi_karen']` binds HER keypair) — see the Rung 5 post-check.
+- **The 3 whales (RULING 3):** `0x684baa57c338c2549aec0aa3f034f695d72a8409` (also on jack's sub — two accounts
+  copying one whale is fine, gate-4 COID carries the division), `0xd6966eb1ae7b52320ba7ab1016680198c9e08a49`,
+  `0xdb859a551fcf56e49416160911476bea7307152f`.
+- **Runner:** a `pm_cli`/SQL write with a **pre-write DB backup** + a **resolved-verify** read-back (mirror the R7.f
+  `pm_caps_set.ps1` / `pm_account_create.ps1` pattern). Present the one-liner; HALT for your authorization.
+
+### Rung 5 — ENGINE RESTART (picks up Karen) — HALT
+- **Touches:** shared engine restart (`restart_tc.ps1`). No files change (the Rung-2 code is already live).
+- **Post-check:** roster log now `2 task(s): spawned=[('kalshi_jack','mlb'),('kalshi_karen','mlb')]
+  brokers=['kalshi_jack','kalshi_karen']`. **Karen's boot-reconcile CLEAN** (proves N3 end-to-end — her account is
+  PM-exclusive + flat). Karen's task runs **DISARMED** (her `arm:kalshi_karen:mlb` absent → effective_armed False).
+- **Stop:** if Karen's boot-reconcile LATCHES → she is not flat / legacy still trades her account (N3 not closed).
+  Do NOT arm. Investigate; her latch does not affect jack (separate task, per-account latch).
+
+### Rung 6 — ARM KAREN — HALT (arm-state write)
+- **Runner:** `pm_cli` arm for `kalshi_karen mlb` (mirror `pm_arm_r8.sh`). Global is already armed → arming her sub
+  gives `effective_armed=True` for Karen without touching jack.
+- **★ WATCH (RULING 2): her FIRST order is FULL production size** (5 contracts, up to $5.50), not a $1 probe. The
+  credential path is the unproven part — confirm from the Rung-5 roster log that `brokers['kalshi_karen']` bound
+  HER keypair, and after the first fill, verify the fill landed on KAREN's Kalshi account (venue read), not jack's.
+  If anything looks like jack's account → global STOP immediately.
+- **Stop:** global disarm; do not re-arm until inspected.
 
 ## RULINGS STILL WAITING ON YOU
 - None new yet. (The 5 rulings are answered; I will surface any fork I hit here with a recommendation.)
