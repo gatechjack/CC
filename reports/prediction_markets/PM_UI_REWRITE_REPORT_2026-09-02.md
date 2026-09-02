@@ -780,3 +780,96 @@ Build + test only; all box access this pass was read-only (diagnosis fetch + loc
 the branch at `431ec76`; prod-live/main-wip NOT advanced, branch NOT pushed (box-is-truth). Render PNGs in
 `cc/renders/` (before_*/after_* + per-card crops); render harness `cc/pm_render.py`, toggle diag
 `cc/pm_toggle_diag.sh` (read-only).
+
+---
+
+# DEPLOY 3 -- 2026-09-02/03 (DEPLOYED LIVE; pm_web-only + ONE pm_web restart; engine never touched)
+
+Board-authorized deploy of the CARD POLISH pass. **pm_web-ONLY, wholesale copy of 5 files (no graft:
+app.py/main.py unchanged vs `cafb132`), one pm_web restart via `az vm run-command`. The engine (trading-corp PID
+163519, ARMED, trading two accounts unattended) was never restarted, reloaded, or touched -- PID 163519 /
+NRestarts 0 at every step.** Deploy target = branch `pm-ui-rewrite-2026-09-02` @ **`431ec76`** (report doc commit
+on top, not deployed).
+
+## Source & scope
+`git diff --name-only cafb132 431ec76` over `web/` = exactly the 5 expected files (feed_mlb.py, live_view.py,
+pm_desk.css, pm_live_subdivision.html, pm_shell.html); **app.py and main.py are unchanged vs `cafb132`** (empty
+diff) -> no graft. Engine files on the branch were NOT shipped.
+
+## Pre-deploy checks (all PASS -- `pm_deploy3_checks.sh`, 2026-09-02T23:01:37Z)
+1. Engine PID **163519**, NRestarts **0**, active; pm_web **167940**, active; schema **17**. Arm rows all
+   armed=True with ts (`arm:global` 08-31T02:35:38Z, `arm:kalshi_jack:mlb` 08-31T21:49:39Z, `arm:kalshi_karen:mlb`
+   09-02T12:53:23Z).
+2. Each of the 5 box files, CR-stripped, EQUALS its `cafb132` sha -- **box == last deploy, zero drift** (5/5 OK).
+3. Box app.py M4 markers: `is_admin` **=10**, `/pm/arm` **=0**.
+4. Backup -> **`/home/azureuser/pm_deploy3_backup_20260902T230137Z`** (5 files). Journal order counts (dry_run=0):
+   kalshi_jack **104**, kalshi_karen **11** (grew from DEPLOY 2's 93/6 -- the engine's normal trading over the day).
+5. BEFORE served `/static/pm_desk.css` CR-stripped sha16 = **`2681180ca6a423b8`** (the `cafb132` file); the shell
+   link carried **no `?v=`** yet.
+
+## Deploy (`pm_deploy3_apply.sh`, 23:02:04Z) -- 5 files wholesale, sha-verified on the box == `431ec76`
+```
+467d528460421a31  web/feed_mlb.py                          (box was 7f05607bb887bb51)
+2c7c8875cd80e768  web/live_view.py                         (box was 6d3b7b3300782d3e)
+1b3b8ccc6dff50cc  web/static/pm_desk.css                   (box was 2681180ca6a423b8)
+90e7357b62e6d87c  web/templates/pm_live_subdivision.html   (box was 769044d17363e73c)
+d5a29a20d5407781  web/templates/pm_shell.html              (box was c3ddce77a5fb4f9c)
+```
+Result: **ALL 5 OK**.
+
+## Restart (pm_web ONLY, via az run-command, 23:03Z)
+`systemctl restart prediction-markets-web` (root, via `az vm run-command` -- ssh+sudo has no TTY on this box).
+pm_web **167940 -> 170400** (active, running); **engine trading-corp PID 163519 UNCHANGED, NRestarts 0**
+immediately after. No package/venv/unit-file change.
+
+## Post-deploy verification (`pm_deploy3_verify.sh`, after a 90s poll cycle, 23:03Z) -- checks 9-19 all PASS
+- **[9]** the 7 listed pages 200; and **all 15 `/farm/{category}` that exist return 200** (atp, cs2, epl, fed,
+  golf, mlb, nba, nfl, nhl, soccer, tennis, ucl, ufc, wnba, wta -- non-200 count 0).
+- **[10]** every static asset link carries `?v=` (or is an unversioned page-level script) and each resolves
+  **200**: `pm.css?v=204d9051`, `pm_desk.css?v=1b3b8ccc`, `htmx.min.js?v=491955cd`, `pm_live.js`, `pm_sort.js`.
+  **No 404** -> no rollback condition.
+- **[11]** the versioned CSS served at `/static/pm_desk.css?v=1b3b8ccc` = **`1b3b8ccc6dff50cc`** (== target,
+  DIFFERS from step 5's `2681180ca6a423b8`); the live page's pm_desk link now carries `?v=1b3b8ccc`; `.tgl`
+  anchors inside `.toggle` = **2**. The cache-bust is live -- a fresh browser now fetches the new CSS.
+- **[12]** card borders by state (live pages): st-live and st-pre cards both render their border; **0 cards with
+  no border** (every current game has a feed). The live slate had no final/mixed/feed-unavailable card at check
+  time -- those states' borders are proven by test + the pre-deploy render; the live+preview borders are
+  confirmed on the actual prod render (`cc/renders/prod_live_jack_1600.png`).
+- **[13]** cards at an inning break (MID/END) during the window: **0** -> NOT claimed verified here (the behavior
+  is proven by `test_feed_parse_inning_break_clears_count` + the pre-deploy render `after_ATH.png`).
+- **[14]** date chip short (no weekday) on every card, both live pages: 3 chips each, **0 with a weekday**,
+  sample `Sep 2 · 6:40 PM ET`; confirmed fitting at **1280px** on the actual prod render
+  (`cc/renders/prod_live_jack_1280.png`) as well as 1600px.
+- **[15]** coverage label present on all three surfaces (root/account/live); marks ok (320 markets);
+  **kalshi_jack 3 of 3 priced, kalshi_karen 3 of 3 priced -- no unpriced tickers** (open counts dropped from
+  8/6 as the day's games settled).
+- **[16]** `GLOBAL ARMED` on `/`; effective `ARMED` on both live pages; **0 DISARMED/STATE UNAVAILABLE; 0 NEVER
+  ARMED anywhere**.
+- **[17]** Farm League: `/farm/mlb` Analyze occurrences **30**, loss-omission markers **87**, pm.css linked; and
+  the shared shell change is confirmed **visually not just by 200** -- the actual prod `/farm/mlb` renders fully
+  styled (`cc/renders/prod_farm_mlb_1600.png`): nav, tables, colored win%, Analyze controls, loss-omission%.
+- **[18]** engine PID **163519** unchanged, NRestarts **0**, ERROR entries since restart **0**; journal counts
+  UNCHANGED (kalshi_jack 104, kalshi_karen 11) -- pm_web placed nothing.
+- **[19]** double-escaped entities `&amp;middot;`/`&amp;mdash;`/`&amp;dagger;`/`&amp;ndash;` = **0** each.
+
+## Visual confirmation (actual prod bytes)
+The served prod HTML (`/live/kalshi_jack/mlb`, `/farm/mlb`) + served CSS were fetched read-only and rendered
+headless at 1600px and 1280px (`cc/renders/prod_live_jack_*`, `prod_farm_mlb_*`): the toggle is a bordered
+segmented control (item 1 cache-bust live), LIVE cards carry the blue border and PREVIEW the subtle not-started
+border (item 2), the date reads `Sep 2 · …` right-aligned (item 4), the diamond lines and scoreboard digits are
+clearly legible (item 5), and Farm is fully styled (item 17).
+
+## Rollback
+Not needed -- all of 9-18 passed and no step-10 404. Backup retained at
+`/home/azureuser/pm_deploy3_backup_20260902T230137Z` (`pm_deploy3_rollback.sh` restores + an az pm_web restart;
+DANGEROUS if restored later -- reverts DEPLOY 3).
+
+## What was NOT done / notes
+- Engine NEVER restarted or touched (163519 / NRestarts 0 at every step). No schema/venv/systemd change; no new
+  box dependency. app.py unchanged (no graft).
+- Item 1's fix is the static-asset cache-bust (`?v=` content hash in pm_shell.html) -- a browser that had the old
+  `pm_desk.css` cached will now re-fetch because the URL changed. Existing tabs open before the deploy may still
+  show the old CSS until reloaded; a normal navigation/refresh picks up the versioned URL.
+- prod-live / main-wip NOT advanced; branch NOT pushed (box-is-truth). Deployed code = `431ec76`.
+- Runners in `cc/`: `pm_deploy3_checks.sh`, `pm_deploy3_apply.sh` (+ `gen_deploy3.py`), `pm_deploy3_restart_az.ps1`,
+  `pm_deploy3_verify.sh`, `pm_deploy3_rollback.sh`; prod render `cc/pm_prodshot.py` from `cc/prod/` (fetched bytes).
