@@ -104,7 +104,25 @@ SAFETY item, that would make the safety set > 3 → report and STOP.
   scheduled_loop / kill_switch / shard_gate tests still green under box-scratch after the restructure. They cannot
   run locally (no pykalshi). Run box-scratch on the A+B bundle before the deploy queue.
 
-## RUNG A-proof — byte-identical mlb-only — LOCAL done (disarmed one-task test); BOX-SCRATCH gate pending (pykalshi path)
+## RUNG A-proof — byte-identical mlb-only — ★ PROVEN ON THE REAL VENV (box-scratch, 2026-09-02 ~22:0xZ)
+Read-only box-scratch (rsync the live tree to `~/pm_multicat_scratch_*`, overlay this branch's files, run the PM
+suite on the box venv with `-p no:pytest_ethereum`; **live engine PID 163519 NRestarts=0 active — UNTOUCHED**;
+scratch dirs cleaned up after). Runners: `cc\pm_scratch_a{,2,3,4}.{sh,ps1}`.
+- **The pykalshi-path tests that never run locally PASS on the box** with Option C: `test_live_driver_r7c` (incl. the
+  scheduled_loop tests + my new M1/M2), `test_kill_switch_r7d`, `test_boot_reconcile_r55` (incl. M3),
+  `test_ufc_match`, `test_venue_exposure_r7`, `test_optiond_r1`, `test_idempotency_r7h`, `test_disarm_r7i`,
+  `test_arm_r5`, `test_per_account_driver_n2`, etc. — all green. (The box's own `tests/` dir is stale/partial, so a3
+  replaced `tests/prediction_markets/` with THIS branch's via `git archive`.)
+- **Only 4 failures, ALL pre-existing / not-my-change (classified, evidence not assertion):**
+  - `test_search_r1::test_schema_head_is_15` + `test_shard_snapshot_m3::…head_is_16` — HARDCODED stale schema
+    constants; live `SCHEMA_HEAD=17, n_migrations=17` (moved 15→16 multi-acct →17 loss-omission). Just stale.
+  - `test_shard_gate_r2::test_driver_places_when_market_shard_funded` + `::…sustained_underfunding_alarm…` — their
+    `FakeClient` RAISES on `/portfolio/positions` (never mocked for R7's venue read, which shipped at my BASE
+    e5d6506) → gate 6 fails-closed `exposure_unknown` before gate 6b. **a4 PROVED these fail IDENTICALLY on the box's
+    un-overlaid e5d6506 `live_driver` (same old line numbers 511/565/382)** → pre-existing stale fixture, NOT my
+    regression. Production venue-read behavior is correctly covered by `test_venue_exposure_r7` (green).
+- **Verdict: on the real venv Option C is byte-identical for the mlb-only path.** Not a real finding → proceed to
+  prepare the deploy.
 
 ## RUNG B(core) — ufc_poly_kalshi_match.py — DONE @ `07c65a2`, 43 tests green (built by a Sonnet agent, reviewed)
 - Pure/stdlib matcher, 2 binary types: moneyline `KXUFCFIGHT-{YYMONDD}{K1}{K2}-{FTR}` + go-the-distance
@@ -180,17 +198,41 @@ real KXUFCFIGHT/KXUFCDISTANCE tickers + real Poly ufc slugs to build canonicaliz
   after my change; they are byte-identical-provable only on the box (pykalshi present). Flagged as the deploy gate.
 
 ## DEPLOY QUEUE (authorize one rung at a time; nothing built here is deployed; box-is-truth, GRAFT main.py never wholesale)
-- **A-bundle (engine; ONE restart) — HALT.** Files changed vs the box (`e5d6506` base == box):
-  `trading_corp/prediction_markets/live_driver.py` (M1 loop + M2 helper/call-site + M3 run_boot_reconcile),
-  `trading_corp/prediction_markets/boot_reconcile.py` (M3 latch_categories), `trading_corp/prediction_markets/
-  arm.py` UNCHANGED (latch_auth_failure already looped), `trading_corp/main.py` (GRAFT the account-grouping hunk;
-  NEVER wholesale). Import closure: live_driver imports arm/boot_reconcile/execution/settlement/shard_balance/
-  venue_exposure/paper + the mlb matcher (all already on the box). NO new module in A (ufc matcher is B). NO
-  migration. Gate-A = py_compile + import-closure + the box-scratch PM suite (`-p no:pytest_ethereum`), which MUST
-  show the pykalshi-path scheduled_loop/kill_switch/shard_gate tests GREEN (byte-identical mlb-only on the real
-  venv) + all the new M1/M2/M3 tests green. Post-check after restart: roster log `N account task(s): {jack:[mlb],
-  karen:[mlb]}` (ONE task per account), both boot-reconciled clean, jack+karen still armed+trading unchanged.
-  Stop: any behavior change to the live mlb path, or a pykalshi-path test red on box-scratch -> do not restart.
+### ★ A-DEPLOY (engine graft + ONE restart) — PREPARED + STAGED + PATCH-VERIFIED, NOT RUN — HALT for the board
+- **★ THE RESTART BOUNCES EVERYTHING.** A needs an ENGINE restart (`restart_tc.ps1` -> `systemctl restart
+  trading-corp`), so ALL divisions bounce: **bitunix, MACE, PEAD, IC, tasty, the Kalshi strategies, AND the PM
+  driver.** Time it accordingly. Box-scratch already proved A on the real venv; the restart is the only live step.
+- **MANIFEST = THE IMPORT CLOSURE, not the diff** (3 files; every import already on the box; NO new module -- the
+  ufc matcher is B, NOT A; NO migration). Hashes CR-STRIPPED both sides (`tr -d '\r'|sha256sum`), never raw `git show`:
+  - `trading_corp/prediction_markets/live_driver.py` — WHOLESALE (box `a99139832970fd61` ==e5d6506 no-drift ->
+    target `4b85f93f0bb20fd8`). Imports arm/boot_reconcile/db/execution/paper/settlement/shard_balance/
+    venue_exposure + mlb matcher + kalshi_live — ALL on the box; my change added NO new import.
+  - `trading_corp/prediction_markets/boot_reconcile.py` — WHOLESALE (box `dc9bbc9f89c29a5e` ==e5d6506 ->
+    `ecce77770f951f74`). Imports arm + stdlib.
+  - `trading_corp/main.py` — ★ GRAFT, NEVER wholesale (the box carries the per-account roster). box
+    `9e8da82de3b8bfcf` (== e5d6506:main.py CR-stripped, verified) -> `bba046e8f1ce9801`. 20-line hunk; `patch -p1`
+    VERIFIED locally to apply to base==box and yield exactly the target (LF patch + LF box + `tr -d '\r'` -> no CRLF
+    failure like the overnight one).
+  - `arm.py` UNCHANGED (M2 reused the existing looping `latch_auth_failure`).
+- **STAGED RUNNER (authored + validated; NOT run): `cc\pm_a_deploy.{sh,ps1}`.** Pre-checks the 3 box pre-state hashes
+  (ABORTS writing nothing on any drift); backs up all 3 to `~/pm_a_deploy_backup_$TS`; wholesale-writes the 2 package
+  files (.tmp -> sha-verify -> mv); patch-grafts main.py + content-verifies (`_pm_by_account` + `categories=_acats`
+  present, old `category=_t["category"]` spawn GONE) + sha-verifies target; Gate-A = py_compile all 3 + `import
+  live_driver, boot_reconcile` on the real venv; RESTORES from backup on ANY failure. **Does NOT restart.** One-liner:
+  `powershell -ep bypass -f .\pm_a_deploy.ps1`.
+- **THEN (separate board steps):** `restart_tc.ps1`, then the post-check (`cc\pm_arm_persisted_ro.ps1` + a roster-log read).
+- **POST-CHECK HEADLINE = NOTHING CHANGED** (Option C is invisible until a 2nd category exists):
+  1. Roster log `2 account task(s): {'kalshi_jack': ['mlb'], 'kalshi_karen': ['mlb']}` — ONE task PER ACCOUNT, each
+     the SINGLE category [mlb] (byte-identical to the old per-(account,category) wiring).
+  2. Both accounts STILL ARMED, **persisted ts UNCHANGED** — read PERSISTED rows (`pm_arm_persisted_ro.ps1`), NOT a
+     status call (the mode=ro fail-safe read a false disarm 3x): global `2026-08-31T02:35:38` / jack
+     `2026-08-31T21:49:39` / karen `2026-09-02T12:53:23` must be byte-identical.
+  3. Boot-reconcile CLEAN for BOTH (`reconciled=True latched=False latched_categories=()`).
+  4. Order counts move ONLY for legit engine fills (the graft placed nothing). 0 skip:exposure_unknown storm.
+- **STOP:** pre-check drift -> aborts writing nothing (investigate). Post-restart: >1 task/account, or a task with
+  >1 category, or an arm ts CHANGED, or a boot-reconcile LATCH, or a skip:exposure_unknown storm -> restore
+  `~/pm_a_deploy_backup_$TS` + restart to revert. Global STOP throughout:
+  `PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global`.
 - **B-bundle (ufc matcher + dispatch) — HALT.** Adds `trading_corp/data/ufc_poly_kalshi_match.py` (NEW) + evaluate
   dispatch + the ufc ctx-builder registration. INERT (no ufc sub-division yet). (fill shas when built.)
 - **C (caps mechanism) — HALT for Jack's ruling** (account-level cap vs 75/75 divide).
