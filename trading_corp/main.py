@@ -1538,38 +1538,77 @@ async def run(argv: list[str] | None = None) -> int:
             with open("config/strategies.yaml", "r", encoding="utf-8") as _pm_f:
                 _pm_cfg = (_pm_yaml.safe_load(_pm_f) or {}).get("pm_live_driver") or {}
             if _pm_cfg.get("enabled"):
+                # ── N2 (per-account trading, 2026-09-02): ONE driver task PER active sub-division, read from the DB
+                # roster (driver_roster.active_driver_subdivisions), each with its OWN account's broker (keys via
+                # the fail-CLOSED whitelist shard_snapshot_task.resolve_kalshi_keys). Replaces the single hardcoded
+                # kalshi_jack task. INERT until a 2nd sub-division exists: with only jack/mlb attached the roster is
+                # exactly {(kalshi_jack, mlb)} -> one task, same broker keys + shared positions_client as before.
+                # Each scheduled_pm_live_loop is a SELF-CONTAINED per-(account,category) task: it boot-reconciles at
+                # the top and returns only ITSELF on a double-fault, so a latch/fault on one account cannot stop
+                # another. Mirrors the M3 shard-snapshot block below.
                 from trading_corp.brokers.kalshi_live import KalshiLiveBroker
-                from trading_corp.prediction_markets import live_driver as _pm_live_driver, db as _pm_db
+                from trading_corp.prediction_markets import (live_driver as _pm_live_driver, db as _pm_db,
+                                                             driver_roster as _pm_roster, shard_snapshot_task as _pm_sst)
                 from trading_corp.data.polymarket_data_api_client import PolymarketDataAPIClient
-                # The KALSHI-ORIGINAL account (secret_ref='KALSHI' on pm_account 'kalshi_jack') — NOT the KAREN
-                # keys poly_kalshi uses. IOC marketable-limit, same transport.
-                _pm_broker = KalshiLiveBroker(
-                    api_key_id=secrets.kalshi_api_key_id,
-                    private_key_pem=secrets.kalshi_private_key_pem,
-                    demo=(os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")),
-                    order_type="ioc",
-                    max_slippage_cents=int(_pm_cfg.get("max_slippage_cents", 2)),
-                )
-                await _pm_broker.connect()
-                # The whale /positions reader — the SAME PolymarketDataAPIClient the paper cadence injects into
-                # paper.poll_pinned. It MUST be entered as an async context manager (it creates its httpx client
-                # in __aenter__); enter it here for the engine's life (mirrors _pk_broker.connect() above; httpx
-                # is cleaned up at process exit like the other long-lived engine clients).
+                _pm_demo = os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")
+                _pm_slip = int(_pm_cfg.get("max_slippage_cents", 2))
+                # ONE shared whale /positions reader across ALL account tasks (whale books are account-independent;
+                # httpx.AsyncClient is concurrency-safe -- two accounts copying one whale double-poll it, which is
+                # load, not a correctness fault). Entered for the engine's life like the single-account wiring it
+                # replaces; httpx is cleaned up at process exit like the other long-lived engine clients.
                 _pm_positions_client = PolymarketDataAPIClient()
                 await _pm_positions_client.__aenter__()
-                pm_live_task = asyncio.create_task(
-                    _pm_live_driver.scheduled_pm_live_loop(
-                        _pm_db.pm_db_path(), _pm_broker, _pm_positions_client,
-                        account_id=_pm_cfg.get("account_id", "kalshi_jack"),
-                        category=_pm_cfg.get("category", "mlb"),
-                        poll_sec=float(_pm_cfg.get("poll_interval_sec", 7)),
-                        index_refresh_sec=float(_pm_cfg.get("index_refresh_sec", 900)),
-                        legacy_db_path=None,   # arm.resolve_legacy_db_path -> data/trading_corp.db
-                    )
-                )
-                log.info("PM LIVE DRIVER WIRED (account=%s category=%s poll=%ss) — ARM STATE governs whether it POSTs",
-                         _pm_cfg.get("account_id", "kalshi_jack"), _pm_cfg.get("category", "mlb"),
-                         _pm_cfg.get("poll_interval_sec", 7))
+                with _pm_db.connect(_pm_db.pm_db_path()) as _pm_conn:
+                    _pm_roster_rows = _pm_roster.active_driver_subdivisions(_pm_conn)
+                # ONE broker per DISTINCT account (an account's sub-divisions share its broker), in first-seen order.
+                # Fail-CLOSED: an unmapped secret_ref resolves to no keys -> the account is SKIPPED, never traded on
+                # the shared keypair (N1). A build/connect failure ISOLATES to that account (the others still start).
+                _pm_brokers = {}
+                _pm_seen = set()
+                for _r in _pm_roster_rows:
+                    _aid = _r["account_id"]
+                    if _aid in _pm_seen:
+                        continue
+                    _pm_seen.add(_aid)
+                    _kid, _pem = _pm_sst.resolve_kalshi_keys(_r["secret_ref"], secrets)
+                    if not _kid or not _pem:
+                        log.warning("PM driver: account %s secret_ref=%r resolved NO keys -> SKIP (fail-closed; "
+                                    "never traded on the shared keypair)", _aid, _r["secret_ref"])
+                        continue
+                    try:
+                        _abroker = KalshiLiveBroker(api_key_id=_kid, private_key_pem=_pem, demo=_pm_demo,
+                                                    order_type="ioc", max_slippage_cents=_pm_slip)
+                        await _abroker.connect()
+                        _pm_brokers[_aid] = _abroker
+                    except Exception as _abx:  # noqa: BLE001 -- one account's broker failure must not stop the others
+                        log.exception("PM driver: broker build/connect FAILED for %s (skip this account): %s",
+                                      _aid, _abx)
+                # PLAN: fail-closed on no-keys, and REFUSE a 2nd sub-division on one account (the filed
+                # multi-category-per-account tripwire) LOUDLY rather than silently degrade three account-scoped safeties.
+                _pm_spawn, _pm_skips = _pm_roster.plan_driver_tasks(_pm_roster_rows, set(_pm_brokers))
+                for _sk in _pm_skips:
+                    if _sk["reason"] == "second_subdivision_on_account":
+                        log.error("PM driver: REFUSING 2nd sub-division %s/%s on an account that already has a task "
+                                  "-- multi-category-per-account is NOT yet safe (auth-latch scope + whole-account "
+                                  "boot-reconcile latch + open_usd within-cycle race). FILED; do NOT enable this way.",
+                                  _sk["account_id"], _sk["category"])
+                    else:
+                        log.warning("PM driver: SKIP %s/%s (%s)", _sk["account_id"], _sk["category"], _sk["reason"])
+                _pm_tasks = []
+                for _t in _pm_spawn:
+                    _pm_tasks.append(asyncio.create_task(
+                        _pm_live_driver.scheduled_pm_live_loop(
+                            _pm_db.pm_db_path(), _pm_brokers[_t["account_id"]], _pm_positions_client,
+                            account_id=_t["account_id"], category=_t["category"],
+                            poll_sec=float(_pm_cfg.get("poll_interval_sec", 7)),
+                            index_refresh_sec=float(_pm_cfg.get("index_refresh_sec", 900)),
+                            legacy_db_path=None,   # arm.resolve_legacy_db_path -> data/trading_corp.db
+                        )))
+                log.info("PM LIVE DRIVER WIRED -- %d task(s): spawned=%s skipped=%s brokers=%s -- ARM STATE governs POSTs",
+                         len(_pm_tasks), [(t["account_id"], t["category"]) for t in _pm_spawn],
+                         [(s["account_id"], s["category"], s["reason"]) for s in _pm_skips], sorted(_pm_brokers))
+                if not _pm_tasks:
+                    log.info("PM live driver: enabled but NO active attached sub-divisions to trade -- idle (0 tasks)")
             else:
                 log.info("PM live driver: pm_live_driver.enabled=false — not wired")
         except Exception as _pm_exc:  # noqa: BLE001 — never break engine boot

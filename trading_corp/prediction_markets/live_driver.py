@@ -50,7 +50,7 @@ import inspect
 import logging
 import time as _time
 
-from . import arm, boot_reconcile, db, execution, paper, settlement, shard_balance
+from . import arm, boot_reconcile, db, execution, paper, settlement, shard_balance, venue_exposure
 from ..data import mlb_poly_kalshi_match as M
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
@@ -355,7 +355,7 @@ def _finalize_order(conn, coid, outcome_status, *, fill=None, error_detail=None,
 
 # ── the ASYNC arm-gated cycle (async twin of run_arm_gated_cycle; reuses evaluate + read_arm_verdict) ──
 async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, place_fn, shard_balances=None,
-                                   legacy_db_path=None, log=None):
+                                   venue_exposure=None, legacy_db_path=None, log=None):
     """Every signal through the chokepoint's 8 gates (`execution.evaluate`), then -- for a gate-passing order and
     ONLY IF ARMED (re-read `arm.read_arm_verdict` immediately before EACH order) -- journal a PENDING row, await
     `place_fn` (the POST), and finalize the outcome. DISARMED blocks everything. A loud error (incl. a wrapped
@@ -368,8 +368,9 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
     consec_err = 0
     ceiling_latched = False
     for s in signals:
-        d = execution.evaluate(s, sub, ctx, journal, conn, now_ts,               # gates + gate 6b (shard funding)
-                               shard_balances=shard_balances, legacy_db_path=legacy_db_path)
+        d = execution.evaluate(s, sub, ctx, journal, conn, now_ts,               # gates + 6b (shard) + 6 (venue exposure)
+                               shard_balances=shard_balances, venue_exposure=venue_exposure,
+                               legacy_db_path=legacy_db_path)
         if d.status != "dry_run_would_place":
             if d.status.startswith("skip:"):
                 n_skip += 1
@@ -377,6 +378,9 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
                     n_shard_underfunded += 1
                     log.warning("pm_live_driver: skip:shard_underfunded (%s x%s) -- funding gap on the market's shard, "
                                 "NOT a fault: %s", d.kalshi_ticker, d.count, d.reason)
+                elif d.status == "skip:exposure_unknown":                        # R7: venue exposure unreadable -> fail-closed
+                    log.warning("pm_live_driver: skip:exposure_unknown -- venue open-exposure read failed; "
+                                "sizing against an unknown book is refused (fail-closed): %s", d.reason)
             else:
                 n_reject += 1
                 # ★ R7.d: the 4TH latching trigger, WIRED HERE. It was DEAD CODE -- arm.latch_count_ceiling
@@ -533,6 +537,9 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
         # out of the fetch's protection, gate 6b would see an UNKNOWN split (skip), never None/stale (adversarial
         # review, defensive). The per-cycle fetch below overwrites this on both success and failure.
         shard_bal = shard_balance.ShardBalances(total_dollars=0.0, by_shard={}, has_breakdown=False)
+        # ★ R7 gate-6 input, SAME fail-closed discipline as shard_bal: bound to an UNKNOWN (has_data False) before
+        # anything can raise, so gate 6 skips (never sizes against an unknown book) even on an early failure.
+        venue_exp = venue_exposure.VenueExposure(total_dollars=0.0, has_data=False)
         try:
             if ctx is None or (_time.time() - last_idx) > index_refresh_sec:
                 ctx = await fetch_market_context(client, int(_time.time())); last_idx = _time.time()
@@ -547,6 +554,17 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 log.warning("pm_live_driver: shard-balance read FAILED -> UNKNOWN split (all entries skip:"
                             "shard_underfunded this cycle -- NEVER place blind): %s", e)
                 shard_bal = shard_balance.ShardBalances(total_dollars=0.0, by_shard={}, has_breakdown=False)
+            # ★ R7 gate-6 input: read the ACCOUNT'S TRUE open exposure from the venue FRESH every cycle (a co-tenant
+            # can add exposure between cycles). NEVER None on the live path -- a read/parse failure fails CLOSED to an
+            # UNKNOWN VenueExposure (has_data False) so every entry skip:exposure_unknown rather than sizing against a
+            # journal-only (co-tenant-blind) base. This is the construction site that makes gate 6's rebase
+            # unbypassable on the live path (the paper/dry-run path passes venue_exposure=None -> journal base).
+            try:
+                venue_exp = await venue_exposure.fetch_open_exposure(client)
+            except Exception as e:  # noqa: BLE001 -- fail-CLOSED: cannot trust the venue exposure -> UNKNOWN -> entries skip
+                log.warning("pm_live_driver: venue open-exposure read FAILED -> UNKNOWN (entries skip:exposure_unknown "
+                            "this cycle -- NEVER size against an unknown book): %s", e)
+                venue_exp = venue_exposure.VenueExposure(total_dollars=0.0, has_data=False)
             with db.connect(pm_db_path) as conn:
                 sub = execution.sub_config_from_row(conn.execute(
                     "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, category)).fetchone())
@@ -634,7 +652,8 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 signals = _kept + _exits + _opposed
                 place_fn = make_place_fn(client)
                 summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
-                                                      shard_balances=shard_bal, legacy_db_path=legacy_db_path, log=log)
+                                                      shard_balances=shard_bal, venue_exposure=venue_exp,
+                                                      legacy_db_path=legacy_db_path, log=log)
                 if summ["placed"] or summ["errors"]:
                     # ★ str(summ): a lone non-empty dict as the sole %-logging arg is treated by stdlib logging as a
                     # %-MAPPING, not a value -> "TypeError: not all arguments converted" and the line is EATEN, exactly

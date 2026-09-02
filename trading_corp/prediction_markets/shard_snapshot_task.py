@@ -23,13 +23,37 @@ _LOG = logging.getLogger(__name__)
 DEFAULT_INTERVAL_SEC = 300   # 5 min -> ~576 /portfolio/balance calls/day for 2 accounts; balance changes slowly + the age is shown.
 
 
+# ★ The ONLY secret_refs that map to a real, INTENDED Kalshi keypair -- a fail-CLOSED WHITELIST, not a default.
+# BEFORE (fails-open, instance #13 of "a safety check that silently stops checking"): any ref != 'kalshi_karen'
+# returned JACK's shared keypair, so a typo'd / new / unmapped secret_ref silently routed that account's orders to
+# JACK's account. With N accounts that is a live money-misrouting bug. NOW: an unrecognised ref -> (None, None) ->
+# the caller SKIPS that account (never trades it on the shared keypair). Jack RULED this the single most important
+# line of the per-account-trading build.
+#   'kalshi_karen' -> the ISOLATED Karen keypair.
+#   'KALSHI' + 'kalshi_jack' -> the shared/original keypair. jack's pm_account is 'kalshi_jack' and its secret_ref
+#     is 'KALSHI' (main.py:1544); BOTH are whitelisted to jack so the LIVE account can never be excluded by a
+#     ref-spelling mismatch. Deploy PRE-CHECK: confirm the live pm_account.secret_ref for kalshi_jack is one of
+#     these before restart (else jack's driver would not spawn).
+_SECRET_REF_KEYPAIR = {
+    "kalshi_karen": ("kalshi_karen_api_key_id", "kalshi_karen_private_key_pem"),
+    "KALSHI":       ("kalshi_api_key_id",       "kalshi_private_key_pem"),
+    "kalshi_jack":  ("kalshi_api_key_id",       "kalshi_private_key_pem"),
+}
+
+
 def resolve_kalshi_keys(secret_ref, secrets):
-    """(api_key_id, private_key_pem) for a pm_account.secret_ref, mirroring main.py:3047's division resolution:
-    'kalshi_karen' -> the isolated KALSHI-KAREN-* keypair; anything else (e.g. 'KALSHI') -> the shared KALSHI-*
-    keypair. getattr keeps it tolerant of a secrets object that lacks the karen fields (-> None -> caller skips)."""
-    if secret_ref == "kalshi_karen":
-        return getattr(secrets, "kalshi_karen_api_key_id", None), getattr(secrets, "kalshi_karen_private_key_pem", None)
-    return getattr(secrets, "kalshi_api_key_id", None), getattr(secrets, "kalshi_private_key_pem", None)
+    """(api_key_id, private_key_pem) for a pm_account.secret_ref -- a fail-CLOSED WHITELIST (_SECRET_REF_KEYPAIR).
+    A RECOGNISED ref returns its keypair (getattr stays tolerant of a secrets object missing the field -> None ->
+    caller skips). An UNRECOGNISED / typo'd / new ref returns (None, None): that account DISABLES ITSELF rather
+    than silently trading on the shared (jack) keypair. NEVER default an unknown ref to jack's keys."""
+    pair = _SECRET_REF_KEYPAIR.get(secret_ref)
+    if pair is None:
+        _LOG.warning("resolve_kalshi_keys: UNMAPPED secret_ref=%r -> fail-closed (None, None); this account is "
+                     "SKIPPED (never traded on the shared keypair). Add it to _SECRET_REF_KEYPAIR to enable.",
+                     secret_ref)
+        return None, None
+    kid_attr, pem_attr = pair
+    return getattr(secrets, kid_attr, None), getattr(secrets, pem_attr, None)
 
 
 async def snapshot_once(pm_db_path, account_id, client, *, now_ts=None):

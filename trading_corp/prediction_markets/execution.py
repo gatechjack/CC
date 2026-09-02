@@ -321,10 +321,19 @@ class Journal:
                     "SELECT client_order_id FROM pm_subdivision_order "
                     "WHERE account_id=? AND dry_run=0 AND client_order_id IS NOT NULL", (aid,)).fetchall():
                     self._placed_coids.add(r["client_order_id"])
+        # ★ R7 venue-exposure rebase (2026-09-02): snapshot the open_usd SEED so in_cycle_open_usd(aid) can isolate
+        # THIS cycle's commit_would_place increments from the construction-time DB seed. On the LIVE path gate 6
+        # ignores the DB seed and uses (venue exposure + in_cycle_open_usd) as the base; the paper/test path still
+        # uses the full journal open_usd. Captured OUTSIDE the table-exists guard so it is always defined ({} if empty).
+        self._open_usd_seed = dict(self._open_usd)
 
     def already_placed(self, coid): return coid in self._placed_coids
     def daily_usd(self, aid, cat): return self._daily_usd.get((aid, cat), 0.0)
     def open_usd(self, aid): return self._open_usd.get(aid, 0.0)
+    def in_cycle_open_usd(self, aid):
+        """The open_usd ADDED this cycle via commit_would_place (current minus the construction seed). Gate 6's R7
+        venue rebase adds this (PM's in-flight placements, not yet reflected on the venue) to the venue base."""
+        return self._open_usd.get(aid, 0.0) - self._open_usd_seed.get(aid, 0.0)
     def orders_today(self, aid, cat): return self._orders_today.get((aid, cat), 0)
 
     def commit_would_place(self, aid, cat, usd: float) -> None:
@@ -337,7 +346,7 @@ class Journal:
 
 # ── THE CHOKEPOINT ──────────────────────────────────────────────────────────
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,
-             *, shard_balances=None, legacy_db_path=None) -> Decision:
+             *, shard_balances=None, venue_exposure=None, legacy_db_path=None) -> Decision:
     """One copy signal through the gates in order. DRY-RUN: COMPUTES the exact V2 body if gates pass and RECORDS
     the disarm verdict; it NEVER places (this module holds no broker). A reject at any gate returns early. The
     disarm verdict is a PREVIEW here -- the LIVE placement gate on `armed` lives in `run_arm_gated_cycle` (R5).
@@ -457,7 +466,23 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         if journal.daily_usd(sub.account_id, sub.category) + notional > sub.daily_usd_cap + 1e-9:   # gate 5
             return Decision("reject:daily_cap", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
                             count=count, notional_usd=notional, reason="daily_cap", disarm_armed=armed)
-        if journal.open_usd(sub.account_id) + notional > sub.max_open_usd + 1e-9:                   # gate 6
+        # gate 6 (exposure cap): R7 VENUE REBASE (2026-09-02, RULING 5). The base is the ACCOUNT'S TRUE open
+        # exposure read from the venue THIS cycle (co-tenant + manual + PM), not PM's journal sum -- so the cap is
+        # correct regardless of PM-exclusivity (a journal sum under-counts a co-tenant on a shared keypair). The
+        # journal accumulator adds THIS cycle's in-flight PM placements (not yet on the venue). ★ Mirrors gate 6b's
+        # shard_balances contract: the LIVE path ALWAYS passes a VenueExposure (real, or has_data=False on a read
+        # failure) so gate 6 FAILS CLOSED (has_data False -> skip:exposure_unknown, never size blind); venue_exposure
+        # None DISABLES the rebase (paper / dry-run / test ONLY -- unreachable on the live path by construction, the
+        # "safety check that silently stops checking" guard).
+        if venue_exposure is None:
+            open_base = journal.open_usd(sub.account_id)                         # paper/test: PM journal-summed base
+        elif not venue_exposure.has_data:
+            return Decision("skip:exposure_unknown", sid, market_type=match.market_type, kalshi_ticker=ticker,
+                            leg=leg, count=count, notional_usd=notional, is_exit=False, disarm_armed=armed,
+                            reason="venue open-exposure unreadable -> fail-closed (never size against an unknown book)")
+        else:
+            open_base = venue_exposure.open_dollars() + journal.in_cycle_open_usd(sub.account_id)   # R7 venue base
+        if open_base + notional > sub.max_open_usd + 1e-9:                                          # gate 6
             return Decision("reject:exposure_cap", sid, market_type=match.market_type, kalshi_ticker=ticker,
                             leg=leg, count=count, notional_usd=notional, reason="exposure_cap", disarm_armed=armed)
         if journal.orders_today(sub.account_id, sub.category) + 1 > sub.max_orders_per_day:         # gate 8

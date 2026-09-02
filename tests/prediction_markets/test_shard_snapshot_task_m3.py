@@ -11,11 +11,15 @@ from trading_corp.prediction_markets import db, shard_snapshot as ss, shard_snap
 
 
 def test_resolve_kalshi_keys_per_account():
+    # ★ HARDENED 2026-09-02 to a fail-CLOSED WHITELIST (was fails-open: any non-'kalshi_karen' ref -> jack's keys,
+    # instance #13). Only recognised refs resolve; an UNMAPPED ref -> (None, None) -> caller skips (never jack's).
     s = types.SimpleNamespace(kalshi_api_key_id="JID", kalshi_private_key_pem="JPEM",
                               kalshi_karen_api_key_id="KID", kalshi_karen_private_key_pem="KPEM")
     assert sst.resolve_kalshi_keys("kalshi_karen", s) == ("KID", "KPEM")   # Karen -> her isolated keypair
-    assert sst.resolve_kalshi_keys("KALSHI", s) == ("JID", "JPEM")         # anything else -> the shared keypair
-    assert sst.resolve_kalshi_keys(None, s) == ("JID", "JPEM")
+    assert sst.resolve_kalshi_keys("KALSHI", s) == ("JID", "JPEM")         # jack's real secret_ref -> shared keypair
+    assert sst.resolve_kalshi_keys("kalshi_jack", s) == ("JID", "JPEM")    # account-id alias -> shared keypair
+    assert sst.resolve_kalshi_keys(None, s) == (None, None)                # UNMAPPED -> fail-closed (NOT jack)
+    assert sst.resolve_kalshi_keys("kalshi_typo", s) == (None, None)       # typo'd ref -> fail-closed (NOT jack)
     s2 = types.SimpleNamespace(kalshi_api_key_id="JID", kalshi_private_key_pem="JPEM")   # no karen fields present
     assert sst.resolve_kalshi_keys("kalshi_karen", s2) == (None, None)     # tolerant -> None -> caller skips
 
