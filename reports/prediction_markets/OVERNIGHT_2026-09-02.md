@@ -148,7 +148,7 @@ DOCUMENTED for his self-service, not driven by me:**
   first live observation once a position is held.
 - **★ post-check [7] BUG (minor): the venue read printed "no keys"** — `pm_r2_postcheck_ro.sh` lacks the service-env
   (`/proc/$ENG/environ`) harvest Rung 0 used, so `load_secrets()` had no KEY_VAULT_URI. Inconclusive anyway (both flat).
-  Add the env harvest before re-running it to observe the R7 field on a held position.
+  FIXED: the service-env harvest is now in pm_r2_postcheck_ro.sh -> re-run it once a position is held to observe the R7 field.
 - **★ R7 FIELD STILL UNOBSERVED — the 4th field-name surprise in this build** (after exchange_index dropped by the
   SDK, liquidity_dollars a deprecated stub, yes_bid dropped by our own dict). Both accounts are flat, so no one has
   seen `market_exposure_dollars` on a real position. The code reads either field (safe by construction) but that is
