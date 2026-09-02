@@ -106,7 +106,37 @@ SAFETY item, that would make the safety set > 3 → report and STOP.
 
 ## RUNG A-proof — byte-identical mlb-only — LOCAL done (disarmed one-task test); BOX-SCRATCH gate pending (pykalshi path)
 
-## RUNG B — UFC matcher + category dispatch — IN PROGRESS (greenfield)
+## RUNG B(core) — ufc_poly_kalshi_match.py — DONE @ `07c65a2`, 43 tests green (built by a Sonnet agent, reviewed)
+- Pure/stdlib matcher, 2 binary types: moneyline `KXUFCFIGHT-{YYMONDD}{K1}{K2}-{FTR}` + go-the-distance
+  `KXUFCDISTANCE-{...}-DIST`. Real tickers/slugs probed from the Kalshi public API + Polymarket (2026-09-02).
+- The JOIN (honest crux the agent surfaced): the **Polymarket slug codes are OPAQUE** (`dan6`, `salpar`) and do NOT
+  map to the Kalshi kcodes, so the match is driven by the Poly **outcome (fighter FULL NAME)** vs the Kalshi market
+  **`title`** (`"{Full Name} wins"`). kcode = `upper(last_name[:3])` (first-name fallback when last<3). Exact match
+  only; carry (ticker, leg) on MatchResult; MISS on ambiguity.
+- KNOWN unresolvable cases as MISS tests (Jack's "show what it can't resolve"): 3-char abbrev COLLISION (two same
+  first-3-last-name fighters on one card -- kcode ambiguous; SYNTHETIC test, agent could not find a real same-card
+  collision), no-distance-ticker-for-bout, ambiguous-date-without-a-fighter-hint, opaque-Poly-slug.
+- ★★ INTEGRATION GAP found in REVIEW (this is rung B2, NOT built -- a careful live-code change, deliberately not
+  rushed at context depth):
+  1. **`title` is not on the live path.** `build_kalshi_fight_index` reads `mkt.get("title")`, but
+     `live_driver._market_quote_dict` carries only quotes+exchange_index, NO title. B2 must add `title` to the UFC
+     ctx builder's market dicts (additive; MLB ignores it).
+  2. **UFC needs its own MarketContext shape.** `execution.MarketContext` is MLB-shaped (moneyline/total/spread
+     indices). UFC needs a fight index + distance index. B2 introduces a per-category context + a uniform matcher
+     adapter.
+  3. **evaluate must category-dispatch.** Today `evaluate` hardwires `M.parse_poly_mlb_bet` / `M.match_bet(...)`.
+     B2 adds a registry `{"mlb": mlb_adapter, "ufc": ufc_adapter}` where each adapter exposes `parse(slug,outcome)`
+     + `match(parsed, ctx, allowed_market_types) -> MatchResult` with the uniform fields evaluate reads
+     (`.status/.kalshi_ticker/.leg/.market_type/.reason`). evaluate picks by `sub.category`; gates/sizing stay
+     category-agnostic. The ufc ctx builder registers into `CATEGORY_CTX_BUILDERS` (the M1 seam) and builds the
+     fight+distance indices carrying `title`.
+  B2 is INERT (no ufc sub-division exists) but it DOES touch `execution.py` (the chokepoint) + `live_driver.py`, so
+  it needs the same care + box-scratch as A. Recommended: build B2, then run ONE box-scratch validating A+B on the
+  real venv (the byte-identical mlb-only gate + a disarmed ufc dry-run against live UFC market data).
+
+## RUNG B2 — dispatch integration (title + UFC context + evaluate registry) — NOT BUILT (scoped above)
+
+## RUNG B(old placeholder) — superseded by B(core)+B2 above
 Discovery landed: UFC = 2 binary types -- moneyline `KXUFCFIGHT-{YYMONDD}{FTR1}{FTR2}-{FTR}` (one market per fighter)
 + go-the-distance `KXUFCDISTANCE-{YYMONDD}{FTR1}{FTR2}` (no line). Polymarket: winner slug + `-go-the-distance`.
 Build `ufc_poly_kalshi_match.py` mirroring the MLB matcher surface + fighter-name canonicalization (the doubleheader
