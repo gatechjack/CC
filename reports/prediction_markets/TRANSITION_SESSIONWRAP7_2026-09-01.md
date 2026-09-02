@@ -1,4 +1,7 @@
 # ★ SESSION WRAP 7 — 2026-09-01 (~19:20Z). SUPERSEDES SW6. FIRST-READ for the next agent.
+> ★★ SUPERSEDED 2026-09-02 by SW8 (`TRANSITION_SESSIONWRAP8_2026-09-02.md`) — READ THAT FIRST. Since SW7: the
+> loss-omission display + the prospects [Analyze] control were both DEPLOYED LIVE (schema 17), and ANOTHER AGENT
+> is mid-build on per-account trading. SW7 is retained for the multi-account/whale-attribution detail.
 > SW6 (2026-09-01 18:31Z) is superseded by this doc. Since SW6: WHALE ATTRIBUTION on /live was DEPLOYED LIVE.
 
 ---
