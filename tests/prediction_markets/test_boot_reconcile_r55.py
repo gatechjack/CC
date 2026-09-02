@@ -282,3 +282,73 @@ def test_structural_no_broker_no_latch_off_switch():
     for banned in ("KalshiLiveBroker", "KalshiBroker", "place_order", "cancel_order",
                    "httpx", "requests", "asyncio", "pykalshi"):
         assert banned not in dir(br), banned                     # none of them in this module's namespace
+
+
+# ── M3 (2026-09-02): WHOLE-ACCOUNT latch -- a mismatch/read-failure disarms EVERY active category on the shared
+# keypair, not just the reconciled one. The comparison is already account-wide; only the latch target widens.
+# boot_reconcile is sport-agnostic (string-keyed on UPPER(ticker)), so a real UFC ticker exercises it directly. ──
+T_UFC = "KXUFCFIGHT-26SEP05HOOPAR-HOO"
+
+
+def _arm_cats(leg, *cats):
+    arm.arm(global_=True, require_latch_clear=True, legacy_db_path=leg)
+    for c in cats:
+        arm.arm(ACCT, c, require_latch_clear=True, legacy_db_path=leg)
+
+
+def test_m3_whole_account_mismatch_latches_ALL_categories(tmp_path):
+    """A KALSHI_ONLY ufc position (in the book, absent from the account-wide journal) is a whole-book mismatch.
+    With latch_categories=[mlb,ufc] BOTH categories latch -- closes the 2nd-category-on-one-account missed-latch."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_cats(leg, "mlb", "ufc")
+    with db.connect(p) as conn:
+        _seed(conn, T_TOR, "yes", 3, category="mlb"); conn.commit()                 # journal: mlb only
+        res = br.reconcile_account(conn, ACCT, "mlb",                                # book: mlb + an un-journaled ufc
+                                   fetch_positions=lambda: [_kpos(T_TOR, 3), _kpos(T_UFC, 2)],
+                                   legacy_db_path=leg, latch_categories=["mlb", "ufc"])
+    assert res.reconciled is False and res.latched is True and set(res.latched_categories) == {"mlb", "ufc"}
+    for c in ("mlb", "ufc"):                                                         # ★ the SIBLING ufc latched too
+        assert arm.is_armed(ACCT, c, legacy_db_path=leg) is False
+        assert arm.current_row(ACCT, c, legacy_db_path=leg)["auto_trigger"] == arm.AUTO_BOOT_RECONCILE
+
+
+def test_m3_clean_two_category_account_does_NOT_false_latch(tmp_path):
+    """The account-wide journal read means a ufc position present in BOTH the journal and the book reconciles as
+    MATCH -- widening the latch introduces NO false latch on a clean two-category account."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_cats(leg, "mlb", "ufc")
+    with db.connect(p) as conn:
+        _seed(conn, T_TOR, "yes", 3, category="mlb")
+        _seed(conn, T_UFC, "yes", 2, category="ufc"); conn.commit()                 # account-wide journal: mlb + ufc
+        res = br.reconcile_account(conn, ACCT, "mlb",                                # book matches BOTH
+                                   fetch_positions=lambda: [_kpos(T_TOR, 3), _kpos(T_UFC, 2)],
+                                   legacy_db_path=leg, latch_categories=["mlb", "ufc"])
+    assert res.reconciled is True and res.latched is False and res.latched_categories == ()
+    for c in ("mlb", "ufc"):
+        assert arm.is_armed(ACCT, c, legacy_db_path=leg) is True                     # ★ NO false latch
+
+
+def test_m3_read_failure_latches_ALL_categories(tmp_path):
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_cats(leg, "mlb", "ufc")
+    def _boom():
+        raise RuntimeError("venue read down")
+    with db.connect(p) as conn:
+        _seed(conn, T_TOR, "yes", 3, category="mlb"); conn.commit()
+        res = br.reconcile_account(conn, ACCT, "mlb", fetch_positions=_boom, legacy_db_path=leg,
+                                   latch_categories=["mlb", "ufc"])
+    assert res.reconciled is False and res.latched is True and set(res.latched_categories) == {"mlb", "ufc"}
+    for c in ("mlb", "ufc"):
+        assert arm.is_armed(ACCT, c, legacy_db_path=leg) is False
+
+
+def test_m3_default_latch_categories_is_backward_compatible(tmp_path):
+    """latch_categories=None -> only [category] latches (the pre-M3 default; direct callers/tests unchanged)."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    _arm_cats(leg, "mlb", "ufc")
+    with db.connect(p) as conn:
+        _seed(conn, T_TOR, "yes", 3, category="mlb"); conn.commit()
+        res = br.reconcile_account(conn, ACCT, "mlb", fetch_positions=lambda: [], legacy_db_path=leg)  # journal_only
+    assert res.latched is True and res.latched_categories == ("mlb",)
+    assert arm.is_armed(ACCT, "mlb", legacy_db_path=leg) is False
+    assert arm.is_armed(ACCT, "ufc", legacy_db_path=leg) is True                     # ufc NOT latched (single-category default)

@@ -351,6 +351,26 @@ async def test_boot_reconcile_latches_on_mismatch(tmp_path):
     assert arm.current_row(ACCT, CAT, legacy_db_path=leg)["auto_trigger"] == arm.AUTO_BOOT_RECONCILE
 
 
+# ── M3 integration: run_boot_reconcile latches EVERY active account category (whole-account) on a mismatch ──
+@pytest.mark.asyncio
+async def test_boot_reconcile_latches_ALL_account_categories(tmp_path):
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:                                                 # TWO categories on ONE account
+        conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, 'mlb')", (ACCT,))
+        conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, 'ufc')", (ACCT,))
+        conn.commit()
+    arm.arm(global_=True, require_latch_clear=True, legacy_db_path=leg)
+    arm.arm(ACCT, "mlb", require_latch_clear=True, legacy_db_path=leg)
+    arm.arm(ACCT, "ufc", require_latch_clear=True, legacy_db_path=leg)
+    fake = FakeKalshiClient(positions=[FakeKPos(T_TOR, 2)])                      # kalshi_only vs an empty journal -> mismatch
+    with db.connect(p) as conn:
+        res = await L.run_boot_reconcile(conn, _sub(category="mlb"), fake, legacy_db_path=leg)
+    assert res.reconciled is False and res.latched is True and set(res.latched_categories) == {"mlb", "ufc"}
+    for cat in ("mlb", "ufc"):                                                  # ★ the whole account disarms, not just mlb
+        assert arm.is_armed(ACCT, cat, legacy_db_path=leg) is False
+        assert arm.current_row(ACCT, cat, legacy_db_path=leg)["auto_trigger"] == arm.AUTO_BOOT_RECONCILE
+
+
 @pytest.mark.asyncio
 async def test_boot_reconcile_clean_when_matches(tmp_path):
     leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)

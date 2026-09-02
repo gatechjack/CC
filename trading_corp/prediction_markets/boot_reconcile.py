@@ -50,7 +50,8 @@ RULINGS (Jack, 2026-08-29 -- STAGE3_PLAN_2026-08-28.md R5.5):
       balance-delta gate). Latch target = the reconciled (account_id, category). ** With ONE sub-division per
       account (first-live) that IS the whole account; when a 2nd sub-division exists on one account a
       full-account (kalshi-only) mismatch must latch the WHOLE account (loop its subs, like latch_auth_failure)
-      or trip global -- deferred per Jack, filed, do NOT silently inherit the per-sub latch then. **
+      or trip global -- ★ BUILT 2026-09-02 (M3): reconcile_account loops `latch_categories` = every active account
+      category (run_boot_reconcile passes it via account_active_categories); None -> [category] for direct callers. **
 
 Spec: reports/prediction_markets/STAGE3_PLAN_2026-08-28.md R5.5.
 """
@@ -156,6 +157,7 @@ class ReconcileResult:
     n_kalshi_tickers: int = 0
     latched: bool = False
     read_error: str | None = None
+    latched_categories: tuple = ()   # M3: EVERY category latched on a mismatch (>= (category,)); () when clean
 
 
 def compare(journal_signed: dict, kalshi_signed: dict) -> list:
@@ -182,7 +184,7 @@ def _detail(account_id: str, diffs) -> str:
 
 
 def reconcile_account(conn, account_id: str, category: str, *, fetch_positions,
-                      legacy_db_path=None) -> ReconcileResult:
+                      legacy_db_path=None, latch_categories=None) -> ReconcileResult:
     """Boot-reconcile ONE account's Kalshi portfolio against the journal; LATCH boot_reconcile_mismatch on ANY
     disagreement (fail-safe DISARMED until a human clears it via arm(require_latch_clear=True)). There is NO
     'latch off' switch on this production entry point -- a mismatch (or a read failure) ALWAYS latches (the pure
@@ -194,25 +196,39 @@ def reconcile_account(conn, account_id: str, category: str, *, fetch_positions,
 
     FULL-ACCOUNT (R-c): the Kalshi side is the WHOLE account book -- ANY position absent from the journal is a
     mismatch (correct only while the account is PM-EXCLUSIVE, a hard R7 precondition). COUNT-ONLY (R-f), EXACT
-    K=0 (R-a). On mismatch -> latch the reconciled (account_id, category) (R-f; see the module docstring on why
-    that is full-account-equivalent ONLY while one sub-division exists per account). CLEAN -> writes NOTHING.
+    K=0 (R-a). CLEAN -> writes NOTHING.
+
+    ★ M3 (2026-09-02) -- WHOLE-ACCOUNT LATCH. The comparison is ALREADY account-wide (journal_signed_positions
+    reads across EVERY category; the Kalshi side is the whole book), but the LATCH used to hit only the reconciled
+    (account_id, category). With ONE category per account that IS the whole account; with a 2nd category on ONE
+    account it is a MISSED-LATCH -- the sibling category arms and trades against an unreconciled book. So the live
+    caller passes `latch_categories` = EVERY active category on the account, and a mismatch/read-failure latches
+    ALL of them (the deferred R-f note in the module docstring, now built). `latch_categories=None` -> [category]
+    (the pre-M3 default, unchanged for direct callers/tests). Latching the SUPERSET is FAIL-SAFE: on a clean
+    account it is never reached; on a mismatch a category with no open interest is harmlessly disarmed+latched. No
+    FALSE-latch is introduced: the account-wide journal read means a co-category position reconciles as MATCH (it is
+    in BOTH the journal and the book) -- widening the latch changes only the mismatch case, never a clean one.
 
     FAIL-SAFE: a portfolio READ/PARSE failure is NOT 'reconciled' -- it latches (cannot confirm -> stay
     disarmed). The JOURNAL read is our OWN DB and raises LOUDLY on failure (a system fault, not a mismatch)."""
+    cats = list(latch_categories) if latch_categories else [category]
     j = journal_signed_positions(conn, account_id)          # our own DB: loud on failure (never a silent 'reconciled')
     try:
         k = kalshi_signed_positions(fetch_positions())       # external venue read/parse: fail-safe-latched
     except Exception as e:                                    # noqa: BLE001 -- fail-safe is deliberate (money gate)
-        arm.latch_boot_reconcile_mismatch(
-            account_id, category, detail="portfolio read FAILED (cannot reconcile): %r" % e,
-            legacy_db_path=legacy_db_path)
+        for c in cats:                                        # M3: latch the WHOLE account on a read failure
+            arm.latch_boot_reconcile_mismatch(
+                account_id, c, detail="portfolio read FAILED (cannot reconcile): %r" % e,
+                legacy_db_path=legacy_db_path)
         return ReconcileResult(account_id, category, reconciled=False, n_journal_tickers=len(j),
-                               latched=True, read_error=repr(e))
+                               latched=True, read_error=repr(e), latched_categories=tuple(cats))
     diffs = compare(j, k)
     if not diffs:
         return ReconcileResult(account_id, category, reconciled=True,
                                n_journal_tickers=len(j), n_kalshi_tickers=len(k))
-    arm.latch_boot_reconcile_mismatch(account_id, category, detail=_detail(account_id, diffs),
-                                      legacy_db_path=legacy_db_path)
+    det = _detail(account_id, diffs)
+    for c in cats:                                            # M3: a whole-book mismatch disarms EVERY account category
+        arm.latch_boot_reconcile_mismatch(account_id, c, detail=det, legacy_db_path=legacy_db_path)
     return ReconcileResult(account_id, category, reconciled=False, diffs=tuple(diffs),
-                           n_journal_tickers=len(j), n_kalshi_tickers=len(k), latched=True)
+                           n_journal_tickers=len(j), n_kalshi_tickers=len(k), latched=True,
+                           latched_categories=tuple(cats))

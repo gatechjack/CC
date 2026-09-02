@@ -481,7 +481,13 @@ async def run_boot_reconcile(conn, sub, client, *, legacy_db_path=None):
     fetch happens HERE; `boot_reconcile.reconcile_account` is SYNC and gets a plain lambda returning the fetched
     list. A mismatch latches boot_reconcile_mismatch. A FETCH FAILURE hands reconcile_account a raising fetcher
     (`_raiser`) so its own fail-safe latch fires. (A JOURNAL-read fault raises OUT of here -- the caller
-    force-latches; see scheduled_pm_live_loop.)"""
+    force-latches; see scheduled_pm_live_loop.)
+
+    ★ M3 (2026-09-02): the comparison is ACCOUNT-WIDE, so the LATCH must be too. We pass `latch_categories` = EVERY
+    active category on the account (account_active_categories, fail-SAFE to [sub.category]); a whole-book mismatch or
+    read failure then disarms every category on the shared keypair, closing the 2nd-category-on-one-account
+    missed-latch (the sibling can no longer arm/trade against an unreconciled book). Under Option C this runs ONCE
+    per account; under the current per-task model each task passes the same superset (redundant, still safe)."""
     async def _fetch():
         return list(await client.portfolio.get_positions(fetch_all=True))
     try:
@@ -490,8 +496,10 @@ async def run_boot_reconcile(conn, sub, client, *, legacy_db_path=None):
         fetch = _raiser(e)
     else:
         fetch = (lambda: positions)
+    cats = account_active_categories(conn, sub.account_id, fallback_category=sub.category)   # M3: whole-account latch
     return boot_reconcile.reconcile_account(conn, sub.account_id, sub.category,
-                                            fetch_positions=fetch, legacy_db_path=legacy_db_path)
+                                            fetch_positions=fetch, legacy_db_path=legacy_db_path,
+                                            latch_categories=cats)
 
 
 # ── R-d: the AUTHENTICATED settlements read (raw payload -> parsed records) ─────────────────────────────
