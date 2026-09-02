@@ -110,6 +110,14 @@ def test_opposed_only_game_has_no_card_but_shows_in_drawer():
     assert len(ctx["trades"]) == 1 and ctx["trades"][0]["status"] == "opposed"   # the trade is still in the drawer
 
 
+def test_value_positions_coverage_honesty():
+    pos = [{"ticker": ML, "held_leg": "yes", "contracts": 5},
+           {"ticker": "KXMLBGAME-X-Y", "held_leg": "yes", "contracts": 3}]   # second has no mark
+    v = lv.value_positions(pos, {ML: marks_mod.Mark(ML, 0.58, 0.41, 0.6, 0.43, 0.59, "active", 1)})
+    assert v["value"] == 5 * 0.58 and v["n_priced"] == 1 and v["n_total"] == 2 and v["complete"] is False
+    assert lv.value_positions([], {})["known"] is False       # nothing priced -> known False (never a $0)
+
+
 def test_no_mark_degrades_value_never_zero():
     ctx = lv.build_live_context(orders=_orders(), open_positions=_open_positions(),
                                 open_positions_by_whale=_by_whale(), slate=_live_slate(),

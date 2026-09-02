@@ -397,6 +397,24 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
     }
 
 
+def value_positions(positions, marks) -> dict:
+    """Value a set of open positions at contracts x held-leg BID using the cached marks. Honest about coverage:
+    `value` sums only the positions we have a mark for, `complete` is True only when EVERY open position is
+    priced, `known` is True when at least one is. The caller shows the value with a 'partial' caveat when
+    n_priced < n_total, or 'no mark' when nothing is priced -- never a $0 that means 'unpriced'."""
+    marks = marks or {}
+    total = len(positions or [])
+    priced = 0
+    val = 0.0
+    for p in (positions or []):
+        bid = marks_mod.bid_for_leg(marks.get(p.get("ticker")), p.get("held_leg"))
+        if bid is not None and p.get("contracts") is not None:
+            priced += 1
+            val += p["contracts"] * bid
+    return {"value": val if priced else None, "n_priced": priced, "n_total": total,
+            "complete": total > 0 and priced == total, "known": priced > 0}
+
+
 def build_from_cache(*, orders, open_positions, open_positions_by_whale, cache, now_ts: int) -> dict:
     """Convenience wrapper: pull the relevant slate(s) + marks from the ui_cache and assemble. The cards can span
     two ET dates (a night game + retention), so we merge both windowed slates' games into one lookup."""

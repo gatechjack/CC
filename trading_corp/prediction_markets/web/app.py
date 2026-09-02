@@ -475,6 +475,23 @@ def _annotate_pnl(a: dict, floor: int) -> None:
     a["thin_sample"] = a.get("n_closed", 0) < floor
 
 
+def _cache_marks():
+    """The cached Kalshi marks (dict) + the cache's refresh age, or ({}, None). pm_web NEVER reads the venue --
+    this is the background poller's cache."""
+    snap = ui_cache.cache().snapshot()
+    marks = snap.marks.marks if (snap.marks is not None and getattr(snap.marks, "marks", None)) else {}
+    return marks, snap.refreshed_ts
+
+
+def _account_open_value(conn, account_row: dict, marks: dict) -> dict:
+    """Current value of an account's OPEN positions at contracts x held-leg BID (across its sub-divisions), from
+    the cached marks. Honest coverage flags travel with it (see live_view.value_positions)."""
+    positions = []
+    for sub in account_row.get("subdivisions", []) or []:
+        positions.extend(subdivision.live_positions(conn, sub["account_id"], sub["category"]))
+    return live_view.value_positions(positions, marks)
+
+
 # M4 account SCOPING: the overview + the account page are filtered by web.authz.visible_account_ids (fail-closed --
 # admin sees all; a non-admin sees ONLY accounts whose owner_identity == their Authelia identity; a NULL owner is
 # admin-only; no identity -> nothing). identity + admin are resolved ON the loop from the request (headers+env, cheap)
@@ -490,17 +507,20 @@ def _load_accounts_overview(identity: str | None = None, is_admin_flag: bool = F
     sees, nor loads a balance for, an account that is not theirs. OFF the loop; PM DB + a read-only legacy
     agent_state read. NEVER a venue read (pm_web is credential-free)."""
     floor = search.DEFAULT_MIN_RESOLVED_FLOOR
+    marks, value_as_of = _cache_marks()
     with connect() as conn:
         accounts = subdivision.accounts_overview(conn)                    # each row carries owner_identity (M4)
         visible = authz.visible_account_ids(identity, is_admin_flag, accounts)
         accounts = [a for a in accounts if a["account_id"] in visible]    # SCOPE first -> then read balances
         for a in accounts:
             a["shard_snap"] = shard_snapshot.read_latest(conn, a["account_id"])   # None -> tile omits balance (honest)
+            a["open_value"] = _account_open_value(conn, a, marks)         # contracts x bid (cached marks), coverage-honest
     for a in accounts:
         _annotate_pnl(a, floor)
     # is_admin gates the HONEST cross-console arm link (M5): the arm/disarm CONTROL lives on the ENGINE console
     # (trading.jacksumner.com/pm/arm), NOT here -- pm_web only DISPLAYS the arm state (R4). Non-admins never see the link.
-    return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor, "is_admin": is_admin_flag}
+    return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor, "is_admin": is_admin_flag,
+            "value_as_of": value_as_of, "now_ts": int(time.time())}
 
 
 def _load_account(account_id: str, identity: str | None = None, is_admin_flag: bool = False):
@@ -515,6 +535,18 @@ def _load_account(account_id: str, identity: str | None = None, is_admin_flag: b
         if account_id not in authz.visible_account_ids(identity, is_admin_flag, accts.values()):
             return _FORBIDDEN                                            # exists but not yours -> 403
         agg = subdivision.account_pnl(conn, account_id)
+        marks, value_as_of = _cache_marks()
+        agg["open_value"] = _account_open_value(conn, agg, marks)         # contracts x bid (cached marks)
+        meta_by_cat = {s["category"]: s for s in subdivision.list_subdivisions(conn)
+                       if s["account_id"] == account_id}                  # sub_label / market_types / whale+order counts
+        for b in agg["subdivisions"]:
+            b["open_value"] = live_view.value_positions(
+                subdivision.live_positions(conn, b["account_id"], b["category"]), marks)
+            m = meta_by_cat.get(b["category"], {})
+            b["sub_label"] = m.get("sub_label")
+            b["market_types"] = m.get("market_types")
+            b["n_whales"] = m.get("n_whales")
+            b["n_live_trades"] = m.get("n_live_trades")
     meta = accts[account_id]
     agg["account_label"] = meta.get("account_label")
     agg["venue"] = meta.get("venue")
@@ -528,7 +560,8 @@ def _load_account(account_id: str, identity: str | None = None, is_admin_flag: b
         snap_table = shard_snapshot.table_present(conn)
         snap_dir = shard_snapshot.shard_direction(conn, account_id)
     return {"account": agg, "global_arm": arm.read_status(), "thin_floor": floor,
-            "shard_snap": snap, "shard_snap_table": snap_table, "shard_dir": snap_dir}
+            "shard_snap": snap, "shard_snap_table": snap_table, "shard_dir": snap_dir,
+            "value_as_of": value_as_of, "now_ts": int(time.time())}
 
 
 @app.get("/", response_class=HTMLResponse)

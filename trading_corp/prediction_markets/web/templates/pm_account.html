@@ -1,108 +1,92 @@
 {% extends "pm_shell.html" %}
-{% block title %}{{ account.account_label or account.account_id }} &middot; Account{% endblock %}
-{% block content %}
-<section>
-  <nav class="pm-crumb"><a href="/">Accounts</a> &rsaquo; {{ account.account_label or account.account_id }}</nav>
-  <div class="pm-section-head">
-    <h1 class="pm-h1">{{ account.account_label or account.account_id }}</h1>
-    <p class="pm-sub">Prediction Markets activity for this account. Read-only &mdash; no arm or attach control here.</p>
-  </div>
+{% block title %}{{ account.account_label or account.account_id }} &middot; Prediction Markets{% endblock %}
+{% block main_class %}class="wrap desk"{% endblock %}
 
-  {# GLOBAL ARM STATE -- read-only (R4). CONTROL is admin-only + M5; the CLI stays authoritative. #}
-  <div class="pm-arm-state">
-    {% if global_arm.global_armed %}<span class="pm-badge pm-badge-armed">GLOBAL ARM &middot; ARMED</span>
-    {% else %}<span class="pm-badge pm-badge-disarmed">GLOBAL ARM &middot; DISARMED</span>{% endif %}
-    <span class="pm-muted">read-only &middot; arm/disarm is a CLI action</span>
-  </div>
+{% macro agechip(age_sec, stale_after=180) %}
+  {%- set stale = age_sec is not none and stale_after is not none and age_sec > stale_after -%}
+  <span class="chip {% if stale %}stale{% endif %}" data-age0="{{ age_sec if age_sec is not none else '' }}" data-stale="{{ stale_after if stale_after is not none else '' }}">{{ age_sec|agefmt }}{% if stale %} &middot; stale{% endif %}</span>
+{%- endmacro %}
 
-  {% if not account.pm_traded %}
-  {# DISPLAY-ONLY account: the limitation is the CONTENT, not a footnote -- never an empty frame implying it fills. #}
-  <div class="pm-empty">
-    <p><strong>This account has no Prediction Markets sub-divisions</strong>, so Prediction Markets does not trade it
-      &mdash; this view is <strong>display-only</strong>.</p>
-    <p class="pm-muted">Any trading on this account is by another system (e.g. the legacy copy-trader). A PM
-      sub-division (an attached whale on a category) is what makes PM trade an account; none exists here.</p>
-  </div>
-  {% else %}
-  {# ACCOUNT TOTAL -- realized / win-loss / SAMPLE / open-at-cost SEPARATELY; caveat travels with the number. #}
-  <div class="pm-section-head"><h2 class="pm-h2">Account total (Prediction Markets)</h2></div>
-  <ul class="pm-kv pm-sub">
-    <li>Realized: <span class="{% if account.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.2f'|format(account.realized_pnl) }}</span>
-      over <span class="pm-primary">{{ account.n_closed }}</span> settled ({{ account.wins }}W / {{ account.losses }}L)
-      {% if account.thin_sample %}<span class="pm-flag pm-flag-thin">&#9888; thin sample &mdash; not evidence of edge</span>{% endif %}</li>
-    <li>Open (at cost): ${{ '%.2f'|format(account.open_cost_usd) }} &middot;
-      {{ account.n_open }} position{{ '' if account.n_open == 1 else 's' }} / {{ '%g'|format(account.open_contracts) }} ct
-      <span class="pm-muted">(cost basis, not marked to market)</span></li>
-  </ul>
+{% macro openvalue(ov) %}
+  {%- if ov and ov.known -%}{{ ov.value|money }}{% if not ov.complete %} <span class="wsm">(partial: {{ ov.n_priced }} of {{ ov.n_total }} priced)</span>{% endif %}
+  {%- else -%}<span class="wsm">no mark</span>{%- endif -%}
+{% endmacro %}
 
-  <div class="pm-section-head"><h2 class="pm-h2">Sub-divisions</h2></div>
-  <div class="pm-table-scroll">
-  <table class="pm-table">
-    <thead><tr><th>Category</th><th class="pm-num">Realized</th><th class="pm-num">Settled</th>
-      <th class="pm-num">W / L</th><th class="pm-num">Open (cost)</th><th class="pm-num">Open ct</th><th></th></tr></thead>
-    <tbody>
-    {% for b in account.subdivisions %}
-      <tr>
-        <td>{{ b.category|upper }}</td>
-        <td class="pm-num {% if b.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.2f'|format(b.realized_pnl) }}</td>
-        <td class="pm-num">{{ b.n_closed }}{% if b.thin_sample %} <span class="pm-flag-thin" title="thin sample -- not evidence of edge">&#9888;</span>{% endif %}</td>
-        <td class="pm-num">{{ b.wins }} / {{ b.losses }}</td>
-        <td class="pm-num">${{ '%.2f'|format(b.open_cost_usd) }}</td>
-        <td class="pm-num">{{ '%g'|format(b.open_contracts) }}</td>
-        <td><a class="pm-btn pm-btn-sm" href="/live/{{ account.account_id }}/{{ b.category }}">Live &rarr;</a></td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  <p class="pm-muted">Realized is booked at settlement/exit; open positions are shown at cost basis (a live venue mark
-    is a later phase). The settled sample size is shown so a small count is never read as edge.</p>
-  {% endif %}
-
-  {# BALANCE (M3) -- per-shard, from the engine's snapshot (pm_web never reads the venue). The AGE is BANDED so a
-     stale number looks wrong at a glance (the Karen-death failure was a healthy-looking number hours old). #}
-  <div class="pm-section-head"><h2 class="pm-h2">Balance (per shard)</h2></div>
-  {% if shard_snap %}
-  <div class="pm-arm-state">
-    <span class="pm-badge pm-age-{{ shard_snap.age_band }}" title="Engine snapshot age. fresh <=15m / stale <=1h / very_stale >1h. A stale balance shown as current is what killed Karen's division.">as of {{ (shard_snap.age_sec // 60) }} min ago &middot; {{ shard_snap.age_band|replace('_',' ') }}</span>
-    <span class="pm-muted">engine snapshot &middot; pm_web reads it (no venue call)</span>
-  </div>
-  {% if shard_snap.has_breakdown %}
-  <div class="pm-table-scroll">
-  <table class="pm-table">
-    <thead><tr><th>Shard</th><th class="pm-num">Balance</th></tr></thead>
-    <tbody>
-    {% for idx, dollars in shard_snap.by_shard|dictsort %}
-      <tr><td>Shard {{ idx }}{% if idx == 3 %} <span class="pm-muted">(MLB/baseball funding)</span>{% elif idx == 0 %} <span class="pm-muted">(default)</span>{% endif %}</td>
-        <td class="pm-num">${{ '%.2f'|format(dollars) }}</td></tr>
-    {% endfor %}
-      <tr><td class="pm-muted">Total</td><td class="pm-num pm-muted">${{ '%.2f'|format(shard_snap.total_dollars) }}</td></tr>
-    </tbody>
-  </table>
-  </div>
-  {% else %}
-  {# has_breakdown=False -> the split is UNKNOWN (subaccount-restricted key). Show the total + 'unknown', NEVER $0 per shard. #}
-  <div class="pm-empty">Per-shard split <strong>unknown</strong> for this key (subaccount-restricted) &mdash; total
-    ${{ '%.2f'|format(shard_snap.total_dollars) }}. The split is not shown as $0 when it is unknown.</div>
-  {% endif %}
-  {# THE STANDING CHECK, on the page: is shard-0 rising? (return-to-3 vs sweeping) -- one line, not a chart. #}
-  {% if shard_dir %}
-    {% if shard_dir.verdict == 'returning' %}
-    <p class="pm-gain">&#10003; Proceeds returning to shard 3 &mdash; shard-0 flat, the funding shard self-sustains.</p>
-    {% elif shard_dir.verdict == 'rising' %}
-    <p class="pm-loss">&#9888; Shard-0 rising (+${{ '%.2f'|format(shard_dir.shard0_last - shard_dir.shard0_first) }}) &mdash; proceeds may be SWEEPING to shard 0. Revisit caps + a shard top-up becomes a daily task.</p>
+{% macro shardtable(snap) %}
+  {% if snap %}
+  <table class="sh"><thead><tr><th>Shard</th><th>Balance age</th><th>Cash</th></tr></thead><tbody>
+    {% if snap.has_breakdown %}
+      {% for idx, cash in snap.by_shard|dictsort %}
+      <tr><td>Shard {{ idx }}</td><td>{{ agechip(snap.age_sec, 900) }}</td><td>{{ cash|money }}</td></tr>
+      {% endfor %}
     {% else %}
-    <p class="pm-muted">Shard-0 direction: building history ({{ shard_dir.n_snapshots }} snapshot{{ '' if shard_dir.n_snapshots == 1 else 's' }}) &mdash; will read &ldquo;returning to shard 3&rdquo; vs &ldquo;sweeping&rdquo; once ~1h of snapshots exist.</p>
+      <tr><td>All shards</td><td>{{ agechip(snap.age_sec, 900) }}</td><td>{{ snap.total_dollars|money }} <span class="dim">(split unknown)</span></td></tr>
     {% endif %}
-  {% endif %}
-  {% elif shard_snap_table %}
-  {# table exists (migration 016 applied) but the engine has not written yet -- DISTINCT from the table being absent. #}
-  <div class="pm-empty">No balance snapshot yet &mdash; the engine writes these every 5 minutes (it holds the venue
-    keys; pm_web reads the snapshot). It will appear shortly after the engine restart.</div>
+    <tr class="baseball"><td><b>Total</b></td><td></td><td><b>{{ snap.total_dollars|money }}</b></td></tr>
+  </tbody></table>
+  <p class="caveat" style="margin:10px 0 0">Only the division's funding shard can be spent on this division. Each balance shows its own age.</p>
   {% else %}
-  {# table absent -- migration 016 not applied yet. #}
-  <div class="pm-empty">Shard-aware balance arrives with the engine snapshot writer (migration 016 + the 5-minute
-    timer). pm_web holds no venue credentials by design, so it never reads the venue directly.</div>
+  <p class="caveat" style="margin:10px 0 0">No balance snapshot yet{% if not shard_snap_table %} (the snapshot store is not present){% endif %}.</p>
   {% endif %}
-</section>
+{% endmacro %}
+
+{% block content %}
+  <div class="crumb"><a href="/">Accounts</a> / {{ account.account_label or account.account_id }}</div>
+  <div style="display:flex;align-items:center;gap:14px;margin-top:4px;flex-wrap:wrap">
+    <h1>{{ account.account_label or account.account_id }} &middot; {{ account.venue or 'kalshi' }}</h1>
+    <span class="tag trading">TRADING</span>
+    <span class="badge {{ 'armed' if global_arm.get('global_armed') else 'disarmed' }}"><span class="dot"></span>{{ 'ARMED' if global_arm.get('global_armed') else 'DISARMED' }}</span>
+    <span class="caveat" style="margin-left:2px">read-only &mdash; arming is done from the service, not here</span>
+  </div>
+
+  <h2>Aggregate performance</h2>
+  <div class="panel pad">
+    <div class="figs">
+      <div class="fig"><div class="lbl">Realized P&amp;L</div>
+        <div class="val {{ account.realized_pnl|pnlcls }}">{{ account.realized_pnl|signed }}</div>
+        <div class="caveat"><span class="wsm">{{ account.n_closed }} settled trade{{ '' if account.n_closed == 1 else 's' }}</span> &mdash; {% if account.thin_sample %}a sample this small tells you the plumbing works, not that the strategy wins.{% else %}outcome, not proven edge.{% endif %}</div></div>
+      <div class="fig"><div class="lbl">Record</div>
+        <div class="val">{{ account.wins }}&ndash;{{ account.losses }}</div>
+        <div class="caveat">Settled positions, not games. One game can settle three ways.</div></div>
+      <div class="fig"><div class="lbl">Open exposure &mdash; at cost</div>
+        <div class="val">{{ account.open_cost_usd|money }}</div>
+        <div class="caveat">{{ account.n_open }} unsettled position{{ '' if account.n_open == 1 else 's' }}. Not what they are worth.</div></div>
+      <div class="fig"><div class="lbl">Open positions &mdash; current value</div>
+        <div class="val">{{ openvalue(account.open_value) }}</div>
+        <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if value_as_of %}, {{ agechip(now_ts - value_as_of, 180) }}{% endif %}.</div></div>
+    </div>
+  </div>
+
+  <h2>Sub-divisions</h2>
+  {% if account.subdivisions %}
+  {% for b in account.subdivisions %}
+  <div class="panel" style="margin-bottom:12px">
+    <div class="pad" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+      <div>
+        <div style="font-family:var(--dmono);font-size:15px">{{ b.sub_label or (account.account_label ~ ' &middot; ' ~ b.category|upper) }}</div>
+        <div class="caveat" style="margin-top:4px">
+          {{ b.market_types or b.category|upper }}
+          {% if b.n_whales is not none %} &middot; {{ b.n_whales }} whale{{ '' if b.n_whales == 1 else 's' }} followed{% endif %}
+          {% if b.n_live_trades is not none %} &middot; {{ b.n_live_trades }} order{{ '' if b.n_live_trades == 1 else 's' }} placed{% endif %}
+        </div>
+        <div class="caveat" style="margin-top:6px">Realized <span class="{{ b.realized_pnl|pnlcls }}">{{ b.realized_pnl|signed }}</span> over {{ b.n_closed }} settled ({{ b.wins }}W / {{ b.losses }}L){% if b.thin_sample %} <span class="wsm">&mdash; thin sample</span>{% endif %} &middot; open {{ b.open_cost_usd|money }} at cost / {{ openvalue(b.open_value) }} value</div>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:16px">
+        <span class="badge armed"><span class="dot"></span>RUNNING</span>
+        <a href="/live/{{ b.account_id }}/{{ b.category }}">Open division &rarr;</a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="panel pad"><p class="caveat" style="margin:0">No PM sub-divisions on this account &mdash; <strong>not traded by Prediction Markets</strong>. Display-only; the balance below may still be spent by another system.</p></div>
+  {% endif %}
+
+  <h2>Cash by shard</h2>
+  <div class="panel pad" style="max-width:680px">
+    {{ shardtable(shard_snap) }}
+    {% if shard_dir and shard_dir.n_snapshots and shard_dir.n_snapshots > 1 %}<p class="caveat" style="margin:12px 0 0">Shard-0 is <b>{{ shard_dir.verdict }}</b> across {{ shard_dir.n_snapshots }} snapshots ({{ shard_dir.shard0_first|money }} &rarr; {{ shard_dir.shard0_last|money }}).</p>{% endif %}
+  </div>
 {% endblock %}
+
+{% block scripts %}<script src="/static/pm_live.js" defer></script>{% endblock %}

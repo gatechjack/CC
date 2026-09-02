@@ -1,68 +1,91 @@
 {% extends "pm_shell.html" %}
 {% block title %}Accounts &middot; Prediction Markets{% endblock %}
-{% block content %}
-<section>
-  <div class="pm-section-head">
-    <h1 class="pm-h1">Accounts</h1>
-    <p class="pm-sub">Per-account Prediction Markets activity. Read-only &mdash; this view places nothing and changes no arm state.</p>
-  </div>
+{% block main_class %}class="wrap desk"{% endblock %}
 
-  {# GLOBAL ARM STATE -- READ-ONLY HERE (R4). pm_web only DISPLAYS the arm state; the admin CONTROL lives on the
-     ENGINE console (M5), because the arm WRITE must be on the side that owns the engine + legacy DB (pm_web is
-     isolation-guarded and must never write arm state). The authoritative kill path is the CLI, never any UI. #}
-  <div class="pm-arm-state">
-    {% if global_arm.global_armed %}
-    <span class="pm-badge pm-badge-armed" title="The global PM kill-switch is ARMED. Read-only indicator; the authoritative control is the CLI.">GLOBAL ARM &middot; ARMED</span>
+{% macro agechip(age_sec, stale_after=180) %}
+  {%- set stale = age_sec is not none and stale_after is not none and age_sec > stale_after -%}
+  <span class="chip {% if stale %}stale{% endif %}" data-age0="{{ age_sec if age_sec is not none else '' }}" data-stale="{{ stale_after if stale_after is not none else '' }}">{{ age_sec|agefmt }}{% if stale %} &middot; stale{% endif %}</span>
+{%- endmacro %}
+
+{% macro openvalue(ov, as_of) %}
+  {%- if ov and ov.known -%}
+    {{ ov.value|money }}{% if not ov.complete %} <span class="wsm">(partial: {{ ov.n_priced }} of {{ ov.n_total }} priced)</span>{% endif %}
+  {%- else -%}<span class="wsm">no mark</span>{%- endif -%}
+{% endmacro %}
+
+{% macro shardtable(snap) %}
+  {% if snap %}
+  <table class="sh"><thead><tr><th>Shard</th><th>Balance age</th><th>Cash</th></tr></thead><tbody>
+    {% if snap.has_breakdown %}
+      {% for idx, cash in snap.by_shard|dictsort %}
+      <tr><td>Shard {{ idx }}</td><td>{{ agechip(snap.age_sec, 900) }}</td><td>{{ cash|money }}</td></tr>
+      {% endfor %}
     {% else %}
-    <span class="pm-badge pm-badge-disarmed" title="The global PM kill-switch is DISARMED -- no division trades. Read-only indicator.">GLOBAL ARM &middot; DISARMED</span>
+      <tr><td>All shards</td><td>{{ agechip(snap.age_sec, 900) }}</td><td>{{ snap.total_dollars|money }} <span class="dim">(split unknown)</span></td></tr>
     {% endif %}
-    <span class="pm-muted">read-only here &middot;
-      {% if is_admin %}
-      {# HONEST cross-console link (Jack ruled): it LEAVES the PM console for the ENGINE console -- an external-link
-         arrow + explicit wording, NOT a disguised in-page control. Arming on that page still requires a confirm. #}
-      <a class="pm-xlink" href="https://trading.jacksumner.com/pm/arm"
-         title="Opens the ENGINE console (a separate app) where the admin arm/disarm control lives. Arming there requires a confirmation. The CLI stays the authoritative kill path.">manage arm state on the engine console &nearr;</a>
-      {% else %}
-      arm/disarm is an admin action; the control lives on the engine console
-      {% endif %}
-    </span>
+    <tr class="baseball"><td><b>Total</b></td><td></td><td><b>{{ snap.total_dollars|money }}</b></td></tr>
+  </tbody></table>
+  <p class="caveat" style="margin:10px 0 0">Only the division's funding shard can be spent on this division; cash in other shards cannot. Each balance shows its own age &mdash; a stale balance is not a current balance.</p>
+  {% else %}
+  <p class="caveat" style="margin:10px 0 0">No balance snapshot yet for this account.</p>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+  <div class="crumb">Accounts</div>
+  <h1>Accounts</h1>
+  <p class="caveat" style="max-width:64ch">Kalshi accounts that copy Polymarket whales onto MLB markets. Both are trading accounts. Every feed value on this page carries its age; a stale value is not a current value.</p>
+
+  {# GLOBAL ARM STATE -- READ-ONLY (R4). pm_web only DISPLAYS the arm state; the admin CONTROL lives on the ENGINE
+     console (M5). The authoritative kill path is the CLI, never any UI. #}
+  <div style="display:flex;align-items:center;gap:14px;margin-top:14px;flex-wrap:wrap">
+    <span class="badge {{ 'armed' if global_arm.get('global_armed') else 'disarmed' }}"><span class="dot"></span>GLOBAL {{ 'ARMED' if global_arm.get('global_armed') else 'DISARMED' }}</span>
+    <span class="caveat">read-only here &middot;
+      {% if is_admin %}<a href="https://trading.jacksumner.com/pm/arm">manage arm state on the engine console &nearr;</a>
+      {% else %}arm/disarm is an admin action; the control lives on the engine console{% endif %}</span>
   </div>
 
   {% if accounts %}
-  <div class="pm-tilegrid">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:20px;margin-top:26px">
     {% for a in accounts %}
-    <a href="/account/{{ a.account_id }}" class="pm-menu-card">
-      <div class="pm-menu-title">{{ a.account_label or a.account_id }} &rarr;</div>
+    <section class="panel pad">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <h1 style="font-size:18px;margin:0">{{ a.account_label or a.account_id }} &middot; {{ a.venue or 'kalshi' }}</h1>
+        <span class="tag trading">TRADING</span>
+        <span class="badge {{ 'armed' if global_arm.get('global_armed') else 'disarmed' }}"><span class="dot"></span>{{ 'ARMED' if global_arm.get('global_armed') else 'DISARMED' }}</span>
+      </div>
+
       {% if a.pm_traded %}
-      <p class="pm-menu-sub"><span class="pm-region-count">{{ a.n_subdivisions }}</span>
-        PM sub-division{{ '' if a.n_subdivisions == 1 else 's' }} &middot; {{ a.venue or 'kalshi' }}</p>
-      {# realized / win-loss / SAMPLE / open-at-cost, shown SEPARATELY -- never one aggregate (R2c discipline). #}
-      <ul class="pm-kv pm-sub">
-        <li>Realized: <span class="{% if a.realized_pnl >= 0 %}pm-gain{% else %}pm-loss{% endif %}">{{ '%+.2f'|format(a.realized_pnl) }}</span>
-          over <span class="pm-primary">{{ a.n_closed }}</span> settled ({{ a.wins }}W / {{ a.losses }}L)</li>
-        <li>Open (at cost): ${{ '%.2f'|format(a.open_cost_usd) }} &middot;
-          {{ a.n_open }} position{{ '' if a.n_open == 1 else 's' }} / {{ '%g'|format(a.open_contracts) }} ct</li>
-      </ul>
-      {# the caveat travels WITH the number, not at page bottom (R2c). #}
-      {% if a.thin_sample %}
-      <p class="pm-flag pm-flag-thin">&#9888; thin sample ({{ a.n_closed }} settled) &mdash; not evidence of edge</p>
+      <div class="figs" style="margin-top:22px">
+        <div class="fig">
+          <div class="lbl">Realized P&amp;L</div>
+          <div class="val {{ a.realized_pnl|pnlcls }}">{{ a.realized_pnl|signed }}</div>
+          <div class="caveat"><span class="wsm">{{ a.n_closed }} settled trade{{ '' if a.n_closed == 1 else 's' }} ({{ a.wins }}W / {{ a.losses }}L)</span>{% if a.thin_sample %} &mdash; too small a sample to read as edge; expected noise at this size is wider than the result.{% else %} &mdash; outcome, not proven edge.{% endif %}</div>
+        </div>
+        <div class="fig">
+          <div class="lbl">Open exposure &mdash; at cost</div>
+          <div class="val">{{ a.open_cost_usd|money }}</div>
+          <div class="caveat">Cost basis across {{ a.n_open }} unsettled position{{ '' if a.n_open == 1 else 's' }}. Not what they are worth now.</div>
+        </div>
+        <div class="fig">
+          <div class="lbl">Open positions &mdash; current value</div>
+          <div class="val">{{ openvalue(a.open_value, value_as_of) }}</div>
+          <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if value_as_of %}, {{ agechip(now_ts - value_as_of, 180) }}{% endif %}. Moves with the games; unrealized, and not the cost basis.</div>
+        </div>
+      </div>
       {% else %}
-      <p class="pm-muted">{{ a.n_closed }}-settled sample &mdash; P&amp;L is outcome, not proven edge</p>
+      <p class="caveat" style="margin-top:16px">No PM sub-divisions &mdash; <strong>not traded by Prediction Markets</strong>. Display-only; any trading on this account is by another system. The balance below is still real (another system may spend it).</p>
       {% endif %}
-      {% else %}
-      <p class="pm-menu-sub pm-empty-inline">No PM sub-divisions &mdash; <strong>not traded by Prediction Markets</strong>.
-        Display-only; any trading on this account is by another system (e.g. the legacy copy-trader).</p>
-      {% endif %}
-      {# compact balance (the real number even for a display-only account -- legacy spends it) + its AGE band. #}
-      {% if a.shard_snap %}
-      <p class="pm-sub">Balance: <span class="pm-primary">{% if a.shard_snap.has_breakdown %}${{ '%.2f'|format(a.shard_snap.total_dollars) }}{% else %}${{ '%.2f'|format(a.shard_snap.total_dollars) }} <span class="pm-muted">(split unknown)</span>{% endif %}</span>
-        <span class="pm-badge pm-age-{{ a.shard_snap.age_band }}">{{ a.shard_snap.age_band|replace('_',' ') }}</span></p>
-      {% endif %}
-    </a>
+
+      <h2>Cash by shard</h2>
+      {{ shardtable(a.shard_snap) }}
+      <p style="margin:20px 0 0"><a href="/account/{{ a.account_id }}">Open {{ a.account_label or a.account_id }} &rarr;</a></p>
+    </section>
     {% endfor %}
   </div>
   {% else %}
-  <div class="pm-empty">No accounts yet. An account appears here once provisioned (a pm_account row).</div>
+  <div class="panel pad" style="margin-top:26px"><p class="caveat" style="margin:0">No accounts visible. An account appears here once provisioned and owned by your identity (admins see all).</p></div>
   {% endif %}
-</section>
 {% endblock %}
+
+{% block scripts %}<script src="/static/pm_live.js" defer></script>{% endblock %}

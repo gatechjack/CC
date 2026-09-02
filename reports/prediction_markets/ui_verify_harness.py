@@ -147,6 +147,19 @@ print("\n[5] OPPOSED close in drawer (present in all renders)")
 chk("not booked" in h, "opposed close shows '— not booked'")
 chk("OPPOSED" in h, "opposed status label present")
 
+print("\n[6] ACCOUNTS overview + ACCOUNT page (real marks)")
+ui_cache.cache().update(slates={"2026-09-02": live_slate}, marks=real_marks, refreshed_ts=T)
+for name, url in (("05_accounts", "/"), ("06_account", "/account/kalshi_jack")):
+    html = cl.get(url).text
+    standalone = html.replace('<link rel="stylesheet" href="/static/pm.css" />', "<style>%s</style>" % CSS)
+    standalone = standalone.replace('<link rel="stylesheet" href="/static/pm_desk.css" />', "")
+    (OUT / (name + ".html")).write_text(standalone, encoding="utf-8")
+acc = cl.get("/").text
+chk("TRADING" in acc and "funding-only" not in acc, "accounts: TRADING tag present, 'funding-only' removed")
+chk("current value" in acc, "accounts: open current value figure present")
+ap = cl.get("/account/kalshi_jack").text
+chk("Sub-divisions" in ap and "Open division" in ap, "account page: sub-divisions + division link")
+
 ok = all(c for c, _ in checks)
 print("\n=== %d/%d checks passed ===" % (sum(1 for c, _ in checks if c), len(checks)))
 print("HTML written to:", OUT)
