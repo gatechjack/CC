@@ -198,7 +198,26 @@ real KXUFCFIGHT/KXUFCDISTANCE tickers + real Poly ufc slugs to build canonicaliz
   after my change; they are byte-identical-provable only on the box (pykalshi present). Flagged as the deploy gate.
 
 ## DEPLOY QUEUE (authorize one rung at a time; nothing built here is deployed; box-is-truth, GRAFT main.py never wholesale)
-### ★ A-DEPLOY (engine graft + ONE restart) — PREPARED + STAGED + PATCH-VERIFIED, NOT RUN — HALT for the board
+### ★★★ A-DEPLOYED LIVE + VERIFIED 2026-09-02 23:03Z graft / 23:10:02Z restart (board-authorized, per-step)
+- Graft `pm_a_deploy.ps1` attempt 1 FAILED SAFE (77KB single-line base64 > pipe line-limit -> `base64: invalid
+  input` -> WRITE_SHA_FAIL -> restored, engine untouched). FIX = wrapped-heredoc base64 (<=76-char lines). Attempt 2
+  GREEN: pre-checks OK, `live_driver 4b85f93f` + `boot_reconcile ecce7777` wholesale, `main.py` grafted `bba046e8`,
+  Gate-A IMPORT_CLOSURE_OK. Backups `~/pm_a_deploy_backup_20260902T230350Z`.
+- Restart (Jack, warned bitunix): engine **PID 163519 -> 171106**, active, 23:10:02Z. **POST-CHECK = NOTHING CHANGED
+  (verified via `pm_a_postcheck_ro.ps1` + follow-ups):** roster `2 account task(s): {'kalshi_jack': ['mlb'],
+  'kalshi_karen': ['mlb']}` (ONE task/account, single category — Option C invisible); persisted arm rows
+  BYTE-UNCHANGED (global `08-31T02:35:38` / jack `08-31T21:49:39` / karen `09-02T12:53:23`, all armed latched=False);
+  **boot-reconcile CLEAN for BOTH** (my M3 format, `latched_categories=()`, 23:14:42Z); 0 skip:exposure_unknown;
+  every division back (bitunix/MACE/PEAD/IC/tasty/Kalshi×N/polymarket/PM/M3-snapshot). Per-category loop alive
+  (OPPOSING-PAIR guard fires per-account in the new `account/category` format; jack's `0x0f58…` cid was contested on
+  the OLD engine at 23:10:00 too = continuity).
+- ★ Boot tracebacks/errors CLASSIFIED non-PM/pre-existing: 3 tracebacks = Telegram update-poll `httpx.ReadError`
+  (transient, auto-retried); fidelity playwright ENOENT (no browser broker); earnings 404 BTC/USD (crypto); 4
+  `pykalshi 404 not_found` from a non-PM Kalshi strategy. None from A; boot-reconcile clean AFTER all of them.
+- Runners: `cc\pm_a_deploy.{sh,ps1}` (graft), `pm_a_postcheck_ro.*` + `pm_a_bootrecon_ro.*` + `pm_a_pmdriver_ro.*` +
+  `pm_a_tb{,2}_ro.*` (read-only verify). ROLLBACK = restore `~/pm_a_deploy_backup_20260902T230350Z` + restart.
+
+### A-DEPLOY (engine graft + ONE restart) — the prepared plan (executed above)
 - **★ THE RESTART BOUNCES EVERYTHING.** A needs an ENGINE restart (`restart_tc.ps1` -> `systemctl restart
   trading-corp`), so ALL divisions bounce: **bitunix, MACE, PEAD, IC, tasty, the Kalshi strategies, AND the PM
   driver.** Time it accordingly. Box-scratch already proved A on the real venv; the restart is the only live step.
