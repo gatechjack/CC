@@ -1,378 +1,350 @@
-# MULTI-CATEGORY-PER-ACCOUNT PLAN — kalshi_jack/ufc alongside kalshi_jack/mlb (2026-09-02)
+# MULTI-CATEGORY-PER-ACCOUNT PLAN — kalshi_jack/ufc alongside kalshi_jack/mlb (2026-09-02, rev 2)
 
-**This is a PLAN. Nothing here was built, deployed, armed, or written to the box.** The only box touch proposed
-is one read-only runner (below), staged for board authorization. Two accounts remain ARMED and TRADING; I did not
-disarm. Global STOP (kills both), verbatim:
+**This is a PLAN. Nothing here was built, deployed, armed, or written to the box.** Rev 2 folds the board's rulings
+(2026-09-02): Option C is SETTLED, the scope finding leads, the three re-scopings are first-class rungs, caps
+structure is ruled (aggregate stays $150/day + 50 orders), the go-live proof is named, M5 is closed. Two accounts
+remain ARMED and TRADING; I did not disarm. Global STOP (kills both), verbatim:
 
     PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global
 
-Branch `pm-per-account-trading-2026-09-02` @ `da5b02a` (worktree `cc-pm-peracct-wt`), clean, local==origin,
-base `f1e28cc`. prod-live `7220e32` / main-wip NOT advanced. Box-is-truth.
+Branch `pm-per-account-trading-2026-09-02` @ pushed HEAD, base `f1e28cc`, clean, local==origin. prod-live `7220e32`
+/ main-wip NOT advanced. Box-is-truth. Fresh read-only shard read (`pm_shards_ro.ps1`, board-approved, 16:47Z):
+**jack shard 0 = $0.0081** (all $482 on shard 3), Karen shard 0 = $25.01 — a ufc copy on jack skips every cycle
+until shard 0 is funded (M5, §7).
 
 ---
 
-## 0. WHAT I VERIFIED vs ASSUMED (read the code, not the summary)
+## 1. LEAD FINDING — "add a second category" is a MATCHER BUILD + a SAFETY RESTRUCTURE, not a guard relaxation
 
-**Verified (read the files at `da5b02a`, CR-stripped hashes):**
-- Worktree clean; HEAD==origin. The 5 package files match SW9's deploy manifest exactly, and **`main.py` at HEAD
-  (CR-stripped) = `9e8da82` = the live box graft**. The code below IS what the box runs. The "VC gap" was a
-  measurement artifact (`git show|sha256sum` emits CRLF vs the box's LF); it is closed on this tip. No phantom drift,
-  no capture-and-commit needed.
-- `driver_roster.plan_driver_tasks` (the guard) refuses the 2nd sub-division on an account (`driver_roster.py:80-84`).
-- `boot_reconcile`'s journal read is **already account-wide across every category** (`_JOURNAL_SIGNED_SQL`,
-  `journal_signed_positions`, `boot_reconcile.py:78-119`); the Kalshi side is the whole book. The *comparison* is
-  whole-account; only the **latch target** is per-`(account_id, category)` (R-f note, `boot_reconcile.py:50-53`).
-- `arm.latch_auth_failure` **already accepts and loops a list of categories** (`arm.py:273-280`). M2's mechanism
-  exists in the control plane; the gap is purely the call site (`live_driver.py:419`) passing `[sub.category]`.
-- `open_usd`/gate 6 is **account-keyed** (`execution.py:295,332,343,485`); `daily_usd`+`orders_today` are
-  **`(account_id, category)`-keyed** (`execution.py:342,344`). Journal is built **per cycle, per task**
-  (`live_driver.py:585`). Gate-6 live base = `venue_exposure.open_dollars() + journal.in_cycle_open_usd(aid)`
-  (`execution.py:484`), where `in_cycle_open_usd` sees only THIS task's commits (its own Journal) and never the
-  sibling's `submitting` rows (the seed filters `outcome_status='filled'`, `execution.py:315`).
-- gate-4 COID = `client_order_id(sub.division, ...)`, `division = "account:category"` (`execution.py:47,111-113,460`)
-  → category-distinct.
-- gate-6b (shard funding) is **per-MARKET-shard**, tri-state, fail-closed, handles shard 0 correctly (`is not None`,
-  not truthiness — `execution.py:499-505`, `shard_balance.py:58-77`). The skip is visible (`live_driver.py:377-380`)
-  plus a sustained-underfunding ALARM (`live_driver.py:666-672`).
-- Wiring: `main.py:1539-1615` spawns ONE `KalshiLiveBroker` per DISTINCT account (`_pm_brokers[aid]`) and ONE
-  `scheduled_pm_live_loop` task per `(account,category)`, all sharing one positions_client. **Two same-account
-  categories would share ONE broker** and its underlying client.
+The guard (`driver_roster.plan_driver_tasks`) is the LAST and smallest step. Two much larger things sit in front
+of it, and the plan is organised around them:
 
-**Assumed / could not verify from the repo:**
-- **pykalshi concurrent-POST safety.** Our `KalshiLiveBroker` wrapper adds **no** per-request mutable state
-  (`kalshi_live.py:315-320,381`); `make_place_fn` calls `client.post` on the shared client (`live_driver.py:288`).
-  Whether two simultaneous POSTs on one pykalshi client are safe (RSA-PSS signing / nonce reentrancy) reduces to
-  pykalshi internals, which are **not vendored** and cannot be confirmed locally. Verdict: **NOT PROVABLE FROM CODE**
-  — treat concurrent same-account POSTs as unproven. (This is itself an argument for the M1 recommendation below.)
-- **UFC market types** — established by external research, not the box (see §5).
-- **Today's shard-0 balance** — inferred from SW9 (jack ≈ all on shard 3, shard 0 ≈ $0.01); a fresh read is staged.
+- **WORKSTREAM A — a UFC matcher + category dispatch (a real build, §8).** `execution.py:49` hardwires
+  `from ..data import mlb_poly_kalshi_match as M`; `evaluate` calls `M.parse_poly_mlb_bet` (`execution.py:383`);
+  `live_driver.SERIES` (`:60`) and `fetch_market_context` are MLB-only. UFC therefore needs its own matcher
+  (`ufc_poly_kalshi_match.py`) + a per-category dispatcher in the chokepoint and the driver. This is comparable in
+  size to the original MLB matcher and could be its own plan. It carries the MLB matcher's hard-won lessons (§8).
+- **WORKSTREAM B — the safety restructure (§3–§6).** M1 (open_usd race) is fixed by ONE task per account iterating
+  its categories (Option C, RULED). That restructure ITSELF re-scopes three per-task safeties (§4) and requires the
+  M2/M3 latch-scope fixes. This is where the guard's protection actually lives.
+
+Neither workstream is the guard. The guard (M4, §12) only opens after BOTH land and are proven, behind a
+fail-closed per-account opt-in that is OFF by default. Anyone reading "just relax the tripwire" is reading it wrong.
 
 ---
 
-## 1. THE CENTRAL QUESTION — were M1/M2/M3 the COMPLETE set, or the three that surfaced overnight?
+## 2. WHAT I VERIFIED vs ASSUMED (read the code at HEAD, CR-stripped)
 
-**Answer: they are the complete set of "an account-scoped safety that DEGRADES by adding a 2nd category to the
-CURRENT two-task-per-account architecture" — but "three fixes" is an INCOMPLETE to-do list**, for two reasons:
+**Verified:** worktree clean, HEAD==origin, the 5 package files match SW9's deploy manifest, and **`main.py` at
+HEAD (CR-stripped) = `9e8da82` = the live box graft** — the code below IS what the box runs, no phantom drift.
+`boot_reconcile`'s journal read is already account-wide across every category (`:78-119`); only the latch target is
+per-category (`:50-53,300-301`). `arm.latch_auth_failure` already loops a category list (`arm.py:273-280`); the gap
+is the call site (`live_driver.py:419`). gate 6/`open_usd` is account-keyed (`execution.py:485,332,343`);
+gate 5/8 daily+count are `(account,category)`-keyed (`:342,344`). gate-4 COID carries `division=account:category`
+(`:47,111-113,460`). gate-6b shard funding is per-market-shard, handles shard 0 (`is not None`, `:499-505` +
+`shard_balance.py:58-77`). Wiring spawns one broker per distinct account + one task per `(account,category)`
+(`main.py:1539-1615`) — two same-account categories would share ONE broker.
 
-1. **The recommended M1 fix (one driver task per account, §2) RE-SCOPES three pieces of per-task state that a
-   single multi-category task would otherwise share across categories.** These are not new account-safety
-   degradations; they are correctness hazards INTRODUCED by collapsing two tasks into one, and each is a
-   "safety-check-that-silently-stops-checking" shape:
-   - **The sustained-shard-underfunding ALARM counter** (`consec_underfunded`, `live_driver.py:528,666-674`) is a
-     per-TASK local. Under one task for mlb+ufc, an mlb placement (`summ["placed"]>0`) RESETS the counter, so a
-     genuinely starved ufc shard-0 would **never raise its sustained alarm** — masked by unrelated mlb activity.
-     Must become **per-category** (or per-shard).
-   - **The consecutive-error latch counter** (`consec_err`, `live_driver.py:367,416,422-423`) is per-task; an
-     mlb fill (`consec_err=0`, line 433) would reset a ufc error streak. Must stay **per-category**.
-   - **The Option-D exit snapshot map** (`prior_snapshots`, `live_driver.py:533,604,625`) is keyed by wallet
-     alone. A wallet pinned in BOTH categories (the attachment table permits `(wallet, mlb)` and `(wallet, ufc)`)
-     would have its two books MERGED under one task → corrupt reduction/exit detection. Must be keyed
-     **`(category, wallet)`**.
-2. **Two by-design account-aggregate implications that are correct but must be RULED, not assumed:** the daily
-   cap (gate 5) and orders/day (gate 8) are **per-`(account,category)`**. Two categories at Ruling-2 caps means the
-   ACCOUNT can spend **2×$150 = $300/day** and place **2×50 = 100 orders/day**. That is the intended per-subdivision
-   semantics, but the account's aggregate risk scales with the category count. The **open-exposure cap (gate 6) is
-   the only account-wide cap** — which is exactly why M1 is the hard one.
-
-So the real work list is: **M1 (+ its re-scoping trio) + M2 + M3**, then **M5 verify**, then **the aggregate-cap
-ruling**, then **M4 (the guard)**. Everything else account-scoped I re-checked is safe per-category (§4).
+**Assumed / not provable from the repo:** **pykalshi concurrent-POST safety** (see §3). UFC market types (external
+research, §11). The exact UFC ticker sub-format and fighter-abbreviation scheme (needs a live disarmed probe, §8).
 
 ---
 
-## 2. M1 — THE `open_usd` CAP RACE
+## 3. M1 — THE open_usd CAP RACE. Fix = Option C (RULED, SETTLED — no longer an open ruling)
 
-### The race, precisely
-Two same-account tasks (jack/mlb, jack/ufc) run as concurrent asyncio tasks in one event loop. Each builds its OWN
-per-cycle `Journal` and its OWN venue-exposure read. Gate 6 base for each = `venue_open + own_in_cycle`. Neither
-sees the other's in-cycle commits (separate Journal objects) nor the other's pre-fill `submitting` rows. They
-interleave at the POST `await` (`live_driver.py:411`). So both can independently authorise up to the cap against
-the same base.
+**The race (unchanged from rev 1):** two same-account tasks each build their own per-cycle Journal + venue read;
+gate 6 base = `venue_open + own_in_cycle`; neither sees the other's in-cycle commits nor pre-fill `submitting`
+rows; they interleave at the POST await. R7's venue base re-anchors CROSS-cycle (once a sibling's orders fill and
+show on `/portfolio/positions`, the next cycle rejects) but does NOT catch two tasks sizing against the same base
+WITHIN an overlapping ~7 s window. Worst case in one window ≈ `2·cap − venue_base` (~$300 vs $150), self-correcting
+next cycle but leaving the account at ~2× cap until positions close. It bites at high position count +
+simultaneous bursts — precisely a Saturday MLB-slate + UFC-card overlap — so "unlikely in practice" is not a defence.
 
-### How much does R7's account-wide venue base mitigate it?
-**Substantially, cross-cycle; not at all, within an overlapping cycle.** R7 reads the account's TRUE filled
-exposure from `/portfolio/positions` fresh every cycle (`live_driver.py:562-567`). Once a sibling's orders FILL and
-appear as positions, the NEXT cycle of either task re-anchors to reality and gate-6-rejects further entries — so the
-breach **cannot compound across cycles**. What it does NOT catch: two tasks reading the same venue base **before
-either's orders fill and propagate**, each adding only its own in-cycle. Entries are IOC (`_ENTRY_TIF`,
-`execution.py:71`) → fill-or-not immediately → a fill becomes a `/portfolio/positions` line near-immediately, but
-not before the sibling's same-window cycle already sized.
+**RULED: Option C — one driver task per account iterating its categories, sharing ONE per-cycle Journal + ONE venue
+read.** Categories run sequentially within a cycle; gate 6's account-keyed in-cycle accumulator sees the first
+category's commits when the second evaluates, so the account open-cap is jointly enforced exactly as it is for one
+category today. **gate 6, `evaluate`, the Journal, and the POST path are UNCHANGED — nothing is added between
+"decide to place" and "POST."** Sequential categories within a cycle is the accepted cost; the board is NOT
+requiring concurrency, so **Option B (a hot-path per-account lock) is off the table and this is no longer carried
+as an open ruling.**
 
-### The race window in practice
-- **Width:** ≈ one poll interval (~7 s, `poll_sec=7`), because each task re-reads the venue only at its own cycle
-  start; any two cycle-starts falling in the same ~7 s window before fills propagate both size against the stale
-  base. This recurs roughly every cycle both categories have gate-passing entries.
-- **Magnitude:** worst case in one overlapping cycle, both tasks fill up to `(cap − venue_base)` each, so the
-  account reaches up to **`2·cap − venue_base`** (≈ **$300 against a $150 cap** when the book starts near flat).
-  It self-corrects the next cycle (both then read the inflated venue and reject) but the account sits at ~2× cap
-  until those positions close/settle.
-- **Probability:** rises with open-position count and simultaneous signal bursts. To be near the $150 cap needs
-  ~27 open contracts ($5.50 each) — and the *exact* trigger is a Saturday with both a full MLB slate AND a UFC
-  card firing entries in the same windows. **"Unlikely in practice" is therefore not defensible** — the whole point
-  of a 2nd category is more simultaneous signal, and fight-nights are the peak-overlap case.
+**★ WHY C IS RIGHT BEYOND ELEGANCE — it never has to ask an unanswerable question.** Two same-account tasks would
+share ONE `KalshiLiveBroker` and POST on ONE client concurrently. Our wrapper adds no per-request state
+(`kalshi_live.py:315-320,381`), but whether two simultaneous POSTs on one pykalshi client are safe (RSA-PSS
+signing / nonce reentrancy) reduces to the library's signed transport — and **pykalshi is not vendored, so this is
+NOT provable from the repo.** The two-task model was resting on an unverified assumption about a signed transport
+carrying real money. **Option C never places two same-account POSTs concurrently, so the question never arises.**
+That certainty is worth more than the intra-cycle concurrency it gives up.
 
-### Coordination options + cost
-- **Option C — ONE driver task per account, iterating its categories, sharing ONE per-cycle Journal + ONE venue
-  read. [RECOMMENDED]** Because it is a single task, the categories run **sequentially** within a cycle; gate 6's
-  in-cycle accumulator (already account-keyed) automatically sees the first category's commits when the second
-  category evaluates — the account open-cap is enforced jointly, exactly as it is for one category today. **gate 6,
-  `evaluate`, the Journal, and the POST path are UNCHANGED.** No lock, no shared-mutable-state across tasks, and
-  **nothing added between "decide to place" and "POST."** It ALSO sidesteps the unprovable concurrent-POST-on-one-
-  broker question — a single task never POSTs concurrently with itself.
-  - **Cost:** category-serialization latency WITHIN a cycle — the second category's signals wait for the first
-    category's placements (bounded by #placements × per-POST latency, the same order of magnitude either way). This
-    is latency the two categories were always going to trade against one shared account cap for anyway.
-  - **Cost (real, §1):** requires re-scoping `consec_underfunded`, `consec_err`, and `prior_snapshots` to
-    per-category inside the restructured loop. Mechanical, but load-bearing.
-- **Option B — keep two tasks + a per-account `asyncio.Lock`** held across the read-venue→evaluate→place span.
-  **This IS a coordination mechanism spanning the hot path** (the lock is held across POST awaits). Same
-  serialization as C but via an explicit primitive on the order path, and it still leaves the concurrent-POST
-  question if the lock scope is ever wrong. **This is the thing the brief flags as Jack's ruling, not mine.**
-- **Option A — a per-account shared in-flight accumulator** both tasks' gate 6 read/write. Race-free under
-  single-threaded asyncio *if* the gate-6-read→commit stays synchronous (it is, within `evaluate`), so it needs no
-  lock — but reconciling the shared in-flight against each task's independent per-cycle venue read (avoiding
-  double-counting as fills migrate onto the venue with two independent cycle phases) is fiddlier than C for no gain.
-
-### Recommendation + where the hot path sits
-**Option C.** It closes M1 **without any hot-path mechanism** — it is a wiring/loop-structure change in
-`live_driver.scheduled_pm_live_loop` + the `main.py` roster grouping, not an addition between decide-and-POST. So
-**the plan's stop condition is NOT triggered by M1.**
-
-**The honest fork for the board (§9):** C's only "cost" is that the two categories on one account trade
-**sequentially, not concurrently**, within each ~7 s cycle. If that latency is acceptable → proceed with C. **If
-the board REQUIRES concurrent per-category execution, then M1 can only be closed with a hot-path per-account lock
-(Option B) — and adding to that hot path is the board's ruling.** If neither serialization nor a lock is acceptable,
-**the guard stays** (per the M4 ruling).
-
-**Hard stop inside the build:** if box-scratch shows Option C does NOT actually enforce the account cap across two
-categories sharing one journal (i.e. my analysis is wrong), STOP and do not relax the guard.
+**Hard stop inside the build:** if box-scratch shows Option C does NOT enforce the account cap across two categories
+on one shared journal (i.e. this analysis is wrong), STOP and do not relax the guard.
 
 ---
 
-## 3. M2 — AUTH-LATCH SCOPE
+## 4. THE THREE RE-SCOPINGS OPTION C INTRODUCES — first-class rungs, each its own test
 
-**Status: NOT-SAFE today; mechanism already exists.** A 401/403 is dead auth for the whole KEYPAIR = the whole
-account, but `live_driver.py:419` calls `arm.latch_auth_failure(sub.account_id, [sub.category], ...)` — only the
-caller's category. The sibling category keeps POSTing on dead auth. `arm.latch_auth_failure` already loops a list
-(`arm.py:273-280`), so the fix is at the call site.
+Collapsing two tasks into one is itself a source of the exact bug class it fixes: **a safety check that silently
+stops checking.** Three pieces of per-TASK state would be wrongly shared across categories under one task. Each
+gets rung status and its own test. **Instances #14, #15, #16 of the standing lens** (the list stood at 13).
 
-**Mechanism:** at the auth-failure latch site, latch **every active category on the account**. Two equivalent
-sources for the category list:
-- Under Option C the task already holds its category list → pass it directly (cleanest).
-- Belt-and-suspenders regardless of task structure: enumerate `SELECT category FROM pm_subdivision WHERE
-  account_id=? AND active=1` at latch time (auth is dead → this DB read is not on the hot path, it fires only on
-  failure). Recommend doing BOTH: pass the loop's list, and have a shared helper that unions it with the DB read so
-  a category with no live task (attachment lapsed mid-session) is still latched.
+- **#14 — the sustained-shard-underfunding ALARM counter** (`consec_underfunded`, `live_driver.py:528,666-674`).
+  Per-task today. Under one task, an mlb placement (`summ["placed"]>0`) RESETS it, so a genuinely starved ufc
+  shard-0 would **never raise its sustained alarm** — masked by mlb activity. → make it **per-category** (dict keyed
+  by category). Test: mlb placing every cycle while ufc is shard-0-starved → the ufc alarm still fires at N=3.
+- **#15 — the consecutive-error latch counter** (`consec_err`, `live_driver.py:367,416,433`). Per-task today. An
+  mlb fill (`consec_err=0`) would reset a ufc error streak → the ufc error-latch never trips. → **per-category**.
+  Test: interleave mlb fills with 3 ufc POST errors → ufc latches consecutive_errors, mlb unaffected.
+- **#16 — Option-D exit-snapshot map** (`prior_snapshots`, `live_driver.py:533,604,625`), keyed by wallet alone.
+  The attachment table permits the same wallet in BOTH categories (`(wallet,mlb)` and `(wallet,ufc)`); under one
+  task their two books MERGE → corrupt reduction/exit detection. → key **`(category, wallet)`**. Test: one wallet
+  attached to both categories, a reduction in one → an exit only in that category, the other untouched.
 
-**Provable:** unit test (forged 401 → all active categories latched, `manual_exit_required=True`); box-scratch with a
-forged-401 place_fn on a two-category account → both categories' `arm:...` rows go `latched=True`.
-
----
-
-## 4. M3 — WHOLE-ACCOUNT BOOT-RECONCILE LATCH
-
-**Status: NOT-SAFE under the recommended single-task model; incidentally-OK-but-fragile under two tasks.**
-
-**Reasoning through both failure directions (two categories, one keypair):**
-- **False-latch — cannot happen from cross-category presence.** The journal read is already account-wide
-  (all categories) and the Kalshi read is the whole book, so a ufc position present in both journal and book
-  reconciles as MATCH. Latching all categories on a *genuine* mismatch is correct — the whole keypair's book is in
-  question. Widening the latch introduces no false latch.
-- **Missed-latch — the real gap.** `reconcile_account` latches only the single `(account_id, category)` it was
-  called for (`boot_reconcile.py:215,300-301`). In today's two-task model each task independently runs an
-  account-wide reconcile and latches its own category, so both happen to get latched — but that is incidental and
-  fragile (it breaks the moment a category has no task, or one reconcile races ahead and arms). Under Option C
-  (ONE account-wide reconcile per account) a single per-category latch would leave the sibling category free to arm
-  and trade against an unreconciled book → a genuine miss.
-- **R-c precondition unchanged.** KALSHI_ONLY = whole-account is correct only while the account is PM-EXCLUSIVE;
-  with two categories the account is still PM-exclusive as a whole (both categories are PM's). A co-tenant/legacy
-  sharing the keypair breaks R-c exactly as today — same precondition, not a new one.
-
-**Mechanism:** make the boot-reconcile latch **account-wide** — run the (already account-wide) comparison once per
-account and, on mismatch or read failure, latch **all active categories** on the account (loop them, mirroring
-`latch_auth_failure`; add `arm.latch_boot_reconcile_mismatch_account(account_id, categories, ...)` or loop the
-existing per-category latch). Under Option C also run the boot settlement-scan per-category before the single
-account-wide reconcile (so a category that settled while down is booked flat first, `live_driver.py:500-513`).
-
-**Provable:** unit test (a co-category Kalshi position absent from the journal → ALL active categories latched; a
-clean two-category account → NO latch); box-scratch with a co-category venue position injected → both categories
-latch, jack's other account unaffected.
+**★ "Did we find all of them?" is an OPEN question, not a closed list.** The first pass through this file (the
+overnight build) surfaced three account-scoped degradations (M1/M2/M3); this second pass surfaced three more, all
+introduced by the fix. A THIRD adversarial pass — pointed specifically at "what other per-task state does the
+single-task loop now share across categories?" — is a required rung before M4, not an afterthought. Candidates
+already on my list to re-examine there: the `last_settle`/`last_idx` throttle timers (per-task — likely fine, but a
+shared timer across categories could starve one category's settlement scan), the per-cycle `ctx` market-context
+cache (must become per-category — MLB vs UFC series), and the DB connection lifetime across a multi-category cycle.
 
 ---
 
-## 5. M5 — SHARD FUNDING (verify-only per the board; funding is the operator's job)
+## 5. M2 — AUTH-LATCH SCOPE (mechanism exists; fix the call site to latch all account categories)
 
-**Verified by reading; behaves exactly as ruled. One box confirmation staged.**
-- gate-6b reads the MARKET's `exchange_index` (`execution.py:391`) and checks THAT shard: `can_fund(order_shard,
-  notional) if order_shard is not None` (`execution.py:499-505`). Shard 0 is handled correctly — the guard is
-  `is not None`, not truthiness, and `shard_balance.can_fund`/`shard`/`by_shard.get(int(idx),0.0)` treat 0 as a
-  real key (`shard_balance.py:58-77`). **Nothing assumes a single funded shard per account** — the balance read
-  returns the whole per-shard breakdown; the gate is per-market-shard.
-- **On insufficient shard → SKIP, and it is VISIBLE, not silent:** a per-copy `WARNING` (`live_driver.py:377-380`),
-  counted (`n_shard_underfunded`), plus a SUSTAINED alarm every N=3 cycles while starved (`live_driver.py:662-672`).
-  It is a SKIP (fundable-later), never the error-latch. **⚠ Under Option C the sustained-alarm counter must be
-  re-scoped per-category (§1) or a starved ufc shard would be masked by mlb placements.**
-- UFC markets are MMA → **shard 0 (Default)**, not shard 3 (Tennis & Baseball). SW9 shows jack ≈ all on shard 3
-  (`$498.02`), **shard 0 ≈ $0.01**. So a ufc category on jack TODAY would `skip:shard_underfunded` on every copy
-  (correct — it does NOT misroute to jack's funded shard 3), until the operator funds shard 0. This is exactly your
-  ruling: **you fund shard 0 for ufc; PM places and, on insufficient balance, skips and leaves it to you.**
-
-**Confirm today's shard-0 (read-only, no creds — reuse the existing sanctioned runner):**
-
-    powershell -ep bypass -f .\pm_shards_ro.ps1
-
-(`pm_shards_ro.sh` already prints jack's `by_shard` incl. shard 0 + age via `shard_snapshot.read_latest`, mode=ro,
-stdlib-only. This is the "what would a shard-0 category find" read. It is confirmatory — the M5 design does not
-depend on the exact number.)
+A 401/403 is dead auth for the whole KEYPAIR = the whole account, but `live_driver.py:419` passes `[sub.category]`.
+`arm.latch_auth_failure` already loops a list (`arm.py:273-280`). **Fix:** latch every active category on the
+account. Under Option C the task holds its category list → pass it. Belt-and-suspenders: a shared helper unions
+that list with `SELECT category FROM pm_subdivision WHERE account_id=? AND active=1` (a DB read that fires only on
+failure, never on the hot path), so a category whose task lapsed mid-session is still latched. Test: forged 401 on
+a two-category account → both `arm:...` rows go `latched=True, manual_exit_required=True`.
 
 ---
 
-## 6. THE PLUS RE-CHECK — every account-scoped safety, classified (never a sweep)
+## 6. M3 — WHOLE-ACCOUNT BOOT-RECONCILE LATCH (latch all categories; both failure directions reasoned)
 
-| Item | Scope in code | Two-categories-one-account verdict |
-|---|---|---|
-| `daily_usd` / gate 5 | `(account_id, category)` | **VERIFIED per-category.** Account aggregate = N×$150/day — by design; RULE it (§9). |
-| `orders_today` / gate 8 | `(account_id, category)` | **VERIFIED per-category.** Account aggregate = N×50/day — by design; RULE it. |
-| `latch_count_ceiling` | per-category (gate 8) | **VERIFIED per-category-correct.** mlb ceiling latches only mlb. |
-| `latch_consecutive_errors` | per-task `consec_err` | **SAFE two-task; NOT-SAFE under Option C** unless kept per-category (§1). |
-| opposed-side guard | `(account_id, category)` (`execution.py:687,714`) | **VERIFIED SAFE.** Cross-category opposition is semantically impossible (mlb/ufc never share `condition_id`). |
-| gate-4 COID | `division=account:category` | **VERIFIED SAFE** (category-distinct coids). |
-| settlement scanner | `(account_id, category)`, matched by ticker (`settlement.py:142,160`) | **VERIFIED per-category-correct.** Under Option C, loop categories. |
-| shard-snapshot writer | per-account, full breakdown (`shard_snapshot_task.py`) | **VERIFIED SAFE** (category-agnostic; unaffected by category count). |
-| Option-D `prior_snapshots` | per-task, keyed by wallet | **SAFE two-task; NOT-SAFE under Option C** unless keyed `(category,wallet)` (§1). |
-| `consec_underfunded` alarm | per-task local | **SAFE two-task; NOT-SAFE under Option C** unless per-category (§1). |
-| per-market cap | absent (backlog) | **PRE-EXISTING, unchanged.** N whales × N contracts stack within ONE market; two categories don't newly interact (different markets). Not a new gap; still filed. |
-| N1 `resolve_kalshi_keys` | fail-closed whitelist | **VERIFIED SAFE** (unmapped ref → skip, never jack's keys). |
+- **False-latch — impossible from cross-category presence.** The journal read is already account-wide, so a ufc
+  position present in both journal and book reconciles as MATCH. Widening the latch to all categories introduces no
+  false latch (a genuine mismatch puts the whole keypair's book in question).
+- **Missed-latch — the real gap.** `reconcile_account` latches only the one `(account,category)` it was called for
+  (`boot_reconcile.py:215,300-301`). Under two tasks each reconciles account-wide and latches its own category, so
+  both happen to latch — incidental and fragile. Under Option C (ONE account-wide reconcile) a single per-category
+  latch leaves the sibling free to arm against an unreconciled book → a genuine miss.
+- **R-c unchanged:** KALSHI_ONLY = whole-account requires PM-exclusivity; two PM categories keep the account
+  PM-exclusive as a whole — same precondition as today, not a new one.
 
----
-
-## 7. ESTABLISH-FIRST RESULTS (read-only)
-
-1. **Broker concurrency-safe for two simultaneous POSTs?** Our wrapper is stateless per request; the answer reduces
-   to pykalshi's signed transport, **not vendored → NOT PROVABLE from code**. Option C makes it moot (no concurrent
-   same-account POST). If Option B is ever chosen, this must be proven on box-scratch (two forced-concurrent POSTs
-   against a stub) before trusting it.
-2. **M1 race window:** ≈ one poll interval wide, recurring; magnitude ≤ `2·cap − venue_base` (~$300 vs $150); bites
-   at high position count + simultaneous bursts (MLB slate + UFC card) — see §2.
-3. **Shard-0 balance / what a shard-0 category finds:** jack ≈ all on shard 3, shard 0 ≈ $0.01 (SW9); a ufc copy
-   would skip:shard_underfunded until you fund shard 0. Fresh read staged (§5).
-4. **What UFC offers on Kalshi (shapes the matcher, config, caps):**
-   - **KXUFCFIGHT** — moneyline; ONE binary market per fighter, two per bout; event ticker
-     `KXUFCFIGHT-{YYMONDD}{FTR1}{FTR2}`, per-fighter `...-{FTR}`. **Clean 1:1** with Polymarket's winner market.
-   - **KXUFCDISTANCE** — "go the distance"; binary per bout, **no strike/line**. **Clean 1:1** with Polymarket
-     `-go-the-distance`.
-   - **KXUFCMOV** (method of victory) — Kalshi one multi-outcome market vs Polymarket per-method binaries →
-     **possible but complex**, not MVP.
-   - Round O/U (Polymarket `-totals-Npt5`) is **Polymarket-only**; round-of-victory (KXUFCVICROUND) is
-     **Kalshi-only**. Neither is copyable.
-   - **So UFC's copyable shape = 2 binary types {moneyline, distance}, distance carrying NO line** — NOT MLB's
-     3-type {moneyline, total, spread}. Cadence ~3–4 events/mo, ~12 bouts/event, bursty on fight-night (Sat);
-     Polymarket carries full props only for featured bouts, prelims are winner-only.
-5. **Candidate UFC whales (farm is already UFC-aware):** `"ufc"` is in `CATEGORY_ALLOWLIST` (`search.py:61`),
-   category mapping exists (`category.py`), and **5 UFC whales are already PINNED** in `pm_watchlist`:
-   **Kh4mz4t, STC14, 000why000, 4751346, kutsumiakia** (FARM_RERANK_2026-08-23). "Which whales trade UFC" is a live
-   query: `SELECT wallet FROM pm_category_stats WHERE category='ufc' ORDER BY roi DESC`. The **matcher is
-   greenfield** — `execution.py:49` hardwires `mlb_poly_kalshi_match`; `evaluate` calls `M.parse_poly_mlb_bet`
-   (`execution.py:383`), and `live_driver.SERIES` (`:60`) + `fetch_market_context` are MLB-only.
+**Fix:** run the (already account-wide) comparison once per account; on mismatch or read failure latch ALL active
+categories (loop them like `latch_auth_failure`; add `latch_boot_reconcile_mismatch_account(account_id, categories)`
+or loop the existing latch). Under Option C run each category's boot settlement-scan first, then the single
+account-wide reconcile. Test: a co-category Kalshi position absent from the journal → all active categories latch;
+a clean two-category account → NO latch; jack's other account unaffected.
 
 ---
 
-## 8. THE PLAN — workstreams, rungs, and what is provable before each deploy
+## 7. M5 — SHARD FUNDING: CLOSED
 
-Two workstreams converge at M4. **A** is the capability (a UFC matcher); **B** is the guard's protection (M1–M3).
-The guard cannot open until BOTH the safety fixes land AND a matcher exists — a relaxed guard with no ufc matcher
-would spawn a ufc task that skips every signal (`skip:non_ufc`), harmless but pointless.
-
-### Workstream A — the UFC matcher (prerequisite capability; category-specific)
-- **A1.** `trading_corp/data/ufc_poly_kalshi_match.py`, mirroring the mlb matcher's public surface: parse a
-  Polymarket ufc bet (slug+outcome → fighter, market_type ∈ {moneyline, distance}); parse `KXUFCFIGHT` /
-  `KXUFCDISTANCE` tickers; **fighter-name canonicalization** (new — there is no `UFC_FIGHTERS` map, cf.
-  `MLB_TEAMS`); `build_*_index`; `match_bet(..., allowed_market_types)`; `liquidity_ok`. Join key = (fight date ET,
-  normalized fighter-pair set) — the analog of the MLB canonical team-set join. Moneyline has a leg; distance is a
-  single binary with no line.
-- **A2.** Make the chokepoint **category-dispatched**: `evaluate` selects the matcher by `sub.category` (a small
-  registry `{"mlb": mlb_match, "ufc": ufc_match}`, or inject the matcher into `SubConfig`/the cycle). Parameterize
-  `live_driver.SERIES` + `fetch_market_context` by category (MLB series vs `KX UFC*` series).
-- **Provable:** unit tests on real recorded UFC fixtures (a KXUFCFIGHT pair + a KXUFCDISTANCE, a Polymarket ufc
-  winner + go-the-distance); box-scratch DISARMED (dry-run) against live UFC market data — assert would-place bodies
-  match real tickers, `skip:no_quote` on unmatched. **INERT (no guard change, no arm).**
-- **NOTE:** this is a substantial build, comparable to the original MLB matcher, and could be its own plan. Method-
-  of-victory is explicitly OUT of the MVP (Kalshi multi-outcome vs Poly per-method binaries).
-
-### Workstream B — the safety fixes (guard preconditions), in order
-- **B1 (M2):** latch all active categories on auth failure (§3). Unit + box-scratch forged-401.
-- **B2 (M3):** account-wide boot-reconcile latch (§4). Unit + box-scratch co-category venue position.
-- **B3 (M1, Option C):** restructure `scheduled_pm_live_loop` to ONE task per account iterating its categories,
-  sharing ONE per-cycle Journal + ONE venue read + ONE shard read; re-scope `consec_underfunded`, `consec_err`,
-  `prior_snapshots` to per-category; loop settlement-scan/index per category (§2, §1). `main.py` roster groups the
-  spawn by account and passes the category list.
-  - **Provable (exactly the brief's tests):**
-    - *box-scratch with two same-account tasks + a FORCED-CONCURRENT placement* — run the **current two-task model**
-      to EMPIRICALLY DEMONSTRATE the race (both size against the same base, account exceeds cap). This justifies
-      that M1 is real and that C (not "unlikely in practice") is the fix.
-    - Then prove **Option C eliminates it**: one task, mlb consumes most of the shared cap, ufc's gate 6 then
-      REJECTS at the shared account cap; assert the account never exceeds `max_open_usd`.
-    - Assert no cross-category corruption: a wallet pinned in both categories keeps separate exit snapshots; a
-      starved ufc shard raises its sustained alarm even while mlb places; a ufc error streak isn't reset by mlb.
-
-### M4 — the guard, LAST, behind a fail-closed per-account opt-in OFF by default
-- Relax `plan_driver_tasks` to GROUP a 2nd category onto an account's task **only when that account is explicitly
-  opted in** (a `pm_account.multi_category_ok` column or a config allowlist, default OFF). Default behaviour is
-  **unchanged** (refuse the 2nd sub-division, log ERROR). The opt-in flips one named account at a time.
-- **Provable:** unit tests — opt-in OFF → still refuses (byte-identical to today); opt-in ON for jack → jack's two
-  categories group into one task; opt-in ON for jack does NOT affect karen.
-- **★ THE BOARD'S STANDING RULING, honoured:** the opt-in ships **only after M1+M2+M3 (+ the §1 re-scoping) are all
-  closed and proven.** If ANY of them cannot be closed, **the guard stays** — two-of-three is not a reason to open
-  it, and "the remaining race is unlikely" is not an argument. If we reach that state I report it and stop.
-
-### Enablement rung (all HALT-for-board; DB writes / restart / arm)
-1. **Fund shard 0** (operator; your ruling) so ufc copies don't skip from cycle 1.
-2. **Set jack's opt-in** + create/confirm `(kalshi_jack, ufc)` with the board's ufc caps; attach the chosen ufc
-   whales (active=1). LIVE PM-DB write, backup + resolved-verify, HALT.
-3. **Restart** (canonical `restart_tc.ps1`) → the jack account task now iterates {mlb, ufc}. Post-check: roster log
-   shows one task per account with both categories; **boot-reconcile clean for the whole account**; ufc DISARMED
-   (no arm row). HALT.
-4. **Arm jack/ufc.** First ufc order fires at full configured size; verify the fill landed on jack's book and that
-   gate 6 now reflects the shared account cap across both categories. HALT.
-- Graft rules unchanged: `app.py`/`main.py` GRAFT never wholesale (box app.py is M4-era + HEAD carries undeployed
-  M5; box main.py carries the per-account roster). This work touches ZERO pm_web files.
+gate-6b is per-market-shard, handles shard 0 correctly, the skip is visible (`live_driver.py:377-380`) and alarmed
+(`:666-672`), and nothing assumes a single funded shard (the read returns the whole per-shard breakdown). UFC → MMA
+→ **shard 0 (Default)**; the board-approved read confirms jack shard 0 = **$0.0081** today, so ufc copies correctly
+skip (no misroute to funded shard 3) until funded. **Funding shard 0 is the operator's job, done when ufc is
+otherwise ready.** ⚠ The only carry-over is #14 (§4): the sustained-underfunding ALARM must be re-scoped per-category
+under Option C or a starved ufc shard is masked. M5's GATE is closed; #14 keeps its ALARM honest.
 
 ---
 
-## 9. WHAT THE BOARD MUST RULE (options + my recommendation; I did not auto-resolve)
+## 8. WORKSTREAM A — the UFC matcher + category dispatch (its own rungs and proofs)
 
-1. **UFC caps & sizing — discovery has landed, so this is now rulable.** UFC copyable types = **moneyline + go-the-
-   distance (2 binary types; distance has NO line)**, ~12 bouts/event, bursty on fight-night.
-   - *Recommendation (a conservative starting point, mirroring MLB Ruling-2):* `sizing_mode='contracts'`,
-     contracts=5, per_order=$5.50, **market_types=('moneyline','distance')**, slippage 2c, liquidity 0.75.
-     For daily/open, note the account aggregate (§1): either accept jack's account at $300/day-$300-open across the
-     two categories, **or** set ufc lower (e.g. daily/open $75 each) so the account aggregate stays near $150. My
-     lean: **start ufc at daily=$75 / open=$75 / 25 orders** given a single fight-night can burst ~12 bouts, then
-     raise after observation. **This is the board's number.**
-2. **Which UFC whales to attach** to `(kalshi_jack, ufc)`. Five are pinned (Kh4mz4t, STC14, 000why000, 4751346,
-   kutsumiakia). *Recommendation:* re-rank them by cost-ROI first (`pm_category_stats` / the farm re-rank), then
-   attach the top 2–3, mirroring the MLB whale count. **Board picks the set.**
-3. **M1 latency-vs-safety** — only if you reject Option C: accept category-serialization within a cycle
-   (Option C, my recommendation, no hot-path change) **vs** a per-account hot-path lock for concurrent categories
-   (Option B, an addition to the order path = your ruling). If neither, the guard stays.
-4. **Account-aggregate cap acknowledgement** (§1): confirm you accept that per-category caps make jack's aggregate
-   daily spend / order count scale with the category count, or set ufc's caps lower per (1).
+**UFC's shape (established, §11): two clean binary types — moneyline `KXUFCFIGHT` and go-the-distance
+`KXUFCDISTANCE` (no line).** Method-of-victory (`KXUFCMOV`) is possible-but-complex (Kalshi multi-outcome vs
+Polymarket per-method binaries) → explicitly OUT of MVP. Round-O/U is Polymarket-only; round-of-victory is
+Kalshi-only — neither copyable.
+
+**A1 — `trading_corp/data/ufc_poly_kalshi_match.py`**, mirroring the MLB matcher's public surface: parse a
+Polymarket ufc bet (slug+outcome → fighter + market_type ∈ {moneyline, distance}); parse `KXUFCFIGHT`/
+`KXUFCDISTANCE` tickers; a fighter-name canonicalizer; `build_*_index`; `match_bet(..., allowed_market_types)`;
+`liquidity_ok`. Join key = (fight date ET, normalized fighter-pair SET).
+
+**A2 — category dispatch** in the chokepoint (`evaluate` selects the matcher by `sub.category` via a small registry
+`{"mlb":…, "ufc":…}`, or the matcher is injected on `SubConfig`) and in the driver (`SERIES` + `fetch_market_context`
+parameterized per category — MLB series vs `KXUFC*`). Note this interacts with #4's per-category `ctx` cache.
+
+**★ THE MLB MATCHER'S HARD-WON LESSONS THAT TRANSFER (name them before building):**
+1. **Exact-strike-ONLY, never round to a neighbour** (`match_bet` never snaps to an adjacent line; R-a's "one
+   contract is a whole position"). UFC moneyline/distance have no numeric line, so there is nothing to round — but
+   the SAME discipline applies to the fighter/date/market-type identity: an approximate name/date match must be a
+   MISS (`skip:no_kalshi_contract`), never a nearest-neighbour guess.
+2. **Carry the Kalshi leg + market_type ON the MatchResult so the executor never re-derives them**
+   (`execution.py:389` reads `match.kalshi_ticker, match.leg`; the leg is decided once, in the matcher). The UFC
+   matcher must likewise return the exact `(ticker, leg)` — for KXUFCFIGHT the leg is "which fighter's YES", for
+   KXUFCDISTANCE it is yes/no on "goes the distance". Re-deriving downstream is the NO-leg-lens home.
+3. **Doubleheader ambiguity → UFC's version is the FIGHTER-NAME/ABBREVIATION problem.** MLB's `G1/G2` doubleheader
+   forced an explicit `doubleheader_ambiguous` MISS rather than a wrong pick. UFC has no same-card rematch, so
+   (date, fighter-pair) is unique per bout — BUT the identity itself is fragile: Kalshi encodes fighters as 3-char
+   ticker abbreviations (`KXUFCFIGHT-26SEP05HOOPAR` = HOOker/PARnasse) that can COLLIDE across two fighters on one
+   card sharing the same first three letters, and Polymarket uses per-event short labels (`ufc-max1-con-…`) with no
+   fixed scheme. So the canonicalizer needs a fighter-name map (there is NO `UFC_FIGHTERS`, cf. `MLB_TEAMS`) and an
+   ambiguity MISS when two candidate bouts on one date could match the same abbreviation — the doubleheader lesson,
+   re-expressed for names. **Name this before building; it is where the matcher will actually break.**
+
+**Proofs (INERT — no guard change, no arm):** unit tests on recorded UFC fixtures (a KXUFCFIGHT pair + a
+KXUFCDISTANCE; a Polymarket winner + go-the-distance; an abbreviation collision → MISS); then a **DISARMED live
+box-scratch dry-run** against real UFC market data — assert would-place bodies carry real tickers with the correct
+leg, and unmatched signals → `skip:no_quote`/`skip:no_kalshi_contract` (never a wrong pick). A live disarmed probe
+first pins the exact `KXUFCFIGHT`/`KXUFCDISTANCE` ticker sub-format (marked UNMEASURED).
 
 ---
 
-## 10. STOP CONDITION (every plan this week has had one)
+## 9. CAPS — STRUCTURE RULED: the account aggregate STAYS $150/day and 50 orders/day
 
-- **M1 can be made safe WITHOUT a hot-path mechanism (Option C), so I am NOT stopping.** If, and only if, the board
-  requires concurrent per-category execution, closing M1 needs a hot-path lock — that is the board's ruling; if the
-  board rejects both serialization and a lock, **the guard stays and this capability is not built.**
-- **Hard stop inside the build:** if box-scratch shows Option C does not actually enforce the account open-cap
-  across two categories on one shared journal, STOP and do not relax the guard.
-- **The M4 ruling stands:** if ANY of M1 / M2 / M3 (or the §1 re-scoping they entail) cannot be closed and proven,
-  the guard stays. "Do not build this yet" remains a legitimate, valuable output.
+The board's ruling: adding a category must NOT silently double the account's exposure. Per-category caps as-built
+would give jack **2×$150 = $300/day, 2×50 = 100 orders** — not what $150 meant. gate 5 (daily) and gate 8 (count)
+are `(account,category)`-keyed today; the open-cap (gate 6) is the only account-wide one. Two ways to hold the
+aggregate:
+
+- **(i) DIVIDE the per-category numbers so they sum to the aggregate** (e.g. 75/75 daily, 25/25 orders). **Holds the
+  ceiling by construction** (the sum can never exceed $150/50) with **ZERO new mechanism** — it reuses the existing
+  per-category gates. **Cost:** it MERELY APPROXIMATES the intent — it caps the SUM correctly but MIS-ALLOCATES: a
+  quiet MLB night wastes its $75 while a busy UFC card is throttled at $75 even though the account could safely
+  spend the full $150. And the split is a guess that needs re-tuning as the category mix shifts. **So $75/$75 holds
+  the ceiling but does NOT let the account use its full $150 when one category is quiet.**
+- **(ii) ADD an ACCOUNT-LEVEL daily+count cap ABOVE the per-category ones** (a gate-5b/8b that gates on a per-ACCOUNT
+  `daily_usd`/`orders_today` aggregate). **Holds the ceiling exactly AND lets headroom flow to whichever category is
+  active.** **Cost:** it is a NEW account-scoped shared counter — which is the SAME within-cycle-race shape as gate 6
+  (M1). **But under Option C that race does not exist:** one task, sequential categories, one shared Journal that is
+  already account-keyed for `open_usd` — extend the identical pattern to a per-account `daily_usd`/`orders_today`
+  aggregate and the account daily/count caps are race-free for free.
+
+**RECOMMENDATION: (ii), the account-level cap, gated on Option C.** It enforces exactly $150/50 aggregate, does not
+waste headroom, and rides M1's own race-free mechanism. (i) is the fallback if the board wants zero new cap code —
+accept the wasted headroom and set the split by expected volume, not 50/50. **Either way the per-category numbers
+themselves are deferred until the matcher proves out (§13).**
 
 ---
 
-## 11. HOW I WORKED / provenance
-Read-only throughout. Verified branch tips CR-stripped. Read execution.py, live_driver.py, boot_reconcile.py,
-arm.py, driver_roster.py, shard_balance.py, shard_snapshot(_task).py, settlement.py, and the main.py wiring myself.
-UFC market-structure + farm-whale location established by two Sonnet sub-agents (external web + local repo read; no
-box, no creds). One read-only box runner staged (`pm_shards_ro.ps1`, §5), not run. No branch created, nothing built.
+## 10. THE GO-LIVE PROOF — named, and it splits in two
+
+Karen's go-live proof was the **credential path** (her keypair resolved and read her own book), which let her skip
+place-one-and-inspect. jack/ufc is different: the keypair is jack's, **already proven** — so the credential path is
+NOT the new risk. The new risks are the shared-account safeties and a new market family. They prove differently:
+
+- **The shared-account SAFETIES (M1 cap enforcement, M2/M3 latch scope, #14/#15/#16 isolation) are FULLY provable
+  OFFLINE, before ufc places anything.** Under Option C they are deterministic and single-task: box-scratch with
+  two same-account categories exercises every one of them without a live fill (§12 proofs). This is the equivalent
+  of Karen's pre-arm proof — and it is stronger, because it is offline and repeatable rather than a live
+  observation. **No live fill is needed to trust the shared safeties.**
+- **The UFC VENUE-WRITE has NO offline proof.** `build_v2_event_order` is generic but has only ever POSTed KXMLB
+  tickers; KXUFCFIGHT/KXUFCDISTANCE are a new market family with their own leg/side/price semantics (esp. the
+  two-markets-per-bout moneyline and the no-line distance binary). Whether a ufc order lands on jack's book with the
+  correct leg and sign cannot be shown short of a real fill. **So — stated plainly as the recommendation, not
+  discovered later — jack/ufc's FIRST ufc order gets place-one-and-inspect** (the treatment Karen skipped): arm,
+  let ONE ufc order place, verify at the venue it landed on jack's book with the correct ticker/leg/sign/count,
+  THEN let it run at full size. A disarmed live-market dry-run (§8) de-risks the matcher first, but the venue write
+  itself is the one thing that needs a live fill.
+
+---
+
+## 11. UFC CAPS & WHALES — deferred, framed properly
+
+**Bet types (established, external research):** moneyline `KXUFCFIGHT` (binary per fighter, two per bout, clean 1:1
+with the Polymarket winner) + go-the-distance `KXUFCDISTANCE` (binary, no line, clean 1:1 with Polymarket
+`-go-the-distance`). ~3–4 events/month, ~12 bouts/event, bursty on fight-night Saturdays; Polymarket carries full
+props only on featured bouts, prelims winner-only.
+
+**The five pinned UFC whales, re-ranked on cost-ROI (from `FARM_RERANK_2026-08-23.md`, grounded/net-verified) —
+NOT on win%:**
+
+| Whale | n | cost-ROI | net | avgWinPx | two-sided (ufc) | single-fight copyable | verdict |
+|---|---|---|---|---|---|---|---|
+| **STC14** | 85 | **+38.7%** | +$11.8k | 0.67 | **6%** | ~100% | **best clean UFC — contested edge, directional** |
+| **Kh4mz4t** | 270 | +26.3% | +$35.7k | 0.64 | **38%** | 96% | real edge but heavily two-sided (hedger) |
+| **kutsumiakia** | 123 | +15.3% | +$24.7k | **0.85** | 0% | ~100% | **CHALK — high win% is favourites, ~0 real edge** |
+| **000why000** | 117 | +13.9% | +$25.9k | 0.75 | 29% | ~100% | mid, directional-ish, 29% two-sided |
+| **4751346** | 1264 | +8.5% | +$192k | 0.77 | **41%** | **only 44%** | **downgraded — half not single-fight-copyable, 41% two-sided** |
+
+**Which I would attach (recommendation, subject to the loss-omission gate below):** **STC14** (clean, directional,
+top cost-ROI) as the anchor, plus **at most one** of {**000why000** (directional-ish) / **Kh4mz4t** (bigger edge but
+38% two-sided → a directional copy reproduces less of it)}. **Avoid kutsumiakia** (chalk, ~0 edge — its win% is a
+favourites artifact) and **4751346** (only 44% of its record is single-fight copyable). Mirror the MLB whale count
+(2–3), start with STC14 + one, widen after live observation.
+
+**★ THE LOSS-OMISSION GATE (the board's hard rule — no attach without the number).** FARM_RERANK's `win%` column is
+the UN-GROUNDED `/closed-positions` number — the SAME class the loss-omission finding later exposed (SDTrading
+screens 94% win but drops ~94% of its losses; truly ~50%). cost-ROI/net there ARE grounded, which is why the
+re-rank above is trustworthy and the win% is not. **The loss-omission % + coverage for each candidate is available
+on the shipped Prospects/Analyze UI** (deployed 2026-09-02 for exactly this — the pinned ufc whales are prospects;
+click [Analyze] on any un-analyzed one). It is NOT in any local artifact (it postdates FARM_RERANK). **Recommendation:
+read STC14's (and the second pick's) loss-omission % off the Prospects page BEFORE attaching; if a candidate's
+losses vanish the way SDTrading's do, drop it.** This is a UI read the board does, not a new box runner.
+
+---
+
+## 12. THE PLAN — rungs in order, with the proof before each deploy
+
+**Two workstreams converge at M4. The guard opens only after BOTH land and are proven.**
+
+**Workstream A (capability), INERT — no arm, no guard change:**
+- **A0 — disarmed live probe** pins the exact `KXUFCFIGHT`/`KXUFCDISTANCE` ticker sub-format + fighter-abbreviation
+  scheme (read-only).
+- **A1 — build `ufc_poly_kalshi_match.py`** (§8) + fighter-name canonicalizer. Proof: unit tests incl. the
+  abbreviation-collision MISS and the carry-the-leg contract.
+- **A2 — category dispatch** in `evaluate` + `live_driver` (per-category matcher, SERIES, ctx). Proof: MLB tests
+  unchanged (non-regression) + a UFC dispatch test. Proof: DISARMED box-scratch dry-run against live UFC data.
+
+**Workstream B (safety restructure), each with its own box-scratch proof:**
+- **B1 (M2, §5):** latch all account categories on auth failure. Proof: forged-401 box-scratch → both latch.
+- **B2 (M3, §6):** account-wide boot-reconcile latch. Proof: co-category venue position → all categories latch; a
+  clean two-category account → no false latch.
+- **B3 (M1 = Option C, §3):** one task per account iterating categories, shared per-cycle Journal + venue read.
+  Proof: **(a)** run the CURRENT two-task model with a FORCED-CONCURRENT placement to EMPIRICALLY DEMONSTRATE the
+  race (account exceeds cap) — the justification that M1 is real; **(b)** prove Option C eliminates it (mlb consumes
+  the shared cap, ufc then gate-6-REJECTS at the account cap; the account never exceeds `max_open_usd`).
+- **B4 (#14/#15/#16, §4):** re-scope the underfunding alarm, consec-error counter, and exit-snapshot map to
+  per-category. Proof: the three tests in §4.
+- **B5 (caps, §9):** the account-level daily/count aggregate cap (recommendation (ii)). Proof: two categories each
+  placing → the account daily/orders aggregate is capped at $150/50, headroom flows to the active category.
+- **B6 — the THIRD adversarial pass (§4):** "what other per-task state does the single-task loop share across
+  categories?" A required rung, not optional. Proof: a written enumeration + a test for anything it finds.
+
+**M4 — the guard, LAST:** relax `plan_driver_tasks` to GROUP a 2nd category onto an account's task ONLY when that
+account is explicitly opted in (a `pm_account.multi_category_ok` column / config allowlist, default OFF; default
+behaviour byte-identical to today). Proof: opt-in OFF → still refuses; ON for jack → groups jack's categories; ON
+for jack does not affect karen. **★ The board's standing ruling: the opt-in ships ONLY after B1–B6 + A all land and
+prove. If ANY of M1/M2/M3 (or the §4 re-scopings) cannot close, the GUARD STAYS — two-of-three is not a reason, and
+"the remaining race is unlikely" is not an argument. Report and stop instead.**
+
+**Enablement (all HALT-for-board; DB writes / restart / arm):** fund shard 0 (operator) → set jack's opt-in + create
+`(kalshi_jack, ufc)` with the board's ufc caps + attach the chosen whales (LIVE DB write, backup + resolved-verify)
+→ restart (canonical `restart_tc.ps1`; post-check: one account task iterating {mlb,ufc}, whole-account
+boot-reconcile clean, ufc DISARMED) → **arm ufc with place-one-and-inspect on the first ufc order (§10)**. Graft
+rules unchanged (`app.py`/`main.py` GRAFT never wholesale); this work touches ZERO pm_web files.
+
+---
+
+## 13. WHAT THE BOARD MUST RULE (open items only — M1 and Option B are settled, removed)
+
+1. **Caps ENFORCEMENT mechanism (structure ruled; pick the mechanism):** (ii) account-level aggregate cap
+   [recommended, race-free under C, holds $150/50 exactly + uses headroom] vs (i) divide per-category to sum
+   [zero new code, wastes headroom]. §9.
+2. **UFC per-category NUMBERS** — deferred until the matcher proves out (A2). Then set them under the chosen (1).
+3. **Which UFC whales** — recommendation: **STC14 + one of {000why000, Kh4mz4t}**, gated on reading their
+   loss-omission % off the shipped Prospects UI first (§11). Board confirms the set after that read.
+
+(M5 is CLOSED. Option C is SETTLED. Option B / hot-path lock is OFF THE TABLE.)
+
+---
+
+## 14. STOP CONDITION
+
+- **M1 is closable WITHOUT a hot-path mechanism (Option C, ruled), so the plan does not stop on M1.**
+- **Hard stop inside the build:** if box-scratch shows Option C does not enforce the account cap across two
+  categories on one shared journal, STOP — do not relax the guard.
+- **The M4 ruling stands:** if ANY of M1 / M2 / M3 / the §4 re-scopings cannot be closed and proven, the guard
+  stays. "Do not build this yet" remains a legitimate, valuable output.
+- **The go-live venue write is not fully provable offline (§10): jack/ufc's first order is place-one-and-inspect.**
+
+---
+
+## 15. PROVENANCE
+Read-only throughout. Branch verified CR-stripped. Read execution/live_driver/boot_reconcile/arm/driver_roster/
+shard_balance/shard_snapshot(_task)/settlement + the main.py wiring myself. UFC market structure + farm-whale
+location established by two Sonnet sub-agents (external web + local repo; no box, no creds). Board-approved
+`pm_shards_ro.ps1` run once (read-only, folded into §7). No branch created, nothing built.
