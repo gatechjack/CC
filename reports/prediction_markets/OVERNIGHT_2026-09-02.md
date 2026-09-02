@@ -135,6 +135,20 @@ DOCUMENTED for his self-service, not driven by me:**
   entries skip:exposure_unknown (fail-closed, existing positions + exits unaffected). Run the post-check's R7 field
   assertion once a position exists; a `skip:exposure_unknown` storm means fix venue_exposure (roll back R7 files from
   the `.bak`, no restart needed to revert the disk, but a restart to reload).
+- **★★★ RUNG 2+R7 DEPLOYED LIVE + VERIFIED (Jack board-authorized `restart_tc.ps1`, restart 12:41:51Z; I ran the
+  read-only post-check + persisted-arm re-read).** Engine PID **144229 → 163519** (NRestarts=0, clean). All 6 files
+  landed (5 sha==HEAD; main.py grafted `9e8da82`). **★ N2 LIVE: roster log = `2 task(s): spawned=[('kalshi_jack',
+  'mlb'),('kalshi_karen','mlb')] brokers=['kalshi_jack','kalshi_karen']`** (Karen's task bound HER keypair). **★ jack
+  UNCHANGED — persisted arm rows ts-identical across the restart; armed + trading (orders 82→83); the two post-restart
+  `armed=False scope=global` reads were the transient fail-safe again.** **★ N3 PROVEN: `arm:kalshi_karen:mlb` still
+  ABSENT post-restart → Karen boot-reconciled CLEAN, sits DISARMED.** 0 `skip:exposure_unknown`.
+- **★ ONLY REMAINING STEP = RUNG 6 (arm Karen) — JACK'S BOARD DECISION.** Karen is ready (subdivision + Ruling-2 caps
+  + 3 active attachments + own broker + disarmed clean task). Arm via `pm_cli arm kalshi_karen mlb` (global already on).
+  Her first order fires at FULL size (Ruling 2); watch that fill lands on KAREN's account + the R7 field gets its
+  first live observation once a position is held.
+- **★ post-check [7] BUG (minor): the venue read printed "no keys"** — `pm_r2_postcheck_ro.sh` lacks the service-env
+  (`/proc/$ENG/environ`) harvest Rung 0 used, so `load_secrets()` had no KEY_VAULT_URI. Inconclusive anyway (both flat).
+  Add the env harvest before re-running it to observe the R7 field on a held position.
 - **★ R7 FIELD STILL UNOBSERVED — the 4th field-name surprise in this build** (after exchange_index dropped by the
   SDK, liquidity_dollars a deprecated stub, yes_bid dropped by our own dict). Both accounts are flat, so no one has
   seen `market_exposure_dollars` on a real position. The code reads either field (safe by construction) but that is
