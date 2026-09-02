@@ -684,3 +684,99 @@ reverts DEPLOY 2).
 - Runners in `cc/`: `pm_deploy2_checks`, `pm_deploy2_apply` (+ `gen_deploy2.py`), `pm_deploy2_restart_az.ps1`
   (az/root -- the ssh `pm_deploy2_restart.*` variant failed-safe on the sudo-TTY limit), `pm_deploy2_verify`,
   `pm_deploy2_evidence`, `pm_deploy2_rollback.sh`.
+
+---
+
+# CARD POLISH -- 2026-09-03 (build + test ONLY; NOTHING deployed, NOTHING restarted)
+
+Board follow-up on Jack's live view (deployed code `cafb132`). Five card-level fixes (items 1-4 from the brief +
+item 5 from Jack's live feedback). Built + tested on branch `pm-ui-rewrite-2026-09-02`, committed **`431ec76`**.
+**No deploy, no restart -- the engine (trading-corp PID 163519, ARMED) was not touched. All box access this pass
+was READ-ONLY** (fetched the live page + served CSS to diagnose item 1; headless-rendered PNGs locally).
+**No app.py or main.py change** -- `git diff cafb132 HEAD` over app.py/main.py is empty, so the M4/M5 graft rule
+does NOT apply to this pass.
+
+## Item 1 -- ACTIVE/COMPLETE toggle: ROOT CAUSE = stale static-asset cache (not a CSS/markup/specificity bug)
+I fetched the live page and served CSS from the box (read-only) and rendered the deployed CSS headless. Findings:
+- The served `/static/pm_desk.css` **contains** the `.toggle .tgl` rules (CR-stripped sha16 `2681180c` = the
+  DEPLOY 2 target); the live page **has** `class="tgl"` on both anchors; the `<link>` order is `pm.css` then
+  `pm_desk.css` (desk wins ties); and `.toggle .tgl` (specificity 0,2,0) outranks `.desk a` (0,1,1) and pm.css's
+  `a{...}` (0,0,1). So markup, class, rule, and specificity are all correct on the server.
+- **Rendering the deployed CSS headless produces the exact prototype**: a bordered segmented control, ACTIVE
+  filled, COMPLETE dimmed, a divider between, padding, ~16px before the caveat (`renders/before_toggle.png`).
+- Therefore the run-together blue text on Jack's screen is **not** a server bug -- it is the browser applying an
+  OLD cached `pm_desk.css` (the file was updated in DEPLOY 2 but the static server sends no cache-busting, so a
+  browser that cached the pre-DEPLOY-2 copy -- which had no `.toggle .tgl` -- never re-fetched, and the anchors
+  fell back to the plain `a`: no padding, blue). None of the three candidate causes (specificity / missing class
+  / never shipped) applies.
+
+**Fix (pm_web-only, no app.py):** version the shell's three static assets with their own content sha8 --
+`pm.css?v=204d9051`, `pm_desk.css?v=1b3b8ccc`, `htmx.min.js?v=491955cd` -- so a changed file gets a new URL and
+is always re-fetched. `test_asset_cache_bust_hashes_match_files` recomputes each file's CR-stripped sha8 and
+asserts the shell's baked `?v=` matches, so any future CSS/JS change that forgets to bump the hash fails CI rather
+than shipping a stale asset. The toggle CSS itself was already correct and is unchanged.
+(Evidence: `renders/before_toggle.png`, `renders/after_toggle.png` -- identical proper segmented control.)
+
+## Item 2 -- game-state full card border
+Three GAME states get a full card border (`renders/after_active_1600.png`, `..._1280.png`):
+- LIVE (in_progress, incl. inning breaks) -> `border-color:var(--live)` (blue).
+- NOT STARTED (preview/scheduled) -> `border-color:var(--line2)` (subtle). Postponed / suspended / delayed reuse
+  this border AND keep their amber chips.
+- COMPLETE (final) -> `border-color:var(--off)` (grey).
+- Feed-unavailable -> NO state border (amber treatment kept).
+The base `.g` border is `1px solid transparent` so no card shifts by state. The **MIXED green top accent
+(position state) coexists with the border (game state)** -- verified on SEA@BOS (`1 SETTLED · 1 LIVE`): grey
+COMPLETE border + green top accent, both visible, not fighting. The legend gains `card border: live game / not
+started / complete`. Existing palette only. (Test: `test_card_state_border_classes` -- st-live/st-pre(preview &
+postponed)/st-complete, feed-unavailable none.)
+
+## Item 3 -- count pips clear at an inning break
+When StatsAPI `inningState` is Middle or End, `feed_mlb` (both the StatsAPI and ESPN parsers) now emits no
+balls/strikes/outs and empty bases -- the count resets between half-innings. The inning label is kept and
+MIDDLE -> **`MID`** (short, consistent with TOP/BOT). Rendered: `MID 4` with all pips hollow and no base runners
+(`renders/after_ATH.png`; before it showed `MIDDLE 4` with the last PA's lit pips). Tests:
+`test_feed_parse_inning_break_clears_count` (parser: Middle/End -> half MID/END, count None, bases (), inning
+kept; Top keeps the count) and `test_template_inning_break_renders_empty_pips_and_label` (no lit pips, no base
+`on`, `MID 4` shown).
+
+## Item 4 -- date/time chip shortened
+Weekday dropped: `_fmt_et_datetime` now returns `Sep 2 · 12:40 PM ET`. Right-aligned on its own line under the
+header so it never crowds the feed chip; verified fitting at 1280px (`renders/after_active_1280.png`). Datetime
+test updated (`Sep 2 · …`).
+
+## Item 5 -- diamond lines + scoreboard font readability (Jack's live feedback)
+Jack reported the diamond lines and scoreboard font were hard to see on the dark panel. Fixed:
+- Diamond outline `.sq` **2px** (was 1px) and **#45597a** (brighter than the old `--line2` #2b3a4e); the base
+  diamonds and home plate lifted to the same #45597a; the feed-dead dashed square lifted to #2f3d4f.
+- Scoreboard digits lifted a full step: leading row stays brightest (`--text`); leading per-inning digits
+  #c3ccd8, trailing team's abbr/runs #aeb9c7 and per-inning digits `--dim` (so the lead still reads at a glance);
+  unplayed cells #3a4a5f (recessed but no longer near-invisible).
+Jack confirmed on the re-render: "Much better." (`renders/after_PHI.png`, `renders/after_ATH.png`.)
+
+## Verification
+- Full `tests/prediction_markets/`: **19 failed = the SAME env-gap/schema baseline** (17× pykalshi, 1×
+  `test_schema_head_is_15` [schema 17], 1× `test_pm_web_imports_no_engine` [bare-subprocess import; passes on the
+  box]); the card-polish tests are green; **zero regressions**.
+- Regenerated + VIEWED the live render in every state at 1600px and 1280px: pre-game, in-progress with runners +
+  count, inning break with empty pips, final-unsettled, complete, mixed, postponed, feed-unavailable. The toggle
+  is a segmented control in the PNG.
+
+## Shippable file list (pm_web-only; NO app.py, NO main.py -> no graft)
+`git diff --name-only cafb132 HEAD` over `web/` = 5 files (HEAD CR-stripped sha16 -> deployed `cafb132` sha16):
+```
+467d528460421a31  (cafb132 7f05607bb887bb51)  web/feed_mlb.py                          [item 3; NEW to the shipped set]
+2c7c8875cd80e768  (cafb132 6d3b7b3300782d3e)  web/live_view.py                         [item 4]
+1b3b8ccc6dff50cc  (cafb132 2681180ca6a423b8)  web/static/pm_desk.css                   [items 2,4,5]
+90e7357b62e6d87c  (cafb132 769044d17363e73c)  web/templates/pm_live_subdivision.html   [item 2]
+d5a29a20d5407781  (cafb132 c3ddce77a5fb4f9c)  web/templates/pm_shell.html              [item 1; NEW to the shipped set]
+```
+`git diff cafb132 HEAD` over app.py/main.py is EMPTY -> app.py did NOT change, so the M4/M5 graft rule does NOT
+apply. Test-only (not shipped): `test_live_card_states_predeploy.py`. Note pm_desk.css's cache-bust `?v=1b3b8ccc`
+is the first 8 of its own sha16 `1b3b8ccc…` -- self-consistent.
+
+## Nothing was deployed or restarted
+Build + test only; all box access this pass was read-only (diagnosis fetch + local headless renders). The engine
+(trading-corp PID 163519, ARMED) was not touched; no pm_web restart; no schema/venv/systemd change. Committed on
+the branch at `431ec76`; prod-live/main-wip NOT advanced, branch NOT pushed (box-is-truth). Render PNGs in
+`cc/renders/` (before_*/after_* + per-card crops); render harness `cc/pm_render.py`, toggle diag
+`cc/pm_toggle_diag.sh` (read-only).
