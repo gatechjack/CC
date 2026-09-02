@@ -96,11 +96,12 @@ DOCUMENTED for his self-service, not driven by me:**
   not deploying — no collision. The box pm_web may move; that is the UI agent's, not drift in my surface.
 
 ## ★★ ARM CONFIRM + GRAFT RUNNER AUTHORED (2026-09-02, Jack's rulings) — all staged, none run by me
-- **★ ARM STATE CONFIRM (run FIRST, gates the deploy):** the 11:30Z recon `armed=False scope=global` is
-  indistinguishable from the transient `mode=ro` fail-safe via a status call. Runner `cc\pm_arm_persisted_ro.{sh,ps1}`
-  reads the PERSISTED `agent_state` rows + their `value_json.ts` (a REAL disarm stamps a NEW ts; the fail-safe leaves
-  the OLD one). **The Rung-2 post-check asserts arm UNCHANGED across the restart — we cannot assert that against an
-  unconfirmed value, so this runs before the graft.**
+- **★ ARM STATE CONFIRMED (Jack ran `pm_arm_persisted_ro.ps1`, 2026-09-02 12:28Z) — JACK IS STILL ARMED; the 11:30Z
+  read was the TRANSIENT fail-safe.** Persisted rows (unchanged ts = no real disarm): `arm:global` armed=True ts
+  **`2026-08-31T02:35:38`** (by=r8_arm), `arm:kalshi_jack:mlb` armed=True ts **`2026-08-31T21:49:39`**,
+  `arm:kalshi_karen:mlb` **NO ROW** (disarmed by fail-safe absence — the deploy's safety). Another instance of the
+  false-alarm-disarm-read lens. **★ ARM BASELINE the Rung-2 post-check asserts UNCHANGED across the restart:** global
+  armed=True ts `2026-08-31T02:35:38` · jack armed=True ts `2026-08-31T21:49:39` · karen absent.
 - **★★ VERSION-CONTROL GAP RECURRED (record it — "we fixed that" is not durable):** the box `main.py` `cc733a17` is
   EXACTLY the multi-account bundle's GRAFTED OUTPUT (`pm_bundle_step2_files.sh` verified its graft to `cc733a17989d`).
   It matches no commit because that grafted result was never faithfully committed to the branch — the same gap
