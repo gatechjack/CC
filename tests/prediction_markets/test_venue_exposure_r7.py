@@ -24,7 +24,20 @@ SLUG = "mlb-sea-tor-2026-08-28"
 
 # ---- venue_exposure module (pure) ------------------------------------------------------------------------------
 
-def test_parse_sums_market_exposure_cents_to_dollars():
+def test_parse_prefers_market_exposure_dollars_string():
+    # pykalshi 1.0.6 field: a fixed-point dollar STRING (no /100). This is the field the box most likely returns.
+    r = V.parse_open_exposure([{"market_exposure_dollars": "13.40"}, {"market_exposure_dollars": "5.00"},
+                               {"market_exposure_dollars": "0.0"}])
+    assert r.has_data and abs(r.total_dollars - 18.40) < 1e-9 and r.n_positions == 3
+
+
+def test_parse_dollars_field_wins_over_cents_when_both_present():
+    # dollars-string is authoritative; a legacy/stale cents field is IGNORED when the dollars field is present.
+    r = V.parse_open_exposure([{"market_exposure_dollars": "10.00", "market_exposure": 999999}])
+    assert abs(r.total_dollars - 10.00) < 1e-9
+
+
+def test_parse_cents_fallback_when_no_dollars_field():
     r = V.parse_open_exposure([{"market_exposure": 1340}, {"market_exposure": 500}, {"market_exposure": 0}])
     assert r.has_data and abs(r.total_dollars - 18.40) < 1e-9 and r.n_positions == 3
 
@@ -40,7 +53,10 @@ def test_parse_none_is_unknown_fail_closed_signal():
 
 
 def test_parse_raises_on_corruption():
-    for bad in ("notalist", [123], [{"market_exposure": None}], [{"nope": 1}], [{"market_exposure": float("inf")}]):
+    # a non-list; a non-dict entry; a position with NEITHER exposure field; non-finite in either field; a
+    # non-numeric dollars string -- all corruption -> raise -> caller fail-closed.
+    for bad in ("notalist", [123], [{"market_exposure": None}], [{"nope": 1}], [{"market_exposure": float("inf")}],
+                [{"market_exposure_dollars": "notanumber"}], [{"market_exposure_dollars": None}]):
         with pytest.raises((ValueError, TypeError)):
             V.parse_open_exposure(bad)
 

@@ -10,11 +10,15 @@ defer -- "a journal sum is only correct while PM is the sole trader; a venue rea
 Pure-stdlib; imports NOTHING from the order path (mirrors shard_balance.py). `parse_open_exposure` is pure and
 unit-tested; `fetch_open_exposure` is a thin async PAGER over a raw client `.get('/portfolio/positions')`.
 
-★ FIELD / UNIT ASSUMPTION -- VERIFY AT DEPLOY. Kalshi position `market_exposure` is the current cost at risk in
-INTEGER CENTS -> dollars = sum(market_exposure)/100. This is the ONE fact I could not confirm on the box tonight
-(the Rung-0 read was classifier-blocked). The deploy CROSS-CHECK reads jack's live venue exposure and confirms it
-~matches his journal open_usd (~$13 at the last read); a 100x unit error would be glaring. If the field turns out to
-be a fixed-point dollar STRING (like balance_dollars), change `_CENTS_PER_DOLLAR` handling before the restart.
+★ FIELD / UNIT -- HARDENED to read EITHER, VERIFY AT DEPLOY WHICH. Per kalshi.py:246, pykalshi 1.0.6 positions
+carry `market_exposure_dollars` (a fixed-point dollar STRING) and bare `market_exposure` was NONEXISTENT on 1.0.6.
+I read the RAW REST (not the SDK), whose field naming I could NOT confirm on the box (Rung-0 blocked), so
+`_position_exposure_dollars` reads `market_exposure_dollars` (dollars, no /100) if present, ELSE `market_exposure`
+(legacy integer cents, /100) -- the same dual read shard_balance uses for balance_dollars/balance. If a position
+carries NEITHER, parse RAISES -> the caller fails CLOSED (skip:exposure_unknown), never a wrong number. ★ DEPLOY
+PROBE (must run WHILE jack holds >=1 position, else an empty book hides it): confirm which field is present and that
+the summed exposure ~matches jack's journal open_usd (~$13) -- a 100x gap or an all-raise (skip:exposure_unknown
+every cycle) means the field/unit is wrong; fix before trusting gate 6.
 
 ★ TRI-STATE like shard_balance.ShardBalances: `has_data` True (a trustworthy sum -- incl. an empty book = flat = $0)
 / False (positions could not be trusted -> the caller FAILS CLOSED at gate 6: skip, never size blind). Fail LOUD on
@@ -34,18 +38,29 @@ _PAGE_LIMIT = 200
 _MAX_PAGES = 25   # bound the pager; 25 x 200 = 5000 positions, far beyond any real account
 
 
-def _cents_to_dollars(v):
-    """A Kalshi integer-cents money value -> FINITE float dollars, or None if absent/unparseable/non-finite.
-    Rejects NaN/Infinity (an infinite exposure would make the cap reject everything, masking a real read)."""
+def _finite(v):
+    """float(v) if finite, else None. Rejects NaN/Infinity (an infinite exposure would make the cap reject
+    everything, masking a real read)."""
     if v is None:
         return None
     try:
         f = float(v)
     except (TypeError, ValueError):
         return None
-    if not math.isfinite(f):
-        return None
-    return f / _CENTS_PER_DOLLAR
+    return f if math.isfinite(f) else None
+
+
+def _position_exposure_dollars(p):
+    """One position's open exposure in DOLLARS. PREFERS `market_exposure_dollars` -- the pykalshi 1.0.6 field, a
+    fixed-point dollar STRING (kalshi.py:246 documents bare `market_exposure` was NONEXISTENT on 1.0.6) -- exactly
+    as shard_balance prefers `balance_dollars` over the integer-cents `balance`. Falls back to a legacy integer-cents
+    `market_exposure` (/100) only if the dollars field is absent. Returns None if NEITHER yields a finite value ->
+    parse_open_exposure RAISES (corruption -> caller fail-closed). This dual read makes the module robust to the
+    raw-REST-vs-SDK field naming I could not confirm on the box; the deploy probe still verifies which is present."""
+    if "market_exposure_dollars" in p:
+        return _finite(p.get("market_exposure_dollars"))            # dollar STRING -> dollars, NO /100
+    c = _finite(p.get("market_exposure"))
+    return None if c is None else c / _CENTS_PER_DOLLAR             # legacy integer CENTS -> dollars
 
 
 @dataclass(frozen=True)
@@ -71,9 +86,10 @@ def parse_open_exposure(market_positions) -> VenueExposure:
     for p in market_positions:
         if not isinstance(p, dict):
             raise ValueError("market_positions entry is not a dict: %r" % (p,))
-        d = _cents_to_dollars(p.get("market_exposure"))
+        d = _position_exposure_dollars(p)
         if d is None:
-            raise ValueError("position missing/non-finite market_exposure: %r" % (p,))
+            raise ValueError("position missing/non-finite exposure "
+                             "(neither market_exposure_dollars nor market_exposure): %r" % (p,))
         total += d
     return VenueExposure(total_dollars=total, has_data=True, n_positions=len(market_positions))
 

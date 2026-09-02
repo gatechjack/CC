@@ -376,11 +376,11 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
                 n_skip += 1
                 if d.status == "skip:shard_underfunded":                         # SURFACED (not latched): a fundable-later gap
                     n_shard_underfunded += 1
+                    log.warning("pm_live_driver: skip:shard_underfunded (%s x%s) -- funding gap on the market's shard, "
+                                "NOT a fault: %s", d.kalshi_ticker, d.count, d.reason)
                 elif d.status == "skip:exposure_unknown":                        # R7: venue exposure unreadable -> fail-closed
                     log.warning("pm_live_driver: skip:exposure_unknown -- venue open-exposure read failed; "
                                 "sizing against an unknown book is refused (fail-closed): %s", d.reason)
-                    log.warning("pm_live_driver: skip:shard_underfunded (%s x%s) -- funding gap on the market's shard, "
-                                "NOT a fault: %s", d.kalshi_ticker, d.count, d.reason)
             else:
                 n_reject += 1
                 # ★ R7.d: the 4TH latching trigger, WIRED HERE. It was DEAD CODE -- arm.latch_count_ceiling

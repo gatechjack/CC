@@ -160,6 +160,17 @@ launchers were classifier-blocked — see the queue's "Runner honesty" note.)
    deployed 2026-09-02 was pm_web-only and does NOT touch the engine or main.py, so the box `main.py` still equals
    my base. My change adds NO migration. Orthogonal — but the Rung-2 graft must reconcile `main.py` file-by-file
    against the box (it should be a clean diff off the multi-account engine bundle), not assume branch equality.
+5. **An adversarial self-review of my own diff (pointed at the standing lenses) caught two things I fixed before
+   committing:** (a) **a HIGH log regression I introduced** — my `elif skip:exposure_unknown` branch had swallowed
+   the pre-existing `skip:shard_underfunded` warning, so a real shard-funding gap (Karen's silent-death signal) went
+   unlogged and an exposure-unknown skip mis-logged as shard-underfunded. Fixed: each skip logs under its own
+   branch. (b) **the `market_exposure` field-name landmine** — pykalshi 1.0.6 positions use `market_exposure_dollars`
+   (a dollar STRING), and bare `market_exposure` was "nonexistent on 1.0.6" (`kalshi.py:246`); my first cut read only
+   `market_exposure` as cents, which would have raised on every position → `skip:exposure_unknown` every cycle →
+   blocked jack whenever he held a position. Fixed: `venue_exposure` now prefers `market_exposure_dollars` with a
+   cents fallback (mirrors shard_balance's `balance_dollars`/`balance`). The review CONFIRMED the core money-path
+   logic (gate-6 rebase, in-cycle isolation, fail-closed ordering + reachability, N2 KeyError-safety, paper-path
+   byte-identity) is correct.
 
 ## DEPLOY QUEUE (authorize one at a time; I reconstruct nothing)
 > **Order:** Rung 0 (read-only, any time) → **Rung 2+R7 bundled** (one engine restart) → Rung 4 (Karen DB write) →
@@ -196,15 +207,20 @@ launchers were classifier-blocked — see the queue's "Runner honesty" note.)
   stdlib; `execution` does NOT import `venue_exposure` (duck-typed param); `main.py`/`live_driver.py` import the two
   new modules (both in the manifest). No other engine file changes.
 - **Touches:** the shared engine → **one restart via your canonical `restart_tc.ps1`**. No pm_web restart. No migration.
-- **★ PRE-CHECK before restart:** confirm the live `pm_account.secret_ref` for `kalshi_jack` is `KALSHI` (or
-  `kalshi_jack`) — it must be in the whitelist or jack's driver would not spawn. (Rung 0 [B1] reads this.)
+- **★ PRE-CHECK before restart (fail-closed whitelist is spelling/case-exact):** from Rung 0 [B1], confirm the live
+  `pm_account.secret_ref` is a whitelist member for **BOTH** accounts — `kalshi_jack` = `KALSHI` (or `kalshi_jack`)
+  and `kalshi_karen` = exactly `kalshi_karen`. An off-spelling fails CLOSED → that account's driver (and its M3
+  shard-snapshot, which shares this same hardened resolver) silently would not run. The whitelist change is a
+  behavior improvement for M3 too (it previously fell open to jack's keys for any non-karen ref).
 - **Post-check (prove BOTH the inert wiring AND the venue cap):**
   1. Engine log: `PM LIVE DRIVER WIRED -- 1 task(s): spawned=[('kalshi_jack','mlb')] skipped=[] brokers=['kalshi_jack']`.
      Exactly ONE task; NO Karen task (she has no attached subdivision yet). Boot-reconcile jack CLEAN.
   2. jack still ARMED, trading, order count advancing as before (behavior unchanged for the driver).
-  3. **R7 unit cross-check:** in the engine log (or a follow-up read-only probe), jack's venue open-exposure this
-     cycle ≈ his journal `open_usd` (~$13, both small) — a ~1:1 match confirms `market_exposure` units are CENTS. A
-     ~100× gap ⇒ the unit assumption is WRONG: do NOT trust gate 6; roll back and fix `venue_exposure._CENTS_PER_DOLLAR`.
+  3. **R7 field/unit cross-check (run WHILE jack holds ≥1 position — an empty book hides it):** `venue_exposure`
+     reads `market_exposure_dollars` (pykalshi 1.0.6 dollar STRING) with a `market_exposure`-cents fallback. Confirm
+     jack's summed venue open-exposure ≈ his journal `open_usd` (~$13). A ~100× gap ⇒ wrong unit; an all-cycles
+     `skip:exposure_unknown` while he holds a position ⇒ NEITHER field is present (raw-REST field renamed) → gate 6
+     is blocking all entries. Either ⇒ do NOT trust gate 6; roll back the R7 files and fix the field read.
   4. No `skip:exposure_unknown` storm (would mean the positions read is failing → gate 6 fail-closed blocking all entries).
 - **Stop conditions / rollback:** if the roster log shows >1 task or a Karen task, or jack's boot-reconcile latches,
   or a `skip:exposure_unknown` storm, or the unit cross-check is ~100× off → restore the 6 `.bak` files + restart.
