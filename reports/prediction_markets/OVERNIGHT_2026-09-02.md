@@ -6,6 +6,41 @@ Branch: `pm-per-account-trading-2026-09-02` (worktree `C:\Users\AA Incorporado\c
 
 ---
 
+## ★★★ FINAL WRAP (13:20Z) — the phases below all EXECUTED. NEW FIRST-READ = `TRANSITION_SESSIONWRAP9_2026-09-02.md`.
+> The "NOTHING TOUCHED THE BOX" header below described the overnight BUILD phase. Since then everything deployed +
+> armed. **TWO accounts (kalshi_jack/mlb + kalshi_karen/mlb) are ARMED + TRADING live. STOP kills both:**
+> `PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global`. Engine 163519, pm_web 155543,
+> schema 17, both boot-reconciled clean, arm ts (persisted): global `08-31T02:35:38`/jack `08-31T21:49:39`/karen
+> `09-02T12:53:23`. jack 3 open, karen 5 open; shards jack $498.03 / karen $472.62 (age 4min). Full state + hazards
+> + lenses in SW9.
+- **★ CORRECTION — there is NO main.py version-control gap; it did NOT "recur."** My earlier "box main.py matches no
+  commit / VC gap" was a MEASUREMENT ARTIFACT: `git show <commit>:main.py | sha256sum` under `autocrlf=true` emits
+  CRLF, the box file is LF, so their shas never match. Byte-proof: box `9e8da82` (LF) == HEAD's LF blob `9e8da82`;
+  box pre-graft `cc733a17` == `git show f1e28cc:main.py | tr -d '\r' | sha256sum`. `git status` = nothing to commit —
+  the branch already matches the box. **Fix: compare CR-stripped, never raw `git show | sha256sum`.** (The REAL
+  deploy hazard is a wholesale main.py deploy from a branch that LACKS N2 — e.g. the UI branch — which would delete
+  Karen's wiring; the UI deploy is pm_web-only. app.py's M5 hazard is REAL, content-level, still live.)
+- **★ HOUSEKEEPING — MINE ONLY (KEEP/REMOVE + what restoring does NOW, both accounts armed):**
+  - **Local runners in `cc\`** (`pm_r0_establish_ro`, `pm_r4_karencaps`, `pm_r2_recon_ro`, `pm_r2_mainpy_n2.patch`,
+    `pm_r2_postcheck_ro`, `pm_r2_graft`, `pm_arm_persisted_ro`, `pm_arm_karen`, `pm_karen_monitor_ro`,
+    `pm_karen_firstfill_verify_ro`, `pm_finalstate_ro`, `pm_capture_mainpy`, `pm_shards_ro`, `_gen_graft.py`,
+    `_verify_graft.py`, `_box_main.py`): **KEEP** — untracked local scratch / the operational deploy record; benign,
+    no restore risk (they are runners, not state).
+  - **★ DANGEROUS box backup `~/pm_r4_karencaps_backup_20260902T112102Z/prediction_markets.db`:** restoring NOW
+    reverts Karen's Ruling-2 caps AND all of today's PM journal (all orders/settlements) on a LIVE ARMED division.
+    **KEEP; do NOT restore.**
+  - **★ DANGEROUS box engine-file backups `~/…/prediction_markets/*.bak_peracct_20260902T123628Z` + `main.py.bak_
+    peracct_20260902T123628Z`** (the real deploy's pre-graft execution/live_driver/shard_snapshot_task/main.py):
+    restoring them + a restart REVERTS N2+R7 → single-account engine → Karen's task vanishes and jack's gate-6 reverts
+    to journal-only. **KEEP as the rollback; INERT until a restart; do NOT restore on a live armed division.** (The
+    `…123155Z` set is graft-attempt-1's, already used to restore that failed attempt — same content, KEEP.)
+  - **Worktree `cc-pm-peracct-wt`** (branch working copy): KEEP.
+  - **NOT mine — leave untouched:** the box `web/*.bak_pmweb_*` / `*.bak_whale_*` pm_web backups (prior sessions').
+  - **★ MONITOR STOPPED.** The read-only poll is NOT running — **nobody is watching Karen's trading.** (One
+    ScheduleWakeup poll may still fire ~09:18Z from before this wrap; it should be ended without rescheduling.)
+
+---
+
 ## ★★ THE LIVE SYSTEM RIGHT NOW — NOTHING TONIGHT TOUCHED THE BOX
 
 I built and tested **only in a local worktree + a local venv.** I made **zero** box deploys, restarts, DB writes,
