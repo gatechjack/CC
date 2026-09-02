@@ -1,0 +1,3 @@
+# The standalone HTML renders are large and regenerable via ui_verify_harness.py.
+# The PNG screenshots + README are the committed evidence.
+*.html
