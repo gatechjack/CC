@@ -53,7 +53,10 @@ arms, or prod-live advances. The live jack-mlb division is trading, untouched.
   HALTED via the `[G-halt]` DB gate (`ed2e6c0`) — N3 rests on that halt persisting.
 
 ### ★ RE-SEQUENCED DEPLOY (supersedes the queue below where they differ):
-1. **Rung 4 — SET Karen's Ruling-2 caps** (live PM-DB UPDATE of the existing `kalshi_karen/mlb` row; no restart). HALT.
+1. **Rung 4 — SET Karen's Ruling-2 caps — ✓ DONE 2026-09-02 11:21Z** (live PM-DB UPDATE, no restart). All gates
+   passed: backup `~/pm_r4_karencaps_backup_20260902T112102Z/prediction_markets.db` (sha `fde81e7a…`, integrity ok);
+   1 row updated; jack row byte-unchanged (`0f640502a879`); resolved-verify through `sub_config_from_row` = Ruling 2
+   exactly (contracts/5/5.5/150/150/50/2/0.75); Karen still DISARMED (no arm row). Runner `cc\pm_r4_karencaps.{sh,ps1}`.
 2. **Rung 2+R7 — engine deploy + ONE restart.** Post-check now expects **TWO** tasks: `(kalshi_jack,mlb)` armed +
    `(kalshi_karen,mlb)` DISARMED, Karen boot-reconcile **CLEAN** (proves N3 end-to-end). Run the R7 field cross-check
    here (needs a held position). HALT.
