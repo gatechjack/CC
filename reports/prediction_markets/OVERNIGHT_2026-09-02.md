@@ -261,10 +261,15 @@ launchers were classifier-blocked — see the queue's "Runner honesty" note.)
   and `kalshi_karen` = exactly `kalshi_karen`. An off-spelling fails CLOSED → that account's driver (and its M3
   shard-snapshot, which shares this same hardened resolver) silently would not run. The whitelist change is a
   behavior improvement for M3 too (it previously fell open to jack's keys for any non-karen ref).
-- **Post-check (prove BOTH the inert wiring AND the venue cap):**
-  1. Engine log: `PM LIVE DRIVER WIRED -- 1 task(s): spawned=[('kalshi_jack','mlb')] skipped=[] brokers=['kalshi_jack']`.
-     Exactly ONE task; NO Karen task (she has no attached subdivision yet). Boot-reconcile jack CLEAN.
-  2. jack still ARMED, trading, order count advancing as before (behavior unchanged for the driver).
+- **★ NO LONGER INERT (Rung 0 finding — do not describe it as zero-risk capability-only):** Karen's sub-division +
+  3 active attachments ALREADY exist, so the roster returns TWO entries. This restart SPAWNS KAREN'S TASK. She is
+  disarmed so nothing places, but **the safety now rests on her ARM STATE (effective_armed=False, no arm row), NOT
+  on an empty roster.** Confirm her arm state is disarmed in the same restart.
+- **Post-check (prove BOTH tasks + the venue cap):**
+  1. Engine log: `PM LIVE DRIVER WIRED -- 2 task(s): spawned=[('kalshi_jack','mlb'),('kalshi_karen','mlb')] skipped=[]
+     brokers=['kalshi_jack','kalshi_karen']`. **TWO tasks.** Karen's broker bound HER keypair (already proven live in
+     Rung 0). **Karen's boot-reconcile CLEAN** (proves N3 end-to-end). Karen runs DISARMED (arm gate blocks all POSTs).
+  2. jack still ARMED + trading, unchanged; Karen present but DISARMED (verify `effective_armed=False` for her).
   3. **R7 field/unit cross-check (run WHILE jack holds ≥1 position — an empty book hides it):** `venue_exposure`
      reads `market_exposure_dollars` (pykalshi 1.0.6 dollar STRING) with a `market_exposure`-cents fallback. Confirm
      jack's summed venue open-exposure ≈ his journal `open_usd` (~$13). A ~100× gap ⇒ wrong unit; an all-cycles
