@@ -142,10 +142,25 @@ DOCUMENTED for his self-service, not driven by me:**
   UNCHANGED — persisted arm rows ts-identical across the restart; armed + trading (orders 82→83); the two post-restart
   `armed=False scope=global` reads were the transient fail-safe again.** **★ N3 PROVEN: `arm:kalshi_karen:mlb` still
   ABSENT post-restart → Karen boot-reconciled CLEAN, sits DISARMED.** 0 `skip:exposure_unknown`.
-- **★ ONLY REMAINING STEP = RUNG 6 (arm Karen) — JACK'S BOARD DECISION.** Karen is ready (subdivision + Ruling-2 caps
-  + 3 active attachments + own broker + disarmed clean task). Arm via `pm_cli arm kalshi_karen mlb` (global already on).
-  Her first order fires at FULL size (Ruling 2); watch that fill lands on KAREN's account + the R7 field gets its
-  first live observation once a position is held.
+- **★★★ RUNG 6 — KAREN ARMED + LIVE + FIRST FILLS VERIFIED (Jack board-authorized, armed 12:53:23Z).** Gated arm
+  (shard-3 $461.28>5.50, config==Ruling 2, 3 pinned attachments, cold sub) → `arm:kalshi_karen:mlb` armed=True
+  `by=karen_arm`; **jack + global rows byte/ts-UNCHANGED** (arming Karen did not touch jack). Karen filled **within
+  ~1s** (ids 85-88, then 89+; 5ct each). **★ FIRST-FILL VERIFIED (`pm_karen_firstfill_verify_ro`, the credential
+  WRITE proof):** KAREN venue==journal 0 mismatch (all her orders on HER account); **JACK venue==journal 0 mismatch =
+  ZERO phantom (Karen added nothing to jack)**; jack's overlapping SDCIN-10/SEABOS-9 are his OWN, every order
+  `response_ts` BEFORE Karen's arm (two accounts independently copying the same Under totals via shared whale
+  `0x684baa57` — COID-division working, not a misroute). **NO-leg hand-inspect** (Karen 87 SEABOS-9 NO @0.52→−5/$2.60,
+  88 SDCIN-10 NO @0.51→−5/$2.55): correct leg, sign (−5=NO), exposure reconciles; jack copied the same Unders (ids
+  83/84) — normal. **★ R7 FIELD OBSERVED LIVE = `market_exposure_dollars`** (the 4th field-name question settled; gate
+  6 read it correctly). Alarm condition (Karen fill on jack's account) NOT met. Runners `cc\pm_arm_karen.{sh,ps1}`,
+  `cc\pm_karen_monitor_ro.{sh,ps1}`, `cc\pm_karen_firstfill_verify_ro.{sh,ps1}`.
+- **★★ STANDING NOTE FOR THE TRANSITION DOC (Jack, for the record) — the `mode=ro` arm fail-safe read looks EXACTLY
+  like a disarm.** It fired at least THREE times today (11:30Z recon, both post-restart post-check reads) — a status
+  call (`read_arm_verdict`) during DB contention (esp. a restart window) returns `armed=False scope=global` by design
+  (an unreadable arm state must never read as armed). **This is NOT a disarm.** The PERSISTED `agent_state` rows +
+  their `value_json.ts` are the truth: a REAL disarm stamps a NEW ts; the fail-safe leaves the OLD one. Anyone reading
+  arm state from a status call, especially near a restart, WILL see a false disarm — check the persisted rows+ts
+  before believing it. Carry this into the next SW as a standing note, not just today's ledger. [[grep-is-not-a-state-check]]
 - **★ post-check [7] BUG (minor): the venue read printed "no keys"** — `pm_r2_postcheck_ro.sh` lacks the service-env
   (`/proc/$ENG/environ`) harvest Rung 0 used, so `load_secrets()` had no KEY_VAULT_URI. Inconclusive anyway (both flat).
   FIXED: the service-env harvest is now in pm_r2_postcheck_ro.sh -> re-run it once a position is held to observe the R7 field.
