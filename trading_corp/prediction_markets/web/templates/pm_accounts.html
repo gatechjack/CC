@@ -1,6 +1,7 @@
 {% extends "pm_shell.html" %}
 {% block title %}Accounts &middot; Prediction Markets{% endblock %}
 {% block main_class %}class="wrap desk"{% endblock %}
+{% from "partials/pm_arm_badge.html" import arm_badge as armbadge %}
 
 {% macro agechip(age_sec, stale_after=180) %}
   {%- set stale = age_sec is not none and stale_after is not none and age_sec > stale_after -%}
@@ -39,10 +40,8 @@
   {# GLOBAL ARM STATE -- READ-ONLY (R4). pm_web only DISPLAYS the arm state; the admin CONTROL lives on the ENGINE
      console (M5). The authoritative kill path is the CLI, never any UI. #}
   <div style="display:flex;align-items:center;gap:14px;margin-top:14px;flex-wrap:wrap">
-    <span class="badge {{ 'armed' if global_arm.get('global_armed') else 'disarmed' }}"><span class="dot"></span>GLOBAL {{ 'ARMED' if global_arm.get('global_armed') else 'DISARMED' }}</span>
-    <span class="caveat">read-only here &middot;
-      {% if is_admin %}<a href="https://trading.jacksumner.com/pm/arm">manage arm state on the engine console &nearr;</a>
-      {% else %}arm/disarm is an admin action; the control lives on the engine console{% endif %}</span>
+    {{ armbadge(arm_badge.global_state, arm_badge.global_age, 'GLOBAL ') }}
+    <span class="caveat">read-only here &mdash; arming is done from the engine service, not here. This page cannot arm or disarm; the CLI is the authoritative path.</span>
   </div>
 
   {% if accounts %}
@@ -52,10 +51,9 @@
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <h1 style="font-size:18px;margin:0">{{ a.account_label or a.account_id }} &middot; {{ a.venue or 'kalshi' }}</h1>
         <span class="tag trading">TRADING</span>
-        <span class="badge {{ 'armed' if global_arm.get('global_armed') else 'disarmed' }}"><span class="dot"></span>{{ 'ARMED' if global_arm.get('global_armed') else 'DISARMED' }}</span>
+        {{ armbadge(arm_badge.global_state, none, 'GLOBAL ') }}
       </div>
 
-      {% if a.pm_traded %}
       <div class="figs" style="margin-top:22px">
         <div class="fig">
           <div class="lbl">Realized P&amp;L</div>
@@ -73,9 +71,6 @@
           <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if value_as_of %}, {{ agechip(now_ts - value_as_of, 180) }}{% endif %}. Moves with the games; unrealized, and not the cost basis.</div>
         </div>
       </div>
-      {% else %}
-      <p class="caveat" style="margin-top:16px">No PM sub-divisions &mdash; <strong>not traded by Prediction Markets</strong>. Display-only; any trading on this account is by another system. The balance below is still real (another system may spend it).</p>
-      {% endif %}
 
       <h2>Cash by shard</h2>
       {{ shardtable(a.shard_snap) }}

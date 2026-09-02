@@ -76,4 +76,5 @@
     </tbody>
   </table></div>
   <div class="pad caveat">Covers the games currently on this page &mdash; the {{ retention_hours }}h card window; the account's full settled history is not all listed here.<br><br>Four terminal states: <b>OPEN</b> still on the books (the row's value is contracts &times; bid); <b>SETTLED</b> Kalshi resolved the market; <b>EXIT</b> we followed a whale out before settlement; <b>OPPOSED</b> two whales took opposite sides and the guard closed the position &mdash; a real P&amp;L the engine does not book, shown as &ldquo;not booked&rdquo; rather than guessed. Rows expand for order id, ticker, slippage and cost basis.</div>
+  <div class="pad caveat" style="border-top:1px solid var(--line)">Markets: {{ sub.market_types or category|upper }} &middot; sizing: {{ sizing_summary }}</div>
 </details>

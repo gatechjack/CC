@@ -364,8 +364,10 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
     for gk, tks in tickers_by_game.items():
         gs = feed_mlb.match_in_slate(slate_games, gk[0], gk[3], gk[1], gk[2]) if slate_games else None
         card = _card(gk, tks, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts)
-        # a game whose positions are ALL off the books (every copy exited/opposed, none open or settled) has no
-        # card-worthy slot -- it is not shown as an empty card; its trades still appear in the drawer.
+        # INTENTIONAL (board-accepted 2026-09-02, fix-pass item 7 -- do NOT "fix" this back): a game whose
+        # positions are ALL off the books (every copy exited or opposed-closed, none still open or settled) has
+        # no card-worthy slot, so it is NOT drawn as an empty "not held" card. Its trades still appear in the
+        # drawer, so nothing is hidden -- the card is just noise without a live/settled position to show.
         if (card["n_settled"] + card["n_live"]) == 0:
             continue
         if not _dropped(card, now_ts):

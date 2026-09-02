@@ -195,6 +195,48 @@ def read_status(account_id: str | None = None, category: str | None = None, *,
     return out
 
 
+def read_display(account_id: str | None = None, category: str | None = None, *,
+                 legacy_db_path: str | None = None) -> dict:
+    """A DISPLAY snapshot for pm_web's READ-ONLY arm badge -- the TRUTH is the persisted agent_state row + its
+    ts. Unlike read_status()/read_arm_verdict() (which fail-safe-COLLAPSE an INDETERMINATE read to DISARMED --
+    correct for the GATE, WRONG for a display), this DISTINGUISHES a real state from an unreadable one:
+
+      global_state / sub_state / effective_state in {'armed','disarmed','absent','unavailable'}
+        'armed'       -- the persisted row says armed=True.
+        'disarmed'    -- the persisted row says armed=False (a real human/auto disarm).
+        'absent'      -- the table read CLEANLY and there is no row (cold start -> disarmed-by-absence).
+        'unavailable' -- the row could NOT be read (mode=ro error / locked / missing table). This is the
+                         FALSE-disarm the engine team flagged: a status read near a restart looks disarmed.
+                         The badge shows 'unavailable' (never 'disarmed'), so a transient read is never
+                         mistaken for a human kill.
+
+    `*_ts` is the row's own write timestamp (ISO8601) -- the badge renders it as an age chip like every other
+    feed value. effective_state is 'armed' only if BOTH global and sub rows read OK and armed; 'unavailable'
+    if EITHER read failed. Read-only: never writes; pulls no engine code."""
+    def _state(status, row):
+        if status == "error":
+            return "unavailable"
+        if status == "absent":
+            return "absent"
+        return "armed" if _row_armed(row) else "disarmed"
+
+    gstatus, grow = _read_row_status(legacy_db_path, GLOBAL_KEY)
+    out = {"global_state": _state(gstatus, grow), "global_ts": (grow or {}).get("ts"),
+           "global_reason": (grow or {}).get("reason")}
+    if account_id and category:
+        sstatus, srow = _read_row_status(legacy_db_path, sub_key(account_id, category))
+        if gstatus == "error" or sstatus == "error":
+            eff = "unavailable"                                        # cannot confirm -> not a real disarm
+        elif _row_armed(grow) and _row_armed(srow):
+            eff = "armed"
+        else:
+            eff = "disarmed"
+        out.update({"sub_state": _state(sstatus, srow), "sub_ts": (srow or {}).get("ts"),
+                    "sub_reason": (srow or {}).get("reason"), "effective_state": eff,
+                    "effective_ts": (srow or {}).get("ts") or (grow or {}).get("ts")})
+    return out
+
+
 # ── WRITE (ENGINE / CLI side only; lazy engine import) ───────────────────────
 def _write(key: str, value: dict, *, legacy_db_path: str | None = None) -> None:
     """Reuse the engine's set_agent_state (the migration-010-sanctioned mechanism). Lazily imported so

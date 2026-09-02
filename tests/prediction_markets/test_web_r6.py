@@ -5,6 +5,8 @@ correctly with a 303 PRG, a GET NEVER mutates (no crawler/prefetch demote), a do
 promote-to-live to a nonexistent sub-division is a safe no-op, and the /live pages stay READ-ONLY (detach is a
 CLI action). Offline, PM DB only.
 """
+import re
+
 from fastapi.testclient import TestClient
 
 from trading_corp.prediction_markets import db, farm
@@ -127,3 +129,25 @@ def test_live_pages_stay_read_only(monkeypatch, tmp_path):
         for token in ("<form", "hx-post", "place order", "/order", "/arm", 'type="submit"'):
             assert token not in html, (path, token)                                     # detach is CLI -> /live has no form
     assert cl.post("/live").status_code == 405                                          # still no POST on the list
+
+
+def test_pm_web_display_pages_have_no_arm_control(monkeypatch, tmp_path):
+    """FIX-PASS item 4 -- the STRONG read-only guard. On every pm_web DISPLAY page (accounts / account / live):
+    NO form, button, submit, or mutating htmx; NO href / form-action / htmx-verb reaches an arm or disarm ACTION;
+    and the arm STATE is a plain <span> badge, never a link or button. pm_web can never arm/disarm -- the CLI is
+    the authoritative path. (The badge is DISPLAY-only; showing 'DISARMED' is a status, not a control.)"""
+    cl, _p = _mk(monkeypatch, tmp_path)
+    cl.post("/live/kalshi_jack/mlb/attach/%s" % WALLET, follow_redirects=False)         # give the live page content
+    for path in ("/", "/account/kalshi_jack", "/live/kalshi_jack/mlb"):
+        html = cl.get(path).text
+        low = html.lower()
+        # no interactive control element at all on a display page
+        for tok in ("<form", "<button", 'type="submit"', "hx-post", "hx-put", "hx-delete", "hx-patch"):
+            assert tok not in low, (path, tok)
+        # no clickable target (href / form action / htmx verb) can reach an /arm or /disarm route.
+        # NB anchored on the '/arm' PATH segment so '/farm' (which contains 'arm') is NOT a false positive.
+        assert re.search(r'(href|action|hx-(?:post|get|put|delete|patch))\s*=\s*"[^"]*/(?:dis)?arm\b',
+                         html, re.I) is None, (path, "an attribute reaches an arm/disarm route")
+        # the arm STATE renders as a plain <span> badge -- never wrapped in an <a>/<button> control
+        assert 'class="badge' in html, path
+        assert re.search(r'<(?:a|button)[^>]*class="[^"]*badge', html, re.I) is None, (path, "badge is a control")

@@ -1,9 +1,10 @@
 {% extends "pm_shell.html" %}
 {% block title %}{{ sub.account_label or account_id }} MLB &middot; Prediction Markets{% endblock %}
 {% block main_class %}class="wrap desk"{% endblock %}
+{% from "partials/pm_arm_badge.html" import arm_badge as armbadge %}
 
 {% block header_extras %}
-  <span class="badge {{ 'armed' if arm.get('global_armed') else 'disarmed' }}"><span class="dot"></span>{{ 'ARMED' if arm.get('global_armed') else 'DISARMED' }}</span>
+  {{ armbadge(arm_badge.global_state, arm_badge.global_age, 'GLOBAL ') }}
   <div class="poll">
     <span id="pollage" data-age0="{{ (now_ts - feed_meta.as_of) if feed_meta.as_of else '' }}" data-interval="{{ poll_interval }}">updated {{ (now_ts - feed_meta.as_of)|agefmt if feed_meta.as_of else 'never' }}</span>
     <a class="mini" id="refresh" style="text-decoration:none" href="{{ request.url.path }}{% if tab == 'complete' %}?tab=complete{% endif %}">Poll now</a>
@@ -144,10 +145,9 @@
   <div class="crumb"><a href="/">Accounts</a> / <a href="/account/{{ account_id }}">{{ sub.account_label or account_id }}</a> / {{ category|upper }}</div>
   <div style="display:flex;align-items:center;gap:14px;margin-top:4px;flex-wrap:wrap">
     <h1>{{ sub.sub_label or ((sub.account_label or account_id) ~ ' &middot; ' ~ category|upper) }}</h1>
-    <span class="badge {{ 'armed' if arm.get('effective_armed') else 'disarmed' }}"><span class="dot"></span>{{ 'ARMED' if arm.get('effective_armed') else 'DISARMED' }}</span>
+    {{ armbadge(arm_badge.effective_state, arm_badge.effective_age) }}
     <span class="caveat">read-only &mdash; arming is done from the service, not here</span>
   </div>
-  <p class="caveat" style="margin-top:6px">{{ sub.market_types or category|upper }} &middot; {{ sizing_summary }}</p>
 
   {% if warming %}
   <p class="caveat" style="margin-top:14px">Feed cache is warming up (first {{ poll_interval }}s poll not yet complete) &mdash; current values and scores appear once the poller has run.</p>

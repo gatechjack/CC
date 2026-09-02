@@ -475,6 +475,30 @@ def _annotate_pnl(a: dict, floor: int) -> None:
     a["thin_sample"] = a.get("n_closed", 0) < floor
 
 
+def _iso_age(ts_str, now_ts: int):
+    """ISO8601 arm-row write-timestamp -> age in seconds vs now_ts, or None -- the arm badge's age chip."""
+    if not ts_str:
+        return None
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+        return max(0, now_ts - int(dt.timestamp()))
+    except (ValueError, TypeError, OSError):
+        return None
+
+
+def _arm_badge(account_id: str | None = None, category: str | None = None, *, now_ts: int) -> dict:
+    """The READ-ONLY arm badge context from the PERSISTED agent_state rows (arm.read_display). State is one of
+    armed/disarmed/absent/unavailable; 'unavailable' (an INDETERMINATE mode=ro read) is shown as such, NEVER as
+    a disarm -- a status read near a restart is a false disarm, and the persisted row + its ts are the truth.
+    The row's own ts becomes the badge age. pm_web only DISPLAYS; the CLI stays the authoritative kill path."""
+    d = arm.read_display(account_id, category)
+    d["global_age"] = _iso_age(d.get("global_ts"), now_ts)
+    if account_id and category:
+        d["effective_age"] = _iso_age(d.get("effective_ts"), now_ts)
+    return d
+
+
 def _cache_marks():
     """The cached Kalshi marks (dict) + the cache's refresh age, or ({}, None). pm_web NEVER reads the venue --
     this is the background poller's cache."""
@@ -519,8 +543,9 @@ def _load_accounts_overview(identity: str | None = None, is_admin_flag: bool = F
         _annotate_pnl(a, floor)
     # is_admin gates the HONEST cross-console arm link (M5): the arm/disarm CONTROL lives on the ENGINE console
     # (trading.jacksumner.com/pm/arm), NOT here -- pm_web only DISPLAYS the arm state (R4). Non-admins never see the link.
-    return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor, "is_admin": is_admin_flag,
-            "value_as_of": value_as_of, "now_ts": int(time.time())}
+    now_ts = int(time.time())
+    return {"accounts": accounts, "arm_badge": _arm_badge(now_ts=now_ts), "thin_floor": floor,
+            "is_admin": is_admin_flag, "value_as_of": value_as_of, "now_ts": now_ts}
 
 
 def _load_account(account_id: str, identity: str | None = None, is_admin_flag: bool = False):
@@ -559,9 +584,10 @@ def _load_account(account_id: str, identity: str | None = None, is_admin_flag: b
         snap = shard_snapshot.read_latest(conn, account_id)
         snap_table = shard_snapshot.table_present(conn)
         snap_dir = shard_snapshot.shard_direction(conn, account_id)
-    return {"account": agg, "global_arm": arm.read_status(), "thin_floor": floor,
+    now_ts = int(time.time())
+    return {"account": agg, "arm_badge": _arm_badge(now_ts=now_ts), "thin_floor": floor,
             "shard_snap": snap, "shard_snap_table": snap_table, "shard_dir": snap_dir,
-            "value_as_of": value_as_of, "now_ts": int(time.time())}
+            "value_as_of": value_as_of, "now_ts": now_ts}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -787,7 +813,8 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int) -> dict 
                                      cache=ui_cache.cache(), now_ts=now_ts)
     return {"sub": sub, "attached": attached, "n_live_trades": n_live_trades,
             "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
-            "account_id": account_id, "category": category, "arm": arm.read_status(account_id, category),
+            "account_id": account_id, "category": category,
+            "arm_badge": _arm_badge(account_id, category, now_ts=now_ts),
             "sizing_summary": subdivision.sizing_summary(sub), **ctx}
 
 

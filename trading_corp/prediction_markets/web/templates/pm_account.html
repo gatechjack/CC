@@ -1,6 +1,7 @@
 {% extends "pm_shell.html" %}
 {% block title %}{{ account.account_label or account.account_id }} &middot; Prediction Markets{% endblock %}
 {% block main_class %}class="wrap desk"{% endblock %}
+{% from "partials/pm_arm_badge.html" import arm_badge as armbadge %}
 
 {% macro agechip(age_sec, stale_after=180) %}
   {%- set stale = age_sec is not none and stale_after is not none and age_sec > stale_after -%}
@@ -35,14 +36,11 @@
   <div style="display:flex;align-items:center;gap:14px;margin-top:4px;flex-wrap:wrap">
     <h1>{{ account.account_label or account.account_id }} &middot; {{ account.venue or 'kalshi' }}</h1>
     <span class="tag trading">TRADING</span>
-    <span class="badge {{ 'armed' if global_arm.get('global_armed') else 'disarmed' }}"><span class="dot"></span>GLOBAL {{ 'ARMED' if global_arm.get('global_armed') else 'DISARMED' }}</span>
+    {{ armbadge(arm_badge.global_state, arm_badge.global_age, 'GLOBAL ') }}
     <span class="caveat" style="margin-left:2px">read-only &mdash; arming is done from the service, not here</span>
   </div>
 
   <h2>Aggregate performance</h2>
-  {% if not account.pm_traded %}
-  <div class="panel pad"><p class="caveat" style="margin:0">This account is display-only &mdash; not traded by Prediction Markets, so there is no aggregate P&amp;L to show. Its balance below may still be spent by another system.</p></div>
-  {% else %}
   <div class="panel pad">
     <div class="figs">
       <div class="fig"><div class="lbl">Realized P&amp;L</div>
@@ -59,7 +57,6 @@
         <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if value_as_of %}, {{ agechip(now_ts - value_as_of, 180) }}{% endif %}.</div></div>
     </div>
   </div>
-  {% endif %}
 
   <h2>Sub-divisions</h2>
   {% if account.subdivisions %}
@@ -83,7 +80,7 @@
   </div>
   {% endfor %}
   {% else %}
-  <div class="panel pad"><p class="caveat" style="margin:0">This account has no Prediction Markets sub-divisions &mdash; <strong>not traded by Prediction Markets</strong>. It is display-only; the balance below may still be spent by another system.</p></div>
+  <div class="panel pad"><p class="caveat" style="margin:0">No sub-divisions on this account yet.</p></div>
   {% endif %}
 
   <h2>Cash by shard</h2>

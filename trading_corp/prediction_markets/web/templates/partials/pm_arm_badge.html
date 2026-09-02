@@ -1,0 +1,9 @@
+{# Read-only ARM badge -- rendered from the PERSISTED agent_state row (arm.read_display), never a fail-safe
+   collapse. `state` is one of armed / disarmed / absent / unavailable. 'unavailable' (an indeterminate mode=ro
+   read, e.g. near a restart) is shown as its OWN state, NEVER as a disarm -- the persisted row + its ts are the
+   truth. `age` is the row's own write-timestamp age (a chip like every other feed value). It is a plain <span>
+   with NO control: pm_web can never arm/disarm; the CLI is the authoritative path. #}
+{% macro arm_badge(state, age, prefix='') -%}
+{%- set cls = 'armed' if state == 'armed' else ('unavailable' if state == 'unavailable' else 'disarmed') -%}
+<span class="badge {{ cls }}" title="Read-only arm STATE from the persisted agent_state row; pm_web only displays it -- the CLI is the authoritative arm/disarm path."><span class="dot"></span>{{ prefix }}{% if state == 'armed' %}ARMED{% elif state == 'unavailable' %}STATE UNAVAILABLE{% else %}DISARMED{% endif %}</span>{% if age is not none %} <span class="chip" data-age0="{{ age }}" data-stale="">{{ age|agefmt }}</span>{% endif %}
+{%- endmacro %}

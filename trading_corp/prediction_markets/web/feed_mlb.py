@@ -27,7 +27,8 @@ import logging
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from trading_corp.data.sports_team_mapping import MLB_TEAMS
 
@@ -54,28 +55,17 @@ def canonical_team(code: str | None) -> str | None:
 
 
 # ── Eastern-time conversion (Kalshi's ticker convention) ─────────────────────────────────────────────────────
-# US Eastern DST (stable since 2007): EDT (UTC-4) from 07:00 UTC on the 2nd Sunday of March until 06:00 UTC on
-# the 1st Sunday of November; EST (UTC-5) otherwise. Computed deterministically so we need no IANA tzdb / tzdata
-# package (the Linux box has zoneinfo; a Windows test host may not -- this rule is correct on both).
-def _nth_sunday(year: int, month: int, n: int) -> int:
-    d = datetime(year, month, 1)
-    first_sunday = 1 + (6 - d.weekday()) % 7   # weekday(): Mon=0..Sun=6
-    return first_sunday + 7 * (n - 1)
-
-
-def _eastern_is_dst(dt_utc: datetime) -> bool:
-    y = dt_utc.year
-    start = datetime(y, 3, _nth_sunday(y, 3, 2), 7, tzinfo=timezone.utc)   # EDT begins 07:00Z
-    end = datetime(y, 11, _nth_sunday(y, 11, 1), 6, tzinfo=timezone.utc)   # EST resumes 06:00Z
-    return start <= dt_utc < end
+# zoneinfo('America/New_York') is authoritative for EDT/EST and every DST transition (fix-pass item 6, replacing
+# an earlier hand-rolled rule). The Linux box has the system IANA tz database; Windows test hosts get it from the
+# `tzdata` package.
+_ET = ZoneInfo("America/New_York")
 
 
 def utc_to_eastern(dt_utc: datetime) -> datetime:
-    """UTC-aware datetime -> naive Eastern wall-clock datetime (the timezone Kalshi tickers use)."""
+    """UTC-aware (or naive-UTC) datetime -> naive Eastern wall-clock datetime (the timezone Kalshi tickers use)."""
     if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-    off = -4 if _eastern_is_dst(dt_utc) else -5
-    return (dt_utc + timedelta(hours=off)).replace(tzinfo=None)
+    return dt_utc.astimezone(_ET).replace(tzinfo=None)
 
 
 def _parse_iso_utc(s: str | None) -> datetime | None:

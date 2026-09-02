@@ -59,11 +59,11 @@ def test_accounts_overview_lists_both_with_honest_pnl(monkeypatch, tmp_path):
     assert "Realized" in html and "settled" in html and "1W / 1L" in html   # W/L split (win + loss seeded)
     assert "at cost" in html                                          # open exposure at cost (design label)
     assert "too small a sample" in html or "outcome, not proven edge" in html   # the thin-sample caveat travels with the number
-    # karen: display-only -> the limitation is in the COPY, not an empty frame
+    # karen: renders through the SAME path with the SAME figures -- NO display-only mode (Jack ruled it out; both
+    # accounts are trading accounts, and kalshi_karen/mlb is live).
     assert 'href="/account/kalshi_karen"' in html and "Karen" in html
-    assert "not traded by Prediction Markets" in html
-    # R4: global arm state visible (read-only), NO control. Check for actual control ELEMENTS/endpoints -- NOT the
-    # bare word "disarm", which legitimately appears in the read-only copy "arm/disarm is a CLI action".
+    assert "display-only" not in html.lower() and "not traded by Prediction Markets" not in html
+    # R4: global arm state visible (read-only), NO control.
     assert "GLOBAL DISARMED" in html                                  # R4: global arm state visible (read-only; no arm rows -> disarmed)
     for tok in ("hx-post", "<form", "<button", "<input", "/attach/"):
         assert tok not in html.lower(), tok
@@ -83,14 +83,16 @@ def test_account_page_jack_shows_subdivision_pnl(monkeypatch, tmp_path):
         assert tok not in html.lower(), tok
 
 
-def test_account_page_karen_states_display_only(monkeypatch, tmp_path):
+def test_account_page_karen_same_path_no_display_only(monkeypatch, tmp_path):
+    """Jack ruled out display-only entirely (fix-pass item 1): EVERY account renders the same aggregate figures
+    + sub-divisions section. Karen (no sub-division seeded here) shows the figures + a neutral 'no sub-divisions',
+    NEVER a 'display-only' / 'not traded by Prediction Markets' state."""
     cl = _client(monkeypatch, tmp_path)
     html = cl.get("/account/kalshi_karen").text
-    assert "no Prediction Markets sub-divisions" in html
-    assert "display-only" in html
-    assert "Sub-divisions" not in html or "no Prediction Markets sub-divisions" in html   # no P&L table, the limitation instead
-    # it must NOT render a zeroed P&L frame implying it will fill
-    assert "Account total" not in html
+    assert "Aggregate performance" in html and "Realized" in html        # the SAME figures as any account
+    assert "display-only" not in html.lower()
+    assert "not traded by Prediction Markets" not in html
+    assert "no Prediction Markets sub-divisions" not in html
 
 
 def test_unknown_account_404(monkeypatch, tmp_path):
