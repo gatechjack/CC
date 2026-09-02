@@ -116,6 +116,13 @@ DOCUMENTED for his self-service, not driven by me:**
   single-account wiring gone + py_compile, then cp) — **never wholesale**; Gate-A (py_compile + import closure);
   on ANY failure RESTORES from `.bak_peracct_$TS`. **It does NOT restart.** Then Jack: `restart_tc.ps1`, then the
   post-check.
+- **★ GRAFT ATTEMPT 1 (Jack board-authorized, ran 12:31Z) — FAILED SAFE, box fully restored, engine untouched.** The
+  pre-check + 5-file write succeeded; the main.py patch failed at `patch` step: `Hunk #1 FAILED at 1538 (different
+  line endings)` — my staged `.patch` was CRLF (Windows) while the box main.py is LF, so the streamed patch mismatched.
+  The runner's fail-path RESTORED all 6 files from `.bak_peracct_$TS` and removed the 2 new files → box back to
+  pre-graft; **no restart, so the armed engine never saw any of it.** **FIX:** normalized the patch to LF (105 CRLF
+  pairs stripped) + added `| tr -d '\r'` on the box patch decode; regenerated + re-verified (5 blobs → HEAD shas,
+  patch round-trips LF). Re-run pending a fresh authorization (the runner content changed).
 - **★ R7 FIELD STILL UNOBSERVED — the 4th field-name surprise in this build** (after exchange_index dropped by the
   SDK, liquidity_dollars a deprecated stub, yes_bid dropped by our own dict). Both accounts are flat, so no one has
   seen `market_exposure_dollars` on a real position. The code reads either field (safe by construction) but that is
