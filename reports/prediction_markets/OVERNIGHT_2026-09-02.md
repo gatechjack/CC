@@ -81,9 +81,36 @@ arms, or prod-live advances. The live jack-mlb division is trading, untouched.
 - **Could not prove locally:** the async live-POST path tests (need `pykalshi`, not installable in the local venv —
   agent-guessed-name classifier block; it IS a declared dep, requirements.txt:57, so the box has it). My change
   does not touch that path. Box-scratch (staged) will confirm on the real venv.
-- **SHA:** [pending commit]
+- **SHA:** `fc089ff` (pushed to origin/pm-per-account-trading-2026-09-02).
 
-### Rung R7 — EXPOSURE-CAP VENUE REBASE — NOT STARTED (next)
+### Rung R7 — EXPOSURE-CAP VENUE REBASE — DONE, proven locally (no deploy)
+- **What (RULING 5):** gate 6 (`max_open_usd`) now rebases its base onto the ACCOUNT'S TRUE open exposure read
+  from the venue each cycle (co-tenant + manual + PM), instead of summing PM's own journal — correct regardless of
+  PM-exclusivity. A journal sum is blind to a co-tenant on a shared keypair; the venue read is not.
+- **Built:**
+  - New `trading_corp/prediction_markets/venue_exposure.py` (pure-stdlib, mirrors shard_balance.py):
+    `fetch_open_exposure(client)` pages `GET /portfolio/positions` and sums per-position `market_exposure`;
+    `parse_open_exposure` fail-LOUD on corruption; tri-state `VenueExposure(has_data)` — has_data=False ⇒ caller
+    fail-closed.
+  - `execution.py`: `Journal` captures the open_usd seed + adds `in_cycle_open_usd(aid)` (this cycle's
+    commit_would_place increments, isolated from the DB seed). `evaluate` gains `venue_exposure=None`; **gate 6**
+    base is now `venue_exposure.open_dollars() + journal.in_cycle_open_usd(aid)` on the live path, with the
+    in-cycle accumulation preserved. Fail-closed: `has_data=False → skip:exposure_unknown`. `venue_exposure=None`
+    disables the rebase (paper/test only — mirrors gate 6b's `shard_balances=None` opt-out, unreachable on the live
+    path).
+  - `live_driver.py`: reads venue exposure fresh each cycle (fail-closed to has_data=False, exactly like the
+    shard-balance read) and threads `venue_exposure` through `run_live_arm_gated_cycle` → `evaluate`.
+- **Proved (HOW):** new `tests/prediction_markets/test_venue_exposure_r7.py` — 14 tests green. The load-bearing one,
+  `test_gate6_cotenant_venue_exposure_blocks_pm_with_empty_journal`: PM's journal EMPTY (open_usd 0) but the venue
+  shows exposure over the cap → **reject** (the old journal-only cap would have over-committed). Plus: fail-closed on
+  has_data=False; None opt-out uses the journal base; boundary at the cap; in-cycle accumulation on top of the venue
+  base; the parser/pager (cents→dollars, empty=flat, missing-key=unknown, corruption raises).
+- **★ COULD NOT PROVE — the field/unit (VERIFY AT DEPLOY):** I assume Kalshi `market_exposure` is INTEGER CENTS
+  (÷100 → dollars). I could not confirm on the box (Rung 0 blocked). The deploy CROSS-CHECK must read jack's live
+  venue exposure and confirm it ~matches his journal open_usd (~$13); a 100× unit error would be glaring. If it is a
+  dollar STRING instead, change the `_CENTS_PER_DOLLAR` handling before restart. Documented in the module header.
+- **SHA:** [pending commit — after the full-suite confirm]
+
 ### Rungs 2–6 — PREPARE runners only (deploy/DB-write/arm all HALT) — NOT STARTED
 
 ---
@@ -104,6 +131,14 @@ arms, or prod-live advances. The live jack-mlb division is trading, untouched.
    multi-category-per-account case. Logs at ERROR.
 5. **Installed `pytest-asyncio` + `pyyaml` into the local `.venv-webtest`** (test-only, additive; the repo's pytest
    config already expects `asyncio_mode`). Did NOT install `pykalshi` (classifier blocked the agent-typed name).
+6. **R7 rebases the gate-6 BASE onto the venue but KEEPS the in-cycle accumulator** (`venue snapshot +
+   in_cycle_open_usd`), rather than replacing the whole cap or wholesale-seeding the Journal from the venue. This
+   preserves within-cycle over-place protection (two orders in one cycle can't both size against the same stale
+   snapshot) and leaves the paper/dry-run path (`venue_exposure=None`) byte-identical. Fail-closed mirrors gate 6b
+   exactly so the "silently stops checking" guard holds (None disables, unreachable on the live path).
+7. **R7 reads `/portfolio/positions` EVERY cycle** (~7s), like the shard-balance read — a co-tenant can add exposure
+   between cycles, so a fresh read is required for correctness. This adds one Kalshi GET per account per cycle (load,
+   not correctness). Accepted; noted for you in case you want a cheaper cadence.
 
 ## WHAT I FOUND THAT NOBODY ASKED ABOUT
 1. **(Confirmed + fixed) `resolve_kalshi_keys` fails OPEN — instance #13.** You flagged this; I confirmed it live in
