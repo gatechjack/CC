@@ -123,6 +123,18 @@ DOCUMENTED for his self-service, not driven by me:**
   pre-graft; **no restart, so the armed engine never saw any of it.** **FIX:** normalized the patch to LF (105 CRLF
   pairs stripped) + added `| tr -d '\r'` on the box patch decode; regenerated + re-verified (5 blobs → HEAD shas,
   patch round-trips LF). Re-run pending a fresh authorization (the runner content changed).
+- **★★ GRAFT ATTEMPT 2 (Jack board-authorized, ran 12:36Z) — GREEN.** Pre-check passed; 5 package files written +
+  sha==HEAD; **main.py patch-grafted `+67/-28`, content-verified (N2 present, single-account gone, py_compile OK)**;
+  Gate-A import closure OK. **New box main.py sha = `9e8da82de3b8bfcf`** (box+N2; RECORD it — still != any commit, the
+  VC gap persists until the box main.py is captured back to the branch). Backups `~/...bak_peracct_20260902T123628Z`.
+  **Engine MainPID 144229 UNCHANGED — new code inert on disk until the restart.**
+- **★ NEXT = JACK'S BOARD DECISIONS (I will NOT run these):** (1) `restart_tc.ps1` — on restart the driver enumerates
+  2 subdivisions → spawns jack/mlb (armed) + karen/mlb (DISARMED); (2) `pm_r2_postcheck_ro.ps1`. **★ WATCH after the
+  restart:** R7 gate-6 is now on jack's LIVE path. Both accounts are flat, so gate 6 base = $0 while flat (entries
+  pass). The `market_exposure_dollars` field is exercised only once a position is HELD — if it's wrong, jack's NEXT
+  entries skip:exposure_unknown (fail-closed, existing positions + exits unaffected). Run the post-check's R7 field
+  assertion once a position exists; a `skip:exposure_unknown` storm means fix venue_exposure (roll back R7 files from
+  the `.bak`, no restart needed to revert the disk, but a restart to reload).
 - **★ R7 FIELD STILL UNOBSERVED — the 4th field-name surprise in this build** (after exchange_index dropped by the
   SDK, liquidity_dollars a deprecated stub, yes_bid dropped by our own dict). Both accounts are flat, so no one has
   seen `market_exposure_dollars` on a real position. The code reads either field (safe by construction) but that is
