@@ -11,9 +11,16 @@ Branch: `pm-per-account-trading-2026-09-02` (worktree `C:\Users\AA Incorporado\c
 I built and tested **only in a local worktree + a local venv.** I made **zero** box deploys, restarts, DB writes,
 arms, or prod-live advances. The live jack-mlb division is trading, untouched.
 
-- **Last-known live state (from the record, NOT a fresh read — see the blocker below):** engine PID **144229**
-  (unchanged since 2026-09-01 18:13Z), pm_web PID **153559**, **schema 17** (loss-omission `mig-017` deployed
-  2026-09-02 03:44Z was pm_web-only; **engine unchanged**), jack-mlb **ARMED, not latched, trading**.
+- **Current live state (per SW8 `TRANSITION_SESSIONWRAP8_2026-09-02.md`, observed 04:54Z — the accurate read; I could
+  not re-read myself, Rung 0 blocked):** engine PID **144229** (unchanged), pm_web **155543**, **schema 17**,
+  boot-reconcile clean. jack-mlb **ARMED, not latched, trading** (orders_today 15/50, 1 open position). Shards:
+  kalshi_jack **$506.01**, **kalshi_karen $486.29 (sh3 461.28 / sh0 25.01)** — Karen's mlb shard is funded.
+- **★★ A CONCURRENT SESSION ran today (now WRAPPED via SW8) — relevant to my N3:** it DISARMED legacy
+  `poly_kalshi_mlb` (commit `ed2e6c0` on **local main-wip**, NOT pushed, NOT mine) via a `[G-halt]` DB gate — no
+  restart, engine unchanged. **This is RULING 1's action (legacy retiring off Karen's shared account).** ★ BUT its
+  commit message says *"Open STL-LAD position rides to settlement"* — **legacy is DISARMED, NOT FLAT.** Karen still
+  holds an open legacy STL-LAD position until it settles, so **N3 is not yet closed** (see the Rung-4 gate below).
+  My branch is independent — I never touched `main-wip` or the concurrent session's pm_web work.
 - **★ I COULD NOT VERIFY THIS LIVE.** The harness safety classifier **blocked the Rung-0 read-only box runner**
   (it reads the runner as autonomous production access — signed venue reads with Karen's real keypair + dumping the
   engine's cred env — and was still weighing the original "plan and halt" framing). That is a reasonable gate on a
@@ -131,8 +138,13 @@ launchers were classifier-blocked — see the queue's "Runner honesty" note.)
 4. **`plan_driver_tasks` REFUSES a 2nd sub-division on one account** rather than trading it. Karen is mlb-only
    (RULING 4) so this never bites today; it's a guard so a future config/DB edit can't silently land the unsafe
    multi-category-per-account case. Logs at ERROR.
-5. **Installed `pytest-asyncio` + `pyyaml` into the local `.venv-webtest`** (test-only, additive; the repo's pytest
-   config already expects `asyncio_mode`). Did NOT install `pykalshi` (classifier blocked the agent-typed name).
+5. **Installed `pytest-asyncio` + `pyyaml` into the shared local `.venv-webtest`** (test-only, additive; the repo's
+   pytest config already expects `asyncio_mode`). Did NOT install `pykalshi` (classifier blocked the agent-typed
+   name). ★ **This changes the baseline yardstick SW8 documented** (SW8 said `.venv-webtest` has no pytest-asyncio →
+   "~117 baseline async/dep fails"). With the plugin installed, MY baseline is **16 fails** (async tests now run and
+   fail only on the missing `pykalshi` + 1 stale schema test). A future agent reconciling against SW8's 117 should
+   know I added the plugin. My own N2/R7 tests do NOT need pytest-asyncio (they use `asyncio.run` directly / are
+   sync), so they pass either way.
 6. **R7 rebases the gate-6 BASE onto the venue but KEEPS the in-cycle accumulator** (`venue snapshot +
    in_cycle_open_usd`), rather than replacing the whole cap or wholesale-seeding the Journal from the venue. This
    preserves within-cycle over-place protection (two orders in one cycle can't both size against the same stale
@@ -207,6 +219,11 @@ launchers were classifier-blocked — see the queue's "Runner honesty" note.)
   stdlib; `execution` does NOT import `venue_exposure` (duck-typed param); `main.py`/`live_driver.py` import the two
   new modules (both in the manifest). No other engine file changes.
 - **Touches:** the shared engine → **one restart via your canonical `restart_tc.ps1`**. No pm_web restart. No migration.
+- **★ Graft cleanliness (verified) + coordination (SW8):** my `main.py` diff vs base is ONLY the N2 hunk — it carries
+  **NO M5 `/pm/arm` engine plumbing** (grep-clean), so the app.py-M5-drift-hazard analog does NOT apply to this
+  graft. My `live_driver.py` already includes the pending **`:639` log fix** (`str(summ)`, line 661) + the R7 change,
+  so Rung 2 ships the :639 fix too. SW8 flags that engine M5 (main.py) is a separate pending change — when M5 ships,
+  it must graft onto THIS N2-modified `main.py` (coordinate ordering; no conflict, different hunks).
 - **★ PRE-CHECK before restart (fail-closed whitelist is spelling/case-exact):** from Rung 0 [B1], confirm the live
   `pm_account.secret_ref` is a whitelist member for **BOTH** accounts — `kalshi_jack` = `KALSHI` (or `kalshi_jack`)
   and `kalshi_karen` = exactly `kalshi_karen`. An off-spelling fails CLOSED → that account's driver (and its M3
@@ -228,7 +245,11 @@ launchers were classifier-blocked — see the queue's "Runner honesty" note.)
   the unit assumption — the cross-check is the guard.)
 
 ### Rung 4 — CREATE/CONFIRM KAREN'S SUBDIVISION + CAPS + ATTACHMENTS — HALT (LIVE PM-DB WRITE)
-- **Gated on Rung 0 + N3:** legacy OFF Karen's account AND Karen FLAT at the venue (else her boot-reconcile latches).
+- **★ GATED ON N3 = KAREN ACTUALLY FLAT (not just legacy disarmed):** legacy `poly_kalshi_mlb` is DISARMED
+  (`ed2e6c0`) but as of SW8 still held an **open STL-LAD legacy position riding to settlement**. Rung 0 [C] must
+  confirm Karen is FLAT at the venue (STL-LAD settled, 0 non-PM positions) BEFORE this rung — otherwise her
+  boot-reconcile (Rung 5) latches on the legacy position (N3 not closed). If STL-LAD is still open, WAIT for it to
+  settle. (Do NOT force-close it — that is legacy's position, not PM's.)
 - **Content depends on Rung 0's finding:**
   - If NO `pm_subdivision` for kalshi_karen → CREATE `(kalshi_karen, mlb)` with **RULING 2 caps** and attach+activate
     the 3 whales.
