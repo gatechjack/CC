@@ -1,3 +1,9 @@
+> ★★ SUPERSEDED by SW10 (`TRANSITION_SESSIONWRAP10_2026-09-02.md`) — read that FIRST. Since SW9: the multi-category
+> plan was accepted and **WORKSTREAM A (the safety restructure: M1 Option C one-task-per-account + M2 account-wide
+> auth latch + M3 whole-account boot-reconcile latch) was DEPLOYED LIVE 2026-09-02 23:10Z** (engine 163519→171106;
+> the driver is now ONE task per account iterating its categories — invisible today since each account has one
+> category). The UFC matcher core was built (inert). SW9 below is retained for the per-account (Karen) detail.
+
 # ★ SESSION WRAP 9 — 2026-09-02 (~13:20Z). SUPERSEDES SW8. FIRST-READ for the next agent.
 > SW8 (`TRANSITION_SESSIONWRAP8_2026-09-02.md`, on branch `pm-prospects-analyze-2026-09-02`) is superseded by this
 > doc. Since SW8: **PER-ACCOUNT TRADING went LIVE — a SECOND Kalshi account (Karen) now trades on the one engine.**
