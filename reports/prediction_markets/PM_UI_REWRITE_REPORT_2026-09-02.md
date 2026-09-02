@@ -291,3 +291,75 @@ NOT deployed, NOT restarted. Both accounts remain armed and trading unattended; 
 Nothing on the box was touched. No service was deployed, restarted, or reloaded. No engine code, engine-owned
 table, or credential was modified (the item-3 merge INCORPORATED the already-deployed per-account engine code; it
 authored no engine change). The armed, trading accounts were not touched.
+
+==============================================================================================================
+# DEPLOY -- 2026-09-02 14:11-14:56Z (Board-authorized, per-step). pm_web ONLY. Engine untouched.
+
+Deployed the pm_web UI rewrite to prod as a pm_web-only file graft + two pm_web restarts (the second for the
+entity fix). The engine (trading-corp PID 163519, NRestarts 0, up since 12:41:51Z) was NEVER restarted, reloaded,
+or touched. Executed as separate board-authorized `.ps1` runners in `cc\` (recon / pull / deploy / restart /
+verify / entity-fix / engcheck). Branch source `pm-ui-rewrite-2026-09-02 @ 9c2eeb3`.
+
+## Pre-deploy checks (Step 1 recon + Step 2 local, all passed)
+1. main.py CR-stripped sha16 = `9e8da82de3b8bfcf` (== the merged per-account tip; driver-wired). main.py NOT
+   copied in any step.
+2. Box app.py is M4: `grep -c is_admin` = 10, `grep -c /pm/arm` = 0. (Confirmed before AND after the graft.)
+3. Engine PID 163519, pm_web PID 155543, schema 17; arm rows all armed=True/latched=False (global ts
+   2026-08-31T02:35:38, jack ts 2026-08-31T21:49:39, karen ts 2026-09-02T12:53:23). Order baseline: jack 90,
+   karen 5.
+4. Backups (the rollback): main deploy `~/pm_ui_deploy_backup_20260902T142654Z` (app.py, arm.py, 4 templates);
+   entity fix `~/pm_ui_entityfix_backup_20260902T144621Z` (3 templates).
+   MEASUREMENT RULE applied throughout: all commit-vs-box comparisons CR-stripped (`| tr -d '\r'`); the box is
+   LF so `sha256sum` on the box == the CR-stripped commit hash. No raw `git show | sha256sum` was trusted.
+
+## The app.py GRAFT (never wholesale)
+The box M4 app.py differs from my base (e95e638, M5) by EXACTLY ONE spot -- `_load_accounts_overview`'s return
+adds a 2-line M5 comment + `"is_admin": is_admin_flag` (that IS the is_admin 12-vs-10 and the `/pm/arm` comment).
+Constructed `target_app.py` = HEAD app.py MINUS that one M5 addition (my rewritten pm_accounts no longer uses
+is_admin). VERIFIED locally: `grep -c is_admin` = 10, `grep -c /pm/arm` = 0, py_compile OK, and box(M4)->target
+diff = 100% my UI edits with ZERO M5 leak. Post-graft ON THE BOX: is_admin stays 10, /pm/arm stays 0 (Gate-A).
+Likewise `pm_accounts.html`: the box M4 template differed from base by only the M5 cross-console arm link (pulled
++ diffed to confirm); my M5-clean rewrite (0 `/pm/arm`) replaced it wholesale.
+
+## Files shipped (16 write ops, each sha16-verified on write)
+- NEW (9): feed_mlb.py, marks.py, ui_cache.py, poller.py, live_view.py, static/pm_desk.css, static/pm_live.js,
+  templates/partials/pm_arm_badge.html, templates/partials/pm_trade_drawer.html.
+- REPLACED (4 templates, box==base confirmed): pm_shell.html, pm_account.html, pm_live_subdivision.html;
+  pm_accounts.html (M5-clean rewrite). ADDITIVE (1): arm.py (box==base; adds read_display only).
+- GRAFT (1): app.py (constructed M5-clean). main.py NOT shipped.
+- Entity fix re-ship (3, second restart): pm_account.html, pm_live_subdivision.html, partials/pm_trade_drawer.html.
+Gate-A on the box after the main graft: py_compile OK; app imports; forbidden engine imports NONE (standalone).
+
+## Restart (pm_web ONLY, az-root)
+`az vm run-command ... systemctl restart prediction-markets-web`. pm_web PID 155543 -> 165582 (main) ->
+166025 (entity fix); ActiveState active/running. Engine trading-corp PID = 163519 immediately after EACH restart.
+
+## Post-deploy verification (Step 6, after a full poll cycle -- all green)
+10. `/`, `/account/kalshi_jack`, `/account/kalshi_karen`, `/live/kalshi_jack/mlb`, `/live/kalshi_karen/mlb`,
+    `/farm`, `/farm/mlb` all return 200 (curl loopback 127.0.0.1:8081, Remote-User forged as the proxy sends).
+11. Both accounts render the SAME template: "display-only" occurrences = 0, "funding-only" = 0, both account
+    pages carry TRADING + Aggregate performance.
+11b. NO double-escaped entities: `&amp;middot;` = 0, `&amp;mdash;` = 0 (the entity fix -- see below). Karen's
+    sub-division label source is `Karen &middot; MLB` -> renders "Karen . MLB".
+12. Arm badge reads the PERSISTED rows: it shows ARMED with an age chip whose data-age0 (216747s) equals the
+    global row's ts age (~216746s); all three rows armed=True.
+13. Open positions are bid-valued or a defined empty state: jack bet-slots $2.25..$5.10; karen $2.55..$3.05; the
+    rest render em-dash (not-held slots). ZERO NaN / torn-empty `bv`. Pollage "updated 17s ago" (poller live).
+14. Engine sanity: PID 163519 unchanged; NRestarts 0; ZERO engine ERROR lines (`journalctl -u trading-corp -p
+    err --since 25min` = "No entries" -- the verify's earlier "1" was a FALSE POSITIVE: `grep -c .` counted the
+    literal "-- No entries --" message). Order counts moved jack 90->91, karen 5->6 -- this is the ENGINE's
+    NORMAL unattended trading across the ~27-min deploy window; pm_web placed nothing (it is credential-free and
+    imports no broker). No orders were added by the deploy or the restarts.
+15. Farm League unchanged: `/farm/mlb` has 30 "Analyze" occurrences and 29 loss-omission markers.
+
+## The entity fix (Board caught 'Karen &middot; MLB' rendering literally)
+HTML entities placed INSIDE a Jinja `{{ }}` expression are autoescaped (`&` -> `&amp;`), so they showed
+literally. Fixed 3 templates: the account/live sub-label fallback now emits `&middot;` as RAW HTML (outside the
+`{{ }}`); the drawer/linescore/matchup em-dash fallbacks use `|safe` (matching the existing farm partials);
+`'Realized P&amp;L'` -> `'Realized P&L'` (single-escape). Only the no-sub_label path was affected (Karen).
+Committed `9c2eeb3`; re-shipped + restarted; verified `&amp;middot;` = 0 live.
+
+## Nothing skipped except by instruction
+main.py was deliberately NOT copied (it carries the live per-account driver wiring). No package was installed, no
+venv/systemd change was made, no engine file was touched. Rollback was available at every step (backups above)
+and never needed.
