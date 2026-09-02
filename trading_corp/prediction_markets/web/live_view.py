@@ -149,19 +149,18 @@ def _et_hhmm_from_key(hhmm: str | None) -> str | None:
     return "%s:%s ET" % (hhmm[:2], hhmm[2:])
 
 
-_WK = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _MON = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def _fmt_et_datetime(date_iso: str | None, hhmm: str | None) -> str | None:
-    """Scheduled first pitch as 'Wed Sep 2 · 6:40 PM ET' -- from the Kalshi ticker's ET date + HHMM (so it
-    renders even with the sports feed down). Date-only if HHMM is missing; time-only if the date does not parse;
-    None if neither is usable."""
+    """Scheduled first pitch as 'Sep 2 · 6:40 PM ET' -- from the Kalshi ticker's ET date + HHMM (so it renders
+    even with the sports feed down). Short form (no weekday, item 4). Date-only if HHMM is missing; time-only if
+    the date does not parse; None if neither is usable."""
     d = None
     if date_iso:
         try:
             dt = datetime.strptime(str(date_iso), "%Y-%m-%d")
-            d = "%s %s %d" % (_WK[dt.weekday()], _MON[dt.month - 1], dt.day)
+            d = "%s %d" % (_MON[dt.month - 1], dt.day)
         except (ValueError, TypeError):
             d = None
     t = None

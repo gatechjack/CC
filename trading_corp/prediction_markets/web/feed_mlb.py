@@ -248,13 +248,16 @@ def parse_statsapi_schedule(sched_json: dict, *, now_ts: int) -> dict:
             status = _map_status((g.get("status") or {}).get("detailedState"),
                                  (g.get("status") or {}).get("abstractGameState"))
             live = status == "in_progress"
-            off = (ls.get("offense") or {})
-            bases = (("first" in off), ("second" in off), ("third" in off)) if live else ()
             half = None
             if live:
                 st = (ls.get("inningState") or ls.get("inningHalf") or "").strip().lower()
-                half = {"top": "TOP", "bottom": "BOT", "middle": "MIDDLE", "end": "END"}.get(st,
+                half = {"top": "TOP", "bottom": "BOT", "middle": "MID", "end": "END"}.get(st,
                         "TOP" if st.startswith("t") else "BOT" if st.startswith("b") else None)
+            # at an inning BREAK (inningState Middle/End) there is NO current plate appearance: the count resets and
+            # the bases clear for the next half. Keep the inning label; drop the stale count/runners (item 3).
+            at_bat = live and half not in ("MID", "END")
+            off = (ls.get("offense") or {})
+            bases = (("first" in off), ("second" in off), ("third" in off)) if at_bat else ()
             la, lh = _statsapi_linescore(ls)
             out[key] = GameState(
                 key=key, date_iso=date_iso, hhmm_et=hhmm, game_no=game_no, source="statsapi",
@@ -266,9 +269,9 @@ def parse_statsapi_schedule(sched_json: dict, *, now_ts: int) -> dict:
                                _record(teams.get("home")), _int_or_none((teams.get("home") or {}).get("score"))),
                 inning=_int_or_none(ls.get("currentInning")) if live else None,
                 half=half,
-                outs=_int_or_none(ls.get("outs")) if live else None,
-                balls=_int_or_none(ls.get("balls")) if live else None,
-                strikes=_int_or_none(ls.get("strikes")) if live else None,
+                outs=_int_or_none(ls.get("outs")) if at_bat else None,
+                balls=_int_or_none(ls.get("balls")) if at_bat else None,
+                strikes=_int_or_none(ls.get("strikes")) if at_bat else None,
                 bases=bases, linescore_away=la, linescore_home=lh, last_play=None)
     return out
 
@@ -317,12 +320,16 @@ def parse_espn_scoreboard(espn_json: dict, *, now_ts: int) -> dict:
         status = _espn_status(comp.get("status") or ev.get("status") or {})
         live = status == "in_progress"
         sit = comp.get("situation") or {}
-        bases = ((bool(sit.get("onFirst")), bool(sit.get("onSecond")), bool(sit.get("onThird")))
-                 if live else ())
         st = comp.get("status") or {}
         half = None
         if live:
-            half = "TOP" if (st.get("type") or {}).get("shortDetail", "").lower().startswith("top") else "BOT"
+            sd = (st.get("type") or {}).get("shortDetail", "").lower()
+            half = ("MID" if sd.startswith("mid") else "END" if sd.startswith("end")
+                    else "TOP" if sd.startswith("top") else "BOT")
+        # inning break -> no current count, bases clear (item 3), same as the StatsAPI path
+        at_bat = live and half not in ("MID", "END")
+        bases = ((bool(sit.get("onFirst")), bool(sit.get("onSecond")), bool(sit.get("onThird")))
+                 if at_bat else ())
         la, lh = _espn_linescore(away_c), _espn_linescore(home_c)
         out[key] = GameState(
             key=key, date_iso=date_iso, hhmm_et=hhmm, game_no=game_no, source="espn",
@@ -333,9 +340,9 @@ def parse_espn_scoreboard(espn_json: dict, *, now_ts: int) -> dict:
                            _espn_record(home_c), _int_or_none(home_c.get("score"))),
             inning=_int_or_none(st.get("period")) if live else None,
             half=half,
-            outs=_int_or_none(sit.get("outs")) if live else None,
-            balls=_int_or_none(sit.get("balls")) if live else None,
-            strikes=_int_or_none(sit.get("strikes")) if live else None,
+            outs=_int_or_none(sit.get("outs")) if at_bat else None,
+            balls=_int_or_none(sit.get("balls")) if at_bat else None,
+            strikes=_int_or_none(sit.get("strikes")) if at_bat else None,
             bases=bases, linescore_away=la, linescore_home=lh,
             last_play=((sit.get("lastPlay") or {}).get("text") if live else None))
     return out

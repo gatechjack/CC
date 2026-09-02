@@ -8,9 +8,14 @@
      pm.css keeps the Farm-League / whale pages' styling; pm_desk.css (loaded after) is the copy-desk design
      system for the Accounts / Account / Live pages + the shared shell. Bare h1/h2/a in pm_desk are scoped
      under .desk so they never restyle the farm pages. #}
-  <link rel="stylesheet" href="/static/pm.css" />
-  <link rel="stylesheet" href="/static/pm_desk.css" />
-  <script src="/static/htmx.min.js" defer></script>
+  {# CACHE-BUST (item 1): the static server sends no far-future max-age, so a browser holds a stale copy of a
+     changed asset -- exactly why the shipped .toggle .tgl rule did not appear on prod after DEPLOY 2 (the CSS was
+     correct on the box; the browser served an old pm_desk.css). The ?v= is the asset's own CR-stripped sha8, so a
+     changed file gets a new URL and is always re-fetched. test_asset_cache_bust keeps these in sync with the
+     files, so a CSS/JS change that forgets to bump the hash fails CI rather than shipping stale. #}
+  <link rel="stylesheet" href="/static/pm.css?v=204d9051" />
+  <link rel="stylesheet" href="/static/pm_desk.css?v=1b3b8ccc" />
+  <script src="/static/htmx.min.js?v=491955cd" defer></script>
 </head>
 <body class="pm-body">
   <header class="top">

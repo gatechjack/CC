@@ -82,8 +82,14 @@ table.sh tr:not(.baseball) td{color:var(--dimmer)}
 .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 @media(max-width:860px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:700px){.cards{grid-template-columns:1fr}}
-.g{background:var(--panel);border-radius:3px;padding:0 0 10px;position:relative}
+.g{background:var(--panel);border-radius:3px;padding:0 0 10px;position:relative;border:1px solid transparent}
 .g.mx{box-shadow:inset 0 2px 0 0 var(--won)}
+/* GAME-STATE full border (item 2): transparent base reserves the space so no card shifts; state sets the colour.
+   LIVE=blue / NOT STARTED=subtle line / COMPLETE=grey. Postponed/suspended/delayed reuse st-pre; feed-unavailable
+   gets none. Existing palette only. Coexists with the MIXED green top accent (position state) -- border vs accent. */
+.g.st-live{border-color:var(--live)}
+.g.st-pre{border-color:var(--line2)}
+.g.st-complete{border-color:var(--off)}
 .g .ghd{display:flex;align-items:center;flex-wrap:wrap;gap:6px 9px;padding:9px 10px 6px}
 .g .mu{font-family:var(--dmono);font-size:12.5px;letter-spacing:.06em;white-space:nowrap}
 .st{font-family:var(--dmono);font-size:9.5px;letter-spacing:.12em;padding:2px 6px;border-radius:2px;border:1px solid var(--line2);color:var(--dim);white-space:nowrap}
@@ -91,7 +97,7 @@ table.sh tr:not(.baseball) td{color:var(--dimmer)}
 .st.na{color:var(--stale);border-color:#6b4a1c}
 .g .ghd .r{margin-left:auto;display:flex;align-items:center;gap:8px}
 .mxn{font-family:var(--dmono);font-size:9.5px;letter-spacing:.1em;color:var(--won);white-space:nowrap}
-.g .gdt{width:100%;font-family:var(--dmono);font-size:9.5px;letter-spacing:.04em;color:var(--dim);margin-top:1px}
+.g .gdt{width:100%;text-align:right;font-family:var(--dmono);font-size:9.5px;letter-spacing:.04em;color:var(--dim);margin-top:1px}
 
 /* three fixed bet lines, seated over home plate -- identical shape on every card */
 .bets{position:absolute;left:50%;top:calc(50% + 80px);transform:translateX(-50%);width:190px;display:grid;gap:1px;background:#070b12;padding:1px;border-radius:2px;z-index:2}
@@ -123,25 +129,29 @@ table.sh tr:not(.baseball) td{color:var(--dimmer)}
 .nocount{font-family:var(--dmono);font-size:9px;letter-spacing:.08em;color:var(--dimmer)}
 .nocount.na{color:var(--stale)}
 .dia{position:relative;width:192px;height:192px;margin:0 auto 78px}
-.sq{position:absolute;left:50%;top:50%;width:132px;height:132px;transform:translate(-50%,-50%) rotate(45deg);border:1px solid var(--line2)}
-.dia.dead .sq{border-color:#1a2431;border-style:dashed}
-.base{position:absolute;width:11px;height:11px;transform:rotate(45deg);border:1px solid var(--line2);background:#080d14}
+/* diamond lines heavier + brighter (item 5, user feedback -- the outline was too faint on the dark panel) */
+.sq{position:absolute;left:50%;top:50%;width:132px;height:132px;transform:translate(-50%,-50%) rotate(45deg);border:2px solid #45597a}
+.dia.dead .sq{border-color:#2f3d4f;border-style:dashed}
+.base{position:absolute;width:11px;height:11px;transform:rotate(45deg);border:1px solid #45597a;background:#080d14}
 .base.on{background:var(--text);border-color:var(--text);box-shadow:0 0 11px rgba(226,232,240,.4)}
 .b2{left:calc(50% - 5.5px);top:calc(50% - 99px)}
 .b1{left:calc(50% + 88px);top:calc(50% - 5.5px)}
 .b3{left:calc(50% - 99px);top:calc(50% - 5.5px)}
-.hp{position:absolute;left:calc(50% - 5px);top:calc(50% + 80px);width:10px;height:10px;transform:rotate(45deg);border:1px solid #223045}
+.hp{position:absolute;left:calc(50% - 5px);top:calc(50% + 80px);width:10px;height:10px;transform:rotate(45deg);border:1px solid #45597a}
 .inner{position:absolute;left:50%;top:calc(50% - 20px);transform:translate(-50%,-50%);width:150px;display:grid;gap:2px;justify-items:center}
 .ls{display:grid;grid-template-columns:19px repeat(9,11px) 17px;font-family:var(--dmono);font-variant-numeric:tabular-nums;align-items:center}
 .ls > *{text-align:center}
 .ls .ab{text-align:left;font-size:10px;font-weight:600;letter-spacing:.04em}
 .ls .i{font-size:9.5px}
 .ls .r{font-size:13.5px;font-weight:700;letter-spacing:-.02em}
+/* scoreboard font brighter (item 5, user feedback -- played digits were too dim to read). Lead row stays
+   brightest; the per-inning digits are lifted a full step and the leading team's are brighter than the trailing
+   team's so the lead still reads at a glance. Unplayed cells stay recessed but are no longer near-invisible. */
 .ls.lead .ab,.ls.lead .r{color:var(--text)}
-.ls.lead .i{color:var(--dim)}
-.ls:not(.lead) .ab,.ls:not(.lead) .r{color:var(--dim)}
-.ls:not(.lead) .i{color:var(--dimmer)}
-.ls .i.fut{color:#253243}
+.ls.lead .i{color:#c3ccd8}
+.ls:not(.lead) .ab,.ls:not(.lead) .r{color:#aeb9c7}
+.ls:not(.lead) .i{color:var(--dim)}
+.ls .i.fut{color:#3a4a5f}
 .ls .i.cur,.ls .i.fut.cur{color:var(--live)}
 .ls.xi .i{font-size:8.5px}
 .ls .i.ext{box-shadow:inset 1px 0 0 0 #2b3a4e}

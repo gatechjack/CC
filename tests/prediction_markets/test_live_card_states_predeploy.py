@@ -2,13 +2,15 @@
 shorthand, and the separated toggle. Pure PM-package assembly tests (build_live_context / _feed_block /
 _short_label / _fmt_et_datetime) plus one TestClient render for the template labels. No engine, no network.
 
-  item 1 -- start line 'Wed Sep 2 . 6:40 PM ET' from the ticker (renders feed-down); feed<->ticker time
+  item 1 -- start line 'Sep 2 . 6:40 PM ET' from the ticker (renders feed-down); feed<->ticker time
             mismatch is flagged, never silently.
   item 2 -- pre-game is 'not started' with NO score digits (not '0-0', not 'game over'); Postponed / Suspended /
             Delayed are their own labels.
   item 3 -- TOTAL shows over/under as a sign ('+8.5' / '-8.5'); SPREAD shows sign + team ('-1.5 ATL' / '+1.5 SD').
   item 4 -- the two Active/Complete toggles render as separate segmented anchors.
 """
+import re
+
 from fastapi.testclient import TestClient
 
 from trading_corp.prediction_markets import db
@@ -51,11 +53,11 @@ def test_settled_leg_derivation():
 
 # ── item 1: scheduled date/time formatting ────────────────────────────────────────────────────────────────────
 def test_fmt_et_datetime_shapes():
-    assert LV._fmt_et_datetime("2026-09-02", "1840") == "Wed Sep 2 · 6:40 PM ET"
-    assert LV._fmt_et_datetime("2026-09-02", "0905") == "Wed Sep 2 · 9:05 AM ET"
-    assert LV._fmt_et_datetime("2026-09-02", "1200") == "Wed Sep 2 · 12:00 PM ET"   # noon
-    assert LV._fmt_et_datetime("2026-09-02", "0000") == "Wed Sep 2 · 12:00 AM ET"   # midnight
-    assert LV._fmt_et_datetime("2026-09-02", None) == "Wed Sep 2"                         # date only, feed-down safe
+    assert LV._fmt_et_datetime("2026-09-02", "1840") == "Sep 2 · 6:40 PM ET"
+    assert LV._fmt_et_datetime("2026-09-02", "0905") == "Sep 2 · 9:05 AM ET"
+    assert LV._fmt_et_datetime("2026-09-02", "1200") == "Sep 2 · 12:00 PM ET"   # noon
+    assert LV._fmt_et_datetime("2026-09-02", "0000") == "Sep 2 · 12:00 AM ET"   # midnight
+    assert LV._fmt_et_datetime("2026-09-02", None) == "Sep 2"                         # date only, feed-down safe
     assert LV._fmt_et_datetime(None, None) is None
 
 
@@ -136,9 +138,9 @@ def test_card_start_display_present_including_feed_down():
                 ("KXMLBTOTAL-26SEP022210NYYLAA-9", None)])            # no GameState -> feed unavailable
     live = _card_for(ctx, "SD", "CIN")
     dead = _card_for(ctx, "NYY", "LAA")
-    assert live["start_display"] == "Wed Sep 2 · 6:40 PM ET"
+    assert live["start_display"] == "Sep 2 · 6:40 PM ET"
     assert dead["feed"]["available"] is False
-    assert dead["start_display"] == "Wed Sep 2 · 10:10 PM ET"    # item 1: renders even feed-down
+    assert dead["start_display"] == "Sep 2 · 10:10 PM ET"    # item 1: renders even feed-down
     # item 3: the TOT slot on each card carries direction
     assert live["slots_by_kind"]["TOT"]["short"] == "+8.5"
 
@@ -153,10 +155,10 @@ def test_time_mismatch_flagged_when_feed_time_differs():
                      strikes=None, bases=(), linescore_away=(1,), linescore_home=(0,), last_play=None)
     ctx = _ctx([("KXMLBTOTAL-26SEP022007HOUSEA-9", gs)])
     card = ctx["cards"][0]
-    assert card["start_display"] == "Wed Sep 2 · 8:10 PM ET"     # the FEED's time
+    assert card["start_display"] == "Sep 2 · 8:10 PM ET"     # the FEED's time
     assert card["time_mismatch"] is not None
-    assert card["time_mismatch"]["ticker"] == "Wed Sep 2 · 8:07 PM ET"
-    assert card["time_mismatch"]["feed"] == "Wed Sep 2 · 8:10 PM ET"
+    assert card["time_mismatch"]["ticker"] == "Sep 2 · 8:07 PM ET"
+    assert card["time_mismatch"]["feed"] == "Sep 2 · 8:10 PM ET"
     # and the drawer trade row carries the same mismatch (so it is flagged, never silent)
     assert ctx["trades"] and ctx["trades"][0]["time_mismatch"] is not None
 
@@ -254,7 +256,7 @@ def test_template_renders_pregame_and_final_states(monkeypatch, tmp_path):
     assert cl.get("/live/kalshi_jack/mlb").status_code == 200
     # item 1: a date/time line on EVERY card (3), incl. the feed-unavailable one
     assert html.count('class="gdt"') == 3
-    assert "Wed Sep 2 · 10:10 PM ET" in html          # feed-down card still shows the ticker time
+    assert "Sep 2 · 10:10 PM ET" in html          # feed-down card still shows the ticker time
     # item 2: pre-game is 'not started', NOT 'game over'; final IS 'game over'
     assert "not started" in html
     assert "game over" in html                             # the final card
@@ -262,6 +264,84 @@ def test_template_renders_pregame_and_final_states(monkeypatch, tmp_path):
     assert '<span class="r">0</span>' not in html
     # item 4: two separate toggle anchors
     assert html.count('class="tgl"') == 2
+
+
+# ── CARD POLISH (2026-09-03) ──────────────────────────────────────────────────────────────────────────────────
+# item 3: inning break clears the count + runners (feed parse), keeps the inning label; MIDDLE -> 'MID'
+def _statsapi_game(inning_state, balls=2, strikes=1, outs=2):
+    return {"dates": [{"games": [{
+        "gamePk": 1, "gameDate": "2026-09-02T23:05:00Z",
+        "teams": {"away": {"team": {"abbreviation": "ATL"}, "score": 3, "leagueRecord": {"wins": 80, "losses": 60}},
+                  "home": {"team": {"abbreviation": "WSH"}, "score": 2, "leagueRecord": {"wins": 70, "losses": 70}}},
+        "status": {"detailedState": "In Progress", "abstractGameState": "Live"},
+        "linescore": {"currentInning": 4, "inningState": inning_state, "balls": balls, "strikes": strikes,
+                      "outs": outs, "offense": {"first": {}, "second": {}},
+                      "innings": [{"away": {"runs": 0}, "home": {"runs": 0}}]},
+    }]}]}
+
+
+def test_feed_parse_inning_break_clears_count():
+    for st, lbl in (("Middle", "MID"), ("End", "END")):
+        g = list(F.parse_statsapi_schedule(_statsapi_game(st), now_ts=NOW).values())[0]
+        assert g.half == lbl                                     # short form, consistent with TOP/BOT
+        assert g.inning == 4                                     # inning label kept across the break
+        assert g.balls is None and g.strikes is None and g.outs is None   # count cleared for the next half
+        assert g.bases == ()                                    # runners cleared
+    # a normal at-bat (Top) keeps the live count + runners
+    g = list(F.parse_statsapi_schedule(_statsapi_game("Top"), now_ts=NOW).values())[0]
+    assert g.half == "TOP" and g.balls == 2 and g.strikes == 1 and g.outs == 2
+    assert g.bases == (True, True, False)
+
+
+def test_template_inning_break_renders_empty_pips_and_label(monkeypatch, tmp_path):
+    # the break card keeps 'MID 4' but lights NO count pips and shows no base runners.
+    brk = _gs("in_progress", away="ATH", home="TEX", hhmm="1610", inning=4, half="MID")   # _gs count defaults None
+    cl = _render_client(monkeypatch, tmp_path, [("KXMLBTOTAL-26SEP021610ATHTEX-9", brk)])
+    html = cl.get("/live/kalshi_jack/mlb").text
+    card = re.split(r'<article class="g', html)[1]
+    assert "MID 4" in card                                       # inning label kept, short form
+    assert 'class="pip on"' not in card                          # no lit count pips at the break
+    assert 'class="base b1 on"' not in card and 'class="base b2 on"' not in card and 'class="base b3 on"' not in card
+
+
+# item 2: the three game states get a full card border; feed-unavailable gets none; postponed uses NOT STARTED
+def test_card_state_border_classes(monkeypatch, tmp_path):
+    cl = _render_client(monkeypatch, tmp_path, [
+        ("KXMLBTOTAL-26SEP021305ATLWSH-9", _gs("in_progress", away="ATL", home="WSH", hhmm="1305", inning=5, half="TOP")),
+        ("KXMLBTOTAL-26SEP021240SDCIN-9", _gs("preview", away="SD", home="CIN", hhmm="1240")),
+        ("KXMLBTOTAL-26SEP021810TORCLE-9", _gs("postponed", away="TOR", home="CLE", hhmm="1810")),
+        ("KXMLBTOTAL-26SEP021510PHIAZ-9", _gs("final", away="PHI", home="AZ", hhmm="1510", la=(1,), lh=(0,), ascore=1, hscore=0)),
+        ("KXMLBTOTAL-26SEP022210NYYLAA-9", None),                # feed unavailable
+    ])
+    html = cl.get("/live/kalshi_jack/mlb").text
+    byteam = {}
+    for m in re.finditer(r'<article class="g([^"]*)">(.*?)</article>', html, re.S):   # bound to each card only
+        cls, inner = m.group(1), m.group(2)
+        for tm in ("ATL", "SD", "TOR", "PHI", "NYY"):
+            if tm in inner:
+                byteam[tm] = cls
+                break
+    assert "st-live" in byteam["ATL"]                            # in-progress -> LIVE border
+    assert "st-pre" in byteam["SD"]                              # preview -> NOT STARTED border
+    assert "st-pre" in byteam["TOR"]                             # postponed -> NOT STARTED border (keeps amber chip)
+    assert "st-complete" in byteam["PHI"]                        # final -> COMPLETE border
+    assert "st-" not in byteam["NYY"]                            # feed-unavailable -> no state border
+    # legend documents the three states
+    assert "live game" in html and "not started" in html and "complete" in html
+
+
+# item 1: the shell cache-busts static assets, and the baked ?v= stays in sync with the files
+def test_asset_cache_bust_hashes_match_files():
+    import hashlib
+    import pathlib
+    web = pathlib.Path(LV.__file__).resolve().parent
+    shell = (web / "templates" / "pm_shell.html").read_text(encoding="utf-8")
+    for asset in ("pm.css", "pm_desk.css", "htmx.min.js"):
+        content = (web / "static" / asset).read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"")
+        want = hashlib.sha256(content).hexdigest()[:8]
+        m = re.search(r"/static/%s\?v=([0-9a-f]{8})" % re.escape(asset), shell)
+        assert m, "no cache-bust ?v= for %s in pm_shell.html" % asset
+        assert m.group(1) == want, "stale cache-bust for %s: shell=%s file=%s -- bump pm_shell.html" % (asset, m.group(1), want)
 
 
 def test_template_flags_time_mismatch_in_drawer(monkeypatch, tmp_path):
@@ -273,6 +353,6 @@ def test_template_flags_time_mismatch_in_drawer(monkeypatch, tmp_path):
                      strikes=None, bases=(), linescore_away=(1,), linescore_home=(0,), last_play=None)
     cl = _render_client(monkeypatch, tmp_path, [("KXMLBTOTAL-26SEP022007HOUSEA-9", gs)])
     html = cl.get("/live/kalshi_jack/mlb").text
-    assert "Wed Sep 2 · 8:10 PM ET" in html           # the feed time on the card
+    assert "Sep 2 · 8:10 PM ET" in html           # the feed time on the card
     assert "&dagger;" in html                              # main-row mismatch marker (never silent)
     assert "Scheduled start" in html and "8:07 PM ET" in html   # drawer detail records the ticker time too

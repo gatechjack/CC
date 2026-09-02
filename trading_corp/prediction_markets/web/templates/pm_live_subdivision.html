@@ -124,7 +124,11 @@
   {%- set feed = card.feed -%}
   {%- set aw = feed.away.abbr if (feed.available and feed.away.abbr) else card.matchup_away -%}
   {%- set hm = feed.home.abbr if (feed.available and feed.home.abbr) else card.matchup_home -%}
-  <article class="g {% if card.mixed %}mx{% endif %}">
+  {# GAME-STATE full border (item 2): LIVE / NOT STARTED / COMPLETE. Postponed/suspended/delayed use the NOT
+     STARTED border + keep their amber chips; feed-unavailable gets NO state border (amber treatment). This is the
+     GAME's state -- distinct from the MIXED green top accent, which is POSITION state, so the two never fight. #}
+  {%- set gstate = 'st-live' if feed.status == 'in_progress' else ('st-complete' if feed.status == 'final' else ('st-pre' if (feed.available and feed.status in ('preview', 'postponed', 'suspended', 'delayed')) else '')) -%}
+  <article class="g {% if card.mixed %}mx{% endif %} {{ gstate }}">
     <div class="ghd">
       {% if not feed.available %}<span class="st na">FEED N/A</span>
       {% elif feed.status == 'final' %}<span class="st">FINAL</span>
@@ -215,6 +219,10 @@
     <span><i style="background:var(--won)"></i>settled won &middot; $1.00/contract</span>
     <span><i style="background:var(--lost)"></i>settled lost &middot; $0.00</span>
     <span><i style="background:#26364a"></i>bet not held</span>
+    <span class="dim" style="margin-left:2px">card border:</span>
+    <span><i style="background:transparent;border:1px solid var(--live)"></i>live game</span>
+    <span><i style="background:transparent;border:1px solid var(--line2)"></i>not started</span>
+    <span><i style="background:transparent;border:1px solid var(--off)"></i>complete</span>
     <span><i style="background:var(--stale)"></i>feed stale or unavailable</span>
     <span><i style="background:var(--text)"></i>runner on base</span>
     <span><i style="background:var(--lampB)"></i>ball <i style="background:var(--lampS);margin-left:8px"></i>strike <i style="background:var(--lampO);margin-left:8px"></i>out</span>
