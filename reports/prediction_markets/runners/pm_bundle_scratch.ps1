@@ -15,7 +15,7 @@ function Find-Exe($name) {
 $ssh = Find-Exe "ssh"; $scp = Find-Exe "scp"
 if (Test-Path $tar) { Remove-Item $tar -Force }
 # git archive HEAD -> LF tar of the overlay files (archive uses stored blobs = LF, not the autocrlf worktree)
-& git -C $wt archive -o $tar HEAD trading_corp/prediction_markets/db.py trading_corp/prediction_markets/execution.py trading_corp/prediction_markets/live_driver.py trading_corp/data/ufc_poly_kalshi_match.py tests/prediction_markets
+& git -C $wt archive -o $tar HEAD trading_corp/prediction_markets/db.py trading_corp/prediction_markets/execution.py trading_corp/prediction_markets/live_driver.py trading_corp/prediction_markets/driver_roster.py trading_corp/data/ufc_poly_kalshi_match.py tests/prediction_markets
 if (-not (Test-Path $tar)) { throw "git archive produced no tar" }
 Write-Host ("overlay tar: {0} bytes -> scp to box" -f (Get-Item $tar).Length)
 & $scp -o ConnectTimeout=20 $tar ("{0}:/home/azureuser/pm_bundle_overlay.tar" -f $h)

@@ -40,14 +40,26 @@ This bundle needs an ENGINE restart (`restart_tc.ps1` -> `systemctl restart trad
   NAME-NORMALIZATION gap (short/full first names + accented chars) that would UNDER-match on real data -- a **go-live
   refinement BEFORE any ufc attach/arm**, and it does NOT affect this INERT mlb-only deploy (no ufc sub exists).
 
-## MANIFEST (box-is-truth; hashes CR-stripped/LF)
+## ★ SCOPE UPDATE 2026-09-03 15:30: BUNDLE NOW = B2 + R1 + R2 + **M4 + C** (all box-scratch PASSED together @ tip)
+Built in the pre-deploy window on THIS branch (droppable -- each is its own commit). **M4** = relax the guard behind a
+FAIL-CLOSED per-account opt-in (`pm_account.multi_category_ok`, migration 019, DDL DEFAULT 0). **C** = the
+account-level aggregate cap (gate 5b/8b, $150/day + 50 orders across categories, config-in-code, race-free on the
+shared Journal). Both are INERT today (no account is opted in, no 2nd category exists) -> byte-identical to today.
+**FALLBACK (kept open):** if either weren't clean they'd be reverted and the B2+R1+R2 bundle ships alone; they ARE
+clean, so all five ride ONE restart. Re-proven box-scratch (whole bundle @ tip `e96fdf8`): reconcile clean incl.
+`driver_roster.py 802c9a82`(==e5d6506); Proof A engine-only = ONLY the 2 pre-existing shard_gate FakeClient failures
+(test_m4_optin / test_account_cap_c / test_per_account_driver_n2 GREEN); CREATE-SQL IDENTICAL (scratch head 19, box
+17); UFC dry-run unchanged; engine PID untouched.
+
+## MANIFEST (box-is-truth; hashes CR-stripped/LF; tip `e96fdf8`)
 | File | Box now | Target (HEAD) | ACTION |
 |---|---|---|---|
-| `trading_corp/prediction_markets/db.py` | `46e612f1` (loss-om 17) | +018 | **★ GRAFT** -- add `MIGRATION_018` block + `(18, MIGRATION_018)` tuple ONLY (box has 017 applied; NEVER wholesale my db.py -- it is e5d6506+017-backport lineage) |
-| `trading_corp/prediction_markets/execution.py` | `bc806bc4` (==e5d6506 base) | `1f48b6b3` | WHOLESALE (box == base, verified; target = base + B2/R2) |
+| `trading_corp/prediction_markets/db.py` | `46e612f1` (loss-om 17) | `5342ad98` (+018,+019) | **★ GRAFT** -- add `MIGRATION_018` + `MIGRATION_019` blocks + both tuples ONLY (box has 017; NEVER wholesale my db.py) |
+| `trading_corp/prediction_markets/execution.py` | `bc806bc4` (==e5d6506 base) | `b25984d0` | WHOLESALE (box == base, verified; target = base + B2/R2/**C**) |
 | `trading_corp/prediction_markets/live_driver.py` | `4b85f93f` (==A deploy) | `6c20891e` | WHOLESALE (box == A, verified; target = A + B2/R1/R2) |
+| `trading_corp/prediction_markets/driver_roster.py` | `802c9a82` (==e5d6506 base) | `0277fa5c` | WHOLESALE (box == base, verified; target = base + **M4**) |
 | `trading_corp/data/ufc_poly_kalshi_match.py` | ABSENT | `2fa2166b` | ADD (new, pure/stdlib) |
-| `main.py` / `boot_reconcile.py` / `app.py` / pm_web | unchanged | -- | NOT shipped |
+| `main.py` / `boot_reconcile.py` / `app.py` / pm_web | unchanged | -- | NOT shipped (main.py already groups spawn by account -> M4 needs no main.py edit) |
 
 Import closure: execution.py adds `from ..data import ufc_poly_kalshi_match as U` (the NEW file -> ship it); live_driver
 adds the same import; both already on the box otherwise. NO other new imports.
@@ -56,11 +68,13 @@ adds the same import; both already on the box otherwise. NO other new imports.
 1. **Gate-1:** BACKUP `data/prediction_markets.db` (+ wal/shm) and `PRAGMA integrity_check` -> must be `ok` FIRST.
    Also back up the 2 code files + db.py to `~/pm_bundle_backup_$TS`.
 2. **Pre-check:** the 4 box hashes == the manifest's "Box now" (abort writing nothing on any drift).
-3. **Migration FIRST:** graft `db.py` (add 018), then RUN `init_db` explicitly (`venv/bin/python -c "from
-   trading_corp.prediction_markets import db; db.init_db()"`) -> applies 018. VERIFY: schema head **18**,
-   `pm_opposed_marker` table present, and its CREATE SQL == the manifest.
-4. **Then the code:** wholesale `execution.py` + `live_driver.py`, ADD `ufc_poly_kalshi_match.py` (.tmp -> sha-verify
-   -> mv).
+3. **Migration FIRST:** graft `db.py` (add BOTH `MIGRATION_018` and `MIGRATION_019` blocks + their tuples), then RUN
+   `init_db` explicitly (`venv/bin/python -c "from trading_corp.prediction_markets import db; db.init_db()"`) -> applies
+   018 THEN 019 in order. VERIFY: schema head **19**; `pm_opposed_marker` present (CREATE SQL == manifest);
+   `pm_account.multi_category_ok` column present with **DEFAULT 0** (`PRAGMA table_info(pm_account)`); and ALL existing
+   `pm_account` rows read `multi_category_ok=0` (the guard stays CLOSED -- no account is opted in).
+4. **Then the code:** wholesale `execution.py` + `live_driver.py` + `driver_roster.py`, ADD `ufc_poly_kalshi_match.py`
+   (.tmp -> sha-verify -> mv).
 5. **Gate-A:** `py_compile` all 3 + `python -c "import trading_corp.prediction_markets.live_driver, .execution,
    trading_corp.data.ufc_poly_kalshi_match"` on the box venv. RESTORE on any failure; do NOT restart.
 6. **Restart** (Jack, warned bitunix): `restart_tc.ps1`.
@@ -70,7 +84,12 @@ code somehow ran before the migration it degrades to opposed-close-only, no cras
 (grep-confirmed). Migration still leads.
 
 ## POST-CHECK (read-only)
-- schema head **18**; `pm_opposed_marker` present (EMPTY -- no contest yet).
+- schema head **19**; `pm_opposed_marker` present (EMPTY); `pm_account.multi_category_ok` present.
+- **★ THE GUARD IS STILL CLOSED (M4 default OFF):** every `pm_account.multi_category_ok = 0` -> the roster log must
+  read **exactly 2 SINGLE-category tasks {kalshi_jack:[mlb], kalshi_karen:[mlb]}** -- NEITHER account has a 2nd
+  category, NEITHER is opted in. If the roster shows any account with >1 category, or >2 tasks, M4 opened the guard
+  when it must not -> STOP + rollback. (C is inert too: no 2nd category exists, so gate 5b/8b bind at the same $150/50
+  as gate 5/8 -> byte-identical.)
 - Roster log: **2 account task(s) {kalshi_jack:[mlb], kalshi_karen:[mlb]}** -- Option C unchanged, B2 invisible.
 - Arm rows PERSISTED + ts BYTE-UNCHANGED, both armed latched=False (global 08-31T02:35:38 / jack 08-31T21:49:39 /
   karen 09-02T12:53:23). NOT a status call.

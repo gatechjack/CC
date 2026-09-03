@@ -9,12 +9,12 @@ echo "engine PID (must be UNTOUCHED): $(systemctl show -p MainPID --value tradin
 
 echo
 echo "### [0] RECONCILE -- box pre-overlay file hashes (LF, tr -d CR) vs expected ###"
-for f in prediction_markets/db.py prediction_markets/execution.py prediction_markets/live_driver.py prediction_markets/boot_reconcile.py; do
+for f in prediction_markets/db.py prediction_markets/execution.py prediction_markets/live_driver.py prediction_markets/driver_roster.py prediction_markets/boot_reconcile.py; do
   h=$(tr -d '\r' < "$ROOT/trading_corp/$f" 2>/dev/null | sha256sum | cut -c1-16); echo "  trading_corp/$f = $h"
 done
 h=$(tr -d '\r' < "$ROOT/trading_corp/main.py" 2>/dev/null | sha256sum | cut -c1-16); echo "  trading_corp/main.py = $h"
 echo "  ufc matcher on box: $([ -f "$ROOT/trading_corp/data/ufc_poly_kalshi_match.py" ] && echo PRESENT || echo ABSENT)"
-echo "  EXPECT: db.py=46e612f152d96b12(loss-om17) execution.py=bc806bc4eb289072(e5d6506) live_driver.py=4b85f93f...(A) boot_reconcile=ecce77770f951f74(A) main.py=bba046e8f1ce9801(A); ufc ABSENT"
+echo "  EXPECT: db.py=46e612f152d96b12(loss-om17) execution.py=bc806bc4eb289072(e5d6506) live_driver.py=4b85f93f...(A) driver_roster.py=802c9a824b4803ac(e5d6506) boot_reconcile=ecce77770f951f74(A) main.py=bba046e8f1ce9801(A); ufc ABSENT"
 
 echo
 echo "### [1] COPY live CODE -> scratch (NOT the venv -- reuse the box venv), OVERLAY my HEAD files, replace tests ###"
@@ -27,18 +27,18 @@ for x in pyproject.toml conftest.py pytest.ini setup.cfg; do [ -f "$ROOT/$x" ] &
 rm -rf "$SCRATCH/tests/prediction_markets"
 tar xf "$TAR" -C "$SCRATCH"
 echo "  overlaid hashes in scratch (must MATCH my branch HEAD):"
-for f in prediction_markets/db.py prediction_markets/execution.py prediction_markets/live_driver.py; do
+for f in prediction_markets/db.py prediction_markets/execution.py prediction_markets/live_driver.py prediction_markets/driver_roster.py; do
   h=$(tr -d '\r' < "$SCRATCH/trading_corp/$f" 2>/dev/null | sha256sum | cut -c1-16); echo "    trading_corp/$f = $h"
 done
 echo "    ufc matcher in scratch: $([ -f "$SCRATCH/trading_corp/data/ufc_poly_kalshi_match.py" ] && echo PRESENT || echo ABSENT)"
-echo "  EXPECT: db.py=aa5126bae6219e5f execution.py=1f48b6b3517295a9 live_driver.py=6c20891eae9253fa; ufc PRESENT(2fa2166b87948b0e)"
+echo "  EXPECT: db.py=5342ad98a2bb16b4(+019) execution.py=b25984d0a1e2cdc4(+C) live_driver.py=6c20891eae9253fa driver_roster.py=0277fa5c9b596d45(+M4); ufc PRESENT(2fa2166b87948b0e)"
 
 echo
 echo "### [2] PROOF A -- MLB byte-identical: run the PM suite on the BOX venv (-p no:pytest_ethereum) ###"
 echo "     (the pykalshi-path tests -- kill_switch / live_driver_r7c / shard_gate -- CANNOT run locally; they are the gate)"
 echo "     (ENGINE/schema tests ONLY -- WEB tests are excluded: my branch is e5d6506-era on web/ while the box has the"
 echo "      newer loss-omission+UI web deployed, so branch web tests mismatch the box web -- a divergence, not my change)"
-ENGINE="test_live_driver_r7c test_kill_switch_r7d test_shard_gate_r2 test_boot_reconcile_r55 test_venue_exposure_r7 test_b2_dispatch test_opposing_close_r5 test_execution_r4 test_ufc_match test_mlb_match_r2 test_search_r1 test_shard_snapshot_m3 test_shard_snapshot_task_m3 test_per_account_driver_n2 test_optiond_r1 test_idempotency_r7h test_disarm_r7i test_arm_r5 test_settlement_rd test_sizing_contracts_r8 test_liquidity_floor_r7f test_null_caps_r7f test_exchange_index_r3 test_shard_balance_r1 test_db test_names"
+ENGINE="test_live_driver_r7c test_kill_switch_r7d test_shard_gate_r2 test_boot_reconcile_r55 test_venue_exposure_r7 test_b2_dispatch test_opposing_close_r5 test_account_cap_c test_m4_optin test_execution_r4 test_ufc_match test_mlb_match_r2 test_search_r1 test_shard_snapshot_m3 test_shard_snapshot_task_m3 test_per_account_driver_n2 test_optiond_r1 test_idempotency_r7h test_disarm_r7i test_arm_r5 test_settlement_rd test_sizing_contracts_r8 test_liquidity_floor_r7f test_null_caps_r7f test_exchange_index_r3 test_shard_balance_r1 test_db test_names"
 FILES=""; for t in $ENGINE; do FILES="$FILES tests/prediction_markets/$t.py"; done
 cd "$SCRATCH" && PYTHONPATH="$SCRATCH" "$V" -m pytest $FILES -p no:pytest_ethereum -q -p no:cacheprovider 2>&1 | tail -30
 
@@ -51,7 +51,7 @@ from trading_corp.prediction_markets import db
 db.init_db("$FRESH")
 c=sqlite3.connect("$FRESH")
 mine=c.execute("SELECT sql FROM sqlite_master WHERE name='pm_loss_grounding_cache'").fetchone()
-print("  scratch head:", c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], "(expect 18)")
+print("  scratch head:", c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], "(expect 19)")
 box=sqlite3.connect("file:$ROOT/data/prediction_markets.db?mode=ro", uri=True)
 live=box.execute("SELECT sql FROM sqlite_master WHERE name='pm_loss_grounding_cache'").fetchone()
 def norm(s):
