@@ -820,3 +820,68 @@ async def test_m1_underfunded_alarm_is_per_category(tmp_path, caplog):
     alarms = [r.getMessage() for r in caplog.records if "SUSTAINED SHARD UNDERFUNDING" in r.getMessage()]
     assert any("/mlb" in m for m in alarms), alarms             # ★ mlb raised its OWN alarm
     assert any("/ufc" in m for m in alarms), alarms             # ★ ufc raised its OWN alarm (per-category, not shared)
+
+
+def _mk_sub_and_attach(conn, wallet, category="mlb"):
+    conn.execute("INSERT INTO pm_subdivision (account_id, category) VALUES (?, ?)", (ACCT, category))
+    conn.execute("INSERT INTO pm_subdivision_attachment (account_id, category, wallet) VALUES (?,?,?)",
+                 (ACCT, category, wallet))
+
+
+def _entry_row(conn, wallet, cid, oidx=0, ticker=None):   # a plain filled ENTRY (is_exit=0) so the journal holds it
+    conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,condition_id,outcome_index,ticker,"
+                 "outcome_leg,is_exit,fill_count,outcome_status,close_source,dry_run,submitted_ts,response_ts) "
+                 "VALUES (?, 'mlb', ?, ?, ?, ?, 'yes', 0, 5.0, 'filled', NULL, 0, 1, 1)", (ACCT, wallet, cid, oidx, ticker or T_TOR))
+
+
+def _opposed_row(conn, wallet, cid, oidx=0, ticker=None):   # a close_source='opposed' row -> cid enters the memory
+    conn.execute("INSERT INTO pm_subdivision_order (account_id,category,wallet,condition_id,outcome_index,ticker,"
+                 "outcome_leg,is_exit,fill_count,outcome_status,close_source,dry_run,submitted_ts,response_ts) "
+                 "VALUES (?, 'mlb', ?, ?, ?, ?, 'yes', 1, 5.0, 'filled', 'opposed', 0, 1, 1)", (ACCT, wallet, cid, oidx, ticker or T_TOR))
+
+
+_W1 = "0x16bb9951a36fce71e2ef57890b786145e0ba8492"
+
+
+@pytest.mark.asyncio
+async def test_r1_memory_resuppression_debugs_not_warns(tmp_path, caplog):
+    """★ R1 (2026-09-03): a cid already in the opposed-memory, re-signalled by a whale flicker, is a memory
+    RE-SUPPRESSION -> DEBUG, NOT WARN. Before R1 this produced the SAME 'NEWLY-contested -> FLAT (close held...)'
+    warning as a real new contest, so a WORKING memory read like a live flatten firing every cycle (the 0x0f58 1816x
+    noise) and was indistinguishable from a failure. Journal = entry + opposed close -> net flat (mirrors the real
+    0x0f58: id=98 entry then id=99 opposed close), so boot-reconcile stays clean."""
+    import logging
+    leg = _legacy(tmp_path); p = str(tmp_path / "sup.db"); db.init_db(p); _arm_both(leg)
+    C = "0xC_mem"
+    with db.connect(p) as conn:
+        _mk_sub_and_attach(conn, _W1); _entry_row(conn, _W1, C); _opposed_row(conn, _W1, C); conn.commit()
+    caplog.set_level(logging.DEBUG, logger="trading_corp.prediction_markets.live_driver")
+    await L.scheduled_pm_live_loop(p, FakeBroker(_FlatVenueClient(positions=[])),
+                                   FakePositionsClient(FakeBook([FakePos(C, 0, "Toronto Blue Jays")])),
+                                   account_id=ACCT, categories=["mlb"], poll_sec=0, legacy_db_path=leg,
+                                   ctx_builders={"mlb": _fake_ctx_builder}, _max_cycles=1)
+    guard = [r for r in caplog.records if "OPPOSING-PAIR guard" in r.getMessage()]
+    assert not [r for r in guard if r.levelno >= logging.WARNING and "NEWLY-contested" in r.getMessage()], \
+        [r.getMessage() for r in guard]                          # ★ a WORKING memory does NOT WARN (the noise fix)
+    assert [r for r in guard if r.levelno == logging.DEBUG and "re-suppressed via memory" in r.getMessage()]  # DEBUG instead
+
+
+@pytest.mark.asyncio
+async def test_r1_new_contest_warns_without_misleading_wording(tmp_path, caplog):
+    """★ R1: a genuinely-NEW contest (both sides incoming, none in memory) WARNS -- and the misleading 'close held +
+    skip both sides' wording (which described something that had already happened once) is GONE."""
+    import logging
+    leg = _legacy(tmp_path); p = str(tmp_path / "new.db"); db.init_db(p); _arm_both(leg)
+    C2 = "0xC_new"
+    with db.connect(p) as conn:
+        _mk_sub_and_attach(conn, _W1); conn.commit()
+    caplog.set_level(logging.DEBUG, logger="trading_corp.prediction_markets.live_driver")
+    book = FakeBook([FakePos(C2, 0, "Toronto Blue Jays"), FakePos(C2, 1, "Seattle Mariners")])   # both sides -> new pair
+    await L.scheduled_pm_live_loop(p, FakeBroker(_FlatVenueClient(positions=[])), FakePositionsClient(book),
+                                   account_id=ACCT, categories=["mlb"], poll_sec=0, legacy_db_path=leg,
+                                   ctx_builders={"mlb": _fake_ctx_builder}, _max_cycles=1)
+    warns = [r.getMessage() for r in caplog.records
+             if "OPPOSING-PAIR guard" in r.getMessage() and "NEWLY-contested" in r.getMessage()
+             and r.levelno >= logging.WARNING]
+    assert warns, "a new contest must WARN"
+    assert "close held + skip both sides" not in warns[0]        # ★ the misleading wording is gone

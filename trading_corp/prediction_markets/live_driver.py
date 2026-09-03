@@ -762,13 +762,25 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                     # contested stays off the books for its life (keyed on the contested market, not the coid).
                     _entries = [s for s in signals if not s.is_exit]
                     _exits = [s for s in signals if s.is_exit]
-                    _kept, _opposed, _contested, _preexisting = execution.detect_opposing_closes(
-                        _entries, execution.account_held_outcomes(conn, account_id, c),
-                        execution.account_opposed_cids(conn, account_id, c))
-                    if _contested:
-                        log.warning("pm_live_driver: OPPOSING-PAIR guard %s/%s -- %d NEWLY-contested -> FLAT (close "
-                                    "held + skip both sides); opposed_closes=%d cids=%s",
-                                    account_id, c, len(_contested), len(_opposed), sorted(_contested))
+                    _held = execution.account_held_outcomes(conn, account_id, c)
+                    _mem = execution.account_opposed_cids(conn, account_id, c)
+                    _kept, _opposed, _contested, _preexisting = execution.detect_opposing_closes(_entries, _held, _mem)
+                    # ★ R1 (2026-09-03): DISTINGUISH a genuinely-NEW contest from a memory RE-SUPPRESSION. Before R1 the
+                    # SAME warning fired whether the OPPOSED-MEMORY WORKED (re-suppressing a whale flicker on an
+                    # already-off-the-books market -- benign) or a NEW pair was created -- and it said "close held + skip
+                    # both sides" even when NOTHING was held or closed. So a working memory read like a live flatten
+                    # firing every cycle (the 0x0f58 1816x noise) and was indistinguishable from a failure -- which cost
+                    # a wrong hypothesis. NOW: WARN only on a NEW contest and/or an ACTUAL flatten, and say WHAT happened
+                    # (flattened N held legs, not the aspirational "close held"); DEBUG the memory re-hits.
+                    _new = _contested - _mem                            # in _contested but NOT already in the memory
+                    if _new or _opposed:
+                        log.warning("pm_live_driver: OPPOSING-PAIR guard %s/%s -- %d NEWLY-contested; flattened %d held "
+                                    "leg(s) + skipped incoming both sides; new_cids=%s",
+                                    account_id, c, len(_new), len(_opposed), sorted(_new))
+                    elif _contested:
+                        log.debug("pm_live_driver: OPPOSING-PAIR guard %s/%s -- %d already-contested market(s) "
+                                  "re-suppressed via memory (whale flicker; no new order, nothing held/closed); cids=%s",
+                                  account_id, c, len(_contested), sorted(_contested))
                     if _preexisting:
                         log.info("pm_live_driver: OPPOSING-PAIR guard %s/%s -- %d PRE-EXISTING pair(s) LEFT to settle: "
                                  "cids=%s", account_id, c, len(_preexisting), sorted(_preexisting))

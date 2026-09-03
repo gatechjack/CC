@@ -103,6 +103,16 @@ DB (entered / opposed-closed / settled).
   directional copy. Reframe: real latent gap, NOT yet triggered on MLB, fix before UFC widens the exposure -- AND add
   the missing instrumentation (nothing logs an un-flattened contested position today; the fix must make it visible).
 
+## BUILD STATUS (2026-09-03, Jack ruled: fix BOTH)
+- **★ R1 (logging) — BUILT + PROVEN.** `live_driver.py` guard call-site now captures `_held`/`_mem`, computes
+  `_new = _contested - _mem`, and WARNs only on a genuinely-NEW contest and/or an ACTUAL flatten (saying "flattened N
+  held leg(s)", not the aspirational "close held + skip both sides"); a memory RE-SUPPRESSION (whale flicker on an
+  already-off-the-books cid) is DEBUG. Zero order-path change (detect_opposing_closes call unchanged). Tests:
+  `test_r1_memory_resuppression_debugs_not_warns` (a WORKING memory does NOT WARN -- the 0x0f58 1816x noise fix) +
+  `test_r1_new_contest_warns_without_misleading_wording`. This makes the two states (memory working vs failing) DISTINCT
+  log lines -- the whole point.
+- **R2 (decision-keyed memory + instrumentation + migration 17->18) — IN PROGRESS.**
+
 ## RECOMMENDATION (Jack rules; NOT implemented)
 - Both issues are rulings, not patches. Issue 1 is a cheap logging-only change that removes the 1816x noise and the
   misleading "NEWLY"/"close held" wording. Issue 2 is the architectural fix (decision-keyed memory) and is the one
