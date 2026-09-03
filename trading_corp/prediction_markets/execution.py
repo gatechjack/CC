@@ -71,6 +71,14 @@ CONFIG_DEFAULTS = {
 }
 _ENTRY_TIF = "immediate_or_cancel"   # marketable copy (IOC); exits use the same TIF + reduce_only
 
+# ★ C (2026-09-03, Jack RULED): the ACCOUNT-LEVEL AGGREGATE caps. Adding a category must NOT silently grow an account's
+# total exposure, so the account total STAYS $150/day + 50 orders ACROSS ALL its categories (NOT per-category, which
+# would double to $300/100). Config-in-code (Jack's rule: config values in code, not migrations). Gate 5b/8b in
+# evaluate enforce these on the shared account-keyed Journal, race-free under Option C. BYTE-IDENTICAL with one category
+# at the ruled $150/50 (the account cap == the per-category cap, and gate 5/8 fire first).
+ACCOUNT_DAILY_USD_CAP = 150.0
+ACCOUNT_MAX_ORDERS_PER_DAY = 50
+
 
 # ── inputs ──────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
@@ -340,6 +348,13 @@ class Journal:
         venue rebase adds this (PM's in-flight placements, not yet reflected on the venue) to the venue base."""
         return self._open_usd.get(aid, 0.0) - self._open_usd_seed.get(aid, 0.0)
     def orders_today(self, aid, cat): return self._orders_today.get((aid, cat), 0)
+    # ★ C (2026-09-03): the ACCOUNT-LEVEL aggregates -- the sum across ALL of the account's categories in the SAME
+    # shared Journal. DERIVED from the per-category counters (not a separate accumulator), so they cannot diverge from
+    # the per-category numbers and need no seed/commit changes. Under Option C (ONE task/account, sequential categories,
+    # ONE shared Journal) these see every category's in-cycle commit -> gate 5b/8b are race-free by construction, the
+    # IDENTICAL mechanism as gate 6's account-keyed open cap. Categories per account are a handful, so the sum is O(1).
+    def daily_usd_account(self, aid): return sum(v for (a, c), v in self._daily_usd.items() if a == aid)
+    def orders_today_account(self, aid): return sum(n for (a, c), n in self._orders_today.items() if a == aid)
 
     def commit_would_place(self, aid, cat, usd: float) -> None:
         """Accumulate a would-place against the in-memory counters so LATER signals in the same run are gated by the
@@ -512,6 +527,16 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         if journal.daily_usd(sub.account_id, sub.category) + notional > sub.daily_usd_cap + 1e-9:   # gate 5
             return Decision("reject:daily_cap", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
                             count=count, notional_usd=notional, reason="daily_cap", disarm_armed=armed)
+        # gate 5b (C 2026-09-03): the ACCOUNT-LEVEL daily aggregate across ALL categories stays $150/day -- adding a
+        # category must NOT silently grow the account total. Race-free by construction under Option C (ONE task/account,
+        # sequential categories, the SAME shared Journal -- a later category's evaluate sees the earlier's in-cycle
+        # commit, exactly as gate 6). HEADROOM FLOWS: whichever category is active consumes the shared cap; a busy
+        # category can take the whole $150 (bounded by its own per-category gate 5), leaving a quiet co-category only the
+        # remainder -- the deliberate cost of the aggregate cap (chosen over 75/75 to not strand headroom on a quiet
+        # night). BYTE-IDENTICAL with one category at the ruled $150 (gate 5 fires first at the same threshold).
+        if journal.daily_usd_account(sub.account_id) + notional > ACCOUNT_DAILY_USD_CAP + 1e-9:      # gate 5b
+            return Decision("reject:account_daily_cap", sid, market_type=match.market_type, kalshi_ticker=ticker,
+                            leg=leg, count=count, notional_usd=notional, reason="account_daily_cap", disarm_armed=armed)
         # gate 6 (exposure cap): R7 VENUE REBASE (2026-09-02, RULING 5). The base is the ACCOUNT'S TRUE open
         # exposure read from the venue THIS cycle (co-tenant + manual + PM), not PM's journal sum -- so the cap is
         # correct regardless of PM-exclusivity (a journal sum under-counts a co-tenant on a shared keypair). The
@@ -534,6 +559,9 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         if journal.orders_today(sub.account_id, sub.category) + 1 > sub.max_orders_per_day:         # gate 8
             return Decision("reject:count_ceiling", sid, market_type=match.market_type, kalshi_ticker=ticker,
                             leg=leg, reason="orders_per_day", disarm_armed=armed)
+        if journal.orders_today_account(sub.account_id) + 1 > ACCOUNT_MAX_ORDERS_PER_DAY:            # gate 8b (C)
+            return Decision("reject:account_count_ceiling", sid, market_type=match.market_type, kalshi_ticker=ticker,
+                            leg=leg, reason="account_orders_per_day", disarm_armed=armed)
         # gate 6b (PER-MARKET shard funding): Kalshi shards collateral by exchange_index and orders auto-route to the
         # market's shard, charging THAT shard -- a healthy TOTAL with an empty market-shard is Karen's silent death.
         # ★ PER MARKET, not per category: live markets never migrate, so an MLB market's shard depends on its creation
