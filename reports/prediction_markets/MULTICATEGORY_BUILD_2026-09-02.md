@@ -191,7 +191,52 @@ scratch dirs cleaned up after). Runners: `cc\pm_scratch_a{,2,3,4}.{sh,ps1}`.
   it needs the same care + box-scratch as A. Recommended: build B2, then run ONE box-scratch validating A+B on the
   real venv (the byte-identical mlb-only gate + a disarmed ufc dry-run against live UFC market data).
 
-## RUNG B2 — dispatch integration (title + UFC context + evaluate registry) — NOT BUILT (scoped above)
+## RUNG B2 — FIRST STEP DONE (live MarketContext probe) 2026-09-03; design proposed; evaluate edit AWAITS Jack's OK
+**Read-only probe `cc\pm_ufc_shape_probe_ro.{ps1,sh}`** (public `/markets` GET + pykalshi `MarketModel` introspection +
+`model_validate` of a REAL raw market -> the exact live-path transform). Live at 15:05Z: KXUFCFIGHT 38 open / 50
+settled, KXUFCDISTANCE 14 open / 50 settled (host `api.elections.kalshi.com`, HTTP200 unauth). pykalshi **1.0.6**,
+`MarketModel` 47 fields, `model_config.extra='ignore'`.
+
+THE WHOLE FIELD SET the UFC ctx builder needs, BOTH sources (SDK object via model_validate vs RAW /markets):
+- **`title` -- ON THE SDK OBJECT** (`MarketModel.title: str|None`, NOT deprecated, survives model_validate).
+  KXUFCFIGHT `title='{Full Name} wins'` (e.g. 'Quentin Pasley wins'); KXUFCDISTANCE `title='Fight goes the distance?'`.
+  So title is NOT the exchange_index class (SDK-dropped) -- it is the **yes_bid class**: OUR `_market_quote_dict` just
+  doesn't COPY it. FIX = ufc ctx builder reads `getattr(m,"title",None)` off the object. **NO raw merge for title.**
+- **quote `*_dollars`** (yes_bid_dollars/yes_ask_dollars/no_bid_dollars/no_ask_dollars) -- ON the object, POPULATED as
+  string dollars ('0.2300'). Kalshi returns ONLY the `*_dollars` form -- there are NO bare yes_bid/yes_ask keys (raw
+  OR model). So UFC behaves EXACTLY like MLB; the `d("yes_ask_dollars","yes_ask")` fallback stays dead. **NO
+  fractional/non-fractional second trap.**
+- **`exchange_index` -- DROPPED BY THE SDK OBJECT** (not a MarketModel field; extra='ignore' discards the raw key);
+  present in RAW = **0** for UFC (=> MMA shard 0). SAME as MLB -> the ufc builder MUST mirror `_merge_raw_market_fields`
+  for exchange_index. 0 flows correctly (the `is not None` checks handle it; gate 6b handles shard 0 per M5).
+- **`yes_bid_size_fp`/`yes_ask_size_fp`** -- now ON the 1.0.6 model, but `_market_quote_dict` doesn't copy them; MLB
+  merges from raw -> ufc builder mirrors the same merge for parity.
+- **`kalshi_dates`** -- derived from the TICKER date (KXUFCFIGHT-26SEP08... -> 2026-09-08); NO market field needed.
+- **`liquidity_dollars`='0.0000'** -- the deprecated always-zero stub; NOT relied on (gate 3 uses yes_bid_dollars).
+  Same non-issue as MLB. NO MarketModel field carries a pydantic `deprecated=` flag.
+- **OBSERVATION (matcher-validation, NOT a ctx gap):** ticker date `26SEP08` vs `close_time 2026-09-23` DIFFER --
+  flag for the disarmed dry-run: confirm the Poly<->Kalshi date join uses the EVENT date consistently.
+
+PROPOSED B2 DESIGN (agree BEFORE touching evaluate -- the chokepoint on 2 live armed accounts):
+1. **`execution.MarketContext`** -- ADD optional `fight_index: dict|None=None` (keep moneyline/total/spread/
+   kalshi_dates/markets). MLB constructs BYTE-IDENTICALLY (new field defaults None); the ufc builder sets fight_index +
+   empty ml/tot/spr. (kalshi_dates semantics differ per category -- MLB=ticker set, UFC=ISO-date set -- each produced
+   by its own builder + read by its own adapter, no conflict.)
+2. **`execution` matcher-adapter registry** `{"mlb":_MlbAdapter, "ufc":_UfcAdapter}` selected by `sub.category`; each
+   exposes `.parse(slug,outcome)` + `.match(parsed, ctx, allowed_market_types) -> MatchResult` (uniform fields
+   status/confidence/kalshi_ticker/reason/leg/market_type -- BOTH matchers already share this). evaluate lines 383-384
+   become `adapter.parse`/`adapter.match`; EVERYTHING after (status/ticker/leg/`ctx.markets.get`/gates/sizing/body) is
+   UNCHANGED. Unknown category -> **fail-safe skip** (never match with the wrong matcher -- the standing lens). The MLB
+   adapter delegates to the IDENTICAL `M.match_bet(parsed, ctx.moneyline_index, ctx.total_index, ctx.spread_index,
+   ctx.kalshi_dates, allowed_market_types=...)` -> byte-identical MLB behaviour by construction.
+3. **`live_driver.fetch_ufc_market_context`** mirroring `fetch_market_context` for KXUFCFIGHT/KXUFCDISTANCE: per-market
+   dict ADDS `title`; `U.build_kalshi_fight_index([{ticker,title}])` + `U.attach_distance_tickers`; kalshi_dates = ISO
+   dates from tickers; raw-merge exchange_index(+size). Register in `CATEGORY_CTX_BUILDERS["ufc"]`. Per-category SERIES
+   map (mlb=[KXMLBGAME,KXMLBTOTAL,KXMLBSPREAD], ufc=[KXUFCFIGHT,KXUFCDISTANCE]).
+4. **PROOF:** MLB tests unchanged + a "mlb adapter == direct M.match_bet" equivalence test + box-scratch byte-identical
+   mlb-only (the gate A got) + a DISARMED live ufc dry-run (also validates the ticker-date-vs-close-time join above).
+
+## RUNG B2 — dispatch integration (title + UFC context + evaluate registry) — NOT BUILT (design above; awaits Jack's OK)
 
 ## RUNG B(old placeholder) — superseded by B(core)+B2 above
 Discovery landed: UFC = 2 binary types -- moneyline `KXUFCFIGHT-{YYMONDD}{FTR1}{FTR2}-{FTR}` (one market per fighter)
