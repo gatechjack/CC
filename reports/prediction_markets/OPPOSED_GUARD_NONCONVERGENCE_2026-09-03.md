@@ -87,6 +87,22 @@ tradeoff Jack must weigh: durable decision-memory (correct flatten-and-remember 
 zero marker-table rows (today, at the cost of the latent gap). Fixing Issue 2 also touches the ORDER PATH (a write
 at contest-decision time), so it earns the same care/box-scratch as any chokepoint change.
 
+## R2 HISTORY SCAN — how often did the harmful shape ACTUALLY occur? (read-only, `cc\pm_opposed_history_ro.{ps1,sh}`)
+Jack: "Look for it in the history rather than reasoning about it." Scanned the retained journal **Aug 30 00:00 ->
+Sep 3 16:31 (~4.5 days, 574,004 lines)** for every OPPOSING-PAIR warning, cross-referenced each contested cid vs the
+DB (entered / opposed-closed / settled).
+- **1,815 warnings, only 2 distinct contested cids.** Contests are RARE on MLB (directional copy).
+- `0x0f58` (MILCHC-MIL): **FLATTENED** (opp_rows=1, working). **1,796 of the 1,815 warnings were this ONE
+  already-flattened cid re-logging** — that IS the Issue-1 noise, quantified.
+- 1 cid **NEVER-HELD** (contested, held nothing -> nothing to flatten; benign) — the other 19 warnings.
+- **ISSUE-2 occurrences (held a side, NEVER opposed-closed, rode to settlement un-flattened): `0`.** OTHER (held +
+  non-opposed exit, or still open): `0`.
+- **Conclusion: the harmful Issue-2 shape has occurred ZERO times in ~4.5 days of live MLB.** This REFUTES "it has
+  probably already happened" with evidence. It does NOT retire the fix: the defect is real, the window is short, and
+  UFC's more two-sided/hedging whales make the no-co-present-entry shape materially more likely than MLB's
+  directional copy. Reframe: real latent gap, NOT yet triggered on MLB, fix before UFC widens the exposure -- AND add
+  the missing instrumentation (nothing logs an un-flattened contested position today; the fix must make it visible).
+
 ## RECOMMENDATION (Jack rules; NOT implemented)
 - Both issues are rulings, not patches. Issue 1 is a cheap logging-only change that removes the 1816x noise and the
   misleading "NEWLY"/"close held" wording. Issue 2 is the architectural fix (decision-keyed memory) and is the one
