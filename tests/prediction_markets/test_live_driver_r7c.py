@@ -885,3 +885,29 @@ async def test_r1_new_contest_warns_without_misleading_wording(tmp_path, caplog)
              and r.levelno >= logging.WARNING]
     assert warns, "a new contest must WARN"
     assert "close held + skip both sides" not in warns[0]        # ★ the misleading wording is gone
+
+
+@pytest.mark.asyncio
+async def test_r2_unflattened_contest_errors_once_and_marks(tmp_path, caplog):
+    """★ R2: a contest we DECIDED to flatten but CANNOT (we HOLD a side; the opposing signal is on the OTHER side; NO
+    co-present held-side entry to route the per-wallet close) -> the guard emits a LOUD ERROR (the held side rides
+    un-flattened) AND writes a DECISION marker. ONCE per occurrence: cycle 2 the marker makes it a memory
+    re-suppression (DEBUG), NOT a re-ERROR. This is the instrumentation whose ABSENCE forced the history scan to INFER
+    the shape forensically."""
+    import logging
+    leg = _legacy(tmp_path); p = str(tmp_path / "unflat.db"); db.init_db(p); _arm_both(leg)
+    C = "0xC_unflat"
+    with db.connect(p) as conn:
+        _mk_sub_and_attach(conn, _W1); _entry_row(conn, _W1, C, oidx=0); conn.commit()   # we HOLD C oidx0 (net-open 5)
+    caplog.set_level(logging.DEBUG, logger="trading_corp.prediction_markets.live_driver")
+    book = FakeBook([FakePos(C, 1, "Seattle Mariners")])          # whale signals the OPPOSING side only -> can't route a close
+    await L.scheduled_pm_live_loop(p, FakeBroker(_FlatVenueClient(positions=[])), FakePositionsClient(book),
+                                   account_id=ACCT, categories=["mlb"], poll_sec=0, legacy_db_path=leg,
+                                   ctx_builders={"mlb": _fake_ctx_builder}, _max_cycles=2)
+    errors = [r.getMessage() for r in caplog.records
+              if "UN-FLATTENED CONTESTED POSITION" in r.getMessage() and r.levelno >= logging.ERROR]
+    assert len(errors) == 1, errors                              # ★ LOUD, exactly ONCE (cycle 2 is memory-suppressed)
+    assert C in errors[0]
+    assert [r for r in caplog.records if "re-suppressed via memory" in r.getMessage() and C in r.getMessage()]  # cycle 2 DEBUG
+    with db.connect(p) as conn:
+        assert C in ex.account_opposed_cids(conn, ACCT, "mlb")   # ★ the DECISION marker was written + is remembered

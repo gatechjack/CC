@@ -13,12 +13,12 @@ def _db():
     d = tempfile.mkdtemp(); p = os.path.join(d, "pm.db"); os.environ["PM_DB_PATH"] = p; db.init_db(p); return p
 
 
-def test_migration_016_creates_table_and_head_is_16():
+def test_migration_016_creates_table_and_head_pin():
     p = _db()
     with db.connect(p) as c:
-        assert c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 16
+        assert c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == db.SCHEMA_HEAD   # init_db reaches head
         assert c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pm_shard_balance_snapshot'").fetchone()
-    assert db.SCHEMA_HEAD == 16
+    assert db.SCHEMA_HEAD == 18   # ★ head-pin tripwire; bumped 16->18 by migration 017 back-port + 018 (opposed-guard R2)
 
 
 def test_write_read_round_trip_preserves_per_shard_split():

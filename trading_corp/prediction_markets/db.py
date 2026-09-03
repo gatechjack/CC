@@ -808,6 +808,55 @@ MIGRATION_016: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_shard_snapshot_acct_ts ON pm_shard_balance_snapshot(account_id, snapshot_ts DESC)",
 ]
 
+# migration 017 BACK-PORTED byte-for-byte from pm-loss-omission-display-2026-09-01 (2026-09-03, Jack approved): the box
+# is at schema 17 via the loss-omission deploy but THIS branch (base e5d6506) predated it, so its db.py was at head 16.
+# Back-ported so the branch is contiguous [1..18] and matches the box; the box already has 017 applied, so the R2
+# deploy grafts ONLY 018. Definition is IDENTICAL to the deployed one (verified). Original comment preserved:
+# Stage 5 loss-omission surfacing (2026-09-01): a per-whale cache of the re-grounded loss omission, POPULATED as a
+# by-product of Analyze (which already pays for the /activity + gamma fetch). The Prospects LIST reads it to show the
+# omission BESIDE win% WITHOUT grounding 131 rows on render; a whale with NO row here is 'unknown' (never a misleading
+# 0%). grounded_ts is the figure's OWN age (staleness travels with the number). PM-web only writes/reads this; the
+# engine never touches it (the CREATE is additive -> a running engine on the pre-17 db.py is unaffected).
+MIGRATION_017: list[str] = [
+    "CREATE TABLE IF NOT EXISTS pm_loss_grounding_cache ("
+    " wallet                   TEXT    NOT NULL,"
+    " category                 TEXT    NOT NULL,"
+    " honest_wins              INTEGER,"
+    " honest_losses            INTEGER,"
+    " a_only_losses            INTEGER,"
+    " loss_omission_pct        REAL,"          # NULL when honest_losses==0 (no losses -> no omission ratio)
+    " coverage_pct             REAL,"          # NULL when no closed decisions to cover
+    " activity_truncated       INTEGER NOT NULL,"
+    " n_activity_held_resolved INTEGER,"
+    " completeness             TEXT,"
+    " grounded_ts              INTEGER NOT NULL,"
+    " PRIMARY KEY (wallet, category)"
+    ")",
+    "CREATE INDEX IF NOT EXISTS ix_pm_lgc_category ON pm_loss_grounding_cache(category)",
+]
+
+# migration 018 (2026-09-03, opposed-guard R2 -- DECISION-keyed opposed memory). ★ SCHEMA NUMBER 018 IS CLAIMED BY THIS
+# WORKSTREAM (pm-multicategory) -- see the SHARED-SCHEMA-NUMBER hazard note below; do NOT reuse 018. The OPPOSED-MEMORY
+# was keyed on a booked close_source='opposed' ROW (the RESOLUTION); a contest DECIDED but never closed (we hold a side
+# with no co-present entry to route the per-wallet close) left NO row -> the memory never learned, the held side rode
+# to settlement UN-flattened, and it re-detected every cycle. This table records the DECISION: one row per
+# (account, category, condition_id) EVER contested, written when detect_opposing_closes decides a cid is contested even
+# with ZERO closes. account_opposed_cids UNIONs this with the opposed-close rows. Additive; INSERT OR IGNORE
+# (idempotent, monotonic); growth is bounded by the count of DISTINCT markets ever contested (rare -- 2 in 4.5 days,
+# and inert after settlement since a resolved market emits no incoming signal). Read+write BOTH guard on table
+# existence -> tolerant of a pre-migration schema (degrade to opposed-close-only; the engine cannot crash if code
+# precedes the migration). PM-web never reads it (confirmed, not asserted).
+MIGRATION_018: list[str] = [
+    "CREATE TABLE IF NOT EXISTS pm_opposed_marker ("
+    " account_id         TEXT    NOT NULL,"
+    " category           TEXT    NOT NULL,"
+    " condition_id       TEXT    NOT NULL,"
+    " first_contested_ts INTEGER NOT NULL,"
+    " PRIMARY KEY (account_id, category, condition_id)"
+    ")",
+    "CREATE INDEX IF NOT EXISTS ix_pm_opposed_marker_acct_cat ON pm_opposed_marker(account_id, category)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -825,6 +874,8 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (14, MIGRATION_014),
     (15, MIGRATION_015),
     (16, MIGRATION_016),
+    (17, MIGRATION_017),   # back-ported from loss-omission (box already has it) -- keeps [1..18] contiguous
+    (18, MIGRATION_018),   # opposed-guard R2: pm_opposed_marker (decision-keyed memory)
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

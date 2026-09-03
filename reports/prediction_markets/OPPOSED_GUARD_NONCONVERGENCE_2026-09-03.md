@@ -111,7 +111,40 @@ DB (entered / opposed-closed / settled).
   `test_r1_memory_resuppression_debugs_not_warns` (a WORKING memory does NOT WARN -- the 0x0f58 1816x noise fix) +
   `test_r1_new_contest_warns_without_misleading_wording`. This makes the two states (memory working vs failing) DISTINCT
   log lines -- the whole point.
-- **R2 (decision-keyed memory + instrumentation + migration 17->18) — IN PROGRESS.**
+- **★ R2 (decision-keyed memory + instrumentation + migration 17->18) — BUILT + PROVEN.**
+  - **Migration:** `db.py` back-ports migration **017** (loss-omission `pm_loss_grounding_cache`, byte-for-byte from
+    the deployed loss-omission branch -- this multicat branch predated it, head was 16) so the list is [1..18]
+    contiguous + matches the box, then adds **018** = `pm_opposed_marker (account_id, category, condition_id,
+    first_contested_ts)`. Fresh `init_db` verified -> head 18, both tables created (the back-ported table's CREATE SQL
+    is captured for a box-CREATE compare at deploy). ★ Box deploy GRAFTS db.py (box already has 017 applied -> only 018
+    runs); Gate-1 backup + integrity_check first; migration LEADS the code.
+  - **Decision-keyed memory:** `execution.account_opposed_cids` now UNIONs the opposed-close rows (RESOLUTION) with
+    `pm_opposed_marker` rows (DECISION); NEW `execution.mark_opposed_contested` (INSERT OR IGNORE, idempotent/bounded).
+    The guard writes a marker for every NEWLY-decided contest (`_new`) even one that generated no close -> the latent
+    gap is closed. BOTH read+write guard on `_table_exists` -> TOLERANT of a pre-018 schema (degrade to
+    opposed-close-only, engine can't crash); pm_web never reads the table (grep-confirmed).
+  - **Instrumentation:** the guard now emits a LOUD `log.error("★ UN-FLATTENED CONTESTED POSITION(S) ...")` when a
+    contest is DECIDED but we HOLD a side and generated NO close -> the held side rides un-flattened. ONCE per
+    occurrence (on `_new`; next cycle it is memory-suppressed, not re-spammed -- the R1 lesson). The thing that was
+    INVISIBLE (the history scan had to infer it) now announces itself.
+  - **Tests:** `test_r2_marker_makes_memory_decision_keyed` (remembered with NO opposed row), `_marker_idempotent_and_
+    scoped` (bounded + per-(account,category)), `_resolved_market_marker_never_false_contests` (★ the required proof:
+    a resolved market emits no incoming -> its marker is INERT), `_tolerant_of_missing_marker_table` (the 014 lesson),
+    and `test_r2_unflattened_contest_errors_once_and_marks` (loop: LOUD ERROR once + marker + next-cycle DEBUG). Full
+    local suite: 15 pykalshi env-gap failures (schema-head tests now pass; NONE from R1/R2/B2 logic).
+  - **★ THE SHARED-SCHEMA-NUMBER HAZARD (Jack: name it):** schema migration numbers are a SHARED RESOURCE allocated by
+    workstreams that CANNOT see each other -- same class as main.py (the box is ahead of every branch; branches
+    diverge from each other). Two branches can both claim 018 with DIFFERENT DDL and only one notices: whoever deploys
+    FIRST wins; the second's `init_db` sees `18 <= current` and SILENTLY SKIPS its DDL (the `schema_version` PRIMARY
+    KEY only stops a RE-INSERT of the same version on one DB -- it does NOT catch same-number/different-DDL, it just
+    skips) -> the second workstream's table never gets created and its code then crashes/misbehaves on a table that
+    isn't there. **What prevents a genuine collision today: only a CONVENTION NOBODY ENFORCES** -- "read the box's
+    current schema head, claim the next number above it, and flag it in the handoff." A real fix would be a
+    content-hash per applied version (fail loudly if a re-applied version's DDL differs) or a central claimed-number
+    registry; neither exists. **★ 018 IS CLAIMED by pm-multicategory (this workstream).**
+  - **★ UI-AGENT FLAG:** `pm-ui-rewrite-2026-09-02` carries migration 017 and is CLOSE TO DEPLOYING. If it also adds a
+    migration it will claim 018 too -> a live collision. **Whoever reads this next: 018 is TAKEN by opposed-guard R2;
+    the UI (or any) next migration must be 019+.** Coordinate before either deploys a migration.
 
 ## RECOMMENDATION (Jack rules; NOT implemented)
 - Both issues are rulings, not patches. Issue 1 is a cheap logging-only change that removes the 1816x noise and the

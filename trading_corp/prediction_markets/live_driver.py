@@ -773,6 +773,25 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                     # a wrong hypothesis. NOW: WARN only on a NEW contest and/or an ACTUAL flatten, and say WHAT happened
                     # (flattened N held legs, not the aspirational "close held"); DEBUG the memory re-hits.
                     _new = _contested - _mem                            # in _contested but NOT already in the memory
+                    # ★ R2 (2026-09-03): DECISION-keyed memory + un-flatten INSTRUMENTATION. (1) Record a marker for
+                    # every NEWLY-decided contest -- EVEN one that generated no close -- so account_opposed_cids
+                    # remembers the DECISION, not just a booked close_source='opposed' row. Next cycle these are memory
+                    # re-hits (R1 DEBUG), not re-detections; and a contest whose flatten POST later fails is STILL
+                    # remembered. (2) LOUDLY surface a contest we DECIDED to flatten but COULD NOT: we HOLD a side and
+                    # generated NO close for it (no co-present entry to route the per-wallet close) -> the held side
+                    # rides UN-flattened to settlement. This was INVISIBLE (the R2 history scan had to INFER the shape);
+                    # now it announces itself. ONCE per occurrence (on _new only -> a persistent state is
+                    # memory-suppressed next cycle, never re-spammed -- the R1 lesson), at ERROR (a real exposure).
+                    if _new:
+                        execution.mark_opposed_contested(conn, account_id, c, sorted(_new), now_ts=now_ts)
+                    _closed_cids = {s.condition_id for s in _opposed}
+                    _unflattened = [cid for cid in _new if _held.get(cid) and cid not in _closed_cids]
+                    if _unflattened:
+                        log.error("pm_live_driver: OPPOSING-PAIR guard %s/%s -- ★ UN-FLATTENED CONTESTED POSITION(S): "
+                                  "decided to FLAT %d market(s) we HOLD but generated NO close (no co-present entry to "
+                                  "route the per-wallet close) -> the held side rides to settlement UN-FLATTENED, a "
+                                  "position we decided to close and did NOT. cids=%s",
+                                  account_id, c, len(_unflattened), sorted(_unflattened))
                     if _new or _opposed:
                         log.warning("pm_live_driver: OPPOSING-PAIR guard %s/%s -- %d NEWLY-contested; flattened %d held "
                                     "leg(s) + skipped incoming both sides; new_cids=%s",

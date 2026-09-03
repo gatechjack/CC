@@ -758,20 +758,47 @@ def account_held_outcomes(conn, account_id: str, category: str) -> dict:
 
 
 def account_opposed_cids(conn, account_id: str, category: str) -> set:
-    """The OPPOSED-MEMORY: {condition_id} this (account, category) has EVER contested -- every cid carrying a
-    close_source='opposed' row. An opposed market stays OFF THE BOOKS for the rest of its life (Jack RULED: the
-    disagreement does not resolve, the GAME does), so once contested NEITHER side is re-entered even if a whale's
-    opposing signal FLICKERS. Derived from the journal's opposed-close rows -- the opposed close IS the record, so
-    there is NO separate marker table and thus NO rows that outlive their markets; it goes inert at settlement (a
-    resolved market emits no entry signals). Keyed on the market being CONTESTED (not on the coid), so the bound is
-    INDEPENDENT of gate-4's stable-coid dedup -- it survives the R7.h /activity-tx_hash re-entry fix that would
-    otherwise unbound the churn. Read-only; [] if the journal table is absent (pre-migration-010)."""
+    """The OPPOSED-MEMORY: {condition_id} this (account, category) has EVER contested. ★ R2 (2026-09-03): DECISION-keyed
+    -- the UNION of (a) every cid carrying a close_source='opposed' row [the RESOLUTION: a booked flatten] and (b) the
+    pm_opposed_marker rows [the DECISION: written when detect_opposing_closes DECIDES a cid is contested, EVEN when it
+    generated no close]. (b) closes the latent gap where a contest we DECIDED to flatten but COULD NOT (we hold a side,
+    no co-present entry to route the per-wallet close) left NO row -> the memory never learned and the held side rode
+    to settlement un-flattened + re-detected every cycle. An opposed market stays OFF THE BOOKS for the rest of its
+    life (Jack RULED: the disagreement does not resolve, the GAME does); it goes INERT at settlement (a resolved market
+    emits no entry signals, so a persistent marker never false-contests -- proven in test). Keyed on the market being
+    CONTESTED (not on the coid), independent of gate-4's stable-coid dedup. ★ TOLERANT of a pre-migration schema (the
+    014 lesson): if pm_opposed_marker is absent (code precedes migration 018) this DEGRADES to the opposed-close-only
+    read -- the engine cannot crash. Read-only; [] if the order table is absent (pre-migration-010)."""
     if not _table_exists(conn, "pm_subdivision_order"):
         return set()
-    return {r[0] for r in conn.execute(
+    cids = {r[0] for r in conn.execute(
         "SELECT DISTINCT condition_id FROM pm_subdivision_order "
         "WHERE account_id = ? AND category = ? AND close_source = 'opposed' AND condition_id IS NOT NULL",
         (account_id, category)).fetchall()}
+    if _table_exists(conn, "pm_opposed_marker"):                 # R2 decision markers (tolerant: skip if pre-migration)
+        cids |= {r[0] for r in conn.execute(
+            "SELECT condition_id FROM pm_opposed_marker WHERE account_id = ? AND category = ?",
+            (account_id, category)).fetchall()}
+    return cids
+
+
+def mark_opposed_contested(conn, account_id: str, category: str, condition_ids, *, now_ts: int) -> int:
+    """★ R2 (2026-09-03): record the DECISION that a market was contested -- one pm_opposed_marker row per
+    (account, category, condition_id) -- so account_opposed_cids remembers a contest EVEN when it generated no
+    close_source='opposed' row (the held-side-with-no-co-present-entry case the close-keyed read missed). INSERT OR
+    IGNORE (idempotent + monotonic: first_contested_ts is the first-seen). Called from the guard ONLY for NEWLY-decided
+    contests (rare), off the order hot path. Returns the count of NEW markers written. ★ TOLERANT: a NO-OP if
+    pm_opposed_marker is absent (code precedes migration 018) -> degrade to opposed-close-only, never crash."""
+    condition_ids = [c for c in (condition_ids or []) if c]
+    if not condition_ids or not _table_exists(conn, "pm_opposed_marker"):
+        return 0
+    before = conn.total_changes
+    conn.executemany(
+        "INSERT OR IGNORE INTO pm_opposed_marker (account_id, category, condition_id, first_contested_ts) "
+        "VALUES (?, ?, ?, ?)", [(account_id, category, cid, int(now_ts)) for cid in condition_ids])
+    if hasattr(conn, "commit"):
+        conn.commit()
+    return conn.total_changes - before
 
 
 def detect_opposing_closes(entry_signals, held_outcomes: dict, opposed_cids=None):

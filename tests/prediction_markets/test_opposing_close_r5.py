@@ -222,12 +222,59 @@ def test_opposed_memory_independent_of_coid_survives_r7h():
 
 
 def test_account_opposed_cids_only_opposed_not_settlement_or_entry(tmp_path, monkeypatch):
-    """account_opposed_cids returns ONLY cids with a close_source='opposed' row -- NOT entries, NOT settlement
-    closes. So a settled or same-side cid is never falsely off-the-books, and there is no marker table to leave
-    dead rows (the opposed close IS the record)."""
+    """account_opposed_cids's CLOSE-keyed half returns ONLY cids with a close_source='opposed' row -- NOT entries, NOT
+    settlement closes. So a settled or same-side cid is never falsely off-the-books. (R2 2026-09-03 UNIONs this with
+    the pm_opposed_marker DECISION rows; with NO markers written, the result is the opposed-close-only base case
+    below.)"""
     p = str(tmp_path / "pm.db"); monkeypatch.setenv("PM_DB_PATH", p); db.init_db(p)
     with db.connect(p) as conn:
         _order(conn, "0xW1", "KX-A", "yes", 0, 5, cid="0xentry", oidx=0)                              # plain entry
         _order(conn, "0xW1", "KX-B", "yes", 1, 5, cid="0xsettle", oidx=0, close_source="settlement")  # settlement close
         _order(conn, "0xW1", "KX-C", "yes", 1, 5, cid="0xopposed", oidx=0, close_source="opposed")    # opposed close
-        assert ex.account_opposed_cids(conn, "kalshi_jack", "mlb") == {"0xopposed"}
+        assert ex.account_opposed_cids(conn, "kalshi_jack", "mlb") == {"0xopposed"}   # no markers -> opposed-only
+
+
+# ── R2 (2026-09-03): DECISION-keyed opposed memory (marker) + tolerance + the resolved-market non-false-contest ──────
+def test_r2_marker_makes_memory_decision_keyed(tmp_path):
+    """★ R2: a contest DECIDED but never CLOSED (no close_source='opposed' row -- the held-side-with-no-co-present-entry
+    case) is STILL remembered, via the marker. account_opposed_cids returns the marker cid even though the close-keyed
+    read alone would miss it. This is the fix for the latent gap the diagnosis named."""
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        assert ex.account_opposed_cids(conn, "kalshi_jack", "mlb") == set()                  # nothing yet
+        assert ex.mark_opposed_contested(conn, "kalshi_jack", "mlb", ["0xdecided"], now_ts=1787900000) == 1
+        assert ex.account_opposed_cids(conn, "kalshi_jack", "mlb") == {"0xdecided"}          # ★ remembered w/ NO opposed row
+
+
+def test_r2_marker_idempotent_and_scoped(tmp_path):
+    """The marker is monotonic (INSERT OR IGNORE -> bounded: one row per ever-contested market): re-marking writes NO
+    new row; and it is scoped by (account, category) so a sibling category/account never inherits it."""
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        assert ex.mark_opposed_contested(conn, "kalshi_jack", "mlb", ["0xc"], now_ts=1) == 1
+        assert ex.mark_opposed_contested(conn, "kalshi_jack", "mlb", ["0xc"], now_ts=2) == 0   # already marked -> no-op
+        assert ex.account_opposed_cids(conn, "kalshi_jack", "ufc") == set()        # scoped: ufc does not inherit mlb's
+        assert ex.account_opposed_cids(conn, "kalshi_karen", "mlb") == set()       # scoped: karen does not inherit jack's
+
+
+def test_r2_resolved_market_marker_never_false_contests():
+    """★ THE 'a resolved market cannot false-contest' PROOF (Jack required). A marker persists after settlement, but a
+    resolved market emits NO incoming signal -> its cid is not in {incoming} u {held} -> detect_opposing_closes never
+    even examines it -> it is NEVER contested. So the persistent marker is INERT: never a false flatten or skip."""
+    X = "0xresolved_marked"                            # in the memory (a marker), but the game is over -> no incoming
+    Y = _sig("0xW", "mlb-y", "TeamY", "0xother", 0)    # a live, unrelated, single-side (uncontested) signal
+    kept, closes, contested, _pre = ex.detect_opposing_closes([Y], {}, opposed_cids={X})
+    assert contested == set() and closes == [] and kept == [Y]   # ★ X inert (no incoming); Y flows (single side, not opposed)
+
+
+def test_r2_tolerant_of_missing_marker_table(tmp_path):
+    """★ THE 014 LESSON. If code runs before migration 018 (pm_opposed_marker absent), account_opposed_cids DEGRADES to
+    the opposed-close-only read (no crash) and mark_opposed_contested is a NO-OP -- the engine cannot crash on a
+    pre-migration schema. (pm_web never reads the table -- confirmed by grep -- so it is unaffected either way.)"""
+    p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        conn.execute("DROP TABLE pm_opposed_marker"); conn.commit()               # simulate a pre-018 schema
+        _order(conn, "0xW", "KX-C", "yes", 1, 5, cid="0xopp", oidx=0, close_source="opposed")
+        assert ex.account_opposed_cids(conn, "kalshi_jack", "mlb") == {"0xopp"}    # opposed-close-only, no crash
+        assert ex.mark_opposed_contested(conn, "kalshi_jack", "mlb", ["0xnew"], now_ts=1) == 0   # no-op (table absent)
+        assert ex.account_opposed_cids(conn, "kalshi_jack", "mlb") == {"0xopp"}    # still just the opposed row
