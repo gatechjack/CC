@@ -52,12 +52,14 @@ import time as _time
 
 from . import arm, boot_reconcile, db, execution, paper, settlement, shard_balance, venue_exposure
 from ..data import mlb_poly_kalshi_match as M
+from ..data import ufc_poly_kalshi_match as U   # B2: UFC fight/distance index builders for fetch_ufc_market_context
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
 
 _LOG = logging.getLogger(__name__)
 SERIES = ("KXMLBGAME", "KXMLBTOTAL", "KXMLBSPREAD")   # Jack's scope ruling: moneyline+total+spread
+UFC_SERIES = ("KXUFCFIGHT", "KXUFCDISTANCE")          # B2: UFC moneyline (per-fighter YES) + go-the-distance (binary)
 _SETTLED_LOOKBACK_SEC = 160 * 86400
 # ★ SUSTAINED-SHARD-UNDERFUNDING alarm threshold (gate 6b, Jack RULED 2026-08-30: SURFACED, NOT latched). N=3 cycles:
 # Kalshi auto-rebalances every 10s and the driver polls ~7s, so a transient gap while a rebalance is mid-flight lasts
@@ -110,14 +112,15 @@ def _market_quote_dict(m) -> dict:
             "exchange_index": ei}
 
 
-async def _merge_raw_market_fields(client, markets: dict) -> None:
+async def _merge_raw_market_fields(client, markets: dict, series_list=None) -> None:
     """★ Merge PER-MARKET fields the pykalshi get_markets Market OBJECT DROPS but the RAW /markets payload CARRIES
-    (verified 2026-08-30): `exchange_index` (gate-6b shard) and `yes_bid_size_fp`/`yes_ask_size_fp` (gate-3
-    TOP-OF-BOOK depth). The SDK object exposes NEITHER as an attribute, and `liquidity_dollars` is a DEPRECATED
-    always-'0.0000' Kalshi stub -- so without this both gates would FAIL CLOSED on every market (skip). The
-    exchange_index is authoritative PER MARKET (correction 1: series-level is only right post-Aug-24). OPEN markets
-    only (we only PLACE on open books). A raw-get failure leaves the fields absent -> gates 3/6b fail-close (safe)."""
-    for series in SERIES:
+    (verified 2026-08-30, re-verified for UFC 2026-09-03): `exchange_index` (gate-6b shard) and `yes_bid_size_fp`/
+    `yes_ask_size_fp` (gate-3 TOP-OF-BOOK depth). The SDK object exposes NEITHER as an attribute, and
+    `liquidity_dollars` is a DEPRECATED always-'0.0000' Kalshi stub -- so without this both gates would FAIL CLOSED on
+    every market (skip). The exchange_index is authoritative PER MARKET (correction 1: series-level is only right
+    post-Aug-24). OPEN markets only (we only PLACE on open books). A raw-get failure leaves the fields absent -> gates
+    3/6b fail-close (safe). `series_list` (B2) parameterises the series to merge; None -> the MLB SERIES (unchanged)."""
+    for series in (series_list or SERIES):
         try:
             raw = client.get("/markets?series_ticker=%s&status=open&limit=1000" % series)
             if inspect.isawaitable(raw):
@@ -165,6 +168,39 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     for tk in game_t:               # the matcher's exact-strike gate is the real guard; carry the game tickers
         dates.add(tk)
     return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets)
+
+
+async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketContext:
+    """B2 (2026-09-03): fetch OPEN + recent-SETTLED KXUFCFIGHT/KXUFCDISTANCE markets and build the UFC MarketContext.
+    MIRRORS fetch_market_context -- SAME `client.get_markets`, SAME `_market_quote_dict` quote fields, SAME raw
+    `exchange_index` merge (UFC's exchange_index is ALSO SDK-dropped, raw=0 -> MMA shard 0; verified 2026-09-03). The
+    UFC-specific parts: (1) the KXUFCFIGHT `title` ("{Fighter Full Name} wins") -- the field the matcher joins the Poly
+    outcome against; `title` IS on the pykalshi MarketModel object (NOT SDK-dropped -- unlike exchange_index), so it is
+    read via getattr, NO raw merge; and (2) the fight+distance index. ★ THE JOIN DATE is the card-LOCAL date encoded in
+    the TICKER (BOTH Kalshi's ticker and Polymarket's slug use it, verified across a cross-midnight card 2026-09-03) --
+    NOT occurrence_datetime/close_time; kalshi_dates is derived from the fight index (whose dates come from the ticker),
+    so this builder NEVER reads occurrence_datetime. A market with no title is skipped by build_kalshi_fight_index."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    fight_markets: list = []       # [{ticker, title}] -> build_kalshi_fight_index (title carries the fighter full name)
+    distance_markets: list = []    # [{ticker, title}] -> attach_distance_tickers (matched by the ticker's date+blob)
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for series in UFC_SERIES:
+        for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+            ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
+                                          fetch_all=(status == MarketStatus.SETTLED), **extra)
+            for m in (ms or []):
+                tk = getattr(m, "ticker", "") or ""
+                if not tk:
+                    continue
+                markets[tk.upper()] = _market_quote_dict(m)
+                entry = {"ticker": tk, "title": getattr(m, "title", None)}
+                (fight_markets if series == "KXUFCFIGHT" else distance_markets).append(entry)
+    await _merge_raw_market_fields(client, markets, series_list=UFC_SERIES)   # exchange_index (SDK-dropped) from raw
+    fight_idx = U.build_kalshi_fight_index(fight_markets)
+    fight_idx = U.attach_distance_tickers(fight_idx, distance_markets)
+    dates = frozenset(k[0] for k in fight_idx)          # ISO dates FROM THE TICKER (card-local), never occurrence
+    return execution.MarketContext({}, {}, {}, dates, markets, fight_index=fight_idx)
 
 
 # ── signal source: attached whales' /positions -> entry CopySignals (chokepoint dedups already-placed) ───
@@ -522,7 +558,7 @@ async def fetch_settlements(client) -> list:
 # (fail-SAFE: no catalog -> no signals -> nothing placed). ★ M1 (Option C) seam: this is what lets ONE account task
 # iterate N categories, each matched against its own catalog, while the account-level Journal/venue/shard reads are
 # shared once per cycle (the shared Journal is what enforces the account open-cap JOINTLY across categories).
-CATEGORY_CTX_BUILDERS = {"mlb": fetch_market_context}
+CATEGORY_CTX_BUILDERS = {"mlb": fetch_market_context, "ufc": fetch_ufc_market_context}   # B2: ufc registered
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────

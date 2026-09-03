@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from ..brokers.kalshi_live import (build_v2_event_order, client_order_id as _kalshi_coid,
                                    usd_to_contracts, v2_side_and_price)
 from ..data import mlb_poly_kalshi_match as M
+from ..data import ufc_poly_kalshi_match as U   # B2: the UFC matcher (category dispatch below); pure/stdlib like M
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 _LOG = logging.getLogger(__name__)
@@ -120,6 +121,10 @@ class MarketContext:
     spread_index: dict
     kalshi_dates: frozenset
     markets: dict             # ticker -> market dict (yes_ask_dollars/no_ask_dollars/liquidity_dollars/...)
+    # B2 (2026-09-03): the UFC fight+distance index (KalshiFight by (date_iso, fighter-pair)). Optional + defaulted so
+    # the MLB construction MarketContext(ml, tot, spr, dates, markets) is BYTE-IDENTICAL (fight_index stays None); the
+    # ufc ctx builder sets fight_index and leaves ml/tot/spr empty. Read only by the ufc matcher adapter below.
+    fight_index: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -345,6 +350,43 @@ class Journal:
 
 
 # ── THE CHOKEPOINT ──────────────────────────────────────────────────────────
+# ── per-category matcher dispatch (B2, 2026-09-03) ─────────────────────────────────────────────────────
+# The chokepoint is category-AGNOSTIC after the match: ticker/leg/quote-lookup/gates/sizing/body are identical for
+# every category. The ONE category-specific step is parsing the Poly bet + matching it to a Kalshi contract, which
+# differs by market family (MLB moneyline/total/spread vs UFC fight/distance). Each adapter is a (parse, match) pair:
+#   parse(slug, outcome)                      -> the matcher's ParsedPolyBet
+#   match(parsed, ctx, allowed_market_types)  -> a MatchResult with the uniform fields evaluate reads below
+#                                                (.status / .market_type / .reason / .kalshi_ticker / .leg).
+# BOTH matchers already share that MatchResult surface. The MLB adapter delegates to the IDENTICAL M.match_bet call
+# evaluate used inline before B2, so MLB behaviour is byte-identical by construction (see test_b2_dispatch). An
+# UNKNOWN category has NO adapter -> evaluate fail-SAFE skips (never match with the wrong matcher -- the standing lens).
+def _mlb_parse(slug, outcome):
+    return M.parse_poly_mlb_bet(slug, outcome)
+
+
+def _mlb_match(parsed, ctx, allowed_market_types):
+    return M.match_bet(parsed, ctx.moneyline_index, ctx.total_index, ctx.spread_index, ctx.kalshi_dates,
+                       allowed_market_types=allowed_market_types)
+
+
+def _ufc_parse(slug, outcome):
+    return U.parse_poly_ufc_bet(slug, outcome)
+
+
+def _ufc_match(parsed, ctx, allowed_market_types):
+    # UFC needs only the fight index (fight moneyline + go-the-distance attached) + the ISO dates present; there is no
+    # total/spread. `fight_index or {}` fail-safes an MLB-shaped ctx (fight_index=None) to "no contract" rather than
+    # crashing -- but the registry never routes UFC to an MLB ctx (the ctx builder is category-keyed too).
+    return U.match_bet(parsed, ctx.fight_index or {}, ctx.kalshi_dates,
+                       allowed_market_types=allowed_market_types)
+
+
+MATCHER_ADAPTERS = {
+    "mlb": (_mlb_parse, _mlb_match),
+    "ufc": (_ufc_parse, _ufc_match),
+}
+
+
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,
              *, shard_balances=None, venue_exposure=None, legacy_db_path=None) -> Decision:
     """One copy signal through the gates in order. DRY-RUN: COMPUTES the exact V2 body if gates pass and RECORDS
@@ -380,9 +422,13 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
             return Decision("reject:per_order_cap", sid, disarm_armed=armed, is_exit=signal.is_exit,
                             reason="fixed_stake_%.4f_gt_cap_%.4f" % (copy_usd, sub.per_order_usd_cap))
 
-    parsed = M.parse_poly_mlb_bet(signal.slug, signal.outcome)                        # gate 3 (match, exact strike)
-    match = M.match_bet(parsed, ctx.moneyline_index, ctx.total_index, ctx.spread_index, ctx.kalshi_dates,
-                        allowed_market_types=sub.market_types)
+    adapter = MATCHER_ADAPTERS.get(sub.category)                                      # gate 3 (match, exact strike)
+    if adapter is None:                                        # unknown category has NO matcher -> fail-safe skip
+        return Decision("skip:no_matcher_for_category", sid, reason="no_matcher_for_category:%s" % sub.category,
+                        is_exit=signal.is_exit, disarm_armed=armed)
+    _parse_bet, _match_bet = adapter
+    parsed = _parse_bet(signal.slug, signal.outcome)
+    match = _match_bet(parsed, ctx, sub.market_types)
     if match.status != "matched":
         return Decision("skip:%s" % match.status, sid, market_type=match.market_type, reason=match.reason,
                         is_exit=signal.is_exit, disarm_armed=armed)

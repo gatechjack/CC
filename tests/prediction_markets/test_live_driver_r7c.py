@@ -18,6 +18,7 @@ import pytest
 
 from trading_corp.prediction_markets import arm, db, execution as ex, live_driver as L, boot_reconcile as BR
 from trading_corp.data import mlb_poly_kalshi_match as M
+from trading_corp.data import ufc_poly_kalshi_match as U   # B2: category dispatch is REAL -> the 2nd category is ufc
 from trading_corp.data.polymarket_data_api_client import PositionRow, ActivityRow
 
 ACCT, CAT = "kalshi_jack", "mlb"
@@ -59,6 +60,29 @@ def _sub(**over):
 
 def _sig(outcome, sid, is_exit=False, wallet="0x16bb9951a36fce71e2ef57890b786145e0ba8492"):
     return ex.CopySignal(wallet=wallet, slug=SLUG, outcome=outcome, condition_id="0xc_" + sid,
+                         outcome_index=0, signal_id=sid, is_exit=is_exit)
+
+
+# ── UFC fixtures (B2: the 2nd category dispatches to the REAL ufc matcher, so it needs real ufc slugs+ctx). NO
+# exchange_index on the markets -> gate 6b shard=None -> underfunded (mirrors the MLB MARKETS here). ──────────────────
+UFC_SLUG = "ufc-dan6-salpar-2026-09-05"
+U_HOO = "KXUFCFIGHT-26SEP05HOOPAR-HOO"
+UFC_FIGHT = [{"ticker": U_HOO, "title": "Daniel Hooker wins"},
+             {"ticker": "KXUFCFIGHT-26SEP05HOOPAR-PAR", "title": "Salahdine Parnasse wins"}]
+UFC_MARKETS = {
+    U_HOO: {"yes_ask_dollars": 0.55, "yes_bid_dollars": 0.53, "no_ask_dollars": 0.47, "liquidity_dollars": 500, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+    "KXUFCFIGHT-26SEP05HOOPAR-PAR": {"yes_ask_dollars": 0.47, "yes_bid_dollars": 0.45, "no_ask_dollars": 0.55, "liquidity_dollars": 500, "yes_bid_size_fp": "500.00", "yes_ask_size_fp": "500.00"},
+}
+
+
+def _ufc_ctx(markets=None):
+    idx = U.attach_distance_tickers(U.build_kalshi_fight_index(UFC_FIGHT), [])
+    return ex.MarketContext({}, {}, {}, frozenset(k[0] for k in idx),
+                            UFC_MARKETS if markets is None else markets, fight_index=idx)
+
+
+def _ufc_sig(outcome, sid, is_exit=False, wallet="0x16bb9951a36fce71e2ef57890b786145e0ba8492"):
+    return ex.CopySignal(wallet=wallet, slug=UFC_SLUG, outcome=outcome, condition_id="0xu_" + sid,
                          outcome_index=0, signal_id=sid, is_exit=is_exit)
 
 
@@ -125,8 +149,8 @@ class FakeMarket:                     # a pykalshi get_markets market object
 
 
 class FakePos:                        # a polymarket /positions row (for is_genuinely_open + pos_outcome_index)
-    def __init__(self, cid, oidx, outcome, cur=0.5, redeemable=False):
-        self.condition_id = cid; self.slug = SLUG; self.outcome = outcome
+    def __init__(self, cid, oidx, outcome, cur=0.5, redeemable=False, slug=SLUG):
+        self.condition_id = cid; self.slug = slug; self.outcome = outcome
         self.extra = {"outcomeIndex": oidx, "curPrice": cur, "redeemable": redeemable}
 
 
@@ -680,6 +704,12 @@ async def _fake_ctx_builder(client, now_ts):
     return _ctx()
 
 
+async def _ufc_fake_ctx_builder(client, now_ts):
+    """The ufc analog -- a canned UFC MarketContext (fight_index populated, no pykalshi import) so the 2nd category
+    dispatches to the REAL ufc matcher in the local venv."""
+    return _ufc_ctx()
+
+
 class _FlatVenueClient(FakeKalshiClient):
     """FakeKalshiClient whose /portfolio/positions returns a KNOWN-FLAT book (market_positions=[]) so venue_exp
     has_data=True and gate 6 (exposure) PASSES -- letting an entry reach gate 6b. The base fake returns {} ->
@@ -703,15 +733,15 @@ async def test_m1_shared_journal_caps_account_open_across_categories(tmp_path):
     async def ok(d):
         return None
     sub_mlb = _sub(category="mlb", max_open_usd=6.0)             # ONE ~$5 order fits; a SECOND does not
-    sub_ufc = _sub(category="ufc", max_open_usd=6.0)            # venue_exposure=None -> gate 6 uses journal.open_usd
+    sub_ufc = _sub(category="ufc", market_types=("moneyline", "go_the_distance"), max_open_usd=6.0)  # REAL ufc dispatch
     with db.connect(p) as conn:                                 # SHARED Journal: mlb commits ~$5; ufc is then capped
         shared = ex.Journal(conn, [ACCT], NOW)
         s_mlb = await L.run_live_arm_gated_cycle(conn, sub_mlb, [_sig("Toronto Blue Jays", "m1")], _ctx(), shared,
                                                  NOW, place_fn=ok, legacy_db_path=leg)
-        s_ufc = await L.run_live_arm_gated_cycle(conn, sub_ufc, [_sig("Seattle Mariners", "u1")], _ctx(), shared,
+        s_ufc = await L.run_live_arm_gated_cycle(conn, sub_ufc, [_ufc_sig("Daniel Hooker", "u1")], _ufc_ctx(), shared,
                                                  NOW, place_fn=ok, legacy_db_path=leg)
     assert s_mlb["placed"] == 1                                 # mlb fit under the account cap
-    assert s_ufc["placed"] == 0 and s_ufc["n_reject"] == 1      # ★ ufc capped by mlb in-cycle open (shared Journal)
+    assert s_ufc["placed"] == 0 and s_ufc["n_reject"] == 1      # ★ ufc (REAL matcher) capped by mlb in-cycle open (shared Journal)
     # RACE DEMO on a FRESH db: two SEPARATE Journals, BOTH constructed at cycle start (blind to each other), then
     # each authorizes ~$5 against the same clean base -> BOTH place -> the account reaches ~$10 > the $6 cap. This is
     # exactly the two-task within-cycle over-place the shared Journal above eliminates.
@@ -721,7 +751,7 @@ async def test_m1_shared_journal_caps_account_open_across_categories(tmp_path):
         j_ufc = ex.Journal(conn, [ACCT], NOW)                   # a second task's own Journal, blind to the first
         r_mlb = await L.run_live_arm_gated_cycle(conn, sub_mlb, [_sig("Toronto Blue Jays", "m2")], _ctx(), j_mlb,
                                                  NOW, place_fn=ok, legacy_db_path=leg)
-        r_ufc = await L.run_live_arm_gated_cycle(conn, sub_ufc, [_sig("Seattle Mariners", "u2")], _ctx(), j_ufc,
+        r_ufc = await L.run_live_arm_gated_cycle(conn, sub_ufc, [_ufc_sig("Daniel Hooker", "u2")], _ufc_ctx(), j_ufc,
                                                  NOW, place_fn=ok, legacy_db_path=leg)
     assert r_mlb["placed"] == 1 and r_ufc["placed"] == 1        # ★ the RACE the shared Journal eliminates
 
@@ -780,11 +810,12 @@ async def test_m1_underfunded_alarm_is_per_category(tmp_path, caplog):
                          (ACCT, c, W))
         conn.commit()
     fake = _FlatVenueClient(positions=[])                       # venue flat -> gate 6 passes -> gate 6b reached
-    book = FakeBook([FakePos("0xc_uf", 0, "Toronto Blue Jays")])  # matches T_TOR; ctx market has NO exchange_index ->
-    caplog.set_level(logging.WARNING)                           # gate 6b skip:shard_underfunded every cycle
+    book = FakeBook([FakePos("0xc_uf", 0, "Toronto Blue Jays"),             # mlb pos -> matched by the MLB matcher
+                     FakePos("0xu_uf", 0, "Daniel Hooker", slug=UFC_SLUG)])  # ufc pos -> matched by the UFC matcher
+    caplog.set_level(logging.WARNING)                           # both markets have NO exchange_index -> gate 6b skip
     await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(book),
                                    account_id=ACCT, categories=["mlb", "ufc"], poll_sec=0, legacy_db_path=leg,
-                                   ctx_builders={"mlb": _fake_ctx_builder, "ufc": _fake_ctx_builder},
+                                   ctx_builders={"mlb": _fake_ctx_builder, "ufc": _ufc_fake_ctx_builder},
                                    _max_cycles=L._SHARD_UNDERFUNDED_ALARM_N)   # exactly N cycles -> each counter hits N
     alarms = [r.getMessage() for r in caplog.records if "SUSTAINED SHARD UNDERFUNDING" in r.getMessage()]
     assert any("/mlb" in m for m in alarms), alarms             # ★ mlb raised its OWN alarm

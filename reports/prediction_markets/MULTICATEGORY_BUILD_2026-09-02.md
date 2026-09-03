@@ -244,7 +244,32 @@ PROPOSED B2 DESIGN (agree BEFORE touching evaluate -- the chokepoint on 2 live a
 4. **PROOF:** MLB tests unchanged + a "mlb adapter == direct M.match_bet" equivalence test + box-scratch byte-identical
    mlb-only (the gate A got) + a DISARMED live ufc dry-run (also validates the ticker-date-vs-close-time join above).
 
-## RUNG B2 — dispatch integration (title + UFC context + evaluate registry) — NOT BUILT (design above; awaits Jack's OK)
+## RUNG B2 — dispatch integration — ★ BUILT + LOCALLY PROVEN 2026-09-03 (Ruling 3); box-scratch is the deploy gate
+Built the approved design. Files:
+- **`execution.py`:** `MarketContext` gains optional `fight_index=None` (MLB construction BYTE-IDENTICAL); `import U`
+  (ufc matcher); a `MATCHER_ADAPTERS = {"mlb":(_mlb_parse,_mlb_match), "ufc":(_ufc_parse,_ufc_match)}` registry; the
+  `evaluate` seam (was lines 383-384) now selects the adapter by `sub.category` -> `parse`/`match`, EVERYTHING after
+  UNCHANGED. Unknown category -> `skip:no_matcher_for_category` (fail-safe). The MLB adapter delegates to the IDENTICAL
+  `M.match_bet(...)` -> byte-identical MLB by construction.
+- **`live_driver.py`:** `import U`; `UFC_SERIES=("KXUFCFIGHT","KXUFCDISTANCE")`; `_merge_raw_market_fields` gains
+  `series_list=None` (MLB call unchanged -> default SERIES); NEW `fetch_ufc_market_context` mirroring
+  `fetch_market_context` + `title` via `getattr(m,"title")` (NOT a raw merge -- title is on the SDK object) + exchange_index
+  raw-merge (IS SDK-dropped) + fight/distance index; `CATEGORY_CTX_BUILDERS` gains `"ufc"`. The date is from the
+  TICKER (never occurrence_datetime) per the resolved ticker-date finding.
+- **Tests:** NEW `test_b2_dispatch.py` (7 pass) -- the **MLB-adapter == direct M.match_bet EQUIVALENCE** proof Jack
+  asked for (matches AND honest misses AND non-mlb), unknown-category fail-safe skip, UFC moneyline + distance dispatch
+  (right ticker/leg), UFC unknown-fighter MISS (not a wrong pick), UFC market-type-excluded scope gate,
+  MarketContext-MLB-construction-unchanged. **Also FIXED the 2 M1 tests** (`test_m1_shared_journal_caps`,
+  `test_m1_underfunded_alarm_is_per_category`): they used 'ufc' as a FAKE MLB label (MLB slugs+ctx), which pre-B2
+  worked because evaluate always used M; B2 makes dispatch REAL, so the ufc category now needs REAL ufc signals+ctx --
+  updated them to a genuine cross-category proof (ufc HOOPAR fight). (The `test_m1_prior_snapshots` test was unaffected
+  -- snapshots are taken pre-match.)
+- **PROOF:** local `.venv-webtest` -> **16 env-gap failures unchanged** (17 pykalshi engine-driver paths + stale
+  `schema_head_is_15`; ALL ModuleNotFoundError/stale-const, NONE from B2 logic); test_execution_r4 / test_mlb_match_r2
+  / test_ufc_match all green (MLB non-regression + ufc units). ★ REMAINING (deploy gate, box only): byte-identical
+  mlb-only on the REAL venv (the pykalshi scheduled_loop/kill_switch/shard_gate tests) + a DISARMED live ufc dry-run.
+
+## RUNG B2 — dispatch integration (title + UFC context + evaluate registry) — DONE (see BUILT section above)
 
 ## RUNG B(old placeholder) — superseded by B(core)+B2 above
 Discovery landed: UFC = 2 binary types -- moneyline `KXUFCFIGHT-{YYMONDD}{FTR1}{FTR2}-{FTR}` (one market per fighter)
