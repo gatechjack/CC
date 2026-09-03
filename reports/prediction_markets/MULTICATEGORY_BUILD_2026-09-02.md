@@ -5,6 +5,45 @@
 tip). Autonomous for build/test/box-scratch/review/commit/push/read-only runners; HALT for deploy, restart, live DB
 write, arm, prod-live advance, or a ruling that is Jack's.
 
+## ★★★ OPTION C — PROVEN IN PRODUCTION 2026-09-03 12:34Z (read-only probe `cc\pm_optionc_fire_ro.{ps1,sh}`)
+At SW10 wrap `PLACED_SINCE_RESTART=0`; the open question was whether the restructured ONE-task-per-account loop would
+place live. **IT DID.** Both armed accounts placed real, filled orders since the 23:10:02Z restart:
+- **kalshi_jack PLACED_SINCE_RESTART=4** (ids 116 SFPIT-SF y@0.56, 117 STLLAD-LAD2 spread y@0.54, 119 CWSHOU-CWS
+  y@0.38, 138 MILCHC-9 total no@0.51). **kalshi_karen PLACED_SINCE_RESTART=6** (ids 118/120/127/135/136/137).
+  Every placement: 5 contracts, `outcome_status=filled`, `is_exit=0`, sane price, on ITS OWN account. **DB
+  placement count == cycle-log `placed>=1` count EXACTLY (jack 4, karen 6).** Cross-account: NONE — jack's rows on
+  kalshi_jack, karen's on kalshi_karen; the one same-ticker/same-time pair (id 117 jack + 118 karen, STLLAD-LAD2
+  spread y@0.54 @23:57:14Z) is the two-accounts-copy-the-same-whale pattern (COID-division), not a misroute.
+- **Row accounting reconciles:** 23 new rows (id 116..138) = 10 placements + 13 settlement rows (jack 6 / karen 7).
+- **Overnight settlements booked cleanly by R-d** (periodic settlement-scan, 8 batches): all 6 wrap-open legs +
+  the new entries settled per-wallet with correct signs (won->+px1.0/+pnl, lost->px0.0/-cost). Examples: MILCHC
+  total-9 won +2.3565; TORCLE-CLE lost -2.3435; SFPIT-SF won +2.114. `SETTLEMENTS_SINCE_RESTART` jack 6 / karen 7.
+- **Boot-reconcile stayed clean:** only the 23:14:42Z boot lines (both `reconciled=True latched=False
+  latched_categories=()`); NO new boot-reconcile overnight (consistent with no restart).
+- **Engine did NOT bounce overnight (the unasked check):** MainPID=171106, NRestarts=0, ExecMainStart=2026-09-02
+  23:10:02Z, ActiveState=active — all byte-identical to wrap. pmweb 170400 unchanged.
+- **Arm (persisted rows, NOT a status call):** global/jack/karen all `armed=True latched=False`, ts byte-identical
+  to the SW10 baseline. Schema 17. Four PM crons intact (paper-poll */30, refresh 05:00, adjudicate 05:40, rollup
+  05:50 UTC). Shards fresh (age 2min): jack $496.11 (sh0 $0.0081 STILL unfunded), karen $459.63 (sh0 $25.01).
+- **Open now:** jack 1 leg (MILCHC-9 total no x5), karen 3 legs (BOSBAL-BOS y, TBTEX-TEX y, MILCHC-9 total no) — all
+  placed today, within cap.
+
+**WRAP-TIME SILENCE EXPLAINED (market conditions, not a restructure fault):** the OPPOSING-PAIR guard re-detected ONE
+contested cid `0x0f589076…aad1` on kalshi_jack ~1816x from 23:10 to **~03:16Z** (`opposed_closes=0` each time: it
+wanted to FLAT a held position but both sides skipped -> re-flagged every ~8s cycle until the underlying MLB game
+settled ~03:16Z, after which it STOPPED). It did NOT starve placement (jack placed 116/117/119 during that window).
+Every PM cycle `errors=0`, `n_reject=0`, `ceiling_latched=False`; no auth-failure/latch events. `skip:exposure_unknown`
+=8 and `skip:shard_underfunded`=17 over 13h (low, fail-closed, expected); SUSTAINED SHARD UNDERFUNDING alarm=0.
+**Verdict: Option C is proven live for the mlb-only (invisible) path — the deploy's actual claim.** The joint
+cross-category cap is still only *exercisable* once a 2nd category exists, but the loop that carries it now places
+correctly in production.
+
+**★ ONE ANOMALY TO FLAG (non-blocking, not new):** the OPPOSING-PAIR guard logging "NEWLY-contested" for the SAME
+cid ~1816x until settlement is a non-convergence log smell ("NEWLY" implies once). It resolved via settlement and
+wrongly closed nothing (opposed_closes=0), but it belongs to the "a safety check keeps checking but never resolves"
+family -> candidate for a later look, do NOT chase now. (Also: 3 tracebacks over 13h — PM cycles show errors=0
+throughout, so non-PM; matches SW10's Telegram/playwright/earnings/non-PM-kalshi classes. Confirm-if-asked.)
+
 ## ★★ LIVE STATE — NOTHING THIS BUILD TOUCHES THE BOX
 - Two accounts ARMED + TRADING throughout: **kalshi_jack/mlb + kalshi_karen/mlb**, one engine, nobody monitoring.
   STOP (kills both): `PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global`.
