@@ -499,3 +499,83 @@ class TestBuildIndex:
         # HOOPAR was not in the index, so nothing gets attached
         for fight in idx2.values():
             assert fight.distance_ticker is None
+
+
+# ─── 12. Name-normalization fix (2026-09-03) ──────────────────────────────────
+# GROUNDED in the ONLY genuine name-FORM misses found by validating the matcher
+# against the pinned whales' REAL UFC bets (pm_ufc_realmatch/namegap probes):
+#   ACCENT_ONLY:    "Gabriel Lourenco"(+cedilla)  vs Kalshi "Gabriel Lourenco"
+#   FIRSTNAME_FORM: "Dan Hooker"                  vs Kalshi "Daniel Hooker"
+#   PARENTHETICAL:  "Andre Lima"                  vs Kalshi "Andre (Bra) Lima"
+# The widening must recover these three WITHOUT ever mis-routing (a wrong pick and a
+# correct-fighters-wrong-market-type are both STOPS). The last three tests are the
+# adversarial guards that prove the widening stays safe.
+class TestNameNormalizationFix:
+    def test_accent_folded_first_last_name_matches(self):
+        """Real: whale bet 'Gabriel Lourenco'(+cedilla); Kalshi title is ASCII."""
+        markets = [
+            {"ticker": "KXUFCFIGHT-26SEP01LOUCLE-LOU", "title": "Gabriel Lourenco wins"},
+            {"ticker": "KXUFCFIGHT-26SEP01LOUCLE-CLE", "title": "Charlie Cleveland wins"},
+        ]
+        idx = _build_index(fight_markets=markets, dist_markets=[])
+        _, r = _match("ufc-gab-cha-2026-09-01", "Gabriel Lourenço",
+                      fight_index=idx, kalshi_dates=frozenset({"2026-09-01"}))
+        assert r.status == "matched"
+        assert r.kalshi_ticker == "KXUFCFIGHT-26SEP01LOUCLE-LOU"
+
+    def test_short_first_name_matches_full(self):
+        """Real: whale bet 'Dan Hooker'; Kalshi title 'Daniel Hooker wins'."""
+        _, r = _match("ufc-dan6-salpar-2026-09-05", "Dan Hooker")
+        assert r.status == "matched"
+        assert r.kalshi_ticker == "KXUFCFIGHT-26SEP05HOOPAR-HOO"
+        assert r.leg == "yes"
+
+    def test_parenthetical_middle_token_tolerated(self):
+        """Real: whale bet 'Andre Lima'; Kalshi title 'Andre (Bra) Lima wins'."""
+        markets = [
+            {"ticker": "KXUFCFIGHT-26AUG29LIMBAT-LIM", "title": "Andre (Bra) Lima wins"},
+            {"ticker": "KXUFCFIGHT-26AUG29LIMBAT-BAT", "title": "Namsrai Batbayar wins"},
+        ]
+        idx = _build_index(fight_markets=markets, dist_markets=[])
+        _, r = _match("ufc-and-nam-2026-08-29", "Andre Lima",
+                      fight_index=idx, kalshi_dates=frozenset({"2026-08-29"}))
+        assert r.status == "matched"
+        assert r.kalshi_ticker == "KXUFCFIGHT-26AUG29LIMBAT-LIM"
+
+    def test_norm_folds_accent_unit(self):
+        assert M._norm("Gabriel Lourenço") == M._norm("Gabriel Lourenco") == "gabriel lourenco"
+
+    # ── adversarial: the widening must NOT create a wrong pick ──
+    def test_two_char_first_name_prefix_still_miss(self):
+        """A <3-char first-name prefix must NOT match (guards single initials / stubs)."""
+        _, r = _match("ufc-dan6-salpar-2026-09-05", "Da Hooker")
+        assert r.status == "winner_outcome_unresolved"
+        assert r.kalshi_ticker is None
+
+    def test_different_first_name_same_surname_is_miss(self):
+        """'Andre Silva' must NOT match 'Anderson Silva' -- 'andre' is not a prefix of
+        'anderson' (share only 'and'), so a same-surname near-miss stays a MISS."""
+        markets = [
+            {"ticker": "KXUFCFIGHT-26SEP05SILRIV-SIL", "title": "Anderson Silva wins"},
+            {"ticker": "KXUFCFIGHT-26SEP05SILRIV-RIV", "title": "Rival Fighter wins"},
+        ]
+        idx = _build_index(fight_markets=markets, dist_markets=[])
+        _, r = _match("ufc-and-riv-2026-09-05", "Andre Silva",
+                      fight_index=idx, kalshi_dates=frozenset({"2026-09-05"}))
+        assert r.status == "winner_outcome_unresolved"
+        assert r.kalshi_ticker is None
+
+    def test_two_same_surname_related_first_names_on_card_is_ambiguous(self):
+        """If ONE outcome prefix-matches a fighter in TWO different bouts on the card,
+        the uniqueness guard returns a SAFE MISS (ambiguous), never a guess."""
+        markets = [
+            {"ticker": "KXUFCFIGHT-26SEP05HOOPAR-HOO", "title": "Daniel Hooker wins"},
+            {"ticker": "KXUFCFIGHT-26SEP05HOOPAR-PAR", "title": "Salahdine Parnasse wins"},
+            {"ticker": "KXUFCFIGHT-26SEP05HOOXAV-HOX", "title": "Danny Hooker wins"},
+            {"ticker": "KXUFCFIGHT-26SEP05HOOXAV-XAV", "title": "Someone Xavier wins"},
+        ]
+        idx = _build_index(fight_markets=markets, dist_markets=[])
+        _, r = _match("ufc-dan-x-2026-09-05", "Dan Hooker",
+                      fight_index=idx, kalshi_dates=frozenset({"2026-09-05"}))
+        assert r.status == "abbrev_collision_ambiguous"
+        assert r.kalshi_ticker is None

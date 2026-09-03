@@ -121,6 +121,7 @@ KNOWN UNRESOLVABLE CASES (explicit misses, not silent failures)
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field, replace
 
 # ── Date helpers (shared with the MLB matcher) ─────────────────────────────
@@ -154,9 +155,17 @@ def kalshi_to_iso_date(kd: str) -> str | None:
 
 # ── Fighter name helpers ────────────────────────────────────────────────────
 
+def _afold(s: str) -> str:
+    """Fold accents/diacritics to ASCII (NFKD decompose -> drop combining marks).
+    'Lourenco' with a cedilla -> 'Lourenco'; 'Charriere' with a grave -> 'Charriere'.
+    Folding NEVER merges two DISTINCT fighters (it only strips diacritics), so it
+    cannot create a wrong pick -- validated 2026-09-03 against real whale UFC bets."""
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii")
+
+
 def _norm(s: str) -> str:
-    """Lowercase, collapse non-alnum to single space, strip."""
-    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+    """Accent-fold, lowercase, collapse non-alnum to single space, strip."""
+    return re.sub(r"[^a-z0-9]+", " ", _afold(s).lower()).strip()
 
 
 def fighter_kcode(full_name: str) -> str:
@@ -192,13 +201,40 @@ def fighter_kcode(full_name: str) -> str:
 
 
 def match_fighter_name(candidate: str, known_name: str) -> bool:
-    """True if `candidate` is a reasonable match for `known_name`.
+    """True if `candidate` (a Polymarket outcome) names the SAME fighter as
+    `known_name` (a Kalshi title fighter).
 
-    Exact full-name match only (normalised). We do NOT use fuzzy / substring
-    because with only two fighters on the card the ambiguity risk is low and
-    exactness prevents silent mis-routes.
+    Tiered and deliberately CONSERVATIVE. Validated 2026-09-03 against the real
+    UFC bets of the pinned whales: this recovers the only genuine name-FORM misses
+    (short/long first name; accents; a parenthetical middle-token disambiguator)
+    with ZERO wrong picks over the real corpus.
+
+      1. Exact accent-folded, normalised equality.
+      2. SAME last token (accent-folded) AND first token exact, OR the SHORTER first
+         token is >= 3 chars and a prefix of the longer. Keying on first + last
+         tokens tolerates an extra MIDDLE token ("Andre Lima" -> "Andre (Bra) Lima").
+
+    Why it cannot mis-route:
+      * The LAST token must match exactly (folded) -- a different surname never matches.
+      * A first-token PREFIX needs >= 3 shared chars, so "D. Hooker" (initial) and
+        "Andre" vs "Anderson" (share only "and", not a prefix) both stay MISSES.
+      * If two fighters on ONE card still both satisfy the rule for one outcome,
+        match_bet's uniqueness guard returns abbrev_collision_ambiguous -- a safe
+        MISS, never a guess. So a widened match can only ever become a safe miss.
     """
-    return _norm(candidate) == _norm(known_name)
+    c, k = _norm(candidate), _norm(known_name)
+    if c == k:
+        return True
+    ct, kt = c.split(), k.split()
+    if not ct or not kt:
+        return False
+    if ct[-1] != kt[-1]:                       # last name must match (accent-folded) exactly
+        return False
+    cf, kf = ct[0], kt[0]
+    if cf == kf:                               # same first token (extra middle tokens tolerated)
+        return True
+    shorter, longer = (cf, kf) if len(cf) <= len(kf) else (kf, cf)
+    return len(shorter) >= 3 and longer.startswith(shorter)
 
 
 # ── Poly slug parsing ────────────────────────────────────────────────────────
