@@ -28,8 +28,8 @@ def test_schema_head_pin():
     # 013=pm_search_run, 014=contracts, 015=settlement-close, 016=shard snapshot, 017=loss-omission cache (back-ported
     # from the deployed loss-omission branch), 018=pm_opposed_marker (opposed-guard R2). Head pinned so a migration bump
     # is a deliberate one-line edit here. (Was 15 -- stale since 016 landed; corrected to 18 with the R2 migration.)
-    assert db.SCHEMA_HEAD == 18
-    assert (17, db.MIGRATION_017) in db.MIGRATIONS and (18, db.MIGRATION_018) in db.MIGRATIONS
+    assert db.SCHEMA_HEAD == 19
+    assert (18, db.MIGRATION_018) in db.MIGRATIONS and (19, db.MIGRATION_019) in db.MIGRATIONS
 
 
 def test_migration_013_creates_pm_search_run(tmp_path):

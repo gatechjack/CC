@@ -74,7 +74,7 @@ def test_n2_roster_is_INERT_today_only_jack_mlb():
             subs=[("kalshi_jack", "mlb", 1)],
             attachments=[("kalshi_jack", "mlb", "0xWHALE", 1)])
     assert DR.active_driver_subdivisions(c) == [
-        {"account_id": "kalshi_jack", "category": "mlb", "secret_ref": "KALSHI"}]
+        {"account_id": "kalshi_jack", "category": "mlb", "secret_ref": "KALSHI", "multi_category_ok": 0}]  # M4: opt-in OFF by default
 
 
 def test_n2_roster_includes_karen_once_she_has_sub_and_active_attachment():

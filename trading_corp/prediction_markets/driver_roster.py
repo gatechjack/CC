@@ -31,6 +31,15 @@ def _table_exists(conn, name: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
 
 
+def _column_exists(conn, table: str, col: str) -> bool:
+    # M4 (2026-09-03): tolerant read of the multi-category opt-in -- if pm_account.multi_category_ok is absent
+    # (code precedes migration 019) we FAIL CLOSED to 0 (guard still refuses the 2nd category), never raise at boot.
+    try:
+        return any(r[1] == col for r in conn.execute("PRAGMA table_info(%s)" % table).fetchall())
+    except Exception:
+        return False
+
+
 def active_driver_subdivisions(conn) -> list[dict]:
     """The DRIVER ROSTER: active sub-divisions on active accounts WITH >=1 active attachment. Returns a list of
     {account_id, category, secret_ref} dicts, deterministically ordered. Empty (never raises) if the money-layer
@@ -45,28 +54,35 @@ def active_driver_subdivisions(conn) -> list[dict]:
         # A driver that trades nothing is the safe degradation; the live box is post-011 so this is belt-and-braces.
         _LOG.warning("driver_roster: pm_subdivision_attachment absent -> EMPTY roster (fail-safe; 0 tasks)")
         return []
+    # M4 (2026-09-03): carry the per-account multi_category_ok opt-in ON the roster row (TOLERANT: 0 if the column is
+    # absent pre-019). plan_driver_tasks reads it to decide whether a 2nd category on the account is grouped or refused.
+    optin_sel = "a.multi_category_ok AS multi_category_ok" if _column_exists(conn, "pm_account", "multi_category_ok") else "0 AS multi_category_ok"
     rows = conn.execute(
-        "SELECT s.account_id AS account_id, s.category AS category, a.secret_ref AS secret_ref "
+        "SELECT s.account_id AS account_id, s.category AS category, a.secret_ref AS secret_ref, " + optin_sel + " "
         "FROM pm_subdivision s "
         "JOIN pm_account a ON a.account_id = s.account_id AND a.active = 1 "
         "WHERE s.active = 1 "
         "  AND EXISTS (SELECT 1 FROM pm_subdivision_attachment at "
         "              WHERE at.account_id = s.account_id AND at.category = s.category AND at.active = 1) "
         "ORDER BY s.account_id, s.category").fetchall()
-    return [{"account_id": r["account_id"], "category": r["category"], "secret_ref": r["secret_ref"]} for r in rows]
+    return [{"account_id": r["account_id"], "category": r["category"], "secret_ref": r["secret_ref"],
+             "multi_category_ok": int(r["multi_category_ok"] or 0)} for r in rows]
 
 
 def plan_driver_tasks(roster: list[dict], accounts_with_keys) -> tuple[list[dict], list[dict]]:
     """PURE planning: given the roster and the set of account_ids whose keys RESOLVED, decide which tasks to SPAWN
-    and which to SKIP (with reasons). Deterministic (roster is pre-ordered). Two skip rules:
+    and which to SKIP (with reasons). Deterministic (roster is pre-ordered). Skip rules:
       - 'no_keys': the account's secret_ref did not resolve to a keypair -> fail-CLOSED (never trade on wrong keys).
-      - 'second_subdivision_on_account': a 2nd sub-division on an account that ALREADY has a spawned task. N
-        DISTINCT accounts (one category each) are safe; a 2nd CATEGORY on ONE account silently degrades three
-        account-scoped safeties -- the account-level open_usd cap has a within-cycle over-place race between the
-        two same-account tasks; latch_auth_failure is called with only the caller's category so a 401 leaves the
-        sibling POSTing on dead auth; a full-account KALSHI_ONLY boot-reconcile mismatch latches only the categories
-        that have tasks. FILED, unbuilt. This guard REFUSES the 2nd LOUDLY so a config/DB edit cannot land the
-        unsafe case silently.
+      - 'second_subdivision_on_account': a 2nd category on an account that ALREADY has a spawned category, and the
+        account is NOT opted in. N distinct accounts (one category each) are always safe; a 2nd CATEGORY on ONE
+        account is safe ONLY under Option C (M1/M2/M3 all closed) + the per-account opt-in (M4). The account-scoped
+        safeties that used to degrade -- the open_usd race (M1), latch_auth_failure scope (M2), whole-account
+        boot-reconcile latch (M3) -- are now closed, so the guard opens BEHIND a fail-closed opt-in.
+    ★ M4 (2026-09-03): a 2nd+ category is GROUPED (emitted, so main.py's by-account grouping puts it on the account's
+    ONE Option-C task) IF AND ONLY IF the account is opted in via `pm_account.multi_category_ok=1` (carried on the
+    roster row as `multi_category_ok`). OFF BY DEFAULT (DDL default 0; absent key -> 0 -> refuse): with no opt-in the
+    behaviour is BYTE-IDENTICAL to before M4 -- one category per account, the 2nd refused. The relaxation is NEVER the
+    default; an account gets a 2nd category only because a deliberate DB edit says so.
     Returns (spawn, skips): spawn = [{account_id, category}], skips = [{account_id, category, reason}]."""
     spawn: list[dict] = []
     skips: list[dict] = []
@@ -78,7 +94,10 @@ def plan_driver_tasks(roster: list[dict], accounts_with_keys) -> tuple[list[dict
             skips.append({"account_id": aid, "category": cat, "reason": "no_keys"})
             continue
         if aid in seen_accounts:
-            skips.append({"account_id": aid, "category": cat, "reason": "second_subdivision_on_account"})
+            if row.get("multi_category_ok"):                    # M4: opted-in -> GROUP onto the account's Option-C task
+                spawn.append({"account_id": aid, "category": cat})
+            else:                                               # fail-CLOSED default: refuse the 2nd category LOUDLY
+                skips.append({"account_id": aid, "category": cat, "reason": "second_subdivision_on_account"})
             continue
         seen_accounts.add(aid)
         spawn.append({"account_id": aid, "category": cat})

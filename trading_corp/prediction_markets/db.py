@@ -857,6 +857,18 @@ MIGRATION_018: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_opposed_marker_acct_cat ON pm_opposed_marker(account_id, category)",
 ]
 
+# migration 019 (2026-09-03, M4 -- per-account MULTI-CATEGORY OPT-IN). ★ SCHEMA NUMBER 019 IS CLAIMED BY THIS
+# WORKSTREAM (pm-multicategory M4) -- see the SHARED-SCHEMA-NUMBER hazard note; pm-ui-rewrite (carries 017, close to
+# deploying) must use 020+. The driver GUARD (driver_roster.plan_driver_tasks) refuses a 2nd category on an account BY
+# DEFAULT; this column is the FAIL-CLOSED per-account opt-in that permits it. DDL DEFAULT 0 -> OFF by default -> the
+# relaxation is NEVER the default state; an account gets a 2nd category ONLY because a deliberate `UPDATE pm_account SET
+# multi_category_ok=1 WHERE account_id=?` says so. Additive; behaviour-neutral until a 2nd (account,category)
+# sub-division AND the opt-in both exist. active_driver_subdivisions reads it TOLERANTLY (0 if the column is absent ->
+# a pre-migration schema STILL refuses the 2nd category), so code preceding the migration cannot open the guard.
+MIGRATION_019: list[str] = [
+    "ALTER TABLE pm_account ADD COLUMN multi_category_ok INTEGER NOT NULL DEFAULT 0",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -876,6 +888,7 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (16, MIGRATION_016),
     (17, MIGRATION_017),   # back-ported from loss-omission (box already has it) -- keeps [1..18] contiguous
     (18, MIGRATION_018),   # opposed-guard R2: pm_opposed_marker (decision-keyed memory)
+    (19, MIGRATION_019),   # M4: pm_account.multi_category_ok (per-account fail-closed opt-in) -- DROPPABLE with M4
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"
