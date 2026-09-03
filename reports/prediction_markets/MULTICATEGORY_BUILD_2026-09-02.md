@@ -214,8 +214,16 @@ THE WHOLE FIELD SET the UFC ctx builder needs, BOTH sources (SDK object via mode
 - **`kalshi_dates`** -- derived from the TICKER date (KXUFCFIGHT-26SEP08... -> 2026-09-08); NO market field needed.
 - **`liquidity_dollars`='0.0000'** -- the deprecated always-zero stub; NOT relied on (gate 3 uses yes_bid_dollars).
   Same non-issue as MLB. NO MarketModel field carries a pydantic `deprecated=` flag.
-- **OBSERVATION (matcher-validation, NOT a ctx gap):** ticker date `26SEP08` vs `close_time 2026-09-23` DIFFER --
-  flag for the disarmed dry-run: confirm the Poly<->Kalshi date join uses the EVENT date consistently.
+- **TICKER-DATE RESOLVED 2026-09-03 (read-only `pm_ufc_datefields_ro` + `pm_poly_ufc_dates_ro`; Jack: establish BEFORE
+  building):** the Kalshi ticker date is the **card-LOCAL date (ET/venue), NOT the UTC `occurrence_datetime`.**
+  `occurrence_datetime`==`expected_expiration_time` = the real fight UTC time; `close_time`==`expiration_time`==
+  `latest_expiration_time` = a ~2-WEEK **administrative settlement-deadline buffer** (NOT the event). **The join MUST
+  use the card-local date = the TICKER's encoded date (exactly what the matcher's `kalshi_to_iso_date` already does)
+  -- NOT occurrence/close_time.** VERIFIED both venues AGREE on 8 fights across 2 cards incl. the cross-midnight one:
+  Kalshi `KXUFCFIGHT-26SEP08PASBER` (occurrence **2026-09-09T05:20Z UTC**) and Poly `ufc-quepas-arlber-**2026-09-08**`
+  BOTH label it **2026-09-08** (card-local) -> the join holds precisely where a UTC-derived date would have BROKEN it.
+  => the ctx builder derives the date FROM THE TICKER and must NOT 'correct' it via `occurrence_datetime`. (Also: Poly
+  `ufc-who-will-*-fight-next` futures have no slug date -> matcher skips; DWCS cards list under KXUFCFIGHT too.)
 
 PROPOSED B2 DESIGN (agree BEFORE touching evaluate -- the chokepoint on 2 live armed accounts):
 1. **`execution.MarketContext`** -- ADD optional `fight_index: dict|None=None` (keep moneyline/total/spread/
