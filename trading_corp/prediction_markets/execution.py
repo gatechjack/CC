@@ -48,6 +48,7 @@ from ..brokers.kalshi_live import (build_v2_event_order, client_order_id as _kal
                                    usd_to_contracts, v2_side_and_price)
 from ..data import mlb_poly_kalshi_match as M
 from ..data import ufc_poly_kalshi_match as U   # B2: the UFC matcher (category dispatch below); pure/stdlib like M
+from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) matcher; pair-keyed, pure/stdlib like M/U
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 _LOG = logging.getLogger(__name__)
@@ -90,6 +91,10 @@ class CopySignal:
     outcome_index: int
     signal_id: str            # STABLE across restarts: the whale's entry tx_hash (canonical) or a position-id hash
     is_exit: bool = False     # entry vs exit (Option D). An exit -> reduce_only on the SAME leg.
+    # ★ tennis (2026-09-04): the Poly market TITLE "A vs B". DEFAULT "" so every existing construction
+    # (mlb/ufc entries, exits, tests) is BYTE-IDENTICAL; ONLY the tennis adapter reads it (pair-keying). A signal
+    # without a title falls back to single-player matching (safe: surname-only outcomes then miss, never mis-pick).
+    title: str = ""
     close_source: str | None = None  # None=whale-exit | 'opposed'=cancellation-by-disagreement (two whales disagree
                                      # -> market off the books). BOTH close PER-WALLET; the opposed flatten emits one
                                      # per holding whale (detect_opposing_closes), summing to the full account flatten.
@@ -133,6 +138,9 @@ class MarketContext:
     # the MLB construction MarketContext(ml, tot, spr, dates, markets) is BYTE-IDENTICAL (fight_index stays None); the
     # ufc ctx builder sets fight_index and leaves ml/tot/spr empty. Read only by the ufc matcher adapter below.
     fight_index: dict | None = None
+    # tennis (2026-09-04): the {date_iso: [KalshiMatch]} index. Optional + defaulted so mlb/ufc constructions stay
+    # BYTE-IDENTICAL; the tennis ctx builder sets match_index and leaves the rest empty. Read only by the tennis adapter.
+    match_index: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -375,7 +383,9 @@ class Journal:
 # BOTH matchers already share that MatchResult surface. The MLB adapter delegates to the IDENTICAL M.match_bet call
 # evaluate used inline before B2, so MLB behaviour is byte-identical by construction (see test_b2_dispatch). An
 # UNKNOWN category has NO adapter -> evaluate fail-SAFE skips (never match with the wrong matcher -- the standing lens).
-def _mlb_parse(slug, outcome):
+# ★ parse takes (slug, outcome, title): mlb/ufc IGNORE title (byte-identical -- same M./U. call as before); ONLY the
+# tennis parse reads it (pair-keying). The dispatch always passes signal.title (default "" for every non-tennis signal).
+def _mlb_parse(slug, outcome, title=None):
     return M.parse_poly_mlb_bet(slug, outcome)
 
 
@@ -384,7 +394,7 @@ def _mlb_match(parsed, ctx, allowed_market_types):
                        allowed_market_types=allowed_market_types)
 
 
-def _ufc_parse(slug, outcome):
+def _ufc_parse(slug, outcome, title=None):
     return U.parse_poly_ufc_bet(slug, outcome)
 
 
@@ -396,9 +406,24 @@ def _ufc_match(parsed, ctx, allowed_market_types):
                        allowed_market_types=allowed_market_types)
 
 
+def _tennis_parse(slug, outcome, title=None):
+    # Pair-keyed: the title "A vs B" supplies both players (date tolerance + safe surname recovery). A None/empty
+    # title degrades to single-player matching (surname-only outcomes then safely MISS, never mis-pick).
+    return TN.parse_poly_tennis_bet(slug, outcome, title)
+
+
+def _tennis_match(parsed, ctx, allowed_market_types):
+    # tennis needs only the match index ({date:[KalshiMatch]}) + the ISO dates present. `match_index or {}` fail-safes
+    # a non-tennis ctx to "no contract"; the registry routes atp/wta to the tennis ctx builder (category-keyed).
+    return TN.match_bet(parsed, ctx.match_index or {}, ctx.kalshi_dates,
+                        allowed_market_types=allowed_market_types)
+
+
 MATCHER_ADAPTERS = {
     "mlb": (_mlb_parse, _mlb_match),
     "ufc": (_ufc_parse, _ufc_match),
+    "atp": (_tennis_parse, _tennis_match),   # both tennis categories share ONE matcher; the ctx builder picks the series
+    "wta": (_tennis_parse, _tennis_match),
 }
 
 
@@ -442,7 +467,7 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         return Decision("skip:no_matcher_for_category", sid, reason="no_matcher_for_category:%s" % sub.category,
                         is_exit=signal.is_exit, disarm_armed=armed)
     _parse_bet, _match_bet = adapter
-    parsed = _parse_bet(signal.slug, signal.outcome)
+    parsed = _parse_bet(signal.slug, signal.outcome, signal.title)   # title read only by tennis; ignored by mlb/ufc
     match = _match_bet(parsed, ctx, sub.market_types)
     if match.status != "matched":
         return Decision("skip:%s" % match.status, sid, market_type=match.market_type, reason=match.reason,
@@ -880,5 +905,6 @@ def detect_opposing_closes(entry_signals, held_outcomes: dict, opposed_cids=None
             for src in inc_by_cid.get(cid, {}).get(oi, []):    # ONE close per holding whale (per-wallet flatten)
                 closes.append(CopySignal(
                     wallet=src.wallet, slug=src.slug, outcome=src.outcome, condition_id=cid, outcome_index=oi,
-                    signal_id=stable_signal_id(src.wallet, cid, oi, "opposed"), is_exit=True, close_source="opposed"))
+                    signal_id=stable_signal_id(src.wallet, cid, oi, "opposed"), is_exit=True, close_source="opposed",
+                    title=src.title))
     return kept, closes, contested, preexisting

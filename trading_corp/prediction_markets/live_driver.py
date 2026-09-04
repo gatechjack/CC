@@ -53,6 +53,7 @@ import time as _time
 from . import arm, boot_reconcile, db, execution, paper, settlement, shard_balance, venue_exposure
 from ..data import mlb_poly_kalshi_match as M
 from ..data import ufc_poly_kalshi_match as U   # B2: UFC fight/distance index builders for fetch_ufc_market_context
+from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) match index builder for fetch_tennis_market_context
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
@@ -60,6 +61,9 @@ from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event
 _LOG = logging.getLogger(__name__)
 SERIES = ("KXMLBGAME", "KXMLBTOTAL", "KXMLBSPREAD")   # Jack's scope ruling: moneyline+total+spread
 UFC_SERIES = ("KXUFCFIGHT", "KXUFCDISTANCE")          # B2: UFC moneyline (per-fighter YES) + go-the-distance (binary)
+# tennis (2026-09-04): the category -> Kalshi MATCH series map. atp/wta split men's/women's on BOTH venues; the ctx
+# builder fetches exactly one series per category (match-winner only -- no set/game/futures/table-tennis).
+TENNIS_SERIES = {"atp": "KXATPMATCH", "wta": "KXWTAMATCH"}
 _SETTLED_LOOKBACK_SEC = 160 * 86400
 # ★ SUSTAINED-SHARD-UNDERFUNDING alarm threshold (gate 6b, Jack RULED 2026-08-30: SURFACED, NOT latched). N=3 cycles:
 # Kalshi auto-rebalances every 10s and the driver polls ~7s, so a transient gap while a rebalance is mid-flight lasts
@@ -203,6 +207,40 @@ async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketConte
     return execution.MarketContext({}, {}, {}, dates, markets, fight_index=fight_idx)
 
 
+async def fetch_tennis_market_context(client, now_ts: int, series: str) -> execution.MarketContext:
+    """tennis (2026-09-04): fetch OPEN + recent-SETTLED markets for ONE match series (KXATPMATCH or KXWTAMATCH) and
+    build the tennis MarketContext. MIRRORS fetch_ufc_market_context -- SAME `client.get_markets`, SAME `_market_quote_dict`
+    quote fields, SAME raw `exchange_index` merge. ★ the `title` ("{Player} wins") IS on the SDK MarketModel object
+    (getattr, NO raw merge -- like UFC); `exchange_index` is NOT on the object and MUST be raw-merged (tennis matches are
+    exchange_index=3 = shard 3). The good news about `title` does NOT carry to `exchange_index` -- they are merged by
+    DIFFERENT paths. The join date is the card-LOCAL date in the ticker (never occurrence_datetime). Match-winner only."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    match_markets: list = []       # [{ticker, title}] -> build_kalshi_match_index (title carries the player full name)
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+        ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
+                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+        for m in (ms or []):
+            tk = getattr(m, "ticker", "") or ""
+            if not tk:
+                continue
+            markets[tk.upper()] = _market_quote_dict(m)
+            match_markets.append({"ticker": tk, "title": getattr(m, "title", None)})
+    await _merge_raw_market_fields(client, markets, series_list=(series,))   # exchange_index (SDK-dropped) from raw
+    match_idx = TN.build_kalshi_match_index(match_markets)
+    dates = frozenset(match_idx.keys())                 # ISO dates FROM THE TICKER (card-local), never occurrence
+    return execution.MarketContext({}, {}, {}, dates, markets, match_index=match_idx)
+
+
+async def fetch_atp_market_context(client, now_ts: int) -> execution.MarketContext:
+    return await fetch_tennis_market_context(client, now_ts, TENNIS_SERIES["atp"])
+
+
+async def fetch_wta_market_context(client, now_ts: int) -> execution.MarketContext:
+    return await fetch_tennis_market_context(client, now_ts, TENNIS_SERIES["wta"])
+
+
 # ── signal source: attached whales' /positions -> entry CopySignals (chokepoint dedups already-placed) ───
 def _stable_entry_key(condition_id: str, outcome_index) -> str:
     """A restart-STABLE entry key for a /positions row, which carries NO fill tx_hash/ts. The whale's holding of a
@@ -229,7 +267,7 @@ def positions_to_entry_signals(rows, wallet: str) -> list:
             wallet=wallet, slug=str(getattr(p, "slug", "") or ""),
             outcome=str(getattr(p, "outcome", "") or ""), condition_id=cid, outcome_index=oidx,
             signal_id=execution.stable_signal_id(wallet, cid, oidx, _stable_entry_key(cid, oidx)),
-            is_exit=False))
+            is_exit=False, title=str(getattr(p, "title", "") or "")))   # tennis pair-keying reads title; mlb/ufc ignore it
     return out
 
 
@@ -558,7 +596,8 @@ async def fetch_settlements(client) -> list:
 # (fail-SAFE: no catalog -> no signals -> nothing placed). ★ M1 (Option C) seam: this is what lets ONE account task
 # iterate N categories, each matched against its own catalog, while the account-level Journal/venue/shard reads are
 # shared once per cycle (the shared Journal is what enforces the account open-cap JOINTLY across categories).
-CATEGORY_CTX_BUILDERS = {"mlb": fetch_market_context, "ufc": fetch_ufc_market_context}   # B2: ufc registered
+CATEGORY_CTX_BUILDERS = {"mlb": fetch_market_context, "ufc": fetch_ufc_market_context,   # B2: ufc registered
+                         "atp": fetch_atp_market_context, "wta": fetch_wta_market_context}   # tennis: per-series builders
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
