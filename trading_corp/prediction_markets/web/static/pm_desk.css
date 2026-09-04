@@ -182,3 +182,20 @@ table.tr tr.det td{background:#0a1017;padding:0 12px 14px;white-space:normal}
 .detgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:14px 26px;padding-top:12px}
 .detgrid .lbl{font-family:var(--sans);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dimmer)}
 .wsm{color:var(--stale)}
+
+/* non-MLB positions table (multi-category, 2026-09-04): an honest table for a category with no game feed. */
+table.postbl{width:100%;border-collapse:collapse;font-family:var(--dmono);font-size:12px}
+table.postbl th{text-align:left;font-family:var(--sans);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.postbl td{padding:11px 14px;border-bottom:1px solid #141d29;color:var(--dim);vertical-align:top}
+table.postbl th.pnum,table.postbl td.pnum{text-align:right}
+.postbl .pdesc{color:var(--text);white-space:normal;max-width:360px}
+.postbl .pt{display:block}
+.postbl .pk{font-family:var(--sans);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--dimmer)}
+.postbl .pside{color:var(--text)}
+.postbl .pval{color:var(--text)}
+.postbl .pval .won{color:var(--won)}.postbl .pval .lost{color:var(--lost)}
+.postbl .pwh{white-space:normal;max-width:220px}
+.postbl tr.prow.live .pval{color:var(--live)}
+.badge.live{color:var(--live);border-color:#1e4f66}
+.badge.won{color:var(--won);border-color:#1d5a41}
+.badge.lost{color:var(--lost);border-color:#6b2a2a}

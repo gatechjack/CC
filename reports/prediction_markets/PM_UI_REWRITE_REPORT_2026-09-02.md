@@ -873,3 +873,126 @@ DANGEROUS if restored later -- reverts DEPLOY 3).
 - prod-live / main-wip NOT advanced; branch NOT pushed (box-is-truth). Deployed code = `431ec76`.
 - Runners in `cc/`: `pm_deploy3_checks.sh`, `pm_deploy3_apply.sh` (+ `gen_deploy3.py`), `pm_deploy3_restart_az.ps1`,
   `pm_deploy3_verify.sh`, `pm_deploy3_rollback.sh`; prod render `cc/pm_prodshot.py` from `cc/prod/` (fetched bytes).
+
+---
+
+# MULTI-CATEGORY FIX -- 2026-09-04 (build + test + verify; NOTHING DEPLOYED, NOTHING RESTARTED)
+
+Board-authorized 2026-09-04. Eight live sub-divisions exist (Jack & Karen x ATP/MLB/UFC/WTA). The `/live/{acct}/{cat}`
+page rendered a **headline that contradicted its own drawer** on every non-MLB sub-division: the summary strip said
+0 games / $0.00 at-cost / 0 positions while the trade drawer listed a real open trade (Jack's ATP KXATPMATCH... 5
+contracts, fill $0.10). This pass makes the totals category-agnostic, gives non-MLB categories an honest positions
+view, covers every held series in the mark poller, and keeps MLB byte-for-byte identical. Branch
+`pm-ui-rewrite-2026-09-02` (worktree `cc-pm-ui-rewrite-wt`); base = deployed `431ec76`.
+
+## Root cause (Jack's hypothesis -- CONFIRMED with box evidence)
+`live_view.build_live_context` grouped every held ticker by MLB **game** via `game_key_from_ticker(tk)`, which parses
+`KXMLB{GAME,TOTAL,SPREAD}-<date><hhmm><AWAYHOME>-...` against `MLB_TEAMS` and returns **None** for any non-MLB ticker
+(`KXATPMATCH`, `KXUFCFIGHT`, `KXWTAMATCH`). The summary strip (at-cost / count / value / realized) was then computed
+**from the game cards**, so a non-MLB sub-division produced **no cards -> all-zero strip**. But `_trade_rows` iterates
+**every** order regardless of ticker, so the drawer still showed the trade. Net: the sport parser silently gated the
+headline totals. The account pages were already correct because they read the journal directly
+(`subdivision.live_positions` / `account_pnl`) -- which is why, in the prod probe below, `kalshi_jack`'s **account**
+page counts the ATP position ($3.65 = atp $0.50 + mlb $3.15) while its **atp live page** shows $0.00. That split is the
+fingerprint of the defect: journal path correct, sport-parser path broken.
+
+## Prod discrepancy table (READ-ONLY box probe `cc/pm_multicat_prod_defect_ro.{ps1,sh}`, deployed code `431ec76`)
+Page strip (rendered by the **currently deployed** pm_web, PID 182842) vs mode=ro journal truth
+(`subdivision.live_positions` run on the box). All page GETs 200; Remote-User=jack; nothing written.
+
+| account | cat | JOURNAL (mode=ro) | PAGE strip (deployed) | verdict |
+|---|---|---|---|---|
+| kalshi_jack | atp | open=1 cost=$0.50 | Games=0 cost=$0.00 postbl=N | **DEFECT -- page hides the position** |
+| kalshi_jack | mlb | open=1 cost=$3.15 | Games=1 cost=$3.15 postbl=N | agrees (MLB path works) |
+| kalshi_jack | ufc | open=0 cost=$0.00 | Games=0 cost=$0.00 | no open pos now (would defect if held) |
+| kalshi_jack | wta | open=0 cost=$0.00 | Games=0 cost=$0.00 | no open pos now |
+| kalshi_karen | atp | open=0 cost=$0.00 | Games=0 cost=$0.00 | no open pos now |
+| kalshi_karen | mlb | open=1 cost=$3.15 | Games=1 cost=$3.15 | agrees (MLB path works) |
+| kalshi_karen | ufc | open=0 cost=$0.00 | Games=0 cost=$0.00 | no open pos now |
+| kalshi_karen | wta | open=0 cost=$0.00 | Games=0 cost=$0.00 | no open pos now |
+
+Account pages (deployed): `kalshi_jack` journal n_open=2 open_cost=$3.65, page links 4/4 cats; `kalshi_karen` n_open=1
+open_cost=$3.15, page links 4/4 cats. **The one live non-MLB position anywhere on the box (jack/atp) is exactly the
+one the page hid** -- the reported defect, reproduced from the box.
+
+## The fix, item by item (all in the worktree; evidence = the tests + the worktree render harness)
+
+**1. Totals never depend on the sport parser.** `build_live_context(..., category=None)` now branches on category.
+For a **non-MLB** category the summary comes from `_journal_summary(open_positions, orders, marks, now_ts)`: at-cost =
+sum of `cost_basis_usd` over `live_positions`; unsettled count/value/coverage via the existing category-agnostic
+`value_positions`; realized-today + settled-today from settlement-close journal rows keyed on the close timestamp. The
+"games held" cell reads the honest alternative ("No game feed for <CAT> -- N open positions") from `has_game_feed`
+False. Evidence: `test_non_mlb_totals_from_journal_not_parser` (n_open=1, at-cost $0.50, value 5x0.12, realized $3.00);
+render harness shows all 8 sub-divisions strip==journal.
+
+**2. Non-MLB pages get an honest positions view.** New `_positions_view(...)` builds an Active (open) / Complete
+(settled/exit/opposed) table; each row carries ticker, market description (the Kalshi **title** from the mark when
+present, else `market_describe`'s `<type>:<ticker>` fallback), side, contracts, cost basis, current value at
+contracts x BID or "no mark", status, and the copied whale(s). Template renders `postbl` table for `mode=='positions'`,
+no court/octagon cards (later Jack decision). Evidence: `test_non_mlb_positions_view_rows`,
+`test_non_mlb_desc_falls_back_to_market_describe_without_title`; PNG `cc/renders/multicat_atp.png` (Zverev vs Halys /
+YES / 5 / $0.50 / $0.60 / OPEN / 0xw).
+
+**3. Mark poller covers every held series.** `marks.series_from_tickers(tickers)` + `subdivision.traded_series(conn)`
+(distinct Kalshi series prefixes from every **held** ticker across all active sub-divisions, both accounts) feed a new
+`poller.refresh_once(..., series_provider=)` / `poll_loop(..., series_provider=)`; `app._held_series_provider` wires it
+in (fail-safe: any DB blip or empty result -> the MLB default so a cold start still primes the slate). `marks.Mark`
+gained a `title` field (populated in `parse_markets` from the Kalshi `title`), which the positions view uses.
+Kalshi public market-data endpoint returns ATP/UFC/WTA identically to MLB -- **confirmed live from the box**: the same
+`api.elections.kalshi.com/.../markets?series_ticker=KXATPMATCH` path already backs the tennis matcher and the first
+ATP fill (order 160) verification. Evidence: `test_series_from_tickers_distinct_prefixes`,
+`test_parse_markets_carries_title`, `test_traded_series_covers_all_held_categories` (mlb+atp+ufc across 2 accounts ->
+`(KXATPMATCH, KXMLBGAME, KXUFCFIGHT)`), `test_poller_threads_series_provider_to_fetch_marks` + the two fail-safe tests.
+Coverage label "N of M priced" now renders on every category (visible on the ATP PNG: "1 of 1 priced").
+
+**4. Feed-unavailable never means "game over" on a category with no feed.** The non-MLB branch renders no diamond, no
+inning/count, no "no count / game over", no baseball legend -- only the positions table + a positions legend. Guarded by
+`test_atp_page_renders_positions_view_not_empty_cards` (asserts none of "game over", "runner on base", "no count",
+"FEED<br>UNAVAILABLE" appear on the ATP page) and visible in the PNG.
+
+**5. Account page + accounts overview.** Verified already category-agnostic: `account_pnl` iterates every active
+category; `_account_open_value` sums `live_positions` across all sub-divisions; sub-division rows list all four
+categories. The only prior gap was non-MLB positions had no marks -> now fixed by item 3. No app.py change needed here
+beyond item 3's poller wiring. Evidence: render harness ACCOUNT rows (n_open=4, all-4-cats-linked=True) + the prod
+probe (deployed account page already linked 4/4 and summed atp+mlb).
+
+**6. MLB unchanged.** The MLB branch keeps the **exact** original card-based summary computation (restored verbatim,
+incl. `realized_today`/`settled_today` keyed on the card's game date, so a cross-midnight settlement behaves as before
+-- deliberately NOT switched to the journal keying used for non-MLB). Two additive keys (`has_game_feed`,
+`n_open_positions`) are appended for the shared template; they do not change any displayed MLB value. Locked by
+`test_mlb_summary_strip_values_locked` (exact strip numbers) and `test_mlb_context_byte_identical_with_and_without_category`
+(the whole context is identical apart from the echoed `category` field). PNG `cc/renders/multicat_mlb.png` shows the
+unchanged game-card view (diamond, ML/TOT/SPR slots, full baseball legend).
+
+## Verification
+- **Full `tests/prediction_markets/`** (`.venv-webtest`, `-p no:pytest_ethereum`): **16 failed, all pre-existing
+  env-gap** (15 pykalshi `ModuleNotFoundError` in engine-driver tests: `test_kill_switch_r7d` x4, `test_live_driver_r7c`
+  x7, `test_shard_gate_r2` x4; + `test_search_r1::test_schema_head_is_15`). **Baseline established authoritatively by
+  running the committed base with my changes stashed -> 16 failed, byte-identical failure set (`diff` empty).** So my
+  delta = **0 new failures**. (The handoff quoted "19"; the true baseline in this worktree/venv is 16 -- this number has
+  been measurement-unstable across sessions per the memory, so I measured it here rather than trusting the quote.)
+- **New tests: 16 passed** -- `test_live_view_multicategory.py` (12) + `test_live_multicategory_render.py` (4, incl. the
+  `test_asset_cache_bust` guard, which passes -> the pm_desk.css hash bump is correct: `1b3b8ccc` -> `825861cd`).
+- **Worktree render harness** `cc/pm_multicat_render.py`: all 8 sub-divisions strip==journal (open=1 / at-cost $0.50 /
+  value $0.60 each), both account pages sum all 4 categories -> **ALL PASS**. Screens `cc/renders/multicat_atp.png`
+  (non-MLB positions view) and `cc/renders/multicat_mlb.png` (MLB cards unchanged).
+- **Box read-only** `cc/pm_multicat_prod_defect_ro.{ps1,sh}`: the prod discrepancy table above (documents the deployed
+  defect); worktree render agrees with the same journal truth.
+- **Nothing deployed / restarted** (`cc/pm_untouched_check_ro.sh`): engine `trading-corp` MainPID **186179**
+  NRestarts=0 (the same PID the fill watcher saw at session start); pm_web MainPID **182842** NRestarts=0. The box still
+  serves pre-fix code -- which is precisely why the defect probe reproduces the old behavior.
+
+## Shippable file list vs deployed `431ec76` (NOT deployed -- for the eventual Board deploy)
+8 files, +342/-62: `web/live_view.py` (category branch + positions view + journal summary),
+`web/marks.py` (`title` field + `series_from_tickers`), `web/poller.py` (`series_provider`),
+`prediction_markets/subdivision.py` (`held_tickers` + `traded_series`, additive), `web/app.py`
+(**changed -- graft rule applies**), `web/static/pm_desk.css` (positions-table styles), `web/templates/pm_live_subdivision.html`
+(cards-vs-table branch), `web/templates/pm_shell.html` (cache-bust hash bump only). Plus 2 new test files.
+**app.py CHANGED**: three purely-additive hunks (a `_held_series_provider` fn, the `series_provider=` poller wiring, the
+`category=category` pass) -- none touch the M5 is_admin/pm-arm hunk. **Graft rule STANDS**: at deploy time app.py is
+GRAFTED onto the box M4 file (box `8b7d35ca` is_admin=10/pm-arm=0), never shipped wholesale; main.py is not shipped from
+this branch. Other 7 files are wholesale-safe (no app.py/main.py collision).
+
+## Runners (cc/)
+`pm_multicat_render.py` (worktree render harness + strip==journal + PNGs), `pm_multicat_prod_defect_ro.{ps1,sh}` (box
+prod-defect probe), `pm_untouched_check_ro.sh` (engine/pm_web untouched check).

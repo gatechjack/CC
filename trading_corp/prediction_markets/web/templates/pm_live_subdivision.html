@@ -1,5 +1,5 @@
 {% extends "pm_shell.html" %}
-{% block title %}{{ sub.account_label or account_id }} MLB &middot; Prediction Markets{% endblock %}
+{% block title %}{{ sub.account_label or account_id }} {{ category|upper }} &middot; Prediction Markets{% endblock %}
 {% block main_class %}class="wrap desk"{% endblock %}
 {% from "partials/pm_arm_badge.html" import arm_badge as armbadge %}
 
@@ -156,6 +156,44 @@
   </article>
 {% endmacro %}
 
+{# ---------- non-MLB positions table (item 2). No court/octagon cards -- an honest table: ticker, market
+   description (Kalshi title when the mark carries one, else the type:ticker fallback), side, contracts, cost
+   basis, current value at contracts x BID or 'no mark', status, and the copied whale(s). Value uses the SAME
+   bid-valuation + coverage the MLB cards use -- never $0 for an unpriced position, never cost standing in for
+   value. Active = still open; Complete = settled / exited / opposed. ---------- #}
+{% macro posrow(p) %}
+  {%- set cls = ('won' if p.won else 'lost') if p.settled else 'live' -%}
+  <tr class="prow {{ cls }}">
+    <td class="pdesc"><span class="pt" title="{{ p.ticker }}">{{ p.desc }}</span><span class="pk">{{ p.kind_label }}</span></td>
+    <td class="pside">{{ (p.held_leg or '&mdash;')|upper }}</td>
+    <td class="pnum">{{ '%g'|format(p.contracts) if p.contracts is not none else '&mdash;'|safe }}</td>
+    <td class="pnum">{% if p.settled %}&mdash;{% else %}{{ p.cost|money if p.cost is not none else '&mdash;'|safe }}{% endif %}</td>
+    <td class="pnum pval">
+      {%- if p.settled -%}
+        {%- if p.value_known -%}<span class="{{ 'won' if p.won else 'lost' }}">{{ p.current_value|money }}</span>{%- else -%}<span class="dim">unresolved</span>{%- endif -%}
+      {%- else -%}
+        {{ p.current_value|money if p.value_known else '<span class="dim">no mark</span>'|safe }}
+      {%- endif -%}
+    </td>
+    <td class="pstat">
+      {%- if p.status == 'open' -%}<span class="badge live">OPEN</span>
+      {%- elif p.status == 'settled' -%}<span class="badge {{ 'won' if p.won else 'lost' }}">{{ 'WON' if p.won else 'LOST' }}</span>
+      {%- elif p.status == 'opposed' -%}<span class="badge">OPPOSED</span>
+      {%- else -%}<span class="badge">EXITED</span>{%- endif -%}
+    </td>
+    <td class="pwh">{% if p.whales %}{{ p.whales|join(', ') }}{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+  </tr>
+{% endmacro %}
+
+{% macro postable(rows) %}
+  <div class="panel" style="margin-top:12px;overflow-x:auto">
+    <table class="postbl">
+      <thead><tr><th>Market</th><th>Side</th><th class="pnum">Contracts</th><th class="pnum">Cost</th><th class="pnum">Value</th><th>Status</th><th>Whale</th></tr></thead>
+      <tbody>{% for p in rows %}{{ posrow(p) }}{% endfor %}</tbody>
+    </table>
+  </div>
+{% endmacro %}
+
 {% block content %}
   <div class="crumb"><a href="/">Accounts</a> / <a href="/account/{{ account_id }}">{{ sub.account_label or account_id }}</a> / {{ category|upper }}</div>
   <div style="display:flex;align-items:center;gap:14px;margin-top:4px;flex-wrap:wrap">
@@ -179,9 +217,16 @@
   {% endif %}
 
   <div class="strip" style="margin-top:20px">
+    {% if summary.has_game_feed %}
     <div class="cell"><div class="u">Games held</div>
       <div class="val">{{ summary.n_active }}<span class="dim" style="font-size:13px"> active &middot; {{ summary.n_complete }} complete</span></div>
       <div class="caveat">Only games with a position appear. A finished game stays active until every position settles.</div></div>
+    {% else %}
+    {# item 1/4: no game feed for this category -> the honest alternative, NOT a fabricated 0 games. #}
+    <div class="cell"><div class="u">Positions held</div>
+      <div class="val">{{ summary.n_open_positions }}<span class="dim" style="font-size:13px"> open</span></div>
+      <div class="caveat">No game feed for {{ category|upper }} &mdash; positions are listed below with cost and current value, not on a scoreboard.</div></div>
+    {% endif %}
     <div class="cell"><div class="u">Unsettled &mdash; at cost</div><div class="val">{{ summary.unsettled_cost|money }}</div>
       <div class="caveat">What we paid. Not what it is worth.</div></div>
     <div class="cell"><div class="u">Unsettled &mdash; current value</div>
@@ -193,6 +238,8 @@
       <div class="caveat">{{ summary.settled_today }} position{{ '' if summary.settled_today == 1 else 's' }} settled today. One day is not a result.</div></div>
   </div>
 
+  {% if mode == 'mlb_cards' %}
+  {# ---------- MLB GAME-CARD view (unchanged, item 6) ---------- #}
   {% set active_cards = cards | selectattr('complete', 'equalto', False) | list %}
   {% set complete_cards = cards | selectattr('complete', 'equalto', True) | list %}
   {% set shown = complete_cards if tab == 'complete' else active_cards %}
@@ -228,6 +275,32 @@
     <span><i style="background:var(--lampB)"></i>ball <i style="background:var(--lampS);margin-left:8px"></i>strike <i style="background:var(--lampO);margin-left:8px"></i>out</span>
     <span class="dim">values are contracts &times; <b>bid</b>; the count column is lamps, not money.</span>
   </div>
+
+  {% else %}
+  {# ---------- non-MLB POSITIONS view (item 2/4): a positions table, NO scoreboard / diamond / inning text ---------- #}
+  {% set pv = positions_view or {'active': [], 'complete': [], 'n_active': 0, 'n_complete': 0} %}
+  {% set shown_pos = pv.complete if tab == 'complete' else pv.active %}
+  <div style="display:flex;align-items:center;gap:16px;margin:32px 0 12px;flex-wrap:wrap">
+    <div class="toggle">
+      <a class="tgl" href="{{ request.url.path }}" role="button" aria-pressed="{{ 'true' if tab != 'complete' else 'false' }}">Active ({{ pv.n_active }})</a>
+      <a class="tgl" href="{{ request.url.path }}?tab=complete" role="button" aria-pressed="{{ 'true' if tab == 'complete' else 'false' }}">Complete ({{ pv.n_complete }})</a>
+    </div>
+    <span class="caveat">{% if tab != 'complete' %}Open {{ category|upper }} positions &mdash; valued at contracts &times; <b>bid</b> from the cached Kalshi marks.{% else %}Settled, exited or opposed-closed {{ category|upper }} positions.{% endif %}</span>
+  </div>
+
+  {% if shown_pos %}
+    {{ postable(shown_pos) }}
+  {% else %}
+  <div class="panel pad"><p class="caveat" style="margin:0">{% if tab == 'complete' %}No completed {{ category|upper }} positions right now.{% elif not feed_meta.ready %}No positions yet &mdash; the poller has not run, or this sub-division holds nothing open.{% else %}No open {{ category|upper }} positions right now.{% endif %}</p></div>
+  {% endif %}
+
+  <div class="legend" style="margin-top:14px">
+    <span><i style="background:var(--live)"></i>open &mdash; value = contracts &times; bid</span>
+    <span><i style="background:var(--won)"></i>settled won &middot; $1.00/contract</span>
+    <span><i style="background:var(--lost)"></i>settled lost &middot; $0.00</span>
+    <span class="dim">values are contracts &times; <b>bid</b>; an unpriced open position reads &ldquo;no mark&rdquo;, never $0.</span>
+  </div>
+  {% endif %}
 
   <h2>Trade detail</h2>
   {% include "partials/pm_trade_drawer.html" %}

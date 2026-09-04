@@ -44,6 +44,7 @@ class Mark:
     last: float | None
     status: str | None
     as_of: int          # unix seconds when fetched -- the mark's own age
+    title: str | None = None   # Kalshi market title -- the honest human name for a non-MLB positions row
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,8 @@ def parse_markets(page_json: dict, *, now_ts: int) -> list[Mark]:
             continue
         out.append(Mark(ticker=t, yes_bid=_f(m.get("yes_bid_dollars")), no_bid=_f(m.get("no_bid_dollars")),
                         yes_ask=_f(m.get("yes_ask_dollars")), no_ask=_f(m.get("no_ask_dollars")),
-                        last=_f(m.get("last_price_dollars")), status=m.get("status"), as_of=now_ts))
+                        last=_f(m.get("last_price_dollars")), status=m.get("status"), as_of=now_ts,
+                        title=m.get("title")))
     return out
 
 
@@ -126,3 +128,17 @@ def fetch_marks(series=MLB_SERIES, *, now_ts: int, http_get=_http_get_json) -> M
     # ok unless EVERY series errored and nothing was collected (then every value degrades to no-mark).
     ok = bool(merged) or not errors
     return MarksResult(marks=merged, ok=ok, as_of=now_ts, error=";".join(errors) or None)
+
+
+def series_from_tickers(tickers) -> tuple:
+    """The distinct Kalshi SERIES to poll, derived from held tickers -- so the poller covers EVERY category we
+    actually hold (ATP/UFC/WTA as well as MLB), never a hardcoded MLB list. A Kalshi ticker is
+    'KX<SERIES>-<event>-<market>'; the series is the pre-'-' prefix (e.g. KXATPMATCH, KXUFCFIGHT, KXMLBGAME).
+    Returns MLB_SERIES when nothing is held so the default MLB slate is still primed on a cold start; results are
+    sorted for a stable, testable order."""
+    out = set()
+    for t in (tickers or []):
+        head = str(t or "").split("-", 1)[0].strip().upper()
+        if head:
+            out.add(head)
+    return tuple(sorted(out)) if out else tuple(MLB_SERIES)

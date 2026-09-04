@@ -155,11 +155,24 @@ templates.env.filters["etdt"] = _etdt
 _poller_task = None
 
 
+def _held_series_provider():
+    """The Kalshi series the mark poller should fetch, derived from every ticker we CURRENTLY HOLD across all
+    sub-divisions (item 3) -- so ATP/UFC/WTA get priced the same as MLB, never a hardcoded MLB list. A short-lived
+    read connection; returns () on any DB blip so the poller falls back to its MLB default. Runs inside the
+    poller's synchronous refresh pass (already off the event loop), so a blocking DB read is fine here."""
+    try:
+        with connect() as conn:
+            return subdivision.traded_series(conn)
+    except Exception:   # noqa: BLE001 -- a series-read blip must not sink the refresh; MLB default takes over
+        return ()
+
+
 @app.on_event("startup")
 async def _start_poller() -> None:
     global _poller_task
     if _poller_task is None or _poller_task.done():
-        _poller_task = asyncio.create_task(poller.poll_loop(ui_cache.cache()))
+        _poller_task = asyncio.create_task(
+            poller.poll_loop(ui_cache.cache(), series_provider=_held_series_provider))
         log.info("pm_web: feed/marks poller started")
 
 
@@ -810,7 +823,7 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int) -> dict 
         copies_by_whale = subdivision.live_copies_by_whale(conn, account_id, category, thin_floor=floor)
     ctx = live_view.build_from_cache(orders=orders, open_positions=open_positions,
                                      open_positions_by_whale=positions_by_whale,
-                                     cache=ui_cache.cache(), now_ts=now_ts)
+                                     cache=ui_cache.cache(), now_ts=now_ts, category=category)
     return {"sub": sub, "attached": attached, "n_live_trades": n_live_trades,
             "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
             "account_id": account_id, "category": category,

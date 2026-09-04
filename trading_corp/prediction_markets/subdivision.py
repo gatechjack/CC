@@ -447,6 +447,38 @@ def account_pnl(conn, account_id: str) -> dict:
     }
 
 
+def held_tickers(conn) -> list[str]:
+    """Every DISTINCT ticker CURRENTLY HELD across ALL active sub-divisions (both accounts, every category) --
+    journal-derived (live_positions), so a position that is open in ANY sub-division is represented exactly once.
+    The mark poller derives the series to fetch from THIS, so it covers ATP/UFC/WTA the same as MLB instead of a
+    hardcoded MLB list. Empty if the money tables are absent (pre-010). Read-only, journal-only."""
+    if not _ready(conn):
+        return []
+    subs = conn.execute(
+        "SELECT account_id, category FROM pm_subdivision WHERE active = 1 ORDER BY account_id, category").fetchall()
+    seen: dict = {}
+    for s in subs:
+        d = dict(s)
+        for h in live_positions(conn, d["account_id"], d["category"]):
+            tk = h.get("ticker")
+            if tk:
+                seen[tk] = True
+    return sorted(seen.keys())
+
+
+def traded_series(conn) -> tuple:
+    """The distinct Kalshi SERIES to poll for current marks, derived from every HELD ticker across all
+    sub-divisions -- the poller's series list, so a non-MLB category we hold gets priced too (item 3). A Kalshi
+    ticker is 'KX<SERIES>-<event>-<market>'; the series is the pre-'-' prefix. Empty tuple when nothing is held ->
+    the poller falls back to its MLB default so a cold start still primes the MLB slate. Read-only."""
+    out = set()
+    for tk in held_tickers(conn):
+        head = str(tk or "").split("-", 1)[0].strip().upper()
+        if head:
+            out.add(head)
+    return tuple(sorted(out))
+
+
 def accounts_overview(conn) -> list[dict]:
     """Every ACTIVE account with its aggregate realized P&L / win-loss / open exposure -- the /accounts landing.
     Read-only; empty if pm_account is absent (pre-010). Never selects a secret value."""

@@ -427,74 +427,185 @@ def _trade_rows(orders: list, agg: dict, marks: dict, slate_games: dict, mismatc
     return rows
 
 
+# ── category detection + journal totals + the non-MLB positions view ─────────────────────────────────────────
+def _is_mlb_category(category, orders) -> bool:
+    """Which view to render. An explicit `category` wins ('mlb' -> game cards; anything else -> a positions table).
+    With NO category (older callers / unit tests that predate the arg) fall back to detecting an MLB game ticker,
+    so existing MLB behaviour is byte-unchanged."""
+    if category is not None:
+        return str(category).strip().lower() == "mlb"
+    return any(game_key_from_ticker(o.get("ticker")) is not None for o in (orders or []))
+
+
+def _realized_today(orders, today_et) -> float:
+    """Realized P&L booked TODAY (ET) from the SETTLEMENT-close journal rows -- category-AGNOSTIC (no sport parse),
+    anchored on the close row's settled/response ts. The same rows the card path sums, so an MLB same-day
+    settlement is unchanged, while a non-MLB page (no games) still gets an honest realized-today."""
+    total = 0.0
+    for o in (orders or []):
+        if o.get("is_exit") and o.get("close_source") in _SETTLE_SOURCES and o.get("realized_pnl") is not None:
+            ts = o.get("settled_ts") or o.get("response_ts")
+            if ts and _et_date(ts) == today_et:
+                total += float(o.get("realized_pnl"))
+    return total
+
+
+def _journal_summary(open_positions, orders, marks, now_ts) -> dict:
+    """The NON-MLB summary strip -- TOTALS come straight from the JOURNAL / open positions, NEVER the sport parser
+    (item 1): at-cost, unsettled position count, current value + coverage, realized-today. There is no game feed
+    for these categories, so the game cells are 0 and `has_game_feed` is False -> the 'games held' cell renders the
+    honest 'no game feed · N open positions' alternative. `settled_today` counts SETTLEMENT-close rows dated today
+    (the same rows realized-today sums), so the count and the P&L are consistent for a category with no cards."""
+    val = value_positions(open_positions or [], marks)
+    unsettled_cost = sum(float(p.get("cost_basis_usd") or 0.0) for p in (open_positions or []))
+    today = _et_date(now_ts)
+    settled_today = sum(1 for o in (orders or [])
+                        if o.get("is_exit") and o.get("close_source") in _SETTLE_SOURCES
+                        and _et_date(o.get("settled_ts") or o.get("response_ts")) == today)
+    return {
+        # game-level (no game feed for a non-MLB category -> 0)
+        "n_active": 0, "n_complete": 0, "settled_today": settled_today, "has_game_feed": False,
+        # position-level totals (from the journal / open positions -- the parser never touches these)
+        "n_open_positions": len(open_positions or []),
+        "unsettled_cost": unsettled_cost,
+        "unsettled_value": val["value"], "unsettled_value_known": val["known"],
+        "unsettled_priced": val["n_priced"], "unsettled_total": val["n_total"],
+        "realized_today": _realized_today(orders or [], today),
+    }
+
+
+def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales_by_ticker) -> dict:
+    """The non-MLB category view: a positions TABLE (active = open; complete = settled/exit/opposed), each row with
+    ticker, honest description (the market title if we have a mark carrying one, else describe_market's
+    '<type>:<ticker>' fallback), side, contracts, cost basis, current value or 'no mark', status, and the copied
+    whale(s). Same bid-valuation + coverage the cards use -- never $0 for an unpriced position, never cost as value."""
+    active, complete = [], []
+    all_tickers = {o.get("ticker") for o in (orders or []) if o.get("ticker")}
+    for tk in sorted(all_tickers):
+        kind = _kind(tk)
+        whales = whales_by_ticker.get(tk, [])
+        op = open_by_ticker.get(tk)
+        if op is not None:
+            leg = op.get("held_leg"); mk = (marks or {}).get(tk)
+            bid = marks_mod.bid_for_leg(mk, leg); contracts = op.get("contracts")
+            value = (contracts * bid) if (bid is not None and contracts is not None) else None
+            title = getattr(mk, "title", None) if mk is not None else None
+            active.append({"ticker": tk, "kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
+                           "desc": (title or describe_market(tk, leg)), "market_title": title, "held_leg": leg,
+                           "contracts": contracts, "cost": op.get("cost_basis_usd"), "avg_fill": op.get("avg_price"),
+                           "fee": op.get("fees_usd"), "current_value": value, "value_known": value is not None,
+                           "bid": bid, "settled": False, "status": "open", "whales": whales})
+            continue
+        # not open -> a terminal (settled / exit / opposed) row, if any close exists for it
+        settle = settle_by_ticker.get(tk)
+        # per-ticker terminal state: prefer a settlement; else the recorded per-(ticker,wallet) state
+        states = {a.get("state") for (t, _w), a in agg.items() if t == tk}
+        if settle is None and not (states & {"exit", "opposed", "settled"}):
+            continue                                # no live/settled position (all off the books) -> not a row
+        settled_leg = _settled_leg([o for o in orders if o.get("ticker") == tk])
+        won = settle.get("won") if settle else None
+        contracts = settle.get("contracts") if settle else None
+        payout = (contracts if won else 0.0) if (won is not None and contracts is not None) else None
+        status = "settled" if settle is not None else ("opposed" if "opposed" in states else "exit")
+        complete.append({"ticker": tk, "kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
+                         "desc": describe_market(tk, settled_leg), "market_title": None, "held_leg": settled_leg,
+                         "contracts": contracts, "cost": None, "avg_fill": None, "fee": None,
+                         "current_value": payout, "value_known": payout is not None, "bid": None, "settled": True,
+                         "won": won, "realized": (settle.get("realized") if settle else None),
+                         "settled_at": (settle.get("settled_ts") if settle else None),
+                         "status": status, "whales": whales})
+    active.sort(key=lambda r: r["ticker"]); complete.sort(key=lambda r: r["ticker"])
+    return {"active": active, "complete": complete, "n_active": len(active), "n_complete": len(complete)}
+
+
 # ── top-level assembly ───────────────────────────────────────────────────────────────────────────────────────
 def build_live_context(*, orders: list, open_positions: list, open_positions_by_whale: list,
-                       slate, marks_result, now_ts: int) -> dict:
+                       slate, marks_result, now_ts: int, category: str | None = None) -> dict:
     """Pure assembly: journal rows + open positions + a feed SlateResult + a MarksResult -> the template context.
-    No DB, no network -- the route fetches those and passes them in (so this unit-tests directly)."""
+    No DB, no network -- the route fetches those and passes them in (so this unit-tests directly).
+
+    ★ MULTI-CATEGORY (2026-09-04): the SUMMARY totals (at-cost / count / value+coverage / realized-today) come from
+    the JOURNAL for EVERY category -- they NEVER depend on the sport parser, so a non-MLB sub-division no longer shows
+    0 while its drawer holds a trade. MLB still renders game CARDS; a non-MLB category renders a positions TABLE
+    (`mode`). MLB is byte-unchanged (same card path, same summary values -- locked by test_live_view_mlb_regression)."""
     marks = (marks_result.marks if marks_result is not None else {}) or {}
     slate_games = (slate.games if slate is not None else {}) or {}
     open_by_ticker = {p["ticker"]: p for p in (open_positions or [])}
     open_by_ticker_wallet = {(p["ticker"], p["wallet"]) for p in (open_positions_by_whale or [])}
     settle_by_ticker = _ticker_settlement(orders or [])
     agg = _pos_aggregates(orders or [], open_by_ticker_wallet)
+    whales_by_ticker: dict = {}
+    for p in (open_positions_by_whale or []):
+        whales_by_ticker.setdefault(p["ticker"], []).append(p.get("user_name") or p.get("wallet"))
 
-    # group tickers by game
-    tickers_by_game: dict = {}
-    orders_by_ticker: dict = {}
-    for o in (orders or []):
-        tk = o.get("ticker")
-        if not tk:
-            continue
-        orders_by_ticker.setdefault(tk, []).append(o)
-        gk = game_key_from_ticker(tk)
-        if gk is not None:
-            tickers_by_game.setdefault(gk, set()).add(tk)
-    # a settled/open ticker with no order? tickers come only from orders, so all are covered.
-
-    cards = []
+    is_mlb = _is_mlb_category(category, orders)
+    cards: list = []
+    positions_view = None
     mismatch_by_gk: dict = {}
-    for gk, tks in tickers_by_game.items():
-        gs = feed_mlb.match_in_slate(slate_games, gk[0], gk[3], gk[1], gk[2]) if slate_games else None
-        card = _card(gk, tks, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts)
-        if card["time_mismatch"]:                    # per-game feed<->ticker start-time skew -> flagged in the drawer
-            mismatch_by_gk[gk] = card["time_mismatch"]
-        # INTENTIONAL (board-accepted 2026-09-02, fix-pass item 7 -- do NOT "fix" this back): a game whose
-        # positions are ALL off the books (every copy exited or opposed-closed, none still open or settled) has
-        # no card-worthy slot, so it is NOT drawn as an empty "not held" card. Its trades still appear in the
-        # drawer, so nothing is hidden -- the card is just noise without a live/settled position to show.
-        if (card["n_settled"] + card["n_live"]) == 0:
-            continue
-        if not _dropped(card, now_ts):
-            cards.append(card)
-    cards.sort(key=lambda c: (c["complete"], c["start_hhmm"] or ""))
 
-    n_active = sum(1 for c in cards if not c["complete"])
-    n_complete = len(cards) - n_active
-    live_cost = sum(c["open_cost"] for c in cards)
-    live_val_known = any(c["value_known"] for c in cards)
-    live_val = sum((c["open_value"] or 0.0) for c in cards if c["value_known"]) if live_val_known else None
-    # mark COVERAGE (always shown, per Jack): how many OPEN bet-slots across the board have a bid vs the total.
-    open_slots = [s for c in cards for s in c["slots_by_kind"].values() if s and not s["settled"]]
-    unsettled_total = len(open_slots)
-    unsettled_priced = sum(1 for s in open_slots if s["value_known"])
-    today = _et_date(now_ts)
-    realized_today = sum(c["realized"] for c in cards if c["date_iso"] == today)
-    settled_today = sum(c["n_settled"] for c in cards if c["date_iso"] == today)
+    if is_mlb:
+        # ── MLB game-cards view (UNCHANGED, item 6) ──────────────────────────────────────────────────────────
+        # group tickers by game
+        tickers_by_game: dict = {}
+        orders_by_ticker: dict = {}
+        for o in (orders or []):
+            tk = o.get("ticker")
+            if not tk:
+                continue
+            orders_by_ticker.setdefault(tk, []).append(o)
+            gk = game_key_from_ticker(tk)
+            if gk is not None:
+                tickers_by_game.setdefault(gk, set()).add(tk)
+        for gk, tks in tickers_by_game.items():
+            gs = feed_mlb.match_in_slate(slate_games, gk[0], gk[3], gk[1], gk[2]) if slate_games else None
+            card = _card(gk, tks, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts)
+            if card["time_mismatch"]:                    # per-game feed<->ticker start-time skew -> flagged in the drawer
+                mismatch_by_gk[gk] = card["time_mismatch"]
+            # INTENTIONAL (board-accepted 2026-09-02, fix-pass item 7 -- do NOT "fix" this back): a game whose
+            # positions are ALL off the books draws no empty "not held" card. Its trades still appear in the drawer.
+            if (card["n_settled"] + card["n_live"]) == 0:
+                continue
+            if not _dropped(card, now_ts):
+                cards.append(card)
+        cards.sort(key=lambda c: (c["complete"], c["start_hhmm"] or ""))
+
+        n_active = sum(1 for c in cards if not c["complete"])
+        n_complete = len(cards) - n_active
+        live_cost = sum(c["open_cost"] for c in cards)
+        live_val_known = any(c["value_known"] for c in cards)
+        live_val = sum((c["open_value"] or 0.0) for c in cards if c["value_known"]) if live_val_known else None
+        # mark COVERAGE (always shown, per Jack): how many OPEN bet-slots across the board have a bid vs the total.
+        open_slots = [s for c in cards for s in c["slots_by_kind"].values() if s and not s["settled"]]
+        unsettled_total = len(open_slots)
+        unsettled_priced = sum(1 for s in open_slots if s["value_known"])
+        today = _et_date(now_ts)
+        realized_today = sum(c["realized"] for c in cards if c["date_iso"] == today)
+        settled_today = sum(c["n_settled"] for c in cards if c["date_iso"] == today)
+        summary = {"n_active": n_active, "n_complete": n_complete, "unsettled_cost": live_cost,
+                   "unsettled_value": live_val, "unsettled_value_known": live_val_known,
+                   "unsettled_priced": unsettled_priced, "unsettled_total": unsettled_total,
+                   "realized_today": realized_today, "settled_today": settled_today,
+                   # additive-only (item 1/2): the two keys the shared template also reads on a non-MLB page.
+                   "has_game_feed": True, "n_open_positions": len(open_positions or [])}
+    else:
+        # ── non-MLB positions view (item 2): a positions table + journal totals that NEVER use the sport parser ─
+        positions_view = _positions_view(orders or [], open_by_ticker, settle_by_ticker, agg, marks,
+                                         whales_by_ticker)
+        summary = _journal_summary(open_positions or [], orders or [], marks, now_ts)
 
     trades = _trade_rows(orders or [], agg, marks, slate_games, mismatch_by_gk, now_ts)
 
     return {
+        "mode": "mlb_cards" if is_mlb else "positions",
+        "category": category,
         "cards": cards,
-        "summary": {"n_active": n_active, "n_complete": n_complete, "unsettled_cost": live_cost,
-                    "unsettled_value": live_val, "unsettled_value_known": live_val_known,
-                    "unsettled_priced": unsettled_priced, "unsettled_total": unsettled_total,
-                    "realized_today": realized_today, "settled_today": settled_today},
+        "positions_view": positions_view,
+        "summary": summary,
         "trades": trades,
         "feed_meta": {"ready": slate is not None, "source": (slate.source if slate else None),
                       "ok": (slate.ok if slate else False),
                       "marks_ok": (marks_result.ok if marks_result is not None else False),
-                      "as_of": (slate.as_of if slate else None)},
+                      "as_of": (slate.as_of if slate else None), "has_game_feed": is_mlb},
         "poll_interval": POLL_INTERVAL_SECONDS, "retention_hours": RETENTION_HOURS,
     }
 
@@ -517,9 +628,11 @@ def value_positions(positions, marks) -> dict:
             "complete": total > 0 and priced == total, "known": priced > 0}
 
 
-def build_from_cache(*, orders, open_positions, open_positions_by_whale, cache, now_ts: int) -> dict:
+def build_from_cache(*, orders, open_positions, open_positions_by_whale, cache, now_ts: int,
+                     category: str | None = None) -> dict:
     """Convenience wrapper: pull the relevant slate(s) + marks from the ui_cache and assemble. The cards can span
-    two ET dates (a night game + retention), so we merge both windowed slates' games into one lookup."""
+    two ET dates (a night game + retention), so we merge both windowed slates' games into one lookup. `category`
+    is threaded through so a non-MLB sub-division renders its positions view instead of the (empty) MLB cards."""
     snap = cache.snapshot()
     merged_games = {}
     for slate in snap.slates.values():
@@ -530,4 +643,4 @@ def build_from_cache(*, orders, open_positions, open_positions_by_whale, cache, 
                                   snap.refreshed_ts)
     return build_live_context(orders=orders, open_positions=open_positions,
                               open_positions_by_whale=open_positions_by_whale, slate=merged,
-                              marks_result=snap.marks, now_ts=now_ts) | {"warming": not snap.ready}
+                              marks_result=snap.marks, now_ts=now_ts, category=category) | {"warming": not snap.ready}
