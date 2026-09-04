@@ -1,34 +1,36 @@
 # PM UI — HANDOFF for the next UI code agent
 
-**STATUS: CURRENT — last updated 2026-09-04 (folds in DEPLOY 4 + the BET-SLOT PASS). This is the current handoff;
-the filename keeps its original date so existing references resolve.**
+**STATUS: CURRENT — last updated 2026-09-04 (folds in DEPLOY 5: settled-slot whale + the bet-slot pass). The
+live-copy UI workstream is WRAPPED at DEPLOY 5. This is the current handoff; the filename keeps its original date so
+existing references resolve.**
 
 Workstream: the Prediction Markets `pm_web` UI rewrite. This doc is the starting point for the next UI pass.
 Branch `pm-ui-rewrite-2026-09-02` (pushed to origin), worktree `C:\Users\AA Incorporado\cc-pm-ui-rewrite-wt`.
-Deployed code = **`86744ac`** (DEPLOY 4, tag `pm-ui-deploy4-2026-09-04`). Full narrative:
+Deployed code = **`8978a2c`** (DEPLOY 5, tag `pm-ui-deploy5-2026-09-04`). Full narrative:
 `PM_UI_REWRITE_REPORT_2026-09-02.md` (PLAN / FIX PASS / DEPLOY 1-3 / CARD POLISH / MULTI-CATEGORY FIX / DEPLOY 4 /
-BET-SLOT PASS).
+BET-SLOT PASS / DEPLOY 5).
 
 --------------------------------------------------------------------------------
 ## 1. WHAT IS LIVE ON PROD
 
-Deployed code = **`86744ac`** (DEPLOY 4, 2026-09-04). pm_web is a STANDALONE FastAPI+Jinja app: it imports only
+Deployed code = **`8978a2c`** (DEPLOY 5, 2026-09-04). pm_web is a STANDALONE FastAPI+Jinja app: it imports only
 `trading_corp.data.*` + the PM package + stdlib; NO engine/main/agents/brokers; holds NO Kalshi credentials; can
 never place an order. SINGLE uvicorn worker (loopback :8081, behind Authelia which sets Remote-User). Restarts go
 through `az vm run-command` (root); the engine `trading-corp` (ARMED, 8 sub-divisions across two accounts) is NEVER
 touched.
 
 Deploy history (all pm_web-only, engine never restarted):
-  DEPLOY 1 `9c2eeb3` -> 2 `cafb132` -> 3 `431ec76` -> **4 `86744ac`** (current LIVE; the multi-category fix).
+  DEPLOY 1 `9c2eeb3` -> 2 `cafb132` -> 3 `431ec76` -> 4 `86744ac` (multi-category fix) -> **5 `8978a2c`** (current
+  LIVE; bet-slot pass + settled-slot whale).
 
-Post-DEPLOY-4 box shipped-file set (box == these, CR-stripped sha16 @ `86744ac`):
-    863af1d1522fb364  prediction_markets/subdivision.py
-    d3cfbeb9549a36b5  web/live_view.py
-    8cace4e71d8140a0  web/marks.py
-    d9f9f4f518b29869  web/poller.py
-    825861cd1f6c6b0d  web/static/pm_desk.css
-    b2cf33e2a7289dc1  web/templates/pm_live_subdivision.html
-    9253801d48466156  web/templates/pm_shell.html
+Post-DEPLOY-5 box shipped-file set (the 4 files that changed 86744ac->8978a2c; box == these, CR-stripped sha16 @
+`8978a2c`):
+    8fb7db158e4a5af8  web/live_view.py
+    18454d5690a316ed  web/static/pm_desk.css
+    db9cb08c3b831b35  web/templates/pm_live_subdivision.html
+    934c258ce953b18d  web/templates/pm_shell.html
+DEPLOY 4's other files remain at their `86744ac` shas (subdivision.py 863af1d1, marks.py 8cace4e7, poller.py
+d9f9f4f5, ...).
 Older UI-rewrite files still live at earlier shas (feed_mlb.py 467d5284, arm.py 60f44720, ui_cache.py e116ee8a,
 pm.css 204d9051, pm_live.js b4c557fc, htmx.min.js 491955cd, pm_trade_drawer.html 48d579db, etc.). Reconcile every
 deploy the same way: `git show <sha>:file | tr -d '\r' | sha256sum` vs `tr -d '\r' < boxfile | sha256sum`.
@@ -73,12 +75,14 @@ deploy the same way: `git show <sha>:file | tr -d '\r' | sha256sum` vs `tr -d '\
   This fixed the DEPLOY-3 defect where a non-MLB sub-division showed 0 games / $0.00 while its drawer held a real
   trade (root cause: `game_key_from_ticker` returns None for non-MLB, so the card-derived strip went 0).
 
-* **Bet slots + whale attribution** `_build_slot` / `_whale_tag` — each MLB card has three fixed slots (ML/TOT/SPR);
-  **★ BET-SLOT PASS (2026-09-04, built not yet deployed):** slots widened to fill the home-plate area (below the
-  diamond), and each HELD slot shows the whale it was copied from (first label + `+N` extras, journal-sourced from
-  `open_positions_by_whale`, right-truncated by CSS so the slot never changes shape). Every slot reserves the whale
-  row so held/unheld slots keep identical height (card height constant). Same tag in the non-MLB positions table's
-  whale column. Settled/unheld slots show no whale; the full untruncated list stays in the trade drawer.
+* **Bet slots + whale attribution** `_build_slot` / `_whale_tag` / `_entry_whales` — each MLB card has three fixed
+  slots (ML/TOT/SPR). **★ BET-SLOT PASS + SETTLED-SLOT WHALE (DEPLOY 5, LIVE):** slots widened to 208px to fill the
+  home-plate area (below the diamond), and each HELD slot -- **live OR settled** -- shows the whale it was copied from
+  (first label + `+N` extras, right-truncated by CSS so the slot never changes shape). Source is journal-only:
+  net-open holders (`open_positions_by_whale`) for a live slot, the ENTRY-fill copiers (`_entry_whales`) for a settled
+  slot (whose net-open set is empty once closed). Every slot reserves the whale row so held/unheld slots keep
+  identical height (card height constant). ONLY UNHELD slots show no whale. Same tag in the non-MLB positions table
+  (active + settled rows). The full untruncated list stays in the trade drawer (and the tag's hover title).
 
 * **Account pages** — `subdivision.account_pnl` iterates every active category; `_account_open_value` sums
   `live_positions` across all sub-divisions; rows list all four categories. Category-agnostic already; DEPLOY 4
@@ -168,5 +172,9 @@ precedes the UI pass — do not build the button first.
 * **Inning-break hollow pips** (DEPLOY 3): proven by unit test + local render only; no game was at an inning break
   during a verification window. Confirm on the next live-baseball check (a MID/END card shows empty pips + cleared
   runners).
-* **BET-SLOT PASS (this branch) not deployed** — the widened slots + copied-from whale tags are built and rendered
-  (`cc/renders/betslot_v3_*`) but await a Board deploy decision; nothing about them is on prod yet.
+* **Multi-whale `+N` and wallet-only truncation on a REAL prod slot.** The settled-slot whale rule IS observed on
+  prod (DEPLOY 5 post-check: jack/mlb Complete 7/7 + karen/mlb 5/5 settled slots + the settled ATP row all show a
+  whale), but every prod position is currently copied from a SINGLE, short-named whale -- so the `+N` badge and the
+  right-truncation ellipsis have not been eyeballed on a live slot. Proven off-prod (render harness
+  `cc/pm_betslot_render.py`, `test_bet_slot_whales.py`). Confirm the first time a prod position is stacked by 2+
+  whales, or copied from a wallet-only (no display name) whale.

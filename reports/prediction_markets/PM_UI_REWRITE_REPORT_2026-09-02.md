@@ -1180,3 +1180,93 @@ engine `trading-corp` PID 186179 untouched throughout (read-only session -- no b
 
 ## Runners (cc/)
 `pm_betslot_render.py` (render harness + the six whale cases, both widths).
+
+---
+
+# DEPLOY 5 -- 2026-09-04 (settled-slot whale + bet-slot pass -> prod; pm_web-only, ONE restart, engine untouched)
+
+Board-authorized 2026-09-04. STEP 0 code fix (settled slots show the copied-from whale) then deploy of the whole
+bet-slot workstream (bet-slot pass + step 0) to prod. **DEPLOYED.** Engine (`trading-corp`, PID 186179, 8 armed
+sub-divisions) not touched.
+
+## Step 0 -- settled slots show the copied-from whale (Jack's ruling)
+Settled slots (won/lost) now render the same whale row as live held slots -- name or right-truncated wallet, `+N`
+for multiples, same fixed width. Only UNHELD slots show no whale. Source = the SAME journal rows the drawer reads:
+the ticker's ENTRY fills (`live_view._entry_whales`, wallet-sorted distinct copiers), since a settled position's
+net-open holder set is empty once closed. Applied to the non-MLB positions table's settled rows too. Added won/lost
+`.bw` whale-row colors so the tag is legible on the green/red settled backgrounds. Deploy target commit = **`8978a2c`**.
+Rendered `cc/renders/settled_v3_mlb_1600.png` -- one card with a settled-WON `+1` slot, a LIVE slot, and a
+settled-LOST slot, each showing its whale (heights equal). Tests `test_bet_slot_whales.py` updated: the settled case
+now asserts the whale IS present + a settled multi-whale `+1` + `_entry_whales` + end-to-end settled card slot and
+settled positions-table row.
+
+## Source + measurement
+`git diff 86744ac 8978a2c` -> **4 pm_web files** (live_view.py, pm_desk.css, pm_live_subdivision.html, pm_shell.html);
+**app.py UNCHANGED** and **main.py UNCHANGED** vs 86744ac (no graft this deploy -- the box keeps app.py `c2e4ddef`).
+All box-vs-git hashes CR-stripped both sides.
+
+## Pre-deploy checks (`cc/pm_deploy5_precheck_ro.sh`)
+1. Engine `trading-corp` MainPID **186179** NRestarts=0 (since 03:57:20Z); pm_web **190041** NRestarts=0 (since the
+   DEPLOY-4 restart 11:26:41Z); schema **19**; GLOBAL armed=True (ts 2026-08-31T02:35:38) + all 8 sub-divisions armed.
+2. 4 box files CR-stripped16 == 86744ac (live_view `d3cfbeb9`, pm_desk.css `825861cd`, pm_live_subdivision `b2cf33e2`,
+   pm_shell `9253801d`). Box app.py == **`c2e4ddef85b4460b`**, is_admin=10, /pm/arm=0 (unchanged, not shipped).
+3. **Backup** = `/home/azureuser/pm_deploy5_backup_20260904T123253Z` (4 files, before shas recorded). **Journal
+   baseline** (mode=ro): jack/mlb open=1 $3.15, karen/mlb open=1 $3.15, other six 0; total open=2 $6.30.
+4. Cache-bust before: served pm_desk.css `825861cd`, shell `?v=825861cd`.
+
+## Deploy (`cc/gen_deploy5.py` -> `cc/pm_deploy5_apply.sh`)
+5. 4 files WHOLESALE (base64 -> temp -> CR-strip -> sha16 gate -> mv), each CR-stripped16 == 8978a2c:
+   live_view `8fb7db158e4a5af8`, pm_desk.css `18454d5690a316ed`, pm_live_subdivision `db9cb08c3b831b35`,
+   pm_shell `934c258ce953b18d`. APPLY FAIL=0. Pre-restart (`pm_deploy5_prerestart_ro.sh`): py_compile live_view OK; all
+   4 shas confirmed; app.py still `c2e4ddef` (is_admin=10 / /pm/arm=0). No package/venv/unit changes.
+
+## Restart (`cc/pm_deploy5_restart_az.ps1`)
+6. `az vm run-command` restarting `prediction-markets-web` ONLY. pm_web **190041 -> 191017** active/running. **Engine
+   186179 -> 186179 (unchanged), NRestarts=0** immediately after. Exit 0.
+
+## Post-deploy verification (`cc/pm_deploy5_postcheck_ro.sh`; after a poll cycle)
+7.  All 8 live pages + 2 account pages + `/` + `/farm` + every real `/farm/{category}` return **200** (`/farm/cs` 404
+    pre-existing, excluded).
+8.  **Settled-slot whale OBSERVED ON PROD.** Every HELD slot (live or settled) shows a whale; unheld none
+    (held==with_whale on every tab): jack/mlb active held=1/1; **jack/mlb Complete held=7, with_whale=7** (all 7
+    settled slots now carry a whale -- pre-deploy they had none); karen/mlb active 1/1; **karen/mlb Complete 5/5**.
+    Card heights equal. (No multi-whale/`+N` or wallet-truncation case exists on prod right now -- single short-named
+    whales -- so those are proven off-prod only: render harness + tests.)
+9.  **Non-MLB settled row whale OBSERVED:** `/live/kalshi_jack/atp?tab=complete` renders the settled Halys row with a
+    whale tag (`settled-row-has-whale-tag=True`; 1 complete row, 1 wtag). Other non-MLB complete tabs are empty (0
+    settled rows).
+10. strip==journal on all 8 (MLB Games=1/$3.15 == journal, "1 of 1 priced"; non-MLB Positions=0/$0.00). No deltas.
+11. Coverage: MLB "1 of 1 priced" x2; `traded_series=('KXMLBGAME',)`. **No non-MLB position is open**, so the non-MLB
+    mark path is STILL not observed on prod (unchanged from DEPLOY 4).
+12. Arm: GLOBAL ARMED + all 8 sub-divisions effective ARMED, page shows ARMED, "NEVER ARMED" nowhere.
+13. **Cache-bust:** served pm_desk.css CR-stripped16 = **`18454d5690a316ed`** (changed from `825861cd`, == target),
+    shell `?v=18454d56`; pm.css / pm_desk.css / htmx.min.js all 200 (no 404 -> no rollback).
+14. Farm pages 200 and styled (15 categories; all real ones 200).
+15. **Engine untouched:** MainPID **186179**, NRestarts **0**; `journalctl -u trading-corp -p err --since <restart>` =
+    "No entries". Order counts unchanged (no fills in the window). pm_web 191017 active.
+16. Zero double-escaped entities across `/`, an account page, an MLB page, an ATP complete page.
+
+## File list -- before/after CR-stripped sha16
+| file | box BEFORE (86744ac) | AFTER (8978a2c, on box) |
+|---|---|---|
+| web/live_view.py | d3cfbeb9549a36b5 | 8fb7db158e4a5af8 |
+| web/static/pm_desk.css | 825861cd1f6c6b0d | 18454d5690a316ed |
+| web/templates/pm_live_subdivision.html | b2cf33e2a7289dc1 | db9cb08c3b831b35 |
+| web/templates/pm_shell.html | 9253801d48466156 | 934c258ce953b18d |
+
+- **app.py NOT shipped** (unchanged vs 86744ac); box app.py stays `c2e4ddef85b4460b` (is_admin=10 / /pm/arm=0).
+- **pm_web PID: 190041 (before) -> 191017 (after).** Engine PID **186179 never changed; NRestarts 0** throughout.
+- **Backup:** `/home/azureuser/pm_deploy5_backup_20260904T123253Z` (rollback = restore + `systemctl restart
+  prediction-markets-web` only; engine never touched).
+
+## Skipped / notes
+- No app.py graft this deploy (unchanged). Only 4 wholesale files.
+- Multi-whale `+N` and wallet truncation are not exercisable on prod at deploy time (no such position exists); proven
+  off-prod (render harness `cc/pm_betslot_render.py`, tests). The settled-slot whale IS exercised on prod (12 settled
+  slots + 1 settled ATP row across the two accounts).
+- Non-MLB mark path still not observed (no non-MLB open position) -- carried forward.
+
+## Runners (cc/)
+`pm_deploy5_precheck_ro.sh`, `pm_deploy5_backup.sh`, `gen_deploy5.py` -> `pm_deploy5_apply.sh`,
+`pm_deploy5_prerestart_ro.sh`, `pm_deploy5_restart_az.ps1`, `pm_deploy5_postcheck_ro.sh`. Rollback: restore the backup
+dir + restart pm_web only.
