@@ -996,3 +996,124 @@ this branch. Other 7 files are wholesale-safe (no app.py/main.py collision).
 ## Runners (cc/)
 `pm_multicat_render.py` (worktree render harness + strip==journal + PNGs), `pm_multicat_prod_defect_ro.{ps1,sh}` (box
 prod-defect probe), `pm_untouched_check_ro.sh` (engine/pm_web untouched check).
+
+---
+
+# DEPLOY 4 -- 2026-09-04 (multi-category fix -> prod; pm_web-only, ONE pm_web restart, engine untouched)
+
+Board-authorized 2026-09-04. Shipped the multi-category fix to prod: the 7 non-app pm_web files wholesale + app.py
+GRAFTED (box M4 + 3 additive hunks), one pm_web restart via `az vm run-command`. Deploy target = branch commit
+`86744ac`. The engine (`trading-corp`, PID 186179, 8 armed sub-divisions across two accounts) was NOT touched,
+restarted, or reloaded at any step. All STOP gates passed; no rollback. **DEPLOYED.**
+
+## Source + measurement
+- `git diff --name-only 431ec76 86744ac -- .../main.py` empty -> **main.py UNCHANGED** (no STOP). 8 shippable pm_web
+  files (7 non-app + app.py); tests/reports do not ship; engine files not on the shipping list.
+- All box-vs-git hashes CR-stripped **both** sides (`tr -d '\r' | sha256sum | cut -c1-16`).
+
+## Pre-deploy checks (`cc/pm_deploy4_precheck_ro.sh`, `cc/pm_deploy4_arm_ro.sh`)
+1. **Services/schema/arm recorded.** Engine `trading-corp` MainPID **186179** NRestarts=0 active (since 2026-09-04
+   03:57:20Z). pm_web MainPID **182842** NRestarts=0 active. pm_db schema **19**. Arm (authoritative via
+   `arm.read_status`): GLOBAL armed=True (ts 2026-08-31T02:35:38); all 8 sub-divisions armed=True latched=False
+   (jack/atp 09-04T04:31:42, jack/mlb 08-31T21:49:39, jack/ufc 09-04T04:29:59, jack/wta 09-04T04:31:43, karen/atp
+   09-04T04:31:43, karen/mlb 09-02T12:53:23, karen/ufc 09-04T04:29:59, karen/wta 09-04T04:31:43).
+2. **Every overwrite target matched its baseline (no third-party box change).** 7 non-app files CR-stripped ==
+   431ec76 (subdivision `dbc710c7`, live_view `2c7c8875`, marks `46ca99a8`, poller `44a6b51d`, pm_desk.css `1b3b8ccc`,
+   pm_live_subdivision `90e7357b`, pm_shell `d5a29a20`). Box app.py CR-stripped16 = **`8b7d35ca88432603`** == M4 target
+   `8b7d35ca`, **is_admin=10, /pm/arm=0** (i.e. the box is M4, NOT the branch M5 `2a1c341d` which carries is_admin=12
+   -- confirming the branch app.py must NOT be shipped wholesale).
+3. **Backup** = `/home/azureuser/pm_deploy4_backup_20260904T112138Z` (all 8 files, "before" shas recorded there).
+   **Journal baseline** (mode=ro): jack/mlb open=1 $3.15, karen/mlb open=1 $3.15, other six sub-divisions open=0 $0.00;
+   total open=2 $6.30. (The jack/atp Halys position that reproduced the defect earlier had settled at 06:28Z, order 162,
+   so no non-MLB open positions remained at deploy time.)
+4. **Cache-bust before:** served `/static/pm_desk.css` CR-stripped16 = `1b3b8ccc6dff50cc`, shell `?v=1b3b8ccc`.
+
+## Deploy (`cc/gen_deploy4.py` -> `cc/pm_deploy4_apply.sh`; app graft `cc/deploy4_box_app.py`)
+5. **7 non-app files** written (base64 -> temp -> CR-strip -> sha16 gate -> mv), each CR-stripped16 == 86744ac:
+   subdivision `863af1d1522fb364`, live_view `d3cfbeb9549a36b5`, marks `8cace4e71d8140a0`, poller `d9f9f4f518b29869`,
+   pm_desk.css `825861cd1f6c6b0d`, pm_live_subdivision `b2cf33e2a7289dc1`, pm_shell `9253801d48466156`. APPLY FAIL=0.
+6. **app.py GRAFTED, never wholesale.** Fetched the box M4 app.py (verified `8b7d35ca88432603`), applied the 3 additive
+   hunks locally (`_held_series_provider` fn; `poll_loop(..., series_provider=_held_series_provider)`; `build_from_cache(
+   ..., category=category)`). Cross-check: `diff` grafted vs branch app.py shows the ONLY delta is the M5 is_admin/pm-arm
+   change (a comment + `"is_admin": is_admin_flag,`) -- i.e. the graft = branch minus M5 = box M4 + my 3 hunks, exactly.
+   Grafted written to box; new box app.py reference CR-stripped16 = **`c2e4ddef85b4460b`**. Post-write invariants (all
+   four shown): **sha `c2e4ddef85b4460b`, is_admin=10, /pm/arm=0, py_compile OK (all 8), app imports with ZERO engine
+   imports** (`pykalshi`/`live_driver`/`execution`/`brokers` absent from sys.modules; `_held_series_provider` present).
+7. No package/venv/unit changes.
+
+## Restart (`cc/pm_deploy4_restart_az.ps1`)
+8. `az vm run-command invoke -g rg-shared-prod -n tc-prod-vm --command-id RunShellScript` restarting
+   `prediction-markets-web` ONLY. pm_web **182842 -> 190041** active/running. **Engine 186179 -> 186179 (unchanged),
+   NRestarts=0** immediately after. Enable succeeded, exit 0.
+
+## Post-deploy verification (`cc/pm_deploy4_postcheck_ro.sh`; ran after a full poll cycle)
+9.  All 8 live pages + both account pages + `/` + `/farm` + every `/farm/{category}` return **200** (`/farm/cs` 404 =
+    pre-existing, my deploy touched zero farm code -- 'cs' is a non-tile tag, not a live-copyable category).
+10. **strip == journal (at-cost + count), all 8:**
+
+    | account | cat | http | mode | JOURNAL open/cost | PAGE hdr/count / at-cost / coverage | verdict |
+    |---|---|---|---|---|---|---|
+    | kalshi_jack | atp | 200 | positions | 0 / $0.00 | Positions=0 / $0.00 / n/a | OK |
+    | kalshi_jack | mlb | 200 | cards | 1 / $3.15 | Games=1 / $3.15 / 1 of 1 priced | OK |
+    | kalshi_jack | ufc | 200 | positions | 0 / $0.00 | Positions=0 / $0.00 / n/a | OK |
+    | kalshi_jack | wta | 200 | positions | 0 / $0.00 | Positions=0 / $0.00 / n/a | OK |
+    | kalshi_karen | atp | 200 | positions | 0 / $0.00 | Positions=0 / $0.00 / n/a | OK |
+    | kalshi_karen | mlb | 200 | cards | 1 / $3.15 | Games=1 / $3.15 / 1 of 1 priced | OK |
+    | kalshi_karen | ufc | 200 | positions | 0 / $0.00 | Positions=0 / $0.00 / n/a | OK |
+    | kalshi_karen | wta | 200 | positions | 0 / $0.00 | Positions=0 / $0.00 / n/a | OK |
+
+    No open positions had a delta vs the step-3 baseline (nothing filled in the window), so no order-id attribution
+    needed.
+11. **MLB unchanged:** both MLB pages render the card grid (diamond, bet slots, ML/TOT/SPR, state border, date chip,
+    coverage label, baseball legend) -- "card grid intact".
+12. **Non-MLB:** all 6 render the positions view, "No game feed for <CAT>", and NONE of `class="dia"` / "runner on
+    base" / "no count" / "game over" / "FEED UNAVAILABLE". With 0 open non-MLB positions the Active tab honestly reads
+    "No open <CAT> positions" (the value-never-$0 rule is vacuously satisfied). **12b -- real non-MLB data on prod:**
+    `/live/kalshi_jack/atp?tab=complete` renders the settled Halys position in the `postbl` table with a **LOST** badge
+    -- the new positions view proven end-to-end on live prod with a real settled position.
+13. **Poller polls the held series:** `traded_series` = `('KXMLBGAME',)` (only KXMLBGAME is currently held; both MLB
+    positions are moneyline). Coverage: both MLB "1 of 1 priced"; non-MLB "n/a" (0 open). No held ticker is unpriced
+    after the poll cycle. (This is the intended item-3 behavior: the series list is derived from held tickers, so it
+    will include KXATPMATCH/KXUFCFIGHT/KXWTAMATCH the moment such a position opens -- and never a hardcoded MLB list.)
+14. **Account pages:** both link 4/4 categories; aggregate (n_open=1, $3.15 each) equals the sum of the sub-division
+    rows.
+15. **Arm:** GLOBAL ARMED; all 8 sub-divisions `is_armed=True`, page shows ARMED, "NEVER ARMED" nowhere (arm state is
+    read each cycle from the legacy DB -- untouched by the pm_web restart).
+16. **Cache-bust:** served `/static/pm_desk.css` CR-stripped16 = **`825861cd1f6c6b0d`** (changed from `1b3b8ccc`,
+    == 86744ac), shell `?v=825861cd`; pm.css / pm_desk.css / htmx.min.js all 200.
+17. **Farm** pages unchanged and styled (all real categories 200 with the stylesheet linked).
+18. **Engine untouched:** MainPID **186179**, NRestarts **0**; **`journalctl -u trading-corp -p err --since <restart>` =
+    "No entries"** (zero engine error entries since the restart). Order counts unchanged (no fills in the window).
+19. **Zero double-escaped entities** across `/`, the account page, an MLB page and an ATP page.
+
+## File list -- before/after CR-stripped sha16
+| file | box BEFORE | AFTER (on box) |
+|---|---|---|
+| prediction_markets/subdivision.py | dbc710c79eee1b7c | 863af1d1522fb364 |
+| web/app.py (GRAFTED, not wholesale) | 8b7d35ca88432603 (M4) | **c2e4ddef85b4460b** (M4 + 3 hunks) |
+| web/live_view.py | 2c7c8875cd80e768 | d3cfbeb9549a36b5 |
+| web/marks.py | 46ca99a80f7d2827 | 8cace4e71d8140a0 |
+| web/poller.py | 44a6b51da0ad36dd | d9f9f4f518b29869 |
+| web/static/pm_desk.css | 1b3b8ccc6dff50cc | 825861cd1f6c6b0d |
+| web/templates/pm_live_subdivision.html | 90e7357b62e6d87c | b2cf33e2a7289dc1 |
+| web/templates/pm_shell.html | d5a29a20d5407781 | 9253801d48466156 |
+
+- **Grafted app.py sha `c2e4ddef85b4460b` is the NEW box app.py reference** (supersedes M4 `8b7d35ca` for the next deploy;
+  it is `8b7d35ca` + the 3 additive multi-category hunks, still is_admin=10 / /pm/arm=0).
+- **pm_web PID: 182842 (before) -> 190041 (after).** Engine PID **186179 never changed; NRestarts 0** throughout.
+- **Backup:** `/home/azureuser/pm_deploy4_backup_20260904T112138Z` (rollback = restore + `systemctl restart
+  prediction-markets-web` only; engine never touched).
+
+## Skipped / notes
+- Ship of the branch app.py wholesale: deliberately NOT done (would regress the box M4 authz to branch M5). Grafted
+  instead, per the graft rule.
+- No prod PNG captured this pass: the deployed code is byte-identical to the fix-task render harness (`cc/renders/
+  multicat_atp.png` / `multicat_mlb.png`), and check 12b confirms the real settled position renders on prod.
+- The multi-category defect is not currently *visible* on prod as a live open non-MLB position (none open right now);
+  the fix is proven by the header/view change on all 6 non-MLB pages + the settled Halys position on the Complete tab.
+- `/farm/cs` 404 is pre-existing (no farm code shipped).
+
+## Runners (cc/)
+`pm_deploy4_precheck_ro.sh`, `pm_deploy4_arm_ro.sh`, `pm_deploy4_backup.sh`, `gen_deploy4.py` -> `pm_deploy4_apply.sh`,
+`deploy4_box_app.py` (grafted), `pm_deploy4_prerestart_ro.sh`, `pm_deploy4_restart_az.ps1`, `pm_deploy4_postcheck_ro.sh`,
+`pm_verify_close162_ro.sh`. Rollback: restore the backup dir + restart pm_web only.
