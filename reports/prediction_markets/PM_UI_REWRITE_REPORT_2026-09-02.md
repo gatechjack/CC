@@ -1117,3 +1117,66 @@ restarted, or reloaded at any step. All STOP gates passed; no rollback. **DEPLOY
 `pm_deploy4_precheck_ro.sh`, `pm_deploy4_arm_ro.sh`, `pm_deploy4_backup.sh`, `gen_deploy4.py` -> `pm_deploy4_apply.sh`,
 `deploy4_box_app.py` (grafted), `pm_deploy4_prerestart_ro.sh`, `pm_deploy4_restart_az.ps1`, `pm_deploy4_postcheck_ro.sh`,
 `pm_verify_close162_ro.sh`. Rollback: restore the backup dir + restart pm_web only.
+
+---
+
+# BET-SLOT PASS -- 2026-09-04 (widened slots + copied-from whale on each held slot; BUILT, NOT DEPLOYED)
+
+Board-authorized 2026-09-04. Two UI items on the MLB card + the non-MLB positions table, then wrap. Branch
+`pm-ui-rewrite-2026-09-02` from `430e8f7` (deployed code `86744ac`, box app.py ref `c2e4ddef85b4460b`). No deploy, no
+restart -- the engine (8 armed sub-divisions) was not touched. **app.py NOT changed this pass.**
+
+## 1. Widen the bet slots (item 1)
+The three fixed slots (ML/TOT/SPR) were a 190px block, narrower than the space below the diamond. Widened to **208px**
+(`.bets width:190px->208px`) so they fill the home-plate area (the diawrap footprint, ~212px) while staying seated over
+home plate -- they overflow the 192px diamond symmetrically within the 212px diawrap, so they never collide with the
+meta (inning/count) column to the right. All three slots keep identical shape on every card; unheld slots stay dimmed.
+The diamond's bottom margin was raised `78px->108px` to make room for the now-two-row slots (below), applied uniformly
+so **card height is constant across cards** (verified at 1600px and 1280px).
+
+## 2. Copied-from whale on each held slot (item 2 -- Jack's reversal of the drawer-only ruling)
+Each HELD slot now shows the whale it was copied from, on a reserved second row inside the slot:
+- **Data (journal-sourced, never inferred):** `_build_slot` takes the ticker's net-open holders from
+  `open_positions_by_whale` (== `subdivision.live_positions_by_whale`, the same journal the drawer reads) via
+  `whales_by_ticker`; `_whale_tag(whales)` returns `{first, extra, all}` -- the FIRST label (display name, else
+  wallet) + the count of ADDITIONAL whales. Settled/unheld slots get `whale_tag=None` (no whale). The `whale_tag` also
+  rides on the non-MLB positions-view rows.
+- **Render (CSS truncation, so the slot never changes shape):** the template `whaletag` macro emits
+  `<span class="wtag"><span class="wn">{first}</span><span class="wx">+N</span></span>`; `.wn` right-truncates with an
+  ellipsis at a fixed `max-width:150px` (bet slot) / `180px` (table cell -- a `td`'s max-width is ignored under
+  auto table-layout, so the cap lives on the tag), while `.wx` (`+N`) is `flex:none` and stays visible. Every slot
+  reserves the whale row (`&nbsp;` when empty) so held/unheld slots are the same height. The full untruncated list is
+  the tag's hover `title` and remains in the trade drawer.
+- **Scope:** the SAME tag/truncation is applied to the non-MLB positions table's whale column (was `whales|join`).
+
+## Evidence
+- **Render harness** `cc/pm_betslot_render.py` -> `cc/renders/betslot_v3_{mlb,atp}_{1600,1280}.png` (VIEWED). MLB card
+  cases all present and correct: 1 held slot (Game A: `FROM SuperLongWhaleHandle2026 +1` -- long name + extra both
+  shown), 2 held slots (Game B: ML `FROM domer +1`; TOT wallet-only `FROM 0x64e93f87d8a0c1b2cde6f20d71f2113...`
+  truncated with ellipsis), 3 held slots (Game C: ML/TOT/SPR each `FROM <whale>`), a settled slot (Game D PHI won ->
+  NO whale), unheld slots (reserved empty whale row, equal height, card height constant). ATP positions table: whale
+  column shows `Kingfish +1` and the truncated wallet. Both widths render 3-cards-per-row with consistent height.
+- **Unit tests** `tests/prediction_markets/test_bet_slot_whales.py` (14): `_whale_tag` single / two `+1` / three `+2`
+  / wallet-only / empty->None; `_build_slot` open-single / open-two / open-wallet-only / unheld->None /
+  settled->no-whale; end-to-end `build_live_context` slot gets the whale from `open_positions_by_whale` (named + multi
+  + wallet-only); non-MLB positions row carries the tag.
+- **Cache-bust:** pm_desk.css changed -> shell `?v=825861cd -> a40ab798`; `test_asset_cache_bust_hashes_match_files`
+  green (in the 4-file pass below).
+- **Full `tests/prediction_markets/`** (`.venv-webtest`, `-p no:pytest_ethereum`): **16 failed -- byte-identical to
+  the DEPLOY-4 env-gap baseline (0 delta)**; all new tests + the card/cache-bust regression suites pass.
+
+## Shippable file list vs deployed `86744ac` (BUILT, awaits a Board deploy)
+4 files, +69/-21; **app.py NOT changed (no graft needed for this pass)**; all wholesale-safe:
+
+| file | box (86744ac) | after (this pass) |
+|---|---|---|
+| web/live_view.py | d3cfbeb9549a36b5 | e3779ffb8d5838c1 |
+| web/static/pm_desk.css | 825861cd1f6c6b0d | a40ab798dfd0468f |
+| web/templates/pm_live_subdivision.html | b2cf33e2a7289dc1 | db9cb08c3b831b35 |
+| web/templates/pm_shell.html | 9253801d48466156 | 3ff3178d9f1d3956 |
+
+Plus `tests/prediction_markets/test_bet_slot_whales.py` (new; does not ship). Nothing deployed, nothing restarted;
+engine `trading-corp` PID 186179 untouched throughout (read-only session -- no box writes at all this pass).
+
+## Runners (cc/)
+`pm_betslot_render.py` (render harness + the six whale cases, both widths).

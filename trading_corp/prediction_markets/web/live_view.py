@@ -252,11 +252,25 @@ def _settled_leg(orders_for_ticker) -> str | None:
     return next(iter(legs)) if len(legs) == 1 else None
 
 
-def _build_slot(ticker, kind, open_pos, settle, mark, settled_leg=None):
+def _whale_tag(whales) -> dict | None:
+    """The compact 'copied from' tag for a HELD slot / positions row (Jack's reversal 2026-09-04: attribution is no
+    longer drawer-only). `whales` is the ordered set of whale labels (display name, else wallet) holding this
+    ticker -- sourced from the journal (live_positions_by_whale), NEVER inferred. Returns the FIRST label plus the
+    count of ADDITIONAL whales (`extra`), for a fixed-width 'First +N' render; the template right-truncates `first`
+    with an ellipsis so the slot never changes shape. None when nothing is held (an unheld/settled slot -> no
+    whale). The full untruncated list rides on `all` (and stays complete in the trade drawer)."""
+    ws = [w for w in (whales or []) if w]
+    if not ws:
+        return None
+    return {"first": ws[0], "extra": len(ws) - 1, "all": ws}
+
+
+def _build_slot(ticker, kind, open_pos, settle, mark, settled_leg=None, whales=None):
     """One card bet-slot: open (live value = contracts x held-leg bid) or settled (won/lost). open_pos is the
     live_positions row for this ticker (or None); settle is the per-ticker settlement rollup (or None). settled_leg
     is the side held into settlement (from _settled_leg) -> a settled slot carries the SAME directional shorthand
-    (over/under, spread sign+team) a live slot does; None -> the line without a sign."""
+    (over/under, spread sign+team) a live slot does; None -> the line without a sign. `whales` (the net-open holders
+    of this ticker, journal-sourced) drives the per-slot 'copied from' tag on a HELD slot only."""
     if open_pos is not None:
         leg = open_pos.get("held_leg")
         bid = marks_mod.bid_for_leg(mark, leg)
@@ -268,19 +282,20 @@ def _build_slot(ticker, kind, open_pos, settle, mark, settled_leg=None):
                 "avg_fill": open_pos.get("avg_price"), "cost": open_pos.get("cost_basis_usd"),
                 "fee": open_pos.get("fees_usd"), "settled": False, "won": None, "realized": None,
                 "settled_at": None, "current_value": value, "value_known": value is not None,
-                "bid": bid}
+                "bid": bid, "whales": list(whales or []), "whale_tag": _whale_tag(whales)}
     if settle is not None:
         won = settle.get("won")
         contracts = settle.get("contracts")
         # a settled position's card value is its PAYOUT: $1.00 per contract if won, $0.00 if lost (realized P&L is
         # a distinct number, shown in the drawer). value_known only when we actually know the win/loss.
         payout = (contracts if won else 0.0) if (won is not None and contracts is not None) else None
+        # a settled slot is NO LONGER HELD -> no 'copied from' tag (the drawer keeps the full attribution).
         return {"kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
                 "short": _short_label(ticker, kind, settled_leg), "desc": describe_market(ticker, settled_leg),
                 "ticker": ticker, "held_leg": settled_leg, "contracts": contracts, "avg_fill": None, "cost": None,
                 "fee": None, "settled": True, "won": won, "realized": settle.get("realized"),
                 "settled_at": settle.get("settled_ts"), "current_value": payout,
-                "value_known": payout is not None, "bid": None}
+                "value_known": payout is not None, "bid": None, "whales": [], "whale_tag": None}
     return None
 
 
@@ -330,15 +345,17 @@ def _ordered_teams(ticker: str):
     return _split_team_blob(blob) or (None, None)
 
 
-def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts):
+def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts,
+          whales_by_ticker=None):
     away_code, home_code = _ordered_teams(sorted(tickers)[0]) if tickers else (None, None)
+    whales_by_ticker = whales_by_ticker or {}
     slots = []
     by_kind = {}
     for tk in sorted(tickers):
         kind = _kind(tk)
         slot = _build_slot(tk, kind, open_by_ticker.get(tk),
                            settle_by_ticker.get(tk), (marks or {}).get(tk),
-                           _settled_leg(orders_by_ticker.get(tk)))
+                           _settled_leg(orders_by_ticker.get(tk)), whales_by_ticker.get(tk))
         if slot is not None and kind not in by_kind:   # one slot per kind on the card
             by_kind[kind] = slot
             slots.append(slot)
@@ -494,7 +511,8 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
                            "desc": (title or describe_market(tk, leg)), "market_title": title, "held_leg": leg,
                            "contracts": contracts, "cost": op.get("cost_basis_usd"), "avg_fill": op.get("avg_price"),
                            "fee": op.get("fees_usd"), "current_value": value, "value_known": value is not None,
-                           "bid": bid, "settled": False, "status": "open", "whales": whales})
+                           "bid": bid, "settled": False, "status": "open", "whales": whales,
+                           "whale_tag": _whale_tag(whales)})
             continue
         # not open -> a terminal (settled / exit / opposed) row, if any close exists for it
         settle = settle_by_ticker.get(tk)
@@ -513,7 +531,7 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
                          "current_value": payout, "value_known": payout is not None, "bid": None, "settled": True,
                          "won": won, "realized": (settle.get("realized") if settle else None),
                          "settled_at": (settle.get("settled_ts") if settle else None),
-                         "status": status, "whales": whales})
+                         "status": status, "whales": whales, "whale_tag": _whale_tag(whales)})
     active.sort(key=lambda r: r["ticker"]); complete.sort(key=lambda r: r["ticker"])
     return {"active": active, "complete": complete, "n_active": len(active), "n_complete": len(complete)}
 
@@ -558,7 +576,8 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
                 tickers_by_game.setdefault(gk, set()).add(tk)
         for gk, tks in tickers_by_game.items():
             gs = feed_mlb.match_in_slate(slate_games, gk[0], gk[3], gk[1], gk[2]) if slate_games else None
-            card = _card(gk, tks, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts)
+            card = _card(gk, tks, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts,
+                         whales_by_ticker)
             if card["time_mismatch"]:                    # per-game feed<->ticker start-time skew -> flagged in the drawer
                 mismatch_by_gk[gk] = card["time_mismatch"]
             # INTENTIONAL (board-accepted 2026-09-02, fix-pass item 7 -- do NOT "fix" this back): a game whose

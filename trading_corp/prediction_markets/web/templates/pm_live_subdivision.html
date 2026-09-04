@@ -18,17 +18,31 @@
   <span class="chip {% if stale %}stale{% endif %}" data-age0="{{ age_sec if age_sec is not none else '' }}" data-stale="{{ stale_after if stale_after is not none else '' }}">{{ age_sec|agefmt }}{% if stale %} &middot; stale{% endif %}</span>
 {%- endmacro %}
 
+{# ---------- copied-from whale tag (Jack's reversal 2026-09-04): FIRST whale + '+N' extras, in one fixed-width
+   field so the slot never changes shape; the name right-truncates with a CSS ellipsis, the '+N' stays visible; the
+   full untruncated list is the hover title (and stays in the trade drawer). Journal-sourced -- never inferred. #}
+{% macro whaletag(tag) %}
+  {%- if tag -%}<span class="wtag" title="copied from {{ tag.all|join(', ') }}"><span class="wn">{{ tag.first }}</span>{% if tag.extra %}<span class="wx">+{{ tag.extra }}</span>{% endif %}</span>{%- endif -%}
+{% endmacro %}
+
 {# ---------- three fixed bet slots (ML/TOT/SPR). Not held => dimmed. Open => live bid-value or 'no mark'.
-   Settled => won (green, payout) / lost (red, $0). Cost basis is NOT shown here; it is a different number. ---------- #}
+   Settled => won (green, payout) / lost (red, $0). Cost basis is NOT shown here; it is a different number. Every
+   slot reserves the whale row so all slots keep identical height whether or not held (card height is constant). #}
 {% macro betline(slot, label, idx) %}
   {%- if not slot -%}
-    <div class="bet"><span class="bl">{{ label }}</span><span class="bt">not held</span><span class="bv">&mdash;</span></div>
+    <div class="bet">
+      <div class="br"><span class="bl">{{ label }}</span><span class="bt">not held</span><span class="bv">&mdash;</span></div>
+      <div class="bw">&nbsp;</div>
+    </div>
   {%- else -%}
     {%- set cls = ('won' if slot.won else 'lost') if slot.settled else 'live' -%}
     <div class="bet {{ cls }}">
-      <span class="bl">{{ label }}</span>
-      <span class="bt" title="{{ slot.desc }}">{{ slot.short }}{% if slot.settled %}{{ ' &#10003;'|safe if slot.won else ' &#10007;'|safe }}{% endif %}</span>
-      <span class="bv"{% if not slot.settled %} data-val="{{ idx }}|{{ label }}"{% endif %}>{{ slot.current_value|money if slot.value_known else 'no mark' }}</span>
+      <div class="br">
+        <span class="bl">{{ label }}</span>
+        <span class="bt" title="{{ slot.desc }}">{{ slot.short }}{% if slot.settled %}{{ ' &#10003;'|safe if slot.won else ' &#10007;'|safe }}{% endif %}</span>
+        <span class="bv"{% if not slot.settled %} data-val="{{ idx }}|{{ label }}"{% endif %}>{{ slot.current_value|money if slot.value_known else 'no mark' }}</span>
+      </div>
+      <div class="bw">{% if slot.whale_tag %}<span class="wfrom">from</span>{{ whaletag(slot.whale_tag) }}{% else %}&nbsp;{% endif %}</div>
     </div>
   {%- endif -%}
 {% endmacro %}
@@ -181,7 +195,7 @@
       {%- elif p.status == 'opposed' -%}<span class="badge">OPPOSED</span>
       {%- else -%}<span class="badge">EXITED</span>{%- endif -%}
     </td>
-    <td class="pwh">{% if p.whales %}{{ p.whales|join(', ') }}{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+    <td class="pwh">{% if p.whale_tag %}{{ whaletag(p.whale_tag) }}{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
   </tr>
 {% endmacro %}
 

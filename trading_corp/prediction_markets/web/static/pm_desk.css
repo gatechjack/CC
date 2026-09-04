@@ -99,14 +99,28 @@ table.sh tr:not(.baseball) td{color:var(--dimmer)}
 .mxn{font-family:var(--dmono);font-size:9.5px;letter-spacing:.1em;color:var(--won);white-space:nowrap}
 .g .gdt{width:100%;text-align:right;font-family:var(--dmono);font-size:9.5px;letter-spacing:.04em;color:var(--dim);margin-top:1px}
 
-/* three fixed bet lines, seated over home plate -- identical shape on every card */
-.bets{position:absolute;left:50%;top:calc(50% + 80px);transform:translateX(-50%);width:190px;display:grid;gap:1px;background:#070b12;padding:1px;border-radius:2px;z-index:2}
-.bet{display:grid;grid-template-columns:32px 1fr auto;gap:6px;align-items:baseline;background:#0a0f16;padding:3px 6px 4px;font-family:var(--dmono)}
+/* three fixed bet lines, seated over home plate -- identical shape on every card. WIDENED (2026-09-04) to fill the
+   home-plate area (the space below the diamond, ~diawrap width) rather than the narrower prototype block. Each slot
+   is two rows: the bet row (label / short / value) + a fixed-height WHALE row reserved on EVERY slot so held and
+   unheld slots keep identical height and the card height stays constant across cards. */
+.bets{position:absolute;left:50%;top:calc(50% + 80px);transform:translateX(-50%);width:208px;display:grid;gap:1px;background:#070b12;padding:1px;border-radius:2px;z-index:2}
+.bet{background:#0a0f16;padding:3px 6px 4px;font-family:var(--dmono)}
+.bet .br{display:grid;grid-template-columns:32px 1fr auto;gap:6px;align-items:baseline}
 .bet .bl{font-size:8.5px;letter-spacing:.14em;color:#2b3a4e}
 .bet .bt{font-size:9.5px;letter-spacing:.04em;color:#2b3a4e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bet .bv{font-size:12.5px;letter-spacing:-.02em;color:#26364a;text-align:right}
+/* the copied-from whale row: fixed height + overflow-hidden so a long name/wallet never changes the slot shape */
+.bet .bw{display:flex;align-items:baseline;gap:5px;height:11px;line-height:11px;overflow:hidden;margin-top:2px;font-size:8px;color:#3a4a5f}
+.bet .bw .wfrom{flex:none;font-size:7px;letter-spacing:.08em;text-transform:uppercase;color:#2b3a4e}
+/* the tag caps at a fixed width so the name/wallet right-truncates with an ellipsis (a td's max-width is ignored
+   under auto table-layout, so the cap lives on the tag itself); the '+N' is flex:none and stays visible. */
+.wtag{display:inline-flex;align-items:baseline;gap:3px;min-width:0;max-width:150px;overflow:hidden;vertical-align:bottom}
+.bet .bw .wtag{flex:0 1 150px}
+.wtag .wn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.wtag .wx{flex:none;color:#6d7f94}
 .bet.live{background:#0e1a24}
 .bet.live .bl{color:var(--live)}.bet.live .bt{color:var(--dim)}.bet.live .bv{color:var(--live)}
+.bet.live .bw{color:#6f8598}.bet.live .bw .wfrom{color:#4a5f74}.bet.live .wtag .wx{color:#8aa0b3}
 .bet.won{background:#0f2c20}
 .bet.won .bl{color:#5fd8a5}.bet.won .bt{color:#8ce9be}.bet.won .bv{color:var(--won)}
 .bet.lost{background:#1f1216}
@@ -128,7 +142,7 @@ table.sh tr:not(.baseball) td{color:var(--dimmer)}
 .bsr.O .pip.on{background:var(--lampO);border-color:var(--lampO);box-shadow:0 0 6px #f0453f88}
 .nocount{font-family:var(--dmono);font-size:9px;letter-spacing:.08em;color:var(--dimmer)}
 .nocount.na{color:var(--stale)}
-.dia{position:relative;width:192px;height:192px;margin:0 auto 78px}
+.dia{position:relative;width:192px;height:192px;margin:0 auto 108px}   /* extra bottom room for the two-row bet slots (whale row) -- same on every card, so card height stays constant */
 /* diamond lines heavier + brighter (item 5, user feedback -- the outline was too faint on the dark panel) */
 .sq{position:absolute;left:50%;top:50%;width:132px;height:132px;transform:translate(-50%,-50%) rotate(45deg);border:2px solid #45597a}
 .dia.dead .sq{border-color:#2f3d4f;border-style:dashed}
@@ -194,7 +208,8 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .postbl .pside{color:var(--text)}
 .postbl .pval{color:var(--text)}
 .postbl .pval .won{color:var(--won)}.postbl .pval .lost{color:var(--lost)}
-.postbl .pwh{white-space:normal;max-width:220px}
+.postbl .pwh{white-space:nowrap;max-width:190px;overflow:hidden}
+.postbl .pwh .wtag{max-width:180px}
 .postbl tr.prow.live .pval{color:var(--live)}
 .badge.live{color:var(--live);border-color:#1e4f66}
 .badge.won{color:var(--won);border-color:#1d5a41}
