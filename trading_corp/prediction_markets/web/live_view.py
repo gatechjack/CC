@@ -253,24 +253,39 @@ def _settled_leg(orders_for_ticker) -> str | None:
 
 
 def _whale_tag(whales) -> dict | None:
-    """The compact 'copied from' tag for a HELD slot / positions row (Jack's reversal 2026-09-04: attribution is no
-    longer drawer-only). `whales` is the ordered set of whale labels (display name, else wallet) holding this
-    ticker -- sourced from the journal (live_positions_by_whale), NEVER inferred. Returns the FIRST label plus the
-    count of ADDITIONAL whales (`extra`), for a fixed-width 'First +N' render; the template right-truncates `first`
-    with an ellipsis so the slot never changes shape. None when nothing is held (an unheld/settled slot -> no
-    whale). The full untruncated list rides on `all` (and stays complete in the trade drawer)."""
+    """The compact 'copied from' tag for a slot that HAS a position (open OR settled -- Jack's rulings 2026-09-04:
+    attribution is no longer drawer-only, and a SETTLED slot shows it too). `whales` is the ordered set of whale
+    labels (display name, else wallet) for this ticker -- journal-sourced (net-open holders for a live slot; the
+    entry-fill copiers for a settled slot), NEVER inferred. Returns the FIRST label plus the count of ADDITIONAL
+    whales (`extra`), for a fixed-width 'First +N' render; the template right-truncates `first` with an ellipsis so
+    the slot never changes shape. None only when the set is empty (an UNHELD slot -> no whale). The full untruncated
+    list rides on `all` (and stays complete in the trade drawer)."""
     ws = [w for w in (whales or []) if w]
     if not ws:
         return None
     return {"first": ws[0], "extra": len(ws) - 1, "all": ws}
 
 
+def _entry_whales(orders_for_ticker) -> list:
+    """The distinct whales that COPIED this ticker, from its ENTRY fills (is_exit=0, filled) -- the SAME journal rows
+    the drawer reads, ordered by wallet (matching live_positions_by_whale's order). Used for a SETTLED slot / settled
+    positions row, whose net-open holder set is empty (the position closed) but whose entry rows still name the
+    copiers. Label = user_name else wallet. Nothing inferred."""
+    seen: dict = {}
+    for o in (orders_for_ticker or []):
+        if not o.get("is_exit") and o.get("outcome_status") == "filled":
+            wal = o.get("wallet") or ""
+            if wal and wal not in seen:
+                seen[wal] = o.get("user_name") or wal
+    return [seen[w] for w in sorted(seen)]
+
+
 def _build_slot(ticker, kind, open_pos, settle, mark, settled_leg=None, whales=None):
     """One card bet-slot: open (live value = contracts x held-leg bid) or settled (won/lost). open_pos is the
     live_positions row for this ticker (or None); settle is the per-ticker settlement rollup (or None). settled_leg
     is the side held into settlement (from _settled_leg) -> a settled slot carries the SAME directional shorthand
-    (over/under, spread sign+team) a live slot does; None -> the line without a sign. `whales` (the net-open holders
-    of this ticker, journal-sourced) drives the per-slot 'copied from' tag on a HELD slot only."""
+    (over/under, spread sign+team) a live slot does; None -> the line without a sign. `whales` (journal-sourced:
+    net-open holders for a live slot, entry-fill copiers for a settled slot) drives the 'copied from' tag on BOTH."""
     if open_pos is not None:
         leg = open_pos.get("held_leg")
         bid = marks_mod.bid_for_leg(mark, leg)
@@ -289,13 +304,14 @@ def _build_slot(ticker, kind, open_pos, settle, mark, settled_leg=None, whales=N
         # a settled position's card value is its PAYOUT: $1.00 per contract if won, $0.00 if lost (realized P&L is
         # a distinct number, shown in the drawer). value_known only when we actually know the win/loss.
         payout = (contracts if won else 0.0) if (won is not None and contracts is not None) else None
-        # a settled slot is NO LONGER HELD -> no 'copied from' tag (the drawer keeps the full attribution).
+        # a settled slot SHOWS its copied-from whale too (Jack's ruling 2026-09-04) -- from the entry-fill copiers.
         return {"kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
                 "short": _short_label(ticker, kind, settled_leg), "desc": describe_market(ticker, settled_leg),
                 "ticker": ticker, "held_leg": settled_leg, "contracts": contracts, "avg_fill": None, "cost": None,
                 "fee": None, "settled": True, "won": won, "realized": settle.get("realized"),
                 "settled_at": settle.get("settled_ts"), "current_value": payout,
-                "value_known": payout is not None, "bid": None, "whales": [], "whale_tag": None}
+                "value_known": payout is not None, "bid": None,
+                "whales": list(whales or []), "whale_tag": _whale_tag(whales)}
     return None
 
 
@@ -353,9 +369,13 @@ def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker,
     by_kind = {}
     for tk in sorted(tickers):
         kind = _kind(tk)
+        # whale set: net-open holders for a live slot; the entry-fill copiers for a settled slot (its net-open set
+        # is empty once closed). Both are journal-sourced -- see _entry_whales.
+        whales = whales_by_ticker.get(tk) if open_by_ticker.get(tk) is not None \
+            else _entry_whales(orders_by_ticker.get(tk))
         slot = _build_slot(tk, kind, open_by_ticker.get(tk),
                            settle_by_ticker.get(tk), (marks or {}).get(tk),
-                           _settled_leg(orders_by_ticker.get(tk)), whales_by_ticker.get(tk))
+                           _settled_leg(orders_by_ticker.get(tk)), whales)
         if slot is not None and kind not in by_kind:   # one slot per kind on the card
             by_kind[kind] = slot
             slots.append(slot)
@@ -520,18 +540,22 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
         states = {a.get("state") for (t, _w), a in agg.items() if t == tk}
         if settle is None and not (states & {"exit", "opposed", "settled"}):
             continue                                # no live/settled position (all off the books) -> not a row
-        settled_leg = _settled_leg([o for o in orders if o.get("ticker") == tk])
+        tk_orders = [o for o in (orders or []) if o.get("ticker") == tk]
+        settled_leg = _settled_leg(tk_orders)
         won = settle.get("won") if settle else None
         contracts = settle.get("contracts") if settle else None
         payout = (contracts if won else 0.0) if (won is not None and contracts is not None) else None
         status = "settled" if settle is not None else ("opposed" if "opposed" in states else "exit")
+        # a settled/closed row shows its copied-from whale too (Jack 2026-09-04) -- from the entry-fill copiers,
+        # since the net-open holder set is empty once the position closed.
+        cw = _entry_whales(tk_orders)
         complete.append({"ticker": tk, "kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
                          "desc": describe_market(tk, settled_leg), "market_title": None, "held_leg": settled_leg,
                          "contracts": contracts, "cost": None, "avg_fill": None, "fee": None,
                          "current_value": payout, "value_known": payout is not None, "bid": None, "settled": True,
                          "won": won, "realized": (settle.get("realized") if settle else None),
                          "settled_at": (settle.get("settled_ts") if settle else None),
-                         "status": status, "whales": whales, "whale_tag": _whale_tag(whales)})
+                         "status": status, "whales": cw, "whale_tag": _whale_tag(cw)})
     active.sort(key=lambda r: r["ticker"]); complete.sort(key=lambda r: r["ticker"])
     return {"active": active, "complete": complete, "n_active": len(active), "n_complete": len(complete)}
 

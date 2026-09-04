@@ -123,8 +123,10 @@ table.sh tr:not(.baseball) td{color:var(--dimmer)}
 .bet.live .bw{color:#6f8598}.bet.live .bw .wfrom{color:#4a5f74}.bet.live .wtag .wx{color:#8aa0b3}
 .bet.won{background:#0f2c20}
 .bet.won .bl{color:#5fd8a5}.bet.won .bt{color:#8ce9be}.bet.won .bv{color:var(--won)}
+.bet.won .bw{color:#5f9a80}.bet.won .bw .wfrom{color:#437a62}.bet.won .wtag .wx{color:#84c2a4}
 .bet.lost{background:#1f1216}
 .bet.lost .bl{color:#c07b7b}.bet.lost .bt{color:#b98d8d}.bet.lost .bv{color:var(--lost)}
+.bet.lost .bw{color:#a67c81}.bet.lost .bw .wfrom{color:#7a5559}.bet.lost .wtag .wx{color:#c99aa0}
 .bnote{position:relative;z-index:2;font-family:var(--dmono);font-size:8.5px;letter-spacing:.02em;color:var(--dimmer);text-align:center;min-height:11px;padding:3px 4px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* diamond */
