@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -30,7 +33,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse, Plai
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from ..db import connect
+from ..db import connect, pm_db_path
 from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot
 from . import authz   # M4: fail-closed identity/admin resolution + account-visibility scoping (reads headers+env only)
 from ..market_describe import describe_market
@@ -278,8 +281,12 @@ def _load_farm_league() -> dict:
     = not in the allowlist). NOT driven by pinned rows: an empty watchlist is legitimate, so a category with
     prospects-but-no-pinned (or with neither) STILL renders its tile -- data stranded behind a missing tile is the
     class of defect this closes. The pair-grain active flag governs list membership, not tile existence. The
-    allowlist is a constant -> no DB read. OFF the loop."""
-    return {"categories": farm.league_categories()}
+    allowlist is a constant. Also reads the latest SEARCH run state (the single-flight status the discovery
+    panel shows: idle / running / done / error / stale) -- one small DB read. OFF the loop."""
+    from ..search_run import latest_search_status
+    with connect() as conn:
+        search_status = latest_search_status(conn, now_ts=int(time.time()))
+    return {"categories": farm.league_categories(), "search_status": search_status}
 
 
 def _load_farm_category(category: str, now_ts: int) -> dict | None:
@@ -422,8 +429,10 @@ async def farm_league_page(request: Request):
     """The Farm-League category tiles (the active Kalshi-copyable categories, data-driven). Each tile links to its
     per-category page. (Phase 3 repointed this from /farm-league onto /farm; the flat farm page it replaces was
     retired.)"""
+    is_admin_flag = authz.is_admin(request)   # M4: the Search (discovery) panel is admin-only, like promote/refresh
     data = await asyncio.to_thread(_load_farm_league)
-    return templates.TemplateResponse(request, "pm_farm_league.html", {"request": request, **data})
+    return templates.TemplateResponse(
+        request, "pm_farm_league.html", {"request": request, "is_admin": is_admin_flag, **data})
 
 
 @app.get("/farm/{category}", response_class=HTMLResponse)
@@ -557,6 +566,104 @@ async def refresh_action(request: Request, category: str, wallet: str):
         return templates.TemplateResponse(request, "partials/pm_prospects_rows.html",
                                           {"request": request, "refresh_notice": _REFRESH_NOTICE.get(outcome), **data})
     return RedirectResponse("/farm/%s" % category, status_code=303)
+
+
+# ── SEARCH (whale discovery -> Prospects) -- the Farm-League-page button. Structurally ALL-CATEGORIES: the
+# Polymarket leaderboard knows only coarse buckets (no "mlb whales" query), backfill is all-categories, and the
+# 15-category filter applies only at the candidate WRITE -- so this searches EVERYTHING, on the main page, never
+# per-category (per-category would be a 92-min sweep masquerading as a one-category refresh). It is a ~90-min job
+# hitting Polymarket from the SAME prod IP the armed engine polls every ~7s, so: admin-only (the Refresh precedent
+# at 50x scale), SINGLE-FLIGHTED server-side (a disabled button is a UI hint; two tabs / a refresh / a direct POST
+# all bypass it, and two concurrent sweeps double the API load on the live-copy path), and run as a DETACHED
+# subprocess (survives a pm_web restart; crash-isolated from the web loop) that ADOPTS the pre-acquired lock.
+
+_SEARCH_BUCKET = "Sports"   # the discovery bucket the button uses (where the sports whales live)
+
+
+def _spawn_search(run_id: int, *, category: str, db_path: str) -> None:
+    """Launch `pm_cli search --run-id <id>` as a DETACHED subprocess that ADOPTS the pre-acquired single-flight
+    lock. Mirrors the proven cron/service invocation (cwd=<root>, PYTHONPATH=<root>, venv python `sys.executable`,
+    the script by path). `start_new_session=True` detaches it so a pm_web restart/deploy does NOT kill a 90-min
+    sweep; stdout/stderr -> a per-run log so a failure is diagnosable. Raises if the process cannot be launched
+    (the caller then releases the lock so it is never stranded 'running')."""
+    root = Path(__file__).resolve().parents[3]                      # <root>/trading_corp/prediction_markets/web/app.py
+    script = root / "trading_corp" / "scripts" / "pm_cli.py"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    logf = open(root / ("pm_search_ui_run%d.log" % run_id), "ab")    # noqa: SIM115 -- child dups the fd; closed below
+    try:
+        subprocess.Popen(
+            [sys.executable, str(script), "--db", db_path, "search", "--run-id", str(run_id),
+             "--category", category],
+            cwd=str(root), env=env, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True)
+    finally:
+        logf.close()   # the parent's copy; the detached child holds its own dup
+
+
+def _acquire_and_launch(now_ts: int) -> dict:
+    """Atomically take the single-flight lock and, if acquired, launch the detached sweep. Returns the acquire
+    result dict ({'acquired': bool, 'run_id', ...}). A REFUSAL (a live run already in flight) launches nothing.
+    If the launch itself fails, the lock is RELEASED (row -> error) so a failed spawn never strands 'running'."""
+    from ..search_run import acquire_search_lock, close_search_run, DEFAULT_LEADERBOARD_LIMIT
+    db_path = os.path.abspath(pm_db_path())    # the EXACT file connect() opens -> the detached child hits the same DB
+    with connect() as conn:
+        lk = acquire_search_lock(
+            conn, now_ts=now_ts, leaderboard_category=_SEARCH_BUCKET,
+            leaderboard_limit=DEFAULT_LEADERBOARD_LIMIT, min_resolved=search.DEFAULT_MIN_RESOLVED_FLOOR,
+            recency_window_days=search.DEFAULT_RECENCY_DAYS, thin_sample_target=search.DEFAULT_THIN_TARGET,
+            launcher="ui")
+    if not lk.get("acquired"):
+        return lk
+    try:
+        _spawn_search(lk["run_id"], category=_SEARCH_BUCKET, db_path=db_path)
+    except Exception as e:   # noqa: BLE001 -- a failed spawn must not strand the lock
+        log.exception("pm_web: search sweep failed to launch (run_id=%s)", lk.get("run_id"))
+        with connect() as conn:
+            close_search_run(conn, lk["run_id"], finished_ts=now_ts, n_discovered=0, n_backfilled=0,
+                             status="error", summary="failed to launch sweep: %s" % (repr(e)[:200]))
+        return {"acquired": False, "run_id": lk["run_id"], "reason": "launch_failed"}
+    return lk
+
+
+def _read_search_status(now_ts: int) -> dict:
+    from ..search_run import latest_search_status
+    with connect() as conn:
+        return latest_search_status(conn, now_ts=now_ts)
+
+
+async def _render_search_status(request: Request):
+    """Render the discovery-panel status fragment (the htmx poll target): reads the latest run's live state
+    (idle/running/done/error/stale) + whether the requester is admin (the button is admin-only)."""
+    is_admin_flag = authz.is_admin(request)
+    status = await asyncio.to_thread(_read_search_status, int(time.time()))
+    return templates.TemplateResponse(
+        request, "partials/pm_search_status.html",
+        {"request": request, "search_status": status, "is_admin": is_admin_flag})
+
+
+@app.post("/farm/search")
+async def farm_search_action(request: Request):
+    """START a Search sweep (admin-only, single-flighted). ADMIN-ONLY server-side (M4) -- Search spends ~1900
+    Polymarket calls over ~90 min against the shared prod IP, the Refresh concern at ~50x scale, so a non-admin
+    POST (curl / stale tab / second browser) is refused here regardless of what the page rendered. The
+    single-flight lock (acquire_search_lock) refuses a SECOND concurrent run BELOW the UI -- the boundary, not
+    the disabled button. On acquire, a detached subprocess runs the ~90-min sweep; the response is the 'underway'
+    status fragment so the operator sees it started + cannot double-fire. POST-only (no GET mutates)."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
+    await asyncio.to_thread(_acquire_and_launch, int(time.time()))   # acquire + (if taken) launch; refusal is a no-op
+    if request.headers.get("HX-Request"):
+        return await _render_search_status(request)                 # swap in the running/underway (or already-running) panel
+    return RedirectResponse("/farm", status_code=303)               # JS-off: PRG back to /farm (panel re-reads state)
+
+
+@app.get("/farm/search/status", response_class=HTMLResponse)
+async def farm_search_status(request: Request):
+    """The discovery panel's status fragment, polled by htmx WHILE a sweep runs so the operator learns it
+    FINISHED (done: N candidates) or FAILED (error/stale), not only that it started. Read-only."""
+    return await _render_search_status(request)
 
 
 @app.post("/live/{account_id}/{category}/attach/{wallet}")

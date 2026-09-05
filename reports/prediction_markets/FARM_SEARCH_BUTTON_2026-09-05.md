@@ -125,7 +125,18 @@ helper to `web/app.py`; coordinate the graft against the box at deploy, file-by-
   hidden `--run-id` (button path) or acquires its own (manual path, exit 3 if one is already running); heartbeats
   at loop start + between wallets. `--category` help rewritten to name the buckets. 3 new CLI tests (reject /
   manual-refuse / adopt) + 18 guard+CLI tests + 84 across the Stage-4 suites all green locally.
-- **R3 — pm_web route + template + status + tests.** pending.
+- **R3 — pm_web route + template + status + tests.** DONE. `web/app.py`: `POST /farm/search` (admin-gated via
+  `_forbid_if_not_admin`; acquire lock off-loop; on acquire spawn a DETACHED `pm_cli search --run-id <id>`
+  subprocess adopting the lock; on launch failure release the lock -> error, never stranded; htmx returns the
+  underway fragment, JS-off 303 to /farm) + `GET /farm/search/status` (the poll target). `_load_farm_league`
+  now reads `latest_search_status`; `farm_league_page` threads `is_admin`. New partial
+  `partials/pm_search_status.html` (idle/running/done/error/stale; running self-polls every 15s via outerHTML,
+  non-running omits the poll -> stops). Panel added to `pm_farm_league.html` (admin-only, scoped `<style>`, NO
+  pm.css; honest warning: ~90 min, same IP as the engine, may compete with live copying, all-categories). Stdlib
+  imports os/subprocess/sys + `pm_db_path` added; `search_run` lazy-imported (import-guard test still green).
+  `test_search_web.py` (9 tests): non-admin/no-identity 403 + nothing launched, admin acquires+launches once,
+  **direct 2nd POST while running launches nothing**, launch-failure releases lock, status idle->running->done,
+  running self-polls / done stops, panel admin-only. 28 existing web tests (healthz/m4_gates/farm) still green.
 - **R4 — box-scratch (full suites, `-p no:pytest_ethereum`) + adversarial review of the guard + graft.** pending.
 - **R5 — stage the deploy manifest (CR-stripped box reconcile, backups, Gate-A transitive imports,
   post-checks, stop conditions, rollback). Push. HALT for authorization.** pending.

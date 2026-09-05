@@ -1,0 +1,40 @@
+{# SEARCH single-flight STATUS fragment -- the htmx poll target for the Farm-League discovery panel. Rendered
+   inline on /farm, swapped in by POST /farm/search (the 'underway' ack), and polled by GET /farm/search/status
+   so the operator learns it FINISHED, not only that it started. WHILE running the root div self-polls (every
+   15s, outerHTML); once state != running the swapped fragment omits the poll attributes -> polling STOPS. The
+   Run button is admin-only (a UI hint -- POST /farm/search is the real, server-side gate). #}
+{% set s = search_status %}
+<div id="pm-search-status" class="pm-search-status pm-ss-{{ s.state }}"
+     data-ss-state="{{ s.state }}"
+     {% if s.state == 'running' %}hx-get="/farm/search/status" hx-trigger="every 15s" hx-swap="outerHTML" hx-target="this"{% endif %}>
+  {% if s.state == 'running' %}
+    <p class="pm-ss-line" role="status">
+      <strong>Search underway</strong> &mdash; sweeping Polymarket for candidate whales. This takes roughly
+      <strong>90 minutes</strong>; leave it running{% if s.age_sec is not none %} (started {{ (s.age_sec // 60) }} min ago){% endif %}.
+      Prospects fill in across the categories as it goes; this line updates on its own, or refresh the page.</p>
+  {% elif s.state == 'stale' %}
+    <p class="pm-ss-line" role="status">
+      The last search appears to have <strong>stopped unexpectedly</strong> (no progress for over 30 minutes).
+      Starting a new search takes over from it.</p>
+  {% elif s.state == 'done' %}
+    <p class="pm-ss-line" role="status">
+      Last search <strong>finished</strong>: <strong>{{ s.n_candidates_written or 0 }}</strong> prospects written
+      across the categories{% if s.age_sec is not none %}, {{ (s.age_sec // 60) }} min ago{% endif %}. New prospects
+      appear under each category's Prospects section.</p>
+  {% elif s.state == 'error' %}
+    <p class="pm-ss-line" role="status">
+      The last search <strong>ended with an error</strong>{% if s.age_sec is not none %} ({{ (s.age_sec // 60) }} min ago){% endif %}.
+      Nothing was left half-written; you can run it again.</p>
+  {% else %}
+    <p class="pm-ss-line" role="status">
+      No search has run yet. A single sweep populates the Prospects list across every category.</p>
+  {% endif %}
+
+  {% if is_admin and s.state != 'running' %}
+    <form method="post" action="/farm/search" class="pm-inline-form pm-search-form"
+          hx-post="/farm/search" hx-target="#pm-search-status" hx-swap="outerHTML" hx-disabled-elt="find button">
+      <button class="pm-btn pm-btn-sm pm-search-run" type="submit"
+        title="Run Search: sweep Polymarket's leaderboard for candidate whales across ALL categories (~90 min, hits the same API the live engine uses -- may briefly compete with live copying).">Run Search</button>
+    </form>
+  {% endif %}
+</div>
