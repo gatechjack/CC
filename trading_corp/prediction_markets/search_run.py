@@ -48,11 +48,33 @@ DEFAULT_LEADERBOARD_CATEGORY = "Sports"
 DEFAULT_LEADERBOARD_LIMIT = 250   # asked; the API caps ~50/bucket -- a POOL, not a cap we depend on.
 
 
+def assert_valid_bucket(category: str | None) -> None:
+    """FAIL-LOUD on a non-bucket leaderboard category. `/v1/leaderboard` is a DISCOVERY axis of five COARSE
+    buckets ONLY (Politics/Sports/Crypto/Tech/Mentions); a FINE category ('mlb', 'ufc', ...) is NOT a query the
+    endpoint understands -- it returns ZERO rows, so `pm_cli search --category mlb` would discover nothing,
+    write nothing, and LOOK LIKE A CLEAN RUN. That silent no-op is the same class as a safety check that stops
+    checking, so we REJECT it here rather than let it masquerade as success (Jack ruled 2026-09-05: reject, do
+    not merely document). `category=None` is allowed -- it is the GLOBAL leaderboard, a real discovery axis.
+    Fine categories are DERIVED from positions AFTER backfill; they are never a leaderboard query."""
+    if category is None:
+        return
+    from ..data.polymarket_data_api_client import POLYMARKET_LEADERBOARD_CATEGORIES
+    if str(category) not in POLYMARKET_LEADERBOARD_CATEGORIES:
+        raise ValueError(
+            "leaderboard bucket %r is not a valid discovery axis. Polymarket's /v1/leaderboard knows only the "
+            "coarse buckets: %s (or omit --category for the global board). A FINE category like 'mlb' returns "
+            "zero wallets -- a run that looks clean but discovers nothing. Fine categories are derived from "
+            "positions AFTER backfill, never queried from the leaderboard."
+            % (category, ", ".join(POLYMARKET_LEADERBOARD_CATEGORIES)))
+
+
 async def discover_wallets(client, *, category: str = DEFAULT_LEADERBOARD_CATEGORY,
                            limit: int = DEFAULT_LEADERBOARD_LIMIT) -> list[tuple[str, str]]:
     """Leaderboard discovery pass: fetch one coarse bucket -> a de-duped pool of (wallet, user_name),
     wallet lowercased (the storage key), leaderboard-rank order preserved. NO backfill here (that is
-    `ensure_backfilled`, and only for whales lacking a complete backfill)."""
+    `ensure_backfilled`, and only for whales lacking a complete backfill). Rejects a fine category up front
+    (`assert_valid_bucket`) so a silent zero-discovery no-op can never masquerade as a clean run."""
+    assert_valid_bucket(category)
     entries = await client.fetch_leaderboard(category=category, limit=limit)
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -307,3 +329,170 @@ def select_and_write_candidates(conn, wallets, *, run_id: int, now_ts: int,
     # caller (pm_cli search) can WARN when n_stats_rows==0 but wallets were backfilled this run.
     return {"n_selected": len(result.candidates), "n_written": n_written, "n_stats_rows": len(stats_rows),
             "excluded": result.excluded, "thin_sample_categories": result.thin_sample_categories}
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# SINGLE-FLIGHT GUARD (2026-09-05) -- the server-side lock a UI Search button needs. A disabled button is
+# a UI hint; two tabs / a refresh / a direct POST all bypass it, and two concurrent ~92-min sweeps DOUBLE
+# the Polymarket API load against the SAME prod IP the armed engine polls every ~7s -> more 429 backoff ->
+# live copies placed late or missed. THIS is the boundary. Reused by BOTH the pm_web button and manual
+# `pm_cli search`, so there is ONE atomic implementation and neither path can start a second live run.
+#
+# STALENESS IS HEARTBEAT-BASED, NOT A FIXED CEILING. `close_search_run` runs in an in-process `finally`, so a
+# SIGKILLed sweep strands its `status='running'` row forever. A fixed time ceiling that expires MID-sweep would
+# permit exactly the concurrency this guard prevents (a genuine long run would look "stale" and a second run
+# would start). Instead the running sweep HEARTBEATS (bumps `params_json.heartbeat_ts` between wallets); a row
+# is a LIVE lock iff its last heartbeat is within `SEARCH_STALE_SEC`. A genuine run keeps heartbeating -> NEVER
+# falsely reclaimed; a crashed run stops -> reclaimable within the window. The window (30 min) exceeds the worst
+# single-wallet backfill (~8 min for a cap-hitting whale, §11B) by 3-4x, so a slow-but-live wallet never trips it.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+
+SEARCH_STALE_SEC = 1800   # 30 min: a 'running' row whose heartbeat is older than this is a DEAD lock (crashed
+                          # sweep) and may be reclaimed. Sized well above the worst single-wallet backfill so a
+                          # live run heartbeating between wallets is never falsely declared stale (see § above).
+
+
+def _row_params(row) -> dict:
+    """Parse a pm_search_run row's params_json -> dict ({} on null/garbage). `row` is a sqlite3.Row or dict."""
+    d = dict(row) if row is not None and not isinstance(row, dict) else (row or {})
+    raw = d.get("params_json")
+    if not raw:
+        return {}
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _liveness_ts(row) -> int:
+    """The ts used to judge a running row's liveness: its last heartbeat if present, else its started_ts (a
+    just-acquired lock that has not heartbeated yet is alive from acquisition). 0 if neither is readable."""
+    d = dict(row) if not isinstance(row, dict) else row
+    hb = _row_params(d).get("heartbeat_ts")
+    try:
+        if hb is not None:
+            return int(hb)
+    except (ValueError, TypeError):
+        pass
+    try:
+        return int(d.get("started_ts") or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _is_live_lock(row, *, now_ts: int, stale_sec: int = SEARCH_STALE_SEC) -> bool:
+    """True iff `row` is a running lock whose heartbeat is still fresh (a genuinely in-flight sweep)."""
+    d = dict(row) if not isinstance(row, dict) else row
+    if str(d.get("status")) != "running" or d.get("finished_ts") is not None:
+        return False
+    return (int(now_ts) - _liveness_ts(d)) < int(stale_sec)
+
+
+def _newest_running_row(conn):
+    """The newest status='running' row (sqlite3.Row) or None. The NEWEST is authoritative: an older running
+    row can never be the live lock (acquire refuses while one is live), so if the newest is stale, none is live."""
+    return conn.execute(
+        "SELECT run_id, status, started_ts, finished_ts, params_json FROM pm_search_run "
+        "WHERE status = 'running' AND finished_ts IS NULL ORDER BY started_ts DESC, run_id DESC LIMIT 1"
+    ).fetchone()
+
+
+def running_lock(conn, *, now_ts: int, stale_sec: int = SEARCH_STALE_SEC) -> dict | None:
+    """The LIVE running lock as a dict, or None if no sweep is currently in flight (idle, or the newest
+    'running' row is a crashed/stale lock). Read-only -- the guard's read side + the UI 'is it running' check."""
+    row = _newest_running_row(conn)
+    if row is None:
+        return None
+    d = dict(row)
+    return d if _is_live_lock(d, now_ts=now_ts, stale_sec=stale_sec) else None
+
+
+def acquire_search_lock(conn, *, now_ts: int, leaderboard_category: str | None, leaderboard_limit: int,
+                        min_resolved: int, recency_window_days: int, thin_sample_target: int,
+                        launcher: str = "ui", stale_sec: int = SEARCH_STALE_SEC) -> dict:
+    """ATOMICALLY check-and-insert the single-flight lock. Under BEGIN IMMEDIATE (SQLite's reserved write lock
+    serialises racing acquirers into one critical section), if a LIVE running lock exists -> DO NOT insert,
+    return {'acquired': False, 'run_id': <existing>, 'reason': 'already_running'}. Otherwise INSERT a fresh
+    `pm_search_run(status='running')` row with `heartbeat_ts = now` (immediately live) and return
+    {'acquired': True, 'run_id': <new>}. If the newest running row is STALE (crashed sweep, no fresh heartbeat)
+    it is first marked 'error' ('reclaimed') so it stops shadowing, then a fresh lock is taken. Two racing
+    callers can NEVER both acquire: the write lock makes the check and the insert one indivisible step.
+    `launcher` records origin ('ui' | 'cli'). The caller MUST later close the row (close_search_run)."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = _newest_running_row(conn)
+        if row is not None:
+            d = dict(row)
+            if _is_live_lock(d, now_ts=now_ts, stale_sec=stale_sec):
+                conn.execute("COMMIT")   # no write performed; release the lock
+                return {"acquired": False, "run_id": int(d["run_id"]), "reason": "already_running"}
+            # newest running row is STALE -> reclaim it (mark errored) so it no longer shadows a new run
+            conn.execute(
+                "UPDATE pm_search_run SET status = 'error', finished_ts = ?, "
+                "summary = COALESCE(summary, '') || ' [reclaimed: stale lock, heartbeat expired]' "
+                "WHERE run_id = ?", (int(now_ts), int(d["run_id"])))
+        params = json.dumps({"launcher": launcher, "heartbeat_ts": int(now_ts)})
+        cur = conn.execute(
+            "INSERT INTO pm_search_run (started_ts, leaderboard_category, leaderboard_limit, min_resolved, "
+            "recency_window_days, thin_sample_target, status, params_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'running', ?)",
+            (int(now_ts), leaderboard_category, int(leaderboard_limit), int(min_resolved),
+             int(recency_window_days), int(thin_sample_target), params))
+        run_id = int(cur.lastrowid)
+        conn.execute("COMMIT")
+        return {"acquired": True, "run_id": run_id}
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def heartbeat_search_run(conn, run_id: int, *, now_ts: int) -> None:
+    """Bump the run's `params_json.heartbeat_ts` so the guard sees the sweep is alive. Read-modify-write
+    (preserves `launcher` and any other params). Cheap; the sweep calls it between wallets. A no-op if the row
+    is gone (nothing to keep alive)."""
+    row = conn.execute("SELECT params_json FROM pm_search_run WHERE run_id = ?", (int(run_id),)).fetchone()
+    if row is None:
+        return
+    p = _row_params(row)
+    p["heartbeat_ts"] = int(now_ts)
+    conn.execute("UPDATE pm_search_run SET params_json = ? WHERE run_id = ?", (json.dumps(p), int(run_id)))
+    if hasattr(conn, "commit"):
+        conn.commit()
+
+
+def latest_search_status(conn, *, now_ts: int, stale_sec: int = SEARCH_STALE_SEC) -> dict:
+    """The most recent run's state for the UI feedback poll. Returns a dict with `state` in
+    {'idle','running','done','error','stale'} plus counts/timestamps for display:
+      - idle    : no run has ever been recorded.
+      - running : a running row with a FRESH heartbeat -> a sweep is genuinely in flight.
+      - stale   : a running row whose heartbeat expired -> the sweep crashed; the UI stops saying 'in progress'.
+      - done    : the last run finished status='ok'.
+      - error   : the last run finished status='error'.
+    Read-only. `age_sec` is measured from the liveness ts for a running row, else from finished_ts."""
+    row = conn.execute(
+        "SELECT * FROM pm_search_run ORDER BY started_ts DESC, run_id DESC LIMIT 1").fetchone()
+    if row is None:
+        return {"state": "idle"}
+    d = dict(row)
+    st = str(d.get("status"))
+    if st == "running" and d.get("finished_ts") is None:
+        state = "running" if _is_live_lock(d, now_ts=now_ts, stale_sec=stale_sec) else "stale"
+        age_sec = max(0, int(now_ts) - _liveness_ts(d))
+    else:
+        state = "done" if st == "ok" else "error"
+        fin = d.get("finished_ts")
+        age_sec = max(0, int(now_ts) - int(fin)) if fin is not None else None
+    return {
+        "state": state,
+        "run_id": int(d["run_id"]),
+        "launcher": _row_params(d).get("launcher"),
+        "leaderboard_category": d.get("leaderboard_category"),
+        "n_discovered": int(d.get("n_discovered") or 0),
+        "n_backfilled": int(d.get("n_backfilled") or 0),
+        "n_candidates_written": int(d.get("n_candidates_written") or 0),
+        "started_ts": d.get("started_ts"),
+        "finished_ts": d.get("finished_ts"),
+        "age_sec": age_sec,
+        "summary": d.get("summary"),
+    }

@@ -115,7 +115,11 @@ helper to `web/app.py`; coordinate the graft against the box at deploy, file-by-
 ## RUNG STATUS (update as they land)
 
 - **R0 — worktree + this handoff + record corrections.** DONE (this commit).
-- **R1 — `search_run` guard core + bucket allowlist + offline tests.** pending.
+- **R1 — `search_run` guard core + bucket allowlist + offline tests.** DONE. Added `acquire_search_lock`
+  (atomic BEGIN IMMEDIATE check-and-insert), `heartbeat_search_run`, `running_lock`, `latest_search_status`,
+  `assert_valid_bucket` + `SEARCH_STALE_SEC=1800`. `test_search_lock.py` (11 tests) green locally
+  (.venv-webtest): second-run-refused, second-connection-refused, stale-reclaim, **heartbeat-keeps-long-run-alive
+  (the fixed-ceiling failure it prevents)**, close-releases, status idle/running/done/error/stale, bucket reject.
 - **R2 — `pm_cli search` wiring (--run-id, heartbeat, bucket-reject, manual lock) + tests.** pending.
 - **R3 — pm_web route + template + status + tests.** pending.
 - **R4 — box-scratch (full suites, `-p no:pytest_ethereum`) + adversarial review of the guard + graft.** pending.
