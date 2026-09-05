@@ -1,5 +1,35 @@
 # FARM SEARCH BUTTON — build handoff (2026-09-05). KEEP CURRENT AS RUNGS LAND.
 
+## ★★★ DEPLOYED LIVE 2026-09-05 23:22:45Z (pm_web-only; engine 196060 NEVER touched)
+Board-authorized `pm_farmsearch_deploy.ps1`. **The runner executed on the FIRST invocation** (backup
+`~/pm_farmsearch_deploy_backup_20260905T232220Z` at 23:22:20Z -> apply -> Gate-A green -> pm_web restart
+**191017 -> 204392** at 23:22:45Z, NRestarts=0). A UI interrupt landed AFTER the runner had already completed
+its box work, so a SECOND invocation ran — it **drift-aborted** (all 5 files already at target) and changed
+nothing: the pre-flight drift guard prevented a double-apply exactly as designed. Verify runner
+`cc/pm_farmsearch_verify.*`. **POST-CHECK GREEN:** 5 files == targets (search_run a15acc3a / pm_cli b5cb0b91 /
+pm_farm_league 3ccf80dd / pm_search_status 59b287dc / **app.py 34bb61ed**); **app.py GRAFT CLEAN by count:
+is_admin=14, /pm/arm=0 (NO M5 leak)**; /healthz 200 schema 19; /farm 200; **/farm/search/status 200 (not 404)**;
+admin /farm renders Prospect-discovery + Run Search + the compete-with-live-copying warning (x2); non-admin
+karen sees NO button (panel admin-only); /farm/search/status shows "finished" (run_id=1/134); **0 Traceback**
+in the pm_web journal since restart; PM DB unchanged (schema 19, pm_search_run still the 1 historic row — the
+deploy wrote NO DB row). **Engine PID 196060 UNCHANGED** (start 09-04 19:55, NRestarts=0). Rollback = restore
+the backup dir + rm the new partial + pm_web restart. **Jack will run the FIRST Search himself; the button was
+NOT pressed.** (Leftover `~/pm_farmsearch_stage` from the second aborted call is harmless scratch.)
+
+### ★ CALLS RECORDED (Jack, 2026-09-05, "these were right"):
+1. **Reject the `--category` decoy FAIL-LOUD, not document it** — a flag that silently does nothing while looking
+   like a clean run is the same class as a safety check that stops checking; documenting would leave the trap armed.
+2. **Branch off multicategory, NOT the actively-owned UI branch** — building on the UI branch risked dragging its
+   unshipped work into this deploy.
+3. **Heartbeat-based lock** — a genuine long run is never falsely reclaimed; a crashed one clears in 30 min. And
+   **the guard is tested the way it is attacked** (a direct POST while running launches nothing) — the boundary is
+   the gate, not the hidden button.
+### Engine-restart 186179->196060 (and the 09-01 18:13:58Z one): EXPLAINED by Jack — the board restarted the
+### shared engine doing work for another division. Not an unattributed bounce; investigation disregarded.
+
+---
+
+
 **Task:** a Search button so Jack can refresh Prospects from the UI. Today the only trigger is the CLI
 `pm_cli search`, and there is no control anywhere in pm_web. pm_web-only work → deploys with a **pm_web
 restart, no engine restart, no interruption to trading**. Nothing here reaches the order path (verified:
