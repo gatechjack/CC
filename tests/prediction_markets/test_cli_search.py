@@ -17,7 +17,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
-from trading_corp.prediction_markets import db
+from trading_corp.prediction_markets import db, search_run
 
 _CLI_PATH = Path(__file__).resolve().parents[2] / "trading_corp" / "scripts" / "pm_cli.py"
 NOW = 1_700_000_000
@@ -183,3 +183,63 @@ def test_search_second_run_skips_complete_whale_and_keeps_candidate(tmp_path, ca
         assert conn.execute("SELECT COUNT(*) FROM pm_watchlist WHERE wallet='0xdone' AND status='candidate'"
                             ).fetchone()[0] == 1        # exactly one, no duplicate
         assert conn.execute("SELECT COUNT(*) FROM pm_search_run").fetchone()[0] == 2   # both runs recorded
+
+
+# ═══════════════ the --category decoy: a fine category is REJECTED (fail-loud), never a silent no-op ═══════════════
+
+def test_search_rejects_fine_category_before_any_work(tmp_path, capsys, monkeypatch):
+    p = _seed_db(tmp_path)
+    pm = _pm_cli()
+    client = FakeSearchClient(leaderboard=[("0xw", "W")])
+    _wire(monkeypatch, pm, client)
+    assert pm.main(["--db", p, "search", "--category", "mlb"]) == 2      # non-zero exit, not a clean 0
+    err = capsys.readouterr().err
+    assert "mlb" in err and "discovers nothing" in err                   # says WHY, names the failure
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_search_run").fetchone()[0] == 0    # no run opened
+    assert client.pulled == [] and client.positions_calls == []          # nothing pulled -- rejected up front
+
+
+# ═══════════════ single-flight through the CLI: a manual run refuses when one is already running ═══════════════
+
+_KNOBS = dict(leaderboard_category="Sports", leaderboard_limit=250,
+              min_resolved=50, recency_window_days=30, thin_sample_target=10)
+
+
+def test_search_manual_refuses_when_a_run_is_already_running(tmp_path, capsys, monkeypatch):
+    p = _seed_db(tmp_path)
+    with db.connect(p) as c:                                             # a live lock already held
+        held = search_run.acquire_search_lock(c, now_ts=NOW, launcher="ui", **_KNOBS)
+        assert held["acquired"] is True
+    pm = _pm_cli()
+    client = FakeSearchClient(leaderboard=[("0xw", "W")],
+                             closed={"0xw": [_cp("0xw", i) for i in range(12)]})
+    _wire(monkeypatch, pm, client)
+    assert pm.main(["--db", p, "search"]) == 3                           # refused -> distinct exit code
+    assert "already running" in capsys.readouterr().err
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_search_run").fetchone()[0] == 1    # no SECOND run opened
+        assert conn.execute("SELECT COUNT(*) FROM pm_closed_position").fetchone()[0] == 0  # no backfill happened
+
+
+# ═══════════════ the button path: --run-id ADOPTS the pre-acquired lock (no second run row) ═══════════════
+
+def test_search_adopts_preacquired_run_id(tmp_path, capsys, monkeypatch):
+    p = _seed_db(tmp_path)
+    with db.connect(p) as c:                                             # pm_web pre-acquires + spawns the sweep
+        acq = search_run.acquire_search_lock(c, now_ts=NOW, launcher="ui", **_KNOBS)
+    rid = acq["run_id"]
+    pm = _pm_cli()
+    client = FakeSearchClient(leaderboard=[("0xw", "W")],
+                             closed={"0xw": [_cp("0xw", i) for i in range(12)]},
+                             positions={"0xw": [_open_pos("0xw")]})
+    _wire(monkeypatch, pm, client)
+    assert pm.main(["--db", p, "search", "--run-id", str(rid)]) == 0     # adopts the lock, runs the sweep
+    with db.connect(p) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pm_search_run").fetchone()[0] == 1    # adopted, NOT a 2nd row
+        row = conn.execute("SELECT run_id, status, n_candidates_written, params_json "
+                           "FROM pm_search_run").fetchone()
+        assert row["run_id"] == rid and row["status"] == "ok" and row["n_candidates_written"] == 1
+        assert search_run._row_params(row)["launcher"] == "ui"          # provenance preserved through adopt
+        assert conn.execute("SELECT COUNT(*) FROM pm_watchlist WHERE wallet='0xw' AND status='candidate'"
+                            ).fetchone()[0] == 1

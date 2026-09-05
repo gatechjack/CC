@@ -120,7 +120,11 @@ helper to `web/app.py`; coordinate the graft against the box at deploy, file-by-
   `assert_valid_bucket` + `SEARCH_STALE_SEC=1800`. `test_search_lock.py` (11 tests) green locally
   (.venv-webtest): second-run-refused, second-connection-refused, stale-reclaim, **heartbeat-keeps-long-run-alive
   (the fixed-ceiling failure it prevents)**, close-releases, status idle/running/done/error/stale, bucket reject.
-- **R2 — `pm_cli search` wiring (--run-id, heartbeat, bucket-reject, manual lock) + tests.** pending.
+- **R2 — `pm_cli search` wiring (--run-id, heartbeat, bucket-reject, manual lock) + tests.** DONE. `_cmd_search`
+  now: rejects a fine `--category` up front (exit 2, stderr names buckets); adopts a pre-acquired lock via the
+  hidden `--run-id` (button path) or acquires its own (manual path, exit 3 if one is already running); heartbeats
+  at loop start + between wallets. `--category` help rewritten to name the buckets. 3 new CLI tests (reject /
+  manual-refuse / adopt) + 18 guard+CLI tests + 84 across the Stage-4 suites all green locally.
 - **R3 — pm_web route + template + status + tests.** pending.
 - **R4 — box-scratch (full suites, `-p no:pytest_ethereum`) + adversarial review of the guard + graft.** pending.
 - **R5 — stage the deploy manifest (CR-stripped box reconcile, backups, Gate-A transitive imports,

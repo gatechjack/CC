@@ -127,6 +127,13 @@ async def _cmd_search(args) -> int:
     the 15-category allowlist, and backfill_complete=1 (a partial whale is never a candidate)."""
     category = args.category or search_run.DEFAULT_LEADERBOARD_CATEGORY
     limit = args.leaderboard_limit
+    # ★ FAIL-LOUD on the --category decoy BEFORE any client/lock: the leaderboard knows only coarse buckets;
+    # a fine category ('mlb') discovers zero wallets and would look like a clean run (a silent no-op).
+    try:
+        search_run.assert_valid_bucket(category)
+    except ValueError as e:
+        print("SEARCH: %s" % e, file=sys.stderr)
+        return 2
     db.init_db(args.db)   # idempotent + version-gated (no-op at schema head); matches _cmd_backfill/_cmd_rollup
     async with _client() as client:
         discovered = await search_run.discover_wallets(client, category=category, limit=limit)
@@ -147,10 +154,25 @@ async def _cmd_search(args) -> int:
             return 0
         counts = {"skipped_complete": 0, "backfilled_complete": 0, "backfilled_partial": 0, "failed": 0}
         with db.connect(args.db) as conn:
-            run_id = search_run.open_search_run(
-                conn, started_ts=_now(), leaderboard_category=category, leaderboard_limit=limit,
-                min_resolved=search.DEFAULT_MIN_RESOLVED_FLOOR, recency_window_days=search.DEFAULT_RECENCY_DAYS,
-                thin_sample_target=search.DEFAULT_THIN_TARGET)
+            # SINGLE-FLIGHT: adopt the lock pm_web pre-acquired (--run-id, the button path), else acquire it
+            # here (manual CLI). acquire_search_lock is atomic (BEGIN IMMEDIATE); a refusal means a sweep is
+            # already in flight, so this run must NOT start a second one against the shared prod IP.
+            adopt_run_id = getattr(args, "run_id", None)
+            if adopt_run_id is not None:
+                run_id = int(adopt_run_id)
+            else:
+                lk = search_run.acquire_search_lock(
+                    conn, now_ts=_now(), leaderboard_category=category, leaderboard_limit=limit,
+                    min_resolved=search.DEFAULT_MIN_RESOLVED_FLOOR,
+                    recency_window_days=search.DEFAULT_RECENCY_DAYS,
+                    thin_sample_target=search.DEFAULT_THIN_TARGET, launcher="cli")
+                if not lk["acquired"]:
+                    print("SEARCH: a search is already running (run_id=%d) -- refusing to start a second "
+                          "(two concurrent sweeps double the API load against the live-copy IP)." % lk["run_id"],
+                          file=sys.stderr)
+                    return 3
+                run_id = lk["run_id"]
+            search_run.heartbeat_search_run(conn, run_id, now_ts=_now())   # freshen the lock at loop start
             print("SEARCH: run_id=%d -- backfilling (per-wallet progress):" % run_id, flush=True)
             for i, (wallet, _nm) in enumerate(discovered, 1):
                 try:
@@ -164,6 +186,7 @@ async def _cmd_search(args) -> int:
                 except Exception as e:  # per-wallet isolation, exactly as run_search
                     counts["failed"] += 1; act = "FAILED (isolated): %s" % (repr(e)[:80])
                 print("  [%3d/%d] %s -> %s" % (i, n, wallet, act), flush=True)
+                search_run.heartbeat_search_run(conn, run_id, now_ts=_now())   # keep the single-flight lock alive
             n_backfilled = counts["backfilled_complete"] + counts["backfilled_partial"]
             search_run.close_search_run(conn, run_id, finished_ts=_now(), n_discovered=n,
                                         n_backfilled=n_backfilled, status="ok", summary=json.dumps({"counts": counts}))
@@ -424,7 +447,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "recency pull -> write status='candidate' rows. ONE-SHOT (Jack runs it, NO cron). "
                              "Prints per-wallet progress; ~20-40 min on a first run. Candidates land on /farm/<cat>.")
     se.add_argument("--category", default=search_run.DEFAULT_LEADERBOARD_CATEGORY,
-                    help="leaderboard bucket to discover from (default %s; ~50/bucket cap)"
+                    help="leaderboard BUCKET to discover from -- one of Politics/Sports/Crypto/Tech/Mentions "
+                         "(default %s; ~50/bucket). NOT a fine sport: 'mlb' etc. discover ZERO and are rejected."
                          % search_run.DEFAULT_LEADERBOARD_CATEGORY)
     se.add_argument("--leaderboard-limit", type=int, default=search_run.DEFAULT_LEADERBOARD_LIMIT,
                     dest="leaderboard_limit", help="requested leaderboard size (default %d; the API caps ~50)"
@@ -432,6 +456,9 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="PREVIEW ONLY: discovery + the new-vs-complete split (1 API call, NO backfill, NO write) "
                          "so the ~call-count / run-time cost is visible before committing")
+    # internal: the pm_web Search button pre-acquires the single-flight lock and passes its run_id so the
+    # spawned sweep ADOPTS that lock row instead of taking its own. Not for interactive use (hidden from --help).
+    se.add_argument("--run-id", type=int, default=None, dest="run_id", help=argparse.SUPPRESS)
     se.set_defaults(func=_cmd_search, is_async=True)
 
     # ── R5 money-layer arm/kill-switch (writes the legacy agent_state via the arm bridge) ──
