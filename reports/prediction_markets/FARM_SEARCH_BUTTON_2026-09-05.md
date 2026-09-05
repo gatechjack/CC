@@ -153,8 +153,65 @@ helper to `web/app.py`; coordinate the graft against the box at deploy, file-by-
     present; **invokability** proven (`pm_cli --help` lists search, `pm_cli search --help` exit 0 = the Gate-A
     transitive-import graph resolves in the service env); **bucket-reject fired live** (`pm_cli search --category
     mlb` -> exit 2 + the fail-loud message). **Engine PID 196060 UNTOUCHED** before/after; pm_web 191017 untouched.
-- **R5 — stage the deploy manifest (CR-stripped box reconcile, backups, Gate-A transitive imports,
-  post-checks, stop conditions, rollback). Push. HALT for authorization.** pending.
+- **R5 — stage the deploy. DONE (STAGED; HALT for authorization).** Branch pushed
+  (`origin/pm-farm-search-2026-09-05`). Read-only box reconcile ran (runner `cc/pm_farmsearch_recon.*`); the
+  app.py graft was built + verified locally; deploy runners authored + validated (ASCII/no-BOM/parse). See the
+  DEPLOY MANIFEST below. **Nothing deployed/restarted; engine 196060 + pm_web 191017 untouched.**
+
+---
+
+## ★ DEPLOY MANIFEST (STAGED 2026-09-05 ~23:06Z; AWAITS Jack's authorization) -- pm_web-only, NO migration, NO engine restart
+
+**Box reconcile (read-only, runner `cc/pm_farmsearch_recon.*`):** engine PID 196060 / pm_web 191017; box
+`pm_search_run` head = **schema 19** (NO migration needed -- the guard reuses migration-013's table) with
+**run_id=1 status=ok Sports 134** already present (the panel first renders "finished: 134"). Box files
+CR-stripped: `search_run.py`=311beb68, `pm_cli.py`=7ae2f219, `pm_farm_league.html`=92af0201 (== my BASE, so
+those deploy wholesale-clean); `app.py`=**c2e4ddef85b4460b (M4: is_admin=10, /pm/arm=0)**; `pm_search_status.html`
+ABSENT; os/subprocess/sys/pm_db_path absent in box app.py.
+
+**5 files, pm_web-only:**
+| file | box now | -> deploy target | how |
+|---|---|---|---|
+| `prediction_markets/search_run.py` | 311beb68 (=base) | **a15acc3a** | wholesale |
+| `scripts/pm_cli.py` | 7ae2f219 (=base) | **b5cb0b91** | wholesale |
+| `prediction_markets/web/templates/pm_farm_league.html` | 92af0201 (=base) | **3ccf80dd** | wholesale |
+| `prediction_markets/web/templates/partials/pm_search_status.html` | ABSENT | **59b287dc** | new file |
+| `prediction_markets/web/app.py` | c2e4ddef (M4) | **34bb61ed** | **GRAFT** |
+
+**★ app.py GRAFT (verified, NOT wholesale):** my base(3f498d4) app.py and the box app.py differ by 262 lines
+(different web lineage -- multicat web is e5d6506-era; the box runs the M4+multicat-hunk line). BUT all four of my
+edit regions (imports / `_load_farm_league` / `farm_league_page` / the refresh->attach route seam) are BYTE-
+IDENTICAL between my base and the box, so my `+116/-4` patch applies to the box app.py cleanly. Verified locally:
+patched box app.py = box **+ exactly my +116/-4, nothing else** -> is_admin=**14** (M4 10 + my 4 search), /pm/arm=**0**
+(M5 stays absent), my routes present, py_compile OK. That grafted file (`cc/_farmsearch_app_grafted.py`, sha
+**34bb61ed**) is the deploy artifact; the deploy re-asserts box==c2e4ddef before streaming it (drift -> ABORT).
+
+**Deploy runner `cc/pm_farmsearch_deploy.ps1`** (one authorized action): stages the 4 files (git-archive HEAD, LF)
++ the grafted app.py via scp -> APPLY sub-script (`pm_farmsearch_deploy_apply.sh`): pre-flight DRIFT CHECK (all 5
+box hashes vs expected; any drift/missing-stage -> ABORT, nothing changed) -> per-file BACKUP
+(`~/pm_farmsearch_deploy_backup_<TS>`) -> apply + forced **644** -> deployed-hash verify (mismatch -> RESTORE+abort)
+-> app.py M5-leak guard (/pm/arm must stay 0 -> else RESTORE+abort) -> **GATE-A** transitive imports in the service
+dir (`import ...web.app` + `pm_cli search --help`, both exit 0; FAIL -> AUTO-RESTORE+abort) -> `DEPLOY_APPLIED_OK`.
+Only on that marker does the runner **restart pm_web** (`az vm run-command ... systemctl restart
+prediction-markets-web` -- ROOT; **engine NOT touched**) -> POST-CHECK (`pm_farmsearch_deploy_postcheck.sh`).
+
+**Post-checks (stop conditions in *bold* -- any failure = do not proceed / investigate):**
+- engine PID **UNCHANGED** == 196060 (NRestarts unchanged); pm_web PID CHANGED (restarted).
+- `/healthz` **200** schema 19; `/farm` **200**; **`/farm/search/status` 200 (NOT 404 -- the route is live, not shadowed)**.
+- admin `/farm` renders "Prospect discovery" + "Run Search" + the "may briefly compete with live copying" warning;
+  non-admin `/farm` hides the panel (server gate is the boundary regardless).
+- **NO Traceback/ImportError** in the pm_web journal since restart. NO live DB write, NO order-path/arm change.
+- **Global STOP (unchanged, verbatim):** `PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global`.
+
+**Rollback:** restore `~/pm_farmsearch_deploy_backup_<TS>` (4 files) + `rm` the new partial + pm_web restart. (The
+apply sub-script AUTO-restores on any gate/verify failure, so a manual rollback is only for a post-restart regret.)
+
+**After deploy (Jack, runtime -- NOT part of the deploy):** press **Run Search** on `/farm` (admin) -> a detached
+`pm_cli search --run-id N` sweep runs ~90 min, the panel shows "underway" + self-polls to "finished: N". First
+press writes the FIRST live UI-launched `pm_search_run` lock + spends real Polymarket budget on the shared prod IP
+(watch for engine 429 backoff in that window -- the unquantified contention this warns about).
 
 ## OPEN RULINGS (write here if any surface; keep building around them)
-- none yet.
+- none. The one deferred nit: `search_run.run_search()` (a composed-wholesale alternative) is NOT single-flight
+  guarded, but it is used ONLY by `test_search_run_r2` -- neither the button nor `pm_cli search` calls it (both
+  acquire the lock). Left as-is; a future guard on it is optional hardening, not on any live path.
