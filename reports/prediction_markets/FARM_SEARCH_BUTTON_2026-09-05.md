@@ -137,7 +137,22 @@ helper to `web/app.py`; coordinate the graft against the box at deploy, file-by-
   `test_search_web.py` (9 tests): non-admin/no-identity 403 + nothing launched, admin acquires+launches once,
   **direct 2nd POST while running launches nothing**, launch-failure releases lock, status idle->running->done,
   running self-polls / done stops, panel admin-only. 28 existing web tests (healthz/m4_gates/farm) still green.
-- **R4 — box-scratch (full suites, `-p no:pytest_ethereum`) + adversarial review of the guard + graft.** pending.
+- **R4 — box-scratch + adversarial review.** DONE.
+  - **Two adversarial reviews (Sonnet) folded in** (commit 47dde65): (real) close_search_run moved to AFTER
+    select_and_write_candidates so the lock is held through the whole run, not released into the write-tail
+    window; close/heartbeat gated `WHERE status='running'` (can't clobber a reclaimed row); `_is_live_lock`
+    checks the window BOTH directions (a far-future heartbeat can't strand the lock); acquire ROLLBACK wrapped
+    (no shadowing a timed-out BEGIN IMMEDIATE); sweep log -> `data/` not the repo root. **Refuted:** the
+    "GET /farm/search/status shadowed by /farm/{category}" finding is FALSE (`{category}` is `[^/]+`, cannot
+    match a 2-segment path; `test_status_endpoint_idle_then_running` GETs it and asserts 200). **Noted:**
+    `run_search()` is an unguarded alternative entrypoint used ONLY by `test_search_run_r2` (not the button or
+    `pm_cli search`, both of which acquire the lock) -- left as-is.
+  - **Box-scratch GREEN** (runner `cc/pm_farmsearch_scratch.{ps1,sh}`, git-archive -> scp -> box venv pytest;
+    isolated scratch tree, live untouched): **143 tests passed** on the box venv (test_search_lock/cli_search/
+    search_web/search_r1/search_r3/search_run_r2/cli/m4_gates/web_healthz/farm) with pykalshi/httpx/fastapi
+    present; **invokability** proven (`pm_cli --help` lists search, `pm_cli search --help` exit 0 = the Gate-A
+    transitive-import graph resolves in the service env); **bucket-reject fired live** (`pm_cli search --category
+    mlb` -> exit 2 + the fail-loud message). **Engine PID 196060 UNTOUCHED** before/after; pm_web 191017 untouched.
 - **R5 — stage the deploy manifest (CR-stripped box reconcile, backups, Gate-A transitive imports,
   post-checks, stop conditions, rollback). Push. HALT for authorization.** pending.
 
