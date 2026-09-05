@@ -170,3 +170,43 @@ async def test_discover_wallets_rejects_fine_category_before_any_network():
 
     with pytest.raises(ValueError):
         await search_run.discover_wallets(_NoCallClient(), category="ufc", limit=10)
+
+
+# ═══════════════ robustness (adversarial-review fixes) ═══════════════
+
+def test_future_heartbeat_does_not_strand_the_lock(tmp_path):
+    """★ A far-FUTURE heartbeat_ts (a clock jump or a bad write) must NOT make the lock permanent -- otherwise a
+    single bogus write strands the guard forever. It reads as reclaimable, and a fresh acquire succeeds."""
+    with db.connect(_db(tmp_path)) as conn:
+        rid = _acquire(conn, NOW)["run_id"]
+        search_run.heartbeat_search_run(conn, rid, now_ts=NOW + 10 * search_run.SEARCH_STALE_SEC)  # bogus future
+        assert search_run.running_lock(conn, now_ts=NOW) is None            # not live -> reclaimable
+        res = _acquire(conn, NOW)
+        assert res["acquired"] is True and res["run_id"] != rid
+
+
+def test_close_does_not_clobber_a_reclaimed_row(tmp_path):
+    """★ After a stale lock is RECLAIMED (marked error) and a fresh lock taken, the old run's belated close must
+    NOT overwrite the reclaim to 'ok' NOR touch the fresh lock (the adopt-after-reclaim guard)."""
+    with db.connect(_db(tmp_path)) as conn:
+        old = _acquire(conn, NOW)["run_id"]
+        later = NOW + search_run.SEARCH_STALE_SEC + 1
+        new = _acquire(conn, later)["run_id"]                              # reclaims `old` (-> error), takes a fresh lock
+        assert new != old
+        search_run.close_search_run(conn, old, finished_ts=later + 5, n_discovered=1, n_backfilled=1,
+                                    status="ok", summary="{}", n_candidates_written=99)   # belated close of the reclaimed run
+        oldrow = conn.execute("SELECT status FROM pm_search_run WHERE run_id=?", (old,)).fetchone()
+        assert oldrow["status"] == "error"                                 # stayed reclaimed, NOT overwritten
+        assert search_run.running_lock(conn, now_ts=later + 6)["run_id"] == new    # fresh lock intact + live
+
+
+def test_heartbeat_is_a_noop_on_a_closed_run(tmp_path):
+    """A closed run is never resurrected: heartbeating it changes nothing (guards status='running')."""
+    with db.connect(_db(tmp_path)) as conn:
+        rid = _acquire(conn, NOW)["run_id"]
+        search_run.close_search_run(conn, rid, finished_ts=NOW + 1, n_discovered=0, n_backfilled=0,
+                                    status="ok", summary="{}")
+        before = conn.execute("SELECT params_json FROM pm_search_run WHERE run_id=?", (rid,)).fetchone()[0]
+        search_run.heartbeat_search_run(conn, rid, now_ts=NOW + 999)
+        after = conn.execute("SELECT params_json FROM pm_search_run WHERE run_id=?", (rid,)).fetchone()[0]
+        assert before == after                                             # unchanged

@@ -188,15 +188,21 @@ async def _cmd_search(args) -> int:
                 print("  [%3d/%d] %s -> %s" % (i, n, wallet, act), flush=True)
                 search_run.heartbeat_search_run(conn, run_id, now_ts=_now())   # keep the single-flight lock alive
             n_backfilled = counts["backfilled_complete"] + counts["backfilled_partial"]
-            search_run.close_search_run(conn, run_id, finished_ts=_now(), n_discovered=n,
-                                        n_backfilled=n_backfilled, status="ok", summary=json.dumps({"counts": counts}))
             print("SEARCH: rollup (pm_closed_position -> pm_category_stats)...", flush=True)
             stats.rollup(conn, now_ts=_now())
+            search_run.heartbeat_search_run(conn, run_id, now_ts=_now())        # hold the lock through the tail
             print("SEARCH: /positions recency pull for %d wallets..." % n, flush=True)
             await search_run.refresh_positions_for(conn, [w for w, _ in discovered], client=client, now_ts=_now())
+            search_run.heartbeat_search_run(conn, run_id, now_ts=_now())
             print("SEARCH: selecting + writing candidates (N>=%d, %dd recency, 15-cat allowlist, complete-only)..."
                   % (search.DEFAULT_MIN_RESOLVED_FLOOR, search.DEFAULT_RECENCY_DAYS), flush=True)
             r = search_run.select_and_write_candidates(conn, [w for w, _ in discovered], run_id=run_id, now_ts=_now())
+            # ★ close (which RELEASES the single-flight lock) is the LAST step, AFTER the candidate-write tail --
+            # so the lock is held for the ENTIRE run (rollup + the 50-wallet /positions pull + the write), never
+            # released early into a window where a second sweep could start against the shared prod IP.
+            search_run.close_search_run(conn, run_id, finished_ts=_now(), n_discovered=n,
+                                        n_backfilled=n_backfilled, status="ok",
+                                        summary=json.dumps({"counts": counts}), n_candidates_written=r["n_written"])
         print("SEARCH DONE: run_id=%d discovered=%d backfilled=%d (complete=%d partial=%d failed=%d) skipped_complete=%d"
               " ; candidates WRITTEN=%d (selected=%d, gated-stats-rows=%d). View on /farm/<category> (Prospects)." %
               (run_id, n, n_backfilled, counts["backfilled_complete"], counts["backfilled_partial"], counts["failed"],

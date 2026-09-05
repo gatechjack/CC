@@ -140,10 +140,13 @@ def open_search_run(conn, *, started_ts: int, leaderboard_category: str, leaderb
 def close_search_run(conn, run_id: int, *, finished_ts: int, n_discovered: int, n_backfilled: int,
                      status: str, summary: str, n_candidates_written: int = 0) -> None:
     """Finalize a `pm_search_run` row. `n_candidates_written` stays 0 at R2 -- selection + write is R3,
-    which updates this row. `status` is 'ok' | 'error'; `summary` carries the per-verdict breakdown JSON."""
+    which updates this row. `status` is 'ok' | 'error'; `summary` carries the per-verdict breakdown JSON.
+    ★ GATED `WHERE ... AND status='running'`: a close can ONLY finalize a still-running row, so it can never
+    clobber a row that the single-flight guard already reclaimed to 'error' (the theoretical adopt-after-reclaim
+    race). A legitimate close always runs on the row it still owns ('running'), so the gate is transparent."""
     conn.execute(
         "UPDATE pm_search_run SET finished_ts = ?, n_discovered = ?, n_backfilled = ?, "
-        "n_candidates_written = ?, status = ?, summary = ? WHERE run_id = ?",
+        "n_candidates_written = ?, status = ?, summary = ? WHERE run_id = ? AND status = 'running'",
         (finished_ts, n_discovered, n_backfilled, n_candidates_written, status, summary, run_id))
     conn.commit() if hasattr(conn, "commit") else None
 
@@ -382,11 +385,15 @@ def _liveness_ts(row) -> int:
 
 
 def _is_live_lock(row, *, now_ts: int, stale_sec: int = SEARCH_STALE_SEC) -> bool:
-    """True iff `row` is a running lock whose heartbeat is still fresh (a genuinely in-flight sweep)."""
+    """True iff `row` is a running lock whose heartbeat is still fresh (a genuinely in-flight sweep). The window
+    is checked in BOTH directions: a heartbeat that is far in the FUTURE (a clock jump or a bad write) must NOT
+    strand the lock forever, so a ts beyond the window ahead reads as stale (reclaimable) exactly like one beyond
+    it behind. Reader and writer are the SAME box (same clock), so genuine skew is ~0 and well inside the window."""
     d = dict(row) if not isinstance(row, dict) else row
     if str(d.get("status")) != "running" or d.get("finished_ts") is not None:
         return False
-    return (int(now_ts) - _liveness_ts(d)) < int(stale_sec)
+    age = int(now_ts) - _liveness_ts(d)
+    return -int(stale_sec) < age < int(stale_sec)
 
 
 def _newest_running_row(conn):
@@ -443,7 +450,10 @@ def acquire_search_lock(conn, *, now_ts: int, leaderboard_category: str | None, 
         conn.execute("COMMIT")
         return {"acquired": True, "run_id": run_id}
     except Exception:
-        conn.execute("ROLLBACK")
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:   # a BEGIN IMMEDIATE that timed out leaves NO active tx -> ROLLBACK would raise and
+            pass            # SHADOW the real 'database is locked'; swallow it so the original error propagates
         raise
 
 
@@ -451,12 +461,14 @@ def heartbeat_search_run(conn, run_id: int, *, now_ts: int) -> None:
     """Bump the run's `params_json.heartbeat_ts` so the guard sees the sweep is alive. Read-modify-write
     (preserves `launcher` and any other params). Cheap; the sweep calls it between wallets. A no-op if the row
     is gone (nothing to keep alive)."""
-    row = conn.execute("SELECT params_json FROM pm_search_run WHERE run_id = ?", (int(run_id),)).fetchone()
-    if row is None:
+    row = conn.execute(
+        "SELECT params_json FROM pm_search_run WHERE run_id = ? AND status = 'running'", (int(run_id),)).fetchone()
+    if row is None:   # gone, or already closed/reclaimed -> nothing live to keep alive (never resurrect a dead row)
         return
     p = _row_params(row)
     p["heartbeat_ts"] = int(now_ts)
-    conn.execute("UPDATE pm_search_run SET params_json = ? WHERE run_id = ?", (json.dumps(p), int(run_id)))
+    conn.execute("UPDATE pm_search_run SET params_json = ? WHERE run_id = ? AND status = 'running'",
+                 (json.dumps(p), int(run_id)))
     if hasattr(conn, "commit"):
         conn.commit()
 

@@ -243,3 +243,27 @@ def test_search_adopts_preacquired_run_id(tmp_path, capsys, monkeypatch):
         assert search_run._row_params(row)["launcher"] == "ui"          # provenance preserved through adopt
         assert conn.execute("SELECT COUNT(*) FROM pm_watchlist WHERE wallet='0xw' AND status='candidate'"
                             ).fetchone()[0] == 1
+
+
+# ═══════════════ the lock is held through the WRITE tail (close is the LAST step, not before it) ═══════════════
+
+def test_lock_is_held_until_after_candidate_write(tmp_path, monkeypatch):
+    """★ The single-flight lock must stay held through rollup + the /positions pull + the candidate write, not be
+    released early into a window a second sweep could use. Prove it: at the moment candidates are written, the run
+    row is STILL 'running' (close runs AFTER select_and_write, so a premature-close regression fails here)."""
+    p = _seed_db(tmp_path)
+    pm = _pm_cli()
+    client = FakeSearchClient(leaderboard=[("0xw", "W")],
+                             closed={"0xw": [_cp("0xw", i) for i in range(12)]},
+                             positions={"0xw": [_open_pos("0xw")]})
+    _wire(monkeypatch, pm, client)
+    seen = {}
+    real = pm.search_run.select_and_write_candidates
+
+    def _spy(conn, wallets, **kw):
+        row = conn.execute("SELECT status FROM pm_search_run WHERE run_id=?", (kw["run_id"],)).fetchone()
+        seen["status_at_write"] = row["status"]
+        return real(conn, wallets, **kw)
+    monkeypatch.setattr(pm.search_run, "select_and_write_candidates", _spy)
+    assert pm.main(["--db", p, "search"]) == 0
+    assert seen["status_at_write"] == "running"          # lock still held when candidates are written

@@ -590,7 +590,12 @@ def _spawn_search(run_id: int, *, category: str, db_path: str) -> None:
     script = root / "trading_corp" / "scripts" / "pm_cli.py"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    logf = open(root / ("pm_search_ui_run%d.log" % run_id), "ab")    # noqa: SIM115 -- child dups the fd; closed below
+    logdir = root / "data"                                          # azureuser-writable + gitignored (NOT the repo root)
+    try:
+        logdir.mkdir(exist_ok=True)
+    except Exception:   # noqa: BLE001 -- data/ already exists in every real deployment; a log dir is best-effort
+        logdir = root
+    logf = open(logdir / ("pm_search_ui_run%d.log" % run_id), "ab")  # noqa: SIM115 -- child dups the fd; closed below
     try:
         subprocess.Popen(
             [sys.executable, str(script), "--db", db_path, "search", "--run-id", str(run_id),
