@@ -128,13 +128,15 @@ NFL_TEAMS: dict[str, str] = {
     "HOU": "Houston Texans",         "IND": "Indianapolis Colts",
     "JAX": "Jacksonville Jaguars",   "KC":  "Kansas City Chiefs",
     "LV":  "Las Vegas Raiders",      "LAC": "Los Angeles Chargers",
-    "LAR": "Los Angeles Rams",       "MIA": "Miami Dolphins",
+    "LAR": "Los Angeles Rams",       "LA":  "Los Angeles Rams",   # Poly uses bare `la` for the Rams (Chargers=`lac`); Kalshi uses LAR. Safe alias (dry-run 2026-09-06).
+    "MIA": "Miami Dolphins",
     "MIN": "Minnesota Vikings",      "NE":  "New England Patriots",
     "NO":  "New Orleans Saints",     "NYG": "New York Giants",
     "NYJ": "New York Jets",          "PHI": "Philadelphia Eagles",
     "PIT": "Pittsburgh Steelers",    "SF":  "San Francisco 49ers",
     "SEA": "Seattle Seahawks",       "TB":  "Tampa Bay Buccaneers",
     "TEN": "Tennessee Titans",       "WAS": "Washington Commanders",
+    "WSH": "Washington Commanders",  "LAS": "Las Vegas Raiders",   # Poly spelling variants (Kalshi uses WAS/LV). Safe aliases (dry-run 2026-09-06).
 }
 
 # WNBA (added 2026-09-06, rung 1). Maps BOTH venues' codes to the canonical full name -- Polymarket and

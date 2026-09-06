@@ -70,7 +70,22 @@ Sub-rungs:
       TRADE, not a side effect. Tested (proven-first-new-last, noise excluded, fail-safe). mlb/ufc/atp/wta cycle
       order now changes from alphabetical to volume-first (Jack ruled) -- verified order-independent for
       boot-reconcile (cats[0]) + dict inits; only the `for c in cats` claim loop is reordered.
-- [ ] F. box-scratch (mlb byte-identical on box venv, -p no:pytest_ethereum) + disarmed dry-run vs REAL markets (nfl first)
+- [x] F1. BOX-SCRATCH GREEN on the BOX VENV (cc/pm_rung1_scratch.* + cc/_rung1_overlay.b64, tar overlay onto a
+      scratch copy; live tree/engine UNTOUCHED). 42 tests pass incl test_mlb_equivalence + test_b2_dispatch +
+      test_mlb_match_r2 -> ★ mlb BYTE-IDENTICAL confirmed on the box venv; box-venv import OK (5 adapters + 5 ctx
+      builders, structural_index default None, live 4 intact). (b64 delivery needed the BOM strip tr -d '\r\357\273\277'.)
+- [x] F2. DISARMED DRY-RUN vs REAL markets (harness cc/build_dryrun.py; Poly bets from box read-only sqlite = 0
+      Kalshi load, Kalshi tickers fetched off-box local IP). ★ GATE PASSES BOTH: wrong_game=0, wrong_market_type=0.
+      - nfl (3427 bets vs 162 KXNFLGAME): matched 192, in-window 62% (preseason coverage), skip_non_moneyline 1632,
+        out_of_window 1484 (old games), no_kalshi_contract 119 (preseason games Kalshi didn't list), fail 0. The
+        dry-run DROVE 3 safe cross-venue team-map fixes: NFL_TEAMS += LA->Rams, WSH->Commanders, LAS->Raiders
+        (Poly spellings; Kalshi uses LAR/WAS/LV). Regression: 26 tests still green after.
+      - cfb (2635 bets vs 898 KXNCAAFGAME, IN SEASON): matched 77, in-window 99%, out_of_window 1488, skip 1054,
+        fail 15 = ALL San Diego State spelled `sdst` = the deliberately-dropped SDST collision (safe miss; SD St via
+        `sdsu` matches). Confirms the cross-venue aliasing (emich/EMU, ncar/UNC, jaxst/JVST, ndkst/NDSU, hawaii/HAW)
+        AND the collision drop on REAL data -> never a wrong pick.
+      - nba/nhl/wnba: same shared matcher + maps (nba/nhl exist, wnba built); a dry-run is a pre-arm verification
+        item WHEN IN-SEASON (nba/nhl open Oct; wnba ending) -- currently mostly out_of_window. NOT a blocker.
 - [ ] G. stage sub-division CREATE runner (DISARMED, no arm rows) + deploy graft runner -> HALT for Jack (deploy line)
 
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
