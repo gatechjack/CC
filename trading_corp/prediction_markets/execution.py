@@ -49,6 +49,7 @@ from ..brokers.kalshi_live import (build_v2_event_order, client_order_id as _kal
 from ..data import mlb_poly_kalshi_match as M
 from ..data import ufc_poly_kalshi_match as U   # B2: the UFC matcher (category dispatch below); pure/stdlib like M
 from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) matcher; pair-keyed, pure/stdlib like M/U
+from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): shared structural matcher, nfl/nba/nhl/wnba/cfb
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 _LOG = logging.getLogger(__name__)
@@ -141,6 +142,10 @@ class MarketContext:
     # tennis (2026-09-04): the {date_iso: [KalshiMatch]} index. Optional + defaulted so mlb/ufc constructions stay
     # BYTE-IDENTICAL; the tennis ctx builder sets match_index and leaves the rest empty. Read only by the tennis adapter.
     match_index: dict | None = None
+    # structural (2026-09-06, rung 1): the {(date_iso, frozenset{names}): [KalshiGame]} index for nfl/nba/nhl/wnba/cfb.
+    # Optional + defaulted so mlb/ufc/tennis constructions stay BYTE-IDENTICAL; the structural ctx builder sets it and
+    # leaves the rest empty. Read only by the structural adapters below.
+    structural_index: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -419,12 +424,30 @@ def _tennis_match(parsed, ctx, allowed_market_types):
                         allowed_market_types=allowed_market_types)
 
 
+def _structural_adapter(cfg):
+    """(parse, match) for a structural category `cfg` (nfl/nba/nhl/wnba/cfb). Mirrors the mlb/tennis adapter
+    surface: parse(slug, outcome, title) -> ParsedBet; match(parsed, ctx, allowed) -> MatchResult reading
+    ctx.structural_index (fail-safe {} for a non-structural ctx -- the registry never routes there). title is
+    accepted for dispatch parity but UNUSED (structural joins on the slug's teams+date, not a title)."""
+    def _parse(slug, outcome, title=None):
+        return SS.parse_poly_bet(slug, outcome, cfg)
+
+    def _match(parsed, ctx, allowed_market_types):
+        return SS.match_bet(parsed, ctx.structural_index or {}, ctx.kalshi_dates, cfg,
+                            allowed_market_types=allowed_market_types)
+    return _parse, _match
+
+
 MATCHER_ADAPTERS = {
     "mlb": (_mlb_parse, _mlb_match),
     "ufc": (_ufc_parse, _ufc_match),
     "atp": (_tennis_parse, _tennis_match),   # both tennis categories share ONE matcher; the ctx builder picks the series
     "wta": (_tennis_parse, _tennis_match),
 }
+# rung 1 (2026-09-06): nfl/nba/nhl/wnba/cfb SHARE the structural matcher (as atp/wta share tennis); one config each.
+# MONEYLINE ONLY (Jack ruled); mlb keeps its own 3-market module (byte-identical). Unknown category still -> fail-safe skip.
+for _cat in ("nfl", "nba", "nhl", "wnba", "cfb"):
+    MATCHER_ADAPTERS[_cat] = _structural_adapter(SS.LEAGUES[_cat])
 
 
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,

@@ -55,8 +55,21 @@ Sub-rungs:
           to the FBS meaning (=Poly); the non-FBS meaning is a safe miss (no Poly bet + both-team join key
           can't wrong-match; proven in test_ambiguous_kalshi_code_cannot_wrong_match).
         - a NEW/unseen code next season = safe miss until added (regen from live codes).
-- [ ] D. generic ctx builder + register nfl/nba/nhl/wnba/cfb in CATEGORY_CTX_BUILDERS + MATCHER_ADAPTERS + SERIES
-- [ ] E. CYCLE ORDER: volume-first replacing alphabetical (policy + consequence written); decide static vs measured
+- [x] D. `fetch_structural_market_context(client,now_ts,cfg)` (moneyline-only, one game series; mirrors the tennis
+      builder) + `_structural_ctx_builder` closures registered in CATEGORY_CTX_BUILDERS for nfl/nba/nhl/wnba/cfb.
+      execution.py: `_structural_adapter(cfg)` registered in MATCHER_ADAPTERS for the 5; new `MarketContext
+      .structural_index` field (DEFAULTED None -> mlb/ufc/tennis constructions BYTE-IDENTICAL). ctx builder reads
+      cfg.game_series from SS.LEAGUES (no new SERIES constants needed). Adapters + registry tested locally
+      (test_structural_wiring.py); test_b2_dispatch still green -> mlb dispatch unchanged. The ctx builder itself
+      needs pykalshi -> its real-fetch test is in sub-rung F (box-scratch).
+- [x] E. `category_volume_order(conn, account_id, cats, now_ts, window_days=30)` -> PROVEN-VOLUME-FIRST (MEASURED,
+      not static) replacing alphabetical; wired into scheduled_pm_live_loop ONCE at task start (read-only ro conn,
+      fail-safe alphabetical). ★ POLICY WRITTEN in the docstring: measured per-account committed-$ over 30d, desc,
+      alpha tiebreak, NEW category ranks last; STALENESS = lags real-time by window + restart cadence (deliberate:
+      'proven' is slow to change); ★ the STARVATION of late/quiet categories when the cap binds is the ACCEPTED
+      TRADE, not a side effect. Tested (proven-first-new-last, noise excluded, fail-safe). mlb/ufc/atp/wta cycle
+      order now changes from alphabetical to volume-first (Jack ruled) -- verified order-independent for
+      boot-reconcile (cats[0]) + dict inits; only the `for c in cats` claim loop is reordered.
 - [ ] F. box-scratch (mlb byte-identical on box venv, -p no:pytest_ethereum) + disarmed dry-run vs REAL markets (nfl first)
 - [ ] G. stage sub-division CREATE runner (DISARMED, no arm rows) + deploy graft runner -> HALT for Jack (deploy line)
 

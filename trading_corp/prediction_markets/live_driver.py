@@ -54,6 +54,7 @@ from . import arm, boot_reconcile, db, execution, heartbeat, paper, settlement, 
 from ..data import mlb_poly_kalshi_match as M
 from ..data import ufc_poly_kalshi_match as U   # B2: UFC fight/distance index builders for fetch_ufc_market_context
 from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) match index builder for fetch_tennis_market_context
+from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): structural game-index builder for nfl/nba/nhl/wnba/cfb
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
@@ -241,6 +242,39 @@ async def fetch_wta_market_context(client, now_ts: int) -> execution.MarketConte
     return await fetch_tennis_market_context(client, now_ts, TENNIS_SERIES["wta"])
 
 
+async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution.MarketContext:
+    """rung 1 (2026-09-06): fetch OPEN + recent-SETTLED KX{X}GAME markets for a structural category (nfl/nba/nhl/
+    wnba/cfb) and build the (date, team-pair) game index. MIRRORS fetch_tennis_market_context -- SAME
+    `client.get_markets`, SAME `_market_quote_dict` quote fields, SAME raw `exchange_index` merge. MONEYLINE ONLY
+    (Jack ruled): fetches ONLY the game series (no total/spread this pass). No title read -- the structural join is
+    on the ticker's team CODES + date (via the team map), not a title. Returns a MarketContext with structural_index
+    set (ml/tot/spr/fight/match left empty)."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    tickers: list = []
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+        ms = await client.get_markets(series_ticker=cfg.game_series, status=status, limit=1000,
+                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+        for m in (ms or []):
+            tk = getattr(m, "ticker", "") or ""
+            if not tk:
+                continue
+            markets[tk.upper()] = _market_quote_dict(m)
+            tickers.append(tk)
+    await _merge_raw_market_fields(client, markets, series_list=(cfg.game_series,))   # exchange_index (SDK-dropped) from raw
+    game_idx = SS.build_game_index(tickers, cfg)
+    dates = frozenset(k[0] for k in game_idx)          # ISO dates FROM THE INDEX (never occurrence_datetime)
+    return execution.MarketContext({}, {}, {}, dates, markets, structural_index=game_idx)
+
+
+def _structural_ctx_builder(cfg):
+    """A category-keyed builder closure carrying `cfg` (the ctx registry maps category -> builder(client, now_ts))."""
+    async def _b(client, now_ts: int) -> execution.MarketContext:
+        return await fetch_structural_market_context(client, now_ts, cfg)
+    return _b
+
+
 # ── signal source: attached whales' /positions -> entry CopySignals (chokepoint dedups already-placed) ───
 def _stable_entry_key(condition_id: str, outcome_index) -> str:
     """A restart-STABLE entry key for a /positions row, which carries NO fill tx_hash/ts. The whale's holding of a
@@ -412,6 +446,42 @@ def account_active_categories(conn, account_id: str, *, fallback_category: str |
         _LOG.warning("account_active_categories(%s): pm_subdivision read failed -> latching fallback category only "
                      "(fail-safe, never fewer): %s", account_id, e)
     return sorted(cats)
+
+
+def category_volume_order(conn, account_id: str, cats: list, *, now_ts: int, window_days: int = 30) -> list:
+    """RANK `cats` for the per-cycle CLAIM ORDER: PROVEN-VOLUME FIRST, replacing the inherited alphabetical order
+    (Jack RULED 2026-09-06). 'Volume' = THIS account's committed ENTRY dollars per category over the last
+    `window_days`, from pm_subdivision_order on the SAME leg-aware committed-$ basis the Journal seeds from
+    (yes: count*price ; no: count*(1-price)). Ranked DESC; TIEBREAK alphabetical. A category with NO recent
+    orders (a NEW category) sums 0 -> ranks LAST, so an unproven category never crowds out a proven high-volume one.
+
+    ★ POLICY + ITS CONSEQUENCE (written down, not incidental): under Option C the account's ONE $150/day + 50-order
+    cap is SHARED across all its categories and claimed in THIS order each cycle. When the cap BINDS, the LATE
+    (low-volume / quiet / new) categories are STARVED SYSTEMATICALLY. That is the ACCEPTED TRADE -- proven high-
+    volume categories get first claim; the old alphabetical order starved whoever sorted last (atp first, wta last),
+    which nobody chose.
+
+    ★ MEASURED, not static -- the choice, justified: a static priority list is wrong the moment volumes shift and
+    needs a hand-edit; a measured rank adapts. The cost of MEASURED is STALENESS: the `window_days` window means a
+    surging category does not out-rank an established one until it accrues window volume, and a quiet one keeps its
+    rank until its window decays; and the rank is recomputed at TASK START (engine restart), NOT every cycle -- so it
+    lags real-time by up to the window + the restart cadence. Deliberate: 'proven' should be slow to change, and
+    restarts are frequent (any deploy). Read-only, bounded (today-window, indexed by account); called ONCE at task
+    start, NEVER on the order hot path. Any error -> deterministic alphabetical fallback (never raises)."""
+    try:
+        since = int(now_ts) - int(window_days) * 86400
+        vol = {c: 0.0 for c in cats}
+        for r in conn.execute(
+            "SELECT category, COALESCE(SUM(CASE WHEN outcome_leg='yes' THEN submitted_count*submitted_price "
+            "  ELSE submitted_count*(1.0-submitted_price) END), 0) AS usd "
+            "FROM pm_subdivision_order WHERE account_id=? AND dry_run=0 AND outcome_status='filled' AND is_exit=0 "
+            "  AND response_ts>=? GROUP BY category", (account_id, since)).fetchall():
+            if r["category"] in vol:
+                vol[r["category"]] = float(r["usd"] or 0.0)
+        return sorted(cats, key=lambda c: (-vol.get(c, 0.0), c))
+    except Exception as e:  # noqa: BLE001 -- a ranking read must NEVER stop the driver; fall back to deterministic order
+        _LOG.warning("category_volume_order(%s) failed -> alphabetical fallback: %s", account_id, e)
+        return sorted(cats)
 
 
 # ── the durable live-order journal (dry_run=0): PENDING insert (pre-POST) + finalize (post-POST) ───────
@@ -598,6 +668,10 @@ async def fetch_settlements(client) -> list:
 # shared once per cycle (the shared Journal is what enforces the account open-cap JOINTLY across categories).
 CATEGORY_CTX_BUILDERS = {"mlb": fetch_market_context, "ufc": fetch_ufc_market_context,   # B2: ufc registered
                          "atp": fetch_atp_market_context, "wta": fetch_wta_market_context}   # tennis: per-series builders
+# rung 1 (2026-09-06): nfl/nba/nhl/wnba/cfb share the structural builder (one series each). A category with NO builder
+# is still SKIPPED every cycle (fail-SAFE: no catalog -> no signals -> nothing placed).
+for _scat in ("nfl", "nba", "nhl", "wnba", "cfb"):
+    CATEGORY_CTX_BUILDERS[_scat] = _structural_ctx_builder(SS.LEAGUES[_scat])
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
@@ -628,6 +702,21 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
         log.error("pm_live_driver: scheduled_pm_live_loop for %s got NO categories -> nothing to drive (returning)",
                   account_id)
         return
+    # ★ CYCLE ORDER (Jack RULED 2026-09-06): PROVEN-VOLUME FIRST, replacing the inherited alphabetical order, so the
+    # busy categories claim the shared account cap before a quiet/new one. Computed ONCE at task start (refreshes on
+    # restart) from a read-only bounded query; see category_volume_order for the policy + the ACCEPTED starvation
+    # trade + the static-vs-measured justification. Any error -> deterministic alphabetical (never stops the driver).
+    import sqlite3 as _sqlite3
+    try:
+        _vc = _sqlite3.connect("file:%s?mode=ro" % pm_db_path, uri=True); _vc.row_factory = _sqlite3.Row
+        try:
+            cats = category_volume_order(_vc, account_id, cats, now_ts=int(_time.time()))
+        finally:
+            _vc.close()
+    except Exception as e:  # noqa: BLE001 -- the ranking must never stop the driver
+        cats = sorted(cats)
+        log.warning("pm_live_driver: volume-order connection failed for %s -> alphabetical %s: %s", account_id, cats, e)
+    log.info("pm_live_driver: cycle order (proven-volume-first) for %s = %s", account_id, cats)
     builders = ctx_builders if ctx_builders is not None else CATEGORY_CTX_BUILDERS
     client = broker._read._client
     # ★ PER-CATEGORY state (M1 re-scopings): a single task must NOT share these across categories --
