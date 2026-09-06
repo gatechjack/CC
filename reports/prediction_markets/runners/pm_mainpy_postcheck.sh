@@ -10,8 +10,8 @@ echo
 echo "## [1] THE ROSTER LINE (the headline; its ABSENCE was this whole incident) -- expect one task/account, [atp,mlb,ufc,wta]:"
 journalctl -u trading-corp --since "$ST" --no-pager 2>/dev/null | grep -E 'PM LIVE DRIVER WIRED|PM live driver' | grep -ivE 'IBIT|Candle' | sed 's/^/  /' | tail -6
 echo
-echo "## [2] BOOT-RECONCILE verdict, both accounts (whatever it is -- a LATCH here is CORRECT, not a fault):"
-journalctl -u trading-corp --since "$ST" --no-pager 2>/dev/null | grep -iE 'boot.?reconcil|reconcile_account|latched_categories|reconciled=' | grep -iE 'kalshi_jack|kalshi_karen|pm|account' | grep -ivE 'IBIT|Candle|coinbase|bitunix' | sed 's/^/  /' | tail -12
+echo "## [2] BOOT-RECONCILE verdict + ALL PM-driver lines, both accounts (a LATCH here is CORRECT, not a fault):"
+journalctl -u trading-corp --since "$ST" --no-pager 2>/dev/null | grep -E 'prediction_markets|pm_live_driver|boot.?reconcil|reconcile|latched' | grep -ivE 'IBIT|Candle|coinbase|bitunix|donchian' | sed 's/^/  /' | tail -20
 echo
 echo "## [3] LATCH state (REPORT ONLY -- do NOT clear; Jack clears once he has seen what it latched on):"
 $V - <<PY 2>/dev/null || echo "  (arm read failed)"
@@ -26,7 +26,7 @@ for k,v in rows:
 PY
 echo
 echo "## [4] THE 12 -- R-d catch-up, WALKED INDIVIDUALLY (largest batch it has ever booked; do NOT report only a total):"
-$V - <<PY 2>/dev/null || echo "  (settlement walk failed)"
+cd "$ROOT" && PYTHONPATH="$ROOT" "$V" - <<PY 2>&1 | sed 's/^/  /'
 import sqlite3
 from trading_corp.prediction_markets import subdivision
 c=sqlite3.connect("file:$PMDB?mode=ro", uri=True); c.row_factory=sqlite3.Row
@@ -48,7 +48,7 @@ print("  (walk the 12 target tickers among these; confirm each realized value ma
 PY
 echo
 echo "## [5] EVERY OTHER DIVISION back (MACE included -- we modified the file MACE deployed, confirm THEIR health):"
-journalctl -u trading-corp --since "$ST" --no-pager 2>/dev/null | grep -E 'MACE .* WIRED|Poly->Kalshi MLB copy WIRED|bitunix_sfp observer wired|PEAD wired|Donchian|Tail-Price' | grep -ivE 'IBIT|Candle' | sed 's/^/  /' | tail -10
+journalctl -u trading-corp --since "$ST" --no-pager 2>/dev/null | grep -iE 'mace .*wired|MACE reconcile|Poly->Kalshi MLB copy WIRED|bitunix_sfp observer wired|PEAD wired|Donchian scheduler online|Tail-Price|Web command center' | grep -ivE 'IBIT|Candle' | sed 's/^/  /' | tail -10
 echo "  errors since restart: $(journalctl -u trading-corp --since "$ST" --no-pager 2>/dev/null | grep -icE 'Traceback|CRITICAL|wiring FAILED')"
 echo
 echo "## [6] SUBSEQUENT CYCLES -- is the driver actually evaluating/placing (re-run a few min later):"
