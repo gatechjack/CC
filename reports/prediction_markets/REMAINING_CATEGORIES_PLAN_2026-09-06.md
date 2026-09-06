@@ -6,6 +6,13 @@ Viability + whale supply are SETTLED (not re-asked). The question is **plumbing 
 **This builds nothing** — it is the document Jack rules on before any build. HALT stands for
 deploy/restart/live-DB-write/arm/cap/prod-advance.
 
+> ★ **POST-RULING UPDATE (2026-09-06, after Jack's rulings): see the section
+> "═══ POST-RULING RESOLUTIONS & cfb (11th category) ═══" at the BOTTOM** — it resolves fed
+> (per-bucket gate, mostly copyable), cs2 (exact-alias + collision handling), soccer tier-2
+> (Kalshi covers ~all leagues — the "coverage gap" claim above was a guessed-ticker error, corrected
+> there), the **aggregate cap arithmetic**, and **adds cfb as an 11th category (Kalshi DOES carry it —
+> the 09-06 "non-Kalshi-copyable" conclusion was wrong)**. Read that section together with this one.
+
 **Probe cost (as required):** Kalshi + Polymarket public APIs were hit **from local IPs (mine + 3
 sub-agents), NOT the box** — so **zero load on the live engine's poller**. One read-only box query
 (`mode=ro` SQLite, no external API) pulled Poly slugs + a liveness check (all 8 RUNNING, any_alarm=False,
@@ -197,3 +204,163 @@ on an in-season strike-encoding probe per sport.
 - **cs2 Tier-1 org display names** on live KXCS2GAME (verify NaVi/Spirit/MOUZ/FaZe/G2 before arming).
 - **Golf season lookup table** must be rebuilt from the Kalshi events endpoint each season.
 - **Classification completeness** for golf/soccer (gamma-tag) and any prefix-less fed slugs sitting in `unknown`.
+
+---
+
+# ═══ POST-RULING RESOLUTIONS & cfb (11th category) — 2026-09-06 ═══
+
+Jack ruled: **moneyline-only first pass**; **soccer INCLUDE tier-2 (do a pass)**, draw leg IN scope;
+**golf last**; **create sub-divisions with standard caps but write NO arm rows** (every new category
+comes up disarmed, CLI-armed when he chooses); and asked for the **aggregate cap arithmetic** before he
+arms the second category. Two categories needed more research before he rules (**fed**, **cs2**), and he
+added **cfb as an 11th** after learning Kalshi lists college football. All resolved below (probes still
+local-IP only, 0 box-poller load; one read-only box DB query `cc/pm_batch_research_ro.*`).
+
+## ★★ cfb — Kalshi DOES carry college football. The 09-06 "non-Kalshi-copyable" conclusion was WRONG.
+**Why it was wrong:** the 09-06 cfb scoping was framed by the task itself as a *non-Kalshi-copyable*
+category ("YOU ARE NOT INVESTIGATING ... ANY OTHER EXECUTION VENUE") — so Kalshi was never probed; the
+premise was taken as given. It was the exact standing trap (absence-from-a-guessed-premise, not evidence).
+**Verified now by probing what the markets ARE** (searched the full series inventory by title/tag, not a
+guessed ticker): Kalshi lists **`KXNCAAFGAME`** ("College Football Game", per-game 2-way, title "{Team}
+wins", ticker `KXNCAAFGAME-26SEP19PURUCLA-UCLA`), **`KXNCAAFSPREAD`**, **`KXNCAAFTOTAL`** — the exact
+MLB-shape trio — plus a large `KXNCAAF*` family (conferences, CFP, awards) and separate `KXNCAAFCSGAME`
+(FCS) / `KXNCAAFD3GAME` (DIII).
+- **Six questions:** (1) Series/types: `KXNCAAFGAME`/`SPREAD`/`TOTAL`; moneyline is the clean 1:1. (2)
+  Poly: `cfb-{away}-{home}-YYYY-MM-DD[-suffix]`, outcome = team name (same as the US pro sports). (3)
+  **Matcher family: STRUCTURAL, with nfl/nba/nhl/wnba** — confirmed, not assumed. Nearly-free matcher.
+  (4+5) **Disproving case = TEAM NAMING, and it is the biggest normalization surface in the whole batch:**
+  our DB has **272 distinct Poly team codes across 2,631 cfb game rows** — because Poly aliases each school
+  several ways (`ala`/`bama`, `ariz`/`arz`/`azst`, `app`/`applst`, `ark`/`arkst`/`arst`, `af`/`airf`,
+  `ball`/`ballst`) and includes FCS opponents in early-season games. Kalshi uses "San Jose St.", "Fresno
+  St.", "Northern Illinois", "New Mexico St." — with **~130+ FBS programs, colliding abbreviations (shared
+  initials), "State" variants, and Miami-FL vs Miami-OH / Ole Miss vs Mississippi**. There is **no existing
+  team map** (unlike NBA/NFL/NHL). This map — two-sided, ~130 schools, ~272 Poly aliases, uniqueness-checked
+  — IS the cfb work, and it is where a WRONG PICK would come from. Build exact-map + uniqueness-guard;
+  unmapped code → safe MISS. (6) Settlement: college OT differs from the NFL (multiple OT possessions), but
+  the moneyline market just needs a WINNER — aligned on both venues; watch cancelled/weather-shortened
+  games (rare) and confirm total/spread OT-basis in the second pass.
+- **What it means for the paper-lane work already done:** **NOT wasted — it runs AHEAD of the live lane.**
+  cfb classification (the `cfb` prefix) shipped last session, so cfb already paper-trades pinned whales and
+  the gamma-graded forward record is accumulating. If it goes live, that record just becomes the honest
+  screening evidence that runs ahead of live trading (same as every other category). What remains for LIVE
+  cfb = the structural matcher + the ~130-team map + ctx builder + registry + a sub-division — the same
+  boilerplate as the others, plus the heavy team map.
+- **Record correction (done in memory):** cfb is a normal **Kalshi-copyable** category; the
+  "non-Kalshi-copyable" framing and the deferred-Robinhood question are **void**. cfb slots into the
+  **structural group with the US team sports**; its team map makes it the heaviest of that group, so
+  sequence it **after** nba/nfl/nhl/wnba (whose maps exist) but within the same build.
+
+## ★ fed — RESOLVED: hikes are MOSTLY PRECISE; the ambiguity is a per-bucket, match-time-detectable gate.
+Pulled 263 distinct fed markets from our DB (+50 fed-ish rows misclassified into `unknown` — a
+classification gap). Classification: **POLITICAL 66, cut_precise 57, hike_precise 36, no_change 36,
+cut_coarse 16, hike_coarse 13, other 39.**
+- **Does Poly always phrase hikes coarsely? NO.** Hikes are **precise 36 vs coarse 13** ("Fed increase by
+  25 bps" / "by 50 bps" are the majority; "increase by 25+ bps" is the minority). Same on cuts (57 precise
+  vs 16 coarse). **The initial "gate the whole hike side" was too pessimistic.**
+- **The clean 1:1 map (given the Fed moves in 25 bp increments, so ">25" ≡ "50 or more"):**
+  Poly "no change"→**H0**; "cut 25 bps"→**C25**; "hike 25 bps"→**H25**; "cut 50+ bps"→**C26**; "hike 50+
+  bps"→**H26**. These are exact-bucket matches.
+- **The AMBIGUOUS phrasings to GATE (a labelled skip, never a guess):** the **coarse "25+ bps"** (spans
+  H25+H26 / C25+C26 — the original kill shot) AND **exact "50 bps"/"75+ bps"** (Kalshi has no exact-50
+  bucket, only the ">25" catch-all → a precise-50 Poly bet is narrower than C26/H26). Also the multi-meeting
+  parlays in "other" (Pause-Pause-Pause), and the 66 political markets.
+- **★ Is the ambiguity detectable AT MATCH TIME? YES.** The bps number + the modifier ("+", "or more",
+  "at least") are in the slug/title; the matcher parses (direction, magnitude, exact-vs-coarse) and gates
+  the ambiguous phrasings while copying the exact-bucket ones. **A gate, not a blind matcher.**
+- **Cut + no-change really 1:1?** no-change→H0 and cut-25→C25 are exact 1:1; but "cut 50 bps exact" and
+  "cut 25+ coarse" are NOT (checked, not assumed) — so it is a **per-bucket** gate, not "the whole cut side
+  is clean."
+- **Recommendation:** build fed with the per-bucket map above; copy {no-change, ±25-exact, ±50+-coarse};
+  SKIP {±25+-coarse, exact-50/75+, parlays, political}. Fix the 50 `unknown`-bucket classification gap
+  (the prefix-less "no-change-in-fed-..." slugs) so those markets are seen. **CPI deferred** (separate
+  threshold shape). **This is a better answer than skipping the hike side: most fed markets are copyable.**
+
+## ★ cs2 — RESOLVED: exact-alias lookup (never fuzzy); small table, high churn, real collision surface.
+Pulled **420 distinct Poly org names** from our DB (esports has a very long tail). Cross-referenced with
+live Kalshi `KXCS2GAME` `yes_sub_title` (full display names).
+- **How many orgs / how many need aliases:** both venues use **full display names**, so most **align
+  exactly** — the alias table is **SMALL** (the handful where display forms differ, e.g. Kalshi possibly
+  "NAVI" vs Poly "Natus Vincere"; "The MongolZ" spacing). It does **NOT** need 420 rows. **Volatility is
+  HIGH** (rebrands, sponsor prefixes, roster churn) — but a rebranded/new org that is not yet aliased just
+  **MISSES safely** (never a wrong pick), so the table is low-maintenance by design, not a treadmill.
+- **★ THE WRONG-PICK / Cerundolo-brothers case IS present and it decides the design:** the org list is full
+  of **same-stem distinct entities** — `ENCE` / `ENCE Academy` / `ENCE Prospects`; `FURIA` / `FURIA fe`;
+  `BIG` / `BIG Academy`; `Spirit` / `Spirit Academy`; `MOUZ` / `MOUZ NXT`; `G2` / `G2 Ares`; `NAVI Junior`
+  vs `Natus Vincere`; `9INE` vs `9z`; plus `ex-<org>` variants. A **fuzzy** first-token match would conflate
+  a main roster with its academy → a WRONG PICK. **Therefore: EXACT-normalized-name match (case/punct/accent
+  fold) + the small alias table, and treat `Academy`/`Prospects`/`Junior`/`NXT`/`ex-` as DISTINCT entities —
+  never fuzzy-collapse.** The tennis pair-key's uniqueness + both-sides guard already makes it wrong-pick
+  safe (both orgs must match and be unique in the window), so cs2 = **reuse the tennis matcher, swap the
+  name-canon for exact-alias, add the ±1-day window.** Confirmed low-risk to build; verify ~5 Tier-1 org
+  display names (NaVi/Spirit/MOUZ/FaZe/G2) against a live Kalshi major before arming (today's sample was
+  Tier-2/3). Map bets (Poly `-gameN`) and tournament futures (~half of cs2 volume) are skipped.
+
+## ★ soccer tier-2 pass — RESOLVED: Kalshi covers ~ALL leagues; the sub-agent's "coverage gap" was a
+##   guessed-ticker error (the exact lesson). No league is unmatchable for lack of a series.
+Searched the full Kalshi series inventory for **every `*GAME` soccer series** (not a guessed ticker):
+**~100+ soccer leagues + cups + internationals** exist, INCLUDING every "tier-2" league the sub-agent
+reported absent — **`KXEREDIVISIEGAME`** (Eredivisie), **`KXSCOTTISHPREMGAME`** (Scottish Prem),
+**`KXBRASILEIROGAME`** (Brazilian Série A), **`KXLIGAMXGAME`** (Liga MX) — plus EFL Championship, Turkish
+Süper Lig, Saudi Pro League, Liga Portugal, Belgian/Danish/Swedish/Norwegian/Polish/Czech/Croatian/Serbian/
+Greek/Swiss top flights, MLS/USL, Argentine/Chilean/Ecuador/Peru/Uruguay/Venezuela, Japan/Korea/China/Thai/
+Indonesia/Malaysia/Singapore/Vietnam/UAE/Egypt/Israel, and cups (FA Cup, Copa del Rey, Coppa Italia, DFB
+Pokal, Coupe de France, EFL Cup, KNVB/Scottish/Serbian cups) + internationals (World Cup, UEFA Nations
+League, AFCON, Copa Libertadores/Sudamericana, CONCACAF, Club World Cup, friendlies).
+- **The sub-agent guessed `KXUEFAGAME`/`KXUELAGAME`, got empties, and declared tier-2 leagues absent** —
+  the same "absence from a guessed ticker name is not evidence of absence" mistake that produced the cfb
+  error and (per Jack) the mis-probed cbb. **Corrected: essentially no Polymarket soccer league lacks a
+  Kalshi `KX*GAME` series.**
+- **So the tier-2 pass answer:** they **come in** — the limiter is not Kalshi coverage, it is **our
+  per-league TEAM MAP effort** (each league ≈ 20 clubs). Build order should follow **Poly whale volume by
+  league**; a league we choose not to map yet is a **deliberate, listed deferral (with its reason:
+  "team map not built"), NOT an unmatchable market.** Enumerating the exact set of Poly soccer league
+  prefixes our whales bet (fl1/sea/lal/uel/uecl/… + the tail) is a one-query build-time step. **The only
+  genuine miss is a Poly soccer bet in a league Kalshi does not list at all** — from this sweep that set is
+  ~empty for anything a whale would plausibly bet.
+
+## ★★ AGGREGATE CAP ARITHMETIC — what a busy day actually looks like (real numbers, as asked)
+The **$150 daily and 50-order caps are per ACCOUNT**, summed across ALL of that account's sub-divisions
+(SW11: the account aggregate binds BEFORE any per-category cap). Real consumption from `pm_subdivision_order`
+(128 filled entry orders / 11 account-days — PM is young, so directional):
+
+| Scope | daily $ (median) | daily $ (peak) | daily orders (median) | daily orders (peak) |
+|---|---:|---:|---:|---:|
+| **mlb** (the busy one) | $44.30 | **$61.85** | 16 | **24** |
+| atp | $21.38 | $23.05 | 10 | 11 |
+| wta | $5.45 | $9.00 | 2 | 2 |
+| **kalshi_jack account** | $38.80 | **$61.05** (all mlb) | 14 | **24** |
+| **kalshi_karen account** | $21.65 | $44.45 (mlb+atp+wta) | 7 | 17 |
+
+- **One busy category ≈ $44–62 and 16–24 orders/day.** Matches your mlb ~$28-typical/~$61-peak read.
+- **The caps bind at ~3–4 concurrently-active categories.** Two mlb-like categories on a mutual busy day
+  ≈ **$90–120 / ~40 orders** — already brushing the 50-order cap. **NFL is in-season NOW, so nfl + mlb is
+  already two;** add nba + nhl in October and a busy autumn day is **~$150–180 / ~50–70 orders → OVER both
+  account caps.** A peak Saturday with nfl + cfb + nba + nhl + a soccer slate all active would exhaust the
+  $150/50 many times over if every category were mlb-active.
+- **★ The consequence to flag: arming more categories does NOT multiply throughput — past ~3–4 active
+  categories they COMPETE for one $150 / 50-order account budget.** And the intra-cycle order is
+  **ALPHABETICAL** (atp, cfb, cs2, epl, fed, golf, mlb, nba, nfl, nhl, soccer, ucl, ufc, wnba, wta —
+  inherited from `ORDER BY category`, nobody chose it), so near the cap the **early-alphabet categories win
+  and the late ones (soccer, ucl, ufc, wnba, wta) get STARVED** on a busy day. This is the tennis
+  aggregate-binding finding, now at 12–15× scale.
+- **Recommendation (you are not ruling caps now — this is the arithmetic you asked for before arming #2):**
+  either (a) **raise the account caps** proportional to the number of armed categories (e.g. scale $150→ N×
+  a per-category budget), or (b) **accept starvation** and make the cycle order fair (round-robin / value-
+  ranked instead of alphabetical) so it is not always wta/ufc that lose, or (c) **per-category sub-caps**
+  under a raised account cap. Since **nfl+mlb already = two active categories today**, this decision is live
+  the moment nfl arms. I will not change any cap without your ruling.
+
+## Updated grouping (11 categories)
+| Family | Categories | Cost |
+|---|---|---|
+| Structural (=MLB) | nba, nfl, nhl, wnba, **cfb** | cheap (maps exist) except **cfb = ~130-team map, heaviest** |
+| Structural-variant (soccer) | epl, ucl, soccer (~all leagues, per-league team maps) | moderate; breadth-bound |
+| Title/name (=tennis) | cs2 | cheap (reuse + exact-alias table) |
+| Field/futures (NEW) | golf | heavy/messy (last) |
+| Event+bucket (NEW) | fed | moderate (per-bucket gate; mostly copyable) |
+
+**Updated order:** nfl (in-season) → nba/nhl (Oct) → wnba → **cfb** (same family, after the maps that exist)
+→ cs2 (parallel) → soccer (epl/ucl → league tail by whale volume) → fed → golf last. **Arm nothing** at
+build; each comes up disarmed, you CLI-arm — and **rule the cap question before arming the second active
+category (nfl, imminent).**
+

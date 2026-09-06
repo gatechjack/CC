@@ -12,8 +12,27 @@ build order. Build NOTHING. HALT for deploy/restart/live-DB-write/arm/cap/prod-a
 - [x] Kalshi series inventory pulled (LOCAL IP, off-box — 0 cost to the engine poller): 3653 Sports + 793 Economics series -> `cc/_kalshi_series_raw.json`. Per-league copyable series identified + sample markets probed.
 - [x] Polymarket slug/outcome/title samples for all 10 (read-only box DB query, `cc/pm_remaincat_poly_ro.*`). Liveness GREEN (8 RUNNING, any_alarm=False) at 2026-09-06 21:00Z.
 - [x] 3 sub-agents returned (soccer / golf / cs2+fed) — findings integrated below.
-- [x] Consolidated document written: `REMAINING_CATEGORIES_PLAN_2026-09-06.md`.
-- [ ] Commit + halt for Jack's build-order ruling.
+- [x] Consolidated document written: `REMAINING_CATEGORIES_PLAN_2026-09-06.md` (v1 committed d711bb0).
+- [x] Jack RULED (moneyline-1st, soccer incl tier-2 + draw, golf last, sub-divs w/ caps but NO arm rows,
+      wants cap arithmetic) + asked fed/cs2 research + added cfb as 11th (Kalshi DOES carry it).
+- [x] POST-RULING RESOLUTIONS written into the plan doc (bottom section) + memory corrected re cfb.
+- [ ] NEXT: proceed to BUILD rung 1 = generalize the structural matcher + US team sports (nfl in-season),
+      after Jack rules the CAP question (needed before arming nfl, the 2nd active category). Build is
+      autonomous; arming/cap changes are HALT.
+
+## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
+- **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion
+  was wrong (premise never probed). Heaviest team map in the batch (272 Poly codes / ~130 FBS, State/Miami/
+  Ole Miss collisions). Paper work runs AHEAD, not wasted. Record corrected in memory.
+- **fed:** hikes mostly PRECISE (36 vs 13 coarse). Clean 1:1 = no-change->H0, 25-exact->H25/C25, 50+coarse->
+  H26/C26. GATE the coarse "25+"/exact-50/parlays/political (66 of 263) -- detectable at match time. Most fed
+  markets copyable. 50 rows misclassified in unknown. CPI deferred.
+- **cs2:** 420 orgs; small alias table (full names align), EXACT match never fuzzy (Academy/Junior/NXT/ex-
+  are distinct = the collision case); reuse tennis matcher + ±1d. Verify Tier-1 names pre-arm.
+- **soccer tier-2:** Kalshi covers ~100+ leagues incl the "absent" ones (sub-agent guessed tickers = wrong).
+  Limiter = per-league team maps by whale volume; nothing unmatchable for lack of a series.
+- **CAP ARITHMETIC:** account caps $150/50-orders bind at ~3-4 concurrent active cats; nfl+mlb already 2;
+  arming more = competition not capacity; alphabetical cycle starves late cats. Jack rules before arming nfl.
 
 ## ★ AGENT FINDINGS (integrated)
 - SOCCER: Poly `-draw` market EXISTS -> Kalshi `-TIE` (clean). BOTH venues settle 90-min regulation (Kalshi rule verbatim "does not include extra time or penalties") -> UCL-knockout divergence DISSOLVES. Two-legged = per-leg markets. 9 Kalshi league series (epl/ucl/lal/sea/fl1/bundes/mls/uel/uecl); tier-2 leagues (Eredivisie/Scottish/Brazil/LigaMX) = coverage gap. Strip "Reg Time:" title prefix (UCL/UECL).
