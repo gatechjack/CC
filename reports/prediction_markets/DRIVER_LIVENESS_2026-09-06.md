@@ -59,9 +59,63 @@ migration-019 banner reserves **020+** for it ("close to deploying").
   (BASE) -> 7 failed/28 passed (L2)** = +3 passing, 0 new failures (the 7 are pre-existing pykalshi box-only tests,
   green in L4 box-scratch). ★ Trading path otherwise byte-unchanged (only additive heartbeat calls; the arm gate,
   place path, journal, opposed guard, settlement all untouched -- to be re-confirmed by L4 adversarial review).
-- **L3 — pm_web liveness panel (6 states) + incident acceptance test.** pending.
-- **L4 — box-scratch + adversarial review.** pending.
-- **L5 — stage deploy (manifest, migration ordering, post-check, stop conditions). HALT.** pending.
+- **L3 — pm_web liveness panel (6 states) + incident acceptance test.** DONE (commit `d347d0d`).
+  READ-ONLY display of `heartbeat.read_liveness` over the EXPECTED (attachment-gated) set, banded by age.
+  `web/app.py` (GRAFT-shaped, additive): `heartbeat` import; `_load_accounts_overview` attaches per-account
+  liveness + a visible-scoped flat list + `any_liveness_alarm`; `_load_account` attaches per-sub `liveness_rows`
+  + `liveness_alarm`; `_load_live_subdivision` attaches the single-sub row. ★ **ABSENT-vs-EMPTY gate:** every
+  alarm bool is `liveness_present and any_alarm(...)` -- a NOT-deployed monitor (table absent) reads NEUTRAL,
+  never red (don't cry wolf about the monitor's own absence -- the silently-skipped-migration hazard). New
+  `web/templates/partials/pm_liveness.html`: SELF-CONTAINED `pm-lv-*` **classes** (NO `pm.css`/`pm_desk.css`
+  edit -- owned by pm-ui-rewrite); ★ style hooks are CLASSES, the `data-liveness-*` attributes are
+  inspection-only (never in a selector) so a test's substring check counts rendered elements, not CSS.
+  `pm_accounts.html`/`pm_account.html`/`pm_live_subdivision.html` render the panel/badge. Six states:
+  RUNNING/IDLE healthy; PENDING (fresh attach) + CATEGORY_STARVED informational; STALE + NEVER = red alarm;
+  ceiling_latched -> IDLE (not a fault). `test_liveness_web.py` (9, all green): **★ THE INCIDENT** (8 subs, no
+  heartbeats, past grace -> all NEVER, `data-liveness-alarm="1"`, "driver NOT running", no green ok) + the
+  **28h-stale** shape (STALE, age reads "28h ago") + all-RUNNING green + **PENDING on fresh attach** (not
+  alarm) + **ceiling_latched -> IDLE** (not a fault) + **table-absent -> neutral** + account-page all-NEVER
+  alarms + **CATEGORY_STARVED is NOT an alarm** + the live-sub badge. ★ **Load-bearing property proven:** an
+  alive account TASK means no sub can be NEVER/STALE (those are task-level) -> RUNNING and a hard alarm never
+  co-occur on one account; per-category degradation is the softer CATEGORY_STARVED. `test_web_healthz`
+  (pm_web-imports-no-engine) still passes -- `heartbeat` imports only `time`+`dataclasses`. Full
+  web+heartbeat+db+m4 suites green locally (p2venv).
+  - ★ **BASE-MISMATCH NOTE for the L3 deploy (like farm-search):** this worktree's web lineage (multicat
+    `3f498d4`) is OLDER than the box's DEPLOYED web (DEPLOY 5, pm-ui-rewrite lineage -- box has `live_view.py`,
+    this base does NOT; the loaders live in `app.py` here). So the L3 web files GRAFT onto the box's newer web
+    file-by-file at deploy; verify the anchors (`_load_accounts_overview`, `_load_account`,
+    `_load_live_subdivision`, the account/overview/live-sub templates) still exist on the box web before
+    grafting. `partials/pm_liveness.html` is NEW (drops in clean). This is an L5 reconcile step.
+- **L4 — box-scratch + adversarial review.** DONE.
+  - **BOX-SCRATCH GREEN** (runner `cc/pm_liveness_scratch.{ps1,sh}`, git-archive HEAD -> isolated box scratch tree,
+    box venv `-p no:pytest_ethereum`; the LIVE tree + engine untouched). **114 tests pass** across
+    test_heartbeat + test_live_driver_r7c (incl. the pykalshi box-only tests that can't run locally) +
+    test_liveness_web + test_web_healthz + test_db + test_web_r4/r6 + test_accounts_m2 + test_m4_gates. Invokability:
+    `pm_web app + heartbeat import OK` (the isolation invariant holds in the box service env), `live_driver +
+    heartbeat import OK`, `SCHEMA_HEAD=20 contiguous=True has020=True`. Engine PID 206872 UNTOUCHED before + after.
+  - **ADVERSARIAL REVIEW** (independent audit + my own order-path read). ★ **ORDER-PATH SAFETY: CLEAN** — the one
+    real risk (the reached/evaluated heartbeat writes call `conn.commit()` mid-cycle on the order path's OWN
+    connection) is a NON-issue because the PM DB connection is opened **`isolation_level=None` (SQLite AUTOCOMMIT,
+    `db.py:74`)** — there is no multi-statement transaction to split; the order path already self-commits per write
+    (`_record_order`/`_finalize_order`); and there is **NO `conn.rollback()` anywhere in `live_driver.py`** (the
+    cycle `except` only logs). So a heartbeat commit cannot early/partial-commit order/Journal/opposed-guard/
+    settlement writes or defeat a rollback. Verified, not assumed. Fail-soft completeness, the cannot-lie property
+    (no heartbeat write outside the loop body; `main.py` has zero heartbeat refs), template autoescape (no `|safe`;
+    styling is class-based, `data-liveness-*` inspection-only), both-directions age (a future ts -> STALE/dead,
+    never fresh), and migration contiguity: ALL substantiated clean.
+  - **★ FLAG FOR JACK (finding #4, NOT fixed — a documented design decision, your call):** the GET route
+    `/live/{account}/{category}` (`app.py:651`) has **no authz scoping** — unlike `/` and `/account` it never
+    resolves identity/checks `visible_account_ids`, so within the authenticated family a non-owner can view any
+    sub's page. This is **PRE-EXISTING and INTENTIONAL** — the R3/R6 author's own comment (`test_live_r3.py:66`):
+    *"the /live pages themselves are not scoped; this header is inert there."* It already openly shows orders /
+    positions / copied-whale identities; the liveness feature adds only a small RUNNING/STALE badge + detail to
+    that surface. I did NOT change it: reversing a documented decision belongs to you, and a naive
+    `active_accounts`-based gate carries real regression risk (the schema-9 honest-empty path + tile-on-create
+    without a `pm_account` row would flip 200->404). **Minimal fix if you want it closed** (own test pass, not a
+    freebie): mirror `account_page`/`_load_account` — resolve `identity, is_admin` in `live_subdivision_page`, pass
+    into `_load_live_subdivision`, return `_FORBIDDEN` (403) when `account_id not in visible_account_ids(...)`,
+    guarding the schema-9/no-account cases. All current `/live` tests run as admin, so admins are unaffected.
+- **L5 — stage deploy (manifest, migration ordering, post-check, stop conditions). HALT.** in progress (below).
 
 ## Open rulings (write here; keep building around them)
 - The migration-number contention with pm-ui-rewrite (above) — recommendation given (020 + deploy-drift-check);
