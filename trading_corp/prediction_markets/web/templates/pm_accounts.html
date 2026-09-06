@@ -1,6 +1,8 @@
 {% extends "pm_shell.html" %}
+{% import "partials/pm_liveness.html" as lv %}
 {% block title %}Accounts &middot; Prediction Markets{% endblock %}
 {% block content %}
+{{ lv.liveness_assets() }}
 <section>
   <div class="pm-section-head">
     <h1 class="pm-h1">Accounts</h1>
@@ -27,6 +29,10 @@
       {% endif %}
     </span>
   </div>
+
+  {# DRIVER LIVENESS (L3) -- the signal arm state cannot give. Goes RED + unmistakable when any expected
+     sub-division is STALE/NEVER (the 2026-09-04 incident would have rendered this panel red for ~28h). #}
+  {{ lv.liveness_panel(liveness, liveness_present, any_liveness_alarm, scope='all accounts') }}
 
   {% if accounts %}
   <div class="pm-tilegrid">
@@ -57,6 +63,15 @@
       {% if a.shard_snap %}
       <p class="pm-sub">Balance: <span class="pm-primary">{% if a.shard_snap.has_breakdown %}${{ '%.2f'|format(a.shard_snap.total_dollars) }}{% else %}${{ '%.2f'|format(a.shard_snap.total_dollars) }} <span class="pm-muted">(split unknown)</span>{% endif %}</span>
         <span class="pm-badge pm-age-{{ a.shard_snap.age_band }}">{{ a.shard_snap.age_band|replace('_',' ') }}</span></p>
+      {% endif %}
+      {# per-account driver-liveness tell (the full per-sub grid is on the account page). Alarm = at least one
+         STALE/NEVER sub-division on this account. Suppressed when the monitor is not deployed (table absent). #}
+      {% if liveness_present and a.liveness %}
+        {% if a.liveness_alarm %}
+        <p class="pm-flag pm-flag-thin" data-liveness-account-alarm="1">&#9888; driver NOT cycling {{ a.liveness|selectattr('state','in',['STALE','NEVER'])|list|length }} of {{ a.liveness|length }} sub-divisions</p>
+        {% else %}
+        <p class="pm-muted" data-liveness-account-alarm="0">&#10003; driver cycling all {{ a.liveness|length }} sub-division{{ '' if a.liveness|length == 1 else 's' }}</p>
+        {% endif %}
       {% endif %}
     </a>
     {% endfor %}

@@ -1,0 +1,106 @@
+{# ══════════════════════════════════════════════════════════════════════════════════════════════════
+   DRIVER LIVENESS (L3, 2026-09-06) -- the display for the signal arm state CANNOT give: "is the driver
+   actually cycling this sub-division RIGHT NOW?". Born from 2026-09-04, when the driver was deleted from
+   main.py and PM did not trade for ~28h with all nine arm rows still GREEN-armed. The rows come from
+   heartbeat.read_liveness (the EXPECTED attachment-gated set joined to engine-written heartbeats, banded
+   by age BOTH DIRECTIONS). READ-ONLY -- pm_web displays; it never writes heartbeats or arm state.
+
+   Six states: RUNNING/IDLE are healthy; PENDING (fresh attach) + CATEGORY_STARVED are informational;
+   STALE + NEVER are ALARMS (red, unmistakable). ceiling_latched reads as IDLE, NEVER a fault.
+   Styling is SELF-CONTAINED (pm-lv-* CLASSES, no pm.css / pm_desk.css edit -- those are owned by the
+   pm-ui-rewrite workstream). ★ STYLE HOOKS ARE CLASSES; the data-liveness-* attributes are INSPECTION
+   ONLY (never referenced by a selector) so a test's substring check counts rendered elements, not CSS.
+   Call liveness_assets() ONCE per page before the first badge/panel.
+   ══════════════════════════════════════════════════════════════════════════════════════════════════ #}
+
+{% macro liveness_assets() -%}
+<style>
+  .pm-lv-panel{border:1px solid #2a3550;border-radius:8px;padding:10px 12px;margin:12px 0;background:#141a26}
+  .pm-lv-panel-alarm{border-color:#e0403a;background:#2a1414;box-shadow:0 0 0 2px rgba(224,64,58,.35)}
+  .pm-lv-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+  .pm-lv-title{font-weight:700;letter-spacing:.04em;font-size:.82rem;text-transform:uppercase;color:#cdd6e6}
+  .pm-lv-summary{font-size:.85rem}
+  .pm-lv-ok{color:#4fbf74;font-weight:600}
+  .pm-lv-alarm-txt{color:#ff6b64;font-weight:800;text-transform:uppercase;letter-spacing:.03em}
+  .pm-lv-absent{color:#c9a24a;font-weight:600}
+  .pm-lv-grid{display:flex;flex-wrap:wrap;gap:6px}
+  .pm-lv-badge{display:inline-flex;align-items:baseline;gap:6px;padding:3px 8px;border-radius:6px;
+    font-size:.78rem;border:1px solid #333e57;background:#1b2231;color:#cdd6e6;white-space:nowrap}
+  .pm-lv-sub{font-weight:600;color:#e6ecf7}
+  .pm-lv-state{font-weight:700;letter-spacing:.02em}
+  .pm-lv-age{color:#8a97ad;font-size:.72rem}
+  /* healthy */
+  .pm-lv-st-RUNNING{border-color:#2f7d4d;background:#132a1c}
+  .pm-lv-st-RUNNING .pm-lv-state{color:#5fd489}
+  .pm-lv-st-IDLE{border-color:#31517e;background:#12203a}
+  .pm-lv-st-IDLE .pm-lv-state{color:#6fa8f0}
+  /* informational */
+  .pm-lv-st-PENDING{border-color:#7a6a2c;background:#241f10}
+  .pm-lv-st-PENDING .pm-lv-state{color:#d9be5c}
+  .pm-lv-st-CATEGORY_STARVED{border-color:#9a5f1e;background:#2a1c0c}
+  .pm-lv-st-CATEGORY_STARVED .pm-lv-state{color:#eaa23c}
+  /* ALARMS */
+  .pm-lv-st-STALE,.pm-lv-st-NEVER{border-color:#e0403a;background:#2a1414}
+  .pm-lv-st-STALE .pm-lv-state,.pm-lv-st-NEVER .pm-lv-state{color:#ff6b64}
+  .pm-lv-inline{font-size:.72rem;color:#8a97ad;margin-left:6px}
+</style>
+{%- endmacro %}
+
+
+{# One sub-division badge: state pill + age + the human detail in the title. `row` is a SubLiveness (or None).
+   The style hook is the CLASS pm-lv-st-<STATE>; data-liveness-state is an inspection attribute only. #}
+{% macro liveness_badge(row) -%}
+  {%- if row is none -%}
+    <span class="pm-lv-badge pm-lv-st-UNKNOWN" data-liveness-state="UNKNOWN" title="no expected-set row for this sub-division">
+      <span class="pm-lv-state">UNKNOWN</span></span>
+  {%- else -%}
+    <span class="pm-lv-badge pm-lv-st-{{ row.state }}" data-liveness-state="{{ row.state }}"
+          title="{{ row.account_id }}/{{ row.category }} &mdash; {{ row.detail }}">
+      <span class="pm-lv-sub">{{ row.category }}</span>
+      <span class="pm-lv-state">{{ row.state|replace('_',' ') }}</span>
+      <span class="pm-lv-age">{{ liveness_age(row.age_sec) }}</span>
+    </span>
+  {%- endif -%}
+{%- endmacro %}
+
+
+{# Age since this sub last cycled. None -> 'never' (a NEVER-spawned sub has no beat). A NEGATIVE age (a future
+   ts -- clock jump / bad write) is surfaced as an anomaly, never hidden. Otherwise coarse s/m/h/d ago. #}
+{% macro liveness_age(s) -%}
+  {%- if s is none -%}never
+  {%- elif s < 0 -%}future ts?
+  {%- elif s < 90 -%}{{ s }}s ago
+  {%- elif s < 3600 -%}{{ (s // 60)|int }}m ago
+  {%- elif s < 172800 -%}{{ (s // 3600)|int }}h ago
+  {%- else -%}{{ (s // 86400)|int }}d ago
+  {%- endif -%}
+{%- endmacro %}
+
+
+{# The PANEL: header + overall status + a badge per sub. `rows` = list[SubLiveness]; `present` = table_present;
+   `alarm` = heartbeat.any_alarm(rows) already gated on `present` by the caller. The whole panel goes RED (the
+   pm-lv-panel-alarm class) when alarm -> the incident is unmistakable. `scope` labels the header. #}
+{% macro liveness_panel(rows, present, alarm, scope='') -%}
+  {%- set n = rows|length -%}
+  {%- set n_alarm = rows|selectattr('state','in',['STALE','NEVER'])|list|length -%}
+  <div class="pm-lv-panel{% if alarm %} pm-lv-panel-alarm{% endif %}"
+       data-liveness-alarm="{{ '1' if alarm else '0' }}" data-liveness-present="{{ '1' if present else '0' }}">
+    <div class="pm-lv-head">
+      <span class="pm-lv-title">Driver liveness{% if scope %} &middot; {{ scope }}{% endif %}</span>
+      {%- if not present %}
+        <span class="pm-lv-summary pm-lv-absent">monitor not deployed here &mdash; heartbeat table absent (migration 020 pending)</span>
+      {%- elif not rows %}
+        <span class="pm-lv-summary pm-lv-absent">no expected sub-divisions (nothing attached to run)</span>
+      {%- elif alarm %}
+        <span class="pm-lv-summary pm-lv-alarm-txt">&#9888; driver NOT running &mdash; {{ n_alarm }} of {{ n }} sub-division{{ '' if n == 1 else 's' }} not cycling &middot; PM may not be trading &middot; check the engine</span>
+      {%- else %}
+        <span class="pm-lv-summary pm-lv-ok">&#10003; all {{ n }} sub-division{{ '' if n == 1 else 's' }} cycling</span>
+      {%- endif %}
+    </div>
+    {%- if present and rows %}
+    <div class="pm-lv-grid">
+      {%- for r in rows %}{{ liveness_badge(r) }}{% endfor %}
+    </div>
+    {%- endif %}
+  </div>
+{%- endmacro %}

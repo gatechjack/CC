@@ -38,7 +38,7 @@ def _table_exists(conn, name: str) -> bool:
 
 
 def table_present(conn) -> bool:
-    """Whether the per-category heartbeat table EXISTS. Distinguishes ABSENT (migration 021 not applied -> 'arrives
+    """Whether the per-category heartbeat table EXISTS. Distinguishes ABSENT (migration 020 not applied -> 'arrives
     with the engine writer / a skipped migration') from PRESENT-but-empty (applied, engine hasn't written yet). A
     blank reads the same for both; a lying-monitor-because-the-migration-silently-skipped must NOT look like idle."""
     return _table_exists(conn, _TABLE_CAT)

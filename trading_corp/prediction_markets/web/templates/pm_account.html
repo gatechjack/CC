@@ -1,6 +1,8 @@
 {% extends "pm_shell.html" %}
+{% import "partials/pm_liveness.html" as lv %}
 {% block title %}{{ account.account_label or account.account_id }} &middot; Account{% endblock %}
 {% block content %}
+{{ lv.liveness_assets() }}
 <section>
   <nav class="pm-crumb"><a href="/">Accounts</a> &rsaquo; {{ account.account_label or account.account_id }}</nav>
   <div class="pm-section-head">
@@ -14,6 +16,9 @@
     {% else %}<span class="pm-badge pm-badge-disarmed">GLOBAL ARM &middot; DISARMED</span>{% endif %}
     <span class="pm-muted">read-only &middot; arm/disarm is a CLI action</span>
   </div>
+
+  {# DRIVER LIVENESS (L3) for THIS account's sub-divisions -- the per-sub grid + a red alarm on any STALE/NEVER. #}
+  {{ lv.liveness_panel(liveness_rows, liveness_present, liveness_alarm, scope=account.account_label or account.account_id) }}
 
   {% if not account.pm_traded %}
   {# DISPLAY-ONLY account: the limitation is the CONTENT, not a footnote -- never an empty frame implying it fills. #}

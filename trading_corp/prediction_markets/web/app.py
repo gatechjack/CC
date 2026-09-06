@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect
-from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot
+from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot, heartbeat
 from . import authz   # M4: fail-closed identity/admin resolution + account-visibility scoping (reads headers+env only)
 from ..market_describe import describe_market
 from ..category import NON_SINGLE_GAME_CATEGORIES, derive_category_from_slug
@@ -354,13 +354,26 @@ def _load_accounts_overview(identity: str | None = None, is_admin_flag: bool = F
         accounts = subdivision.accounts_overview(conn)                    # each row carries owner_identity (M4)
         visible = authz.visible_account_ids(identity, is_admin_flag, accounts)
         accounts = [a for a in accounts if a["account_id"] in visible]    # SCOPE first -> then read balances
+        # L3 DRIVER LIVENESS (read-only): the EXPECTED (attachment-gated) set + latest heartbeats, banded by age. This
+        # is the signal arm state cannot give -- 'is the driver actually cycling this sub right now?'. table_present
+        # distinguishes 'migration 020 not applied' from 'applied, engine hasn't written yet'. Scoped per-account below
+        # (a non-admin never sees another account's liveness -- `accounts` is already visibility-scoped).
+        liveness_present = heartbeat.table_present(conn)
+        all_liveness = heartbeat.read_liveness(conn)                       # now_ts defaults to time.time() (live age)
         for a in accounts:
             a["shard_snap"] = shard_snapshot.read_latest(conn, a["account_id"])   # None -> tile omits balance (honest)
+            a["liveness"] = [r for r in all_liveness if r.account_id == a["account_id"]]
+            # ★ ABSENT-vs-EMPTY: with the table ABSENT (monitor not deployed) read_liveness still classes the expected
+            # set NEVER -- that must read NEUTRAL 'not deployed', NOT a red alarm (don't cry wolf about the monitor).
+            a["liveness_alarm"] = liveness_present and heartbeat.any_alarm(a["liveness"])
     for a in accounts:
         _annotate_pnl(a, floor)
     # is_admin gates the HONEST cross-console arm link (M5): the arm/disarm CONTROL lives on the ENGINE console
     # (trading.jacksumner.com/pm/arm), NOT here -- pm_web only DISPLAYS the arm state (R4). Non-admins never see the link.
-    return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor, "is_admin": is_admin_flag}
+    visible_liveness = [r for r in all_liveness if r.account_id in visible]   # the panel: only visible accounts' subs
+    return {"accounts": accounts, "global_arm": arm.read_status(), "thin_floor": floor, "is_admin": is_admin_flag,
+            "liveness_present": liveness_present, "liveness": visible_liveness,
+            "any_liveness_alarm": liveness_present and heartbeat.any_alarm(visible_liveness)}
 
 
 def _load_account(account_id: str, identity: str | None = None, is_admin_flag: bool = False):
@@ -387,8 +400,15 @@ def _load_account(account_id: str, identity: str | None = None, is_admin_flag: b
         snap = shard_snapshot.read_latest(conn, account_id)
         snap_table = shard_snapshot.table_present(conn)
         snap_dir = shard_snapshot.shard_direction(conn, account_id)
+        # L3 DRIVER LIVENESS per sub-division (read-only), keyed by category so each breakdown row shows its badge.
+        liveness_present = heartbeat.table_present(conn)
+        live_rows = {r.category: r for r in heartbeat.read_liveness(conn) if r.account_id == account_id}
+    for b in agg["subdivisions"]:
+        b["liveness"] = live_rows.get(b.get("category"))                  # None -> sub with no expected-set row (rare)
     return {"account": agg, "global_arm": arm.read_status(), "thin_floor": floor,
-            "shard_snap": snap, "shard_snap_table": snap_table, "shard_dir": snap_dir}
+            "shard_snap": snap, "shard_snap_table": snap_table, "shard_dir": snap_dir,
+            "liveness_present": liveness_present, "liveness_rows": list(live_rows.values()),
+            "liveness_alarm": liveness_present and heartbeat.any_alarm(list(live_rows.values()))}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -610,9 +630,13 @@ def _load_live_subdivision(account_id: str, category: str) -> dict | None:
         positions_by_whale = subdivision.live_positions_by_whale(conn, account_id, category)
         floor = search.DEFAULT_MIN_RESOLVED_FLOOR
         copies_by_whale = subdivision.live_copies_by_whale(conn, account_id, category, thin_floor=floor)
+        # L3 DRIVER LIVENESS for THIS sub (read-only): the one matching row from the expected-set liveness read.
+        liveness_present = heartbeat.table_present(conn)
+        _live = [r for r in heartbeat.read_liveness(conn) if r.account_id == account_id and r.category == category]
     return {"sub": sub, "attached": attached, "orders": orders, "n_live_trades": n_live_trades,
             "positions": positions_by_whale, "copies_by_whale": copies_by_whale, "thin_floor": floor,
-            "sizing_summary": subdivision.sizing_summary(sub)}
+            "sizing_summary": subdivision.sizing_summary(sub),
+            "liveness_present": liveness_present, "liveness": _live[0] if _live else None}
 
 
 @app.get("/live", response_class=HTMLResponse)

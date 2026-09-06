@@ -1,6 +1,8 @@
 {% extends "pm_shell.html" %}
+{% import "partials/pm_liveness.html" as lv %}
 {% block title %}{{ sub.account_label }} &middot; {{ sub.category|upper }} &middot; Live{% endblock %}
 {% block content %}
+{{ lv.liveness_assets() }}
 <section>
   <nav class="pm-crumb"><a href="/">Accounts</a> &rsaquo; <a href="/account/{{ sub.account_id }}">{{ sub.account_label }}</a>
     &rsaquo; {{ sub.category|upper }}</nav>
@@ -15,6 +17,20 @@
     <li>Sizing: {{ sizing_summary }}</li>
     <li>Created: {{ sub.created_ts|utcdate }}</li>
   </ul>
+
+  {# DRIVER LIVENESS (L3) for THIS sub-division: is the engine actually cycling and evaluating it right now?
+     A STALE/NEVER badge here means this sub is not being copied even if it is armed. #}
+  <div class="pm-section-head"><h2 class="pm-h2">Driver</h2></div>
+  {% if not liveness_present %}
+  <div class="pm-empty">Driver-liveness monitor not deployed here yet (heartbeat table absent &mdash; migration 020 pending).</div>
+  {% elif liveness %}
+  <div class="pm-lv-grid" data-liveness-alarm="{{ '1' if liveness.state in ['STALE','NEVER'] else '0' }}">
+    {{ lv.liveness_badge(liveness) }}
+    <span class="pm-lv-inline">{{ liveness.detail }}</span>
+  </div>
+  {% else %}
+  <div class="pm-empty">No expected-set liveness row &mdash; this sub-division has no active attachment, so the driver does not run it.</div>
+  {% endif %}
 
   {# COPIES THESE WHALES (R6): the ACTIVE attachments -- which pinned whales this sub-division copies. READ-ONLY
      (no form, no detach button here -- /live stays read-only; detach is a CLI action). Honest-empty until a
