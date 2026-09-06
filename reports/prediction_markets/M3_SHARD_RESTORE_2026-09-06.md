@@ -87,7 +87,25 @@ are stale.
 - **On failure:** restore from backup, do NOT restart.
 - **Do NOT restart** — the engine restart is Jack's, after he warns co-tenants.
 
-## 6. POST-CHECK (M3-specific), after Jack's engine restart
+## 5b. BUILD STATUS — graft built + box-scratched GREEN (2026-09-06 ~19:04Z), HALTED for apply auth
+- **Base (box):** `main.py` CR-stripped `236a6be054268278` (pure LF; raw==CR-stripped; pulled exact bytes, read-only).
+- **Payload:** M3 block = reference `bba046e8` lines 1627–1660, 34 lines / 2558 bytes LF (sha16 `d3c784e6121574d9`),
+  base64 in the runner (block carries em-dashes; base64 keeps the runner pure-ASCII).
+- **TARGET after graft:** CR-stripped `408b2a415a1da18b` (raw==CR; +2559 bytes = block + 1 blank line).
+- **Local proof:** byte-level splice proof (bytes before the anchor unchanged AND bytes from the anchor onward
+  unchanged → ONLY the block+blank inserted); MACE + PM-driver markers equal by count; M3 markers 0→present;
+  `prediction_markets` imports 1→2; local py_compile OK.
+- **★ BOX-SCRATCH GREEN (runner `cc/pm_m3_scratch.{ps1,sh}`, writes only /tmp, live main.py untouched):** the
+  box-side splice **reproduced TARGET `408b2a41` on the LIVE box file**; py_compile OK on the box venv; MACE
+  survival grep -ic **tastytrade 20=20, mace 119=119, KalshiTailPriceArbAgent 2=2**; driver markers unchanged;
+  M3 markers restored; PM module imports resolve on the box venv; live main.py still `236a6be0`.
+- **Apply runner staged (GATED, `cc/pm_m3_apply.{ps1,sh}`):** drift-check live==`236a6be0` (ABORT on drift) →
+  box-side splice hash-gated to `408b2a41` → backup `~/pm_m3_restore_backup_<TS>` → cp → verify applied==`408b2a41`
+  → **MACE/base markers survive by grep -ic count backup-vs-applied (any deletion → restore+abort)** → diff shows
+  added-only/0-removed → Gate-A (py_compile + PM-module import + import trading_corp.main, restore on break) →
+  **NO restart.** Rollback on every failure branch.
+
+## 6. POST-CHECK (M3-specific), after Jack's engine restart — runner `cc/pm_m3_postcheck.{ps1,sh}` (run ~5 min post-restart)
 - `M3 shard-snapshot writer WIRED (2 account(s): [kalshi_jack, kalshi_karen]; 5-min timer)` in the boot log.
 - The writer produces FRESH snapshots for BOTH accounts on its 5-min timer: `pm_shard_balance_snapshot`
   newest_age drops from ~48h to **minutes** for jack AND karen; new rows accumulating.
