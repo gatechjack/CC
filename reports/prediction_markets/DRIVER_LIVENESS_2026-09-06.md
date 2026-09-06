@@ -119,7 +119,24 @@ migration-019 banner reserves **020+** for it ("close to deploying").
   Branch `pm-driver-liveness-2026-09-06` PUSHED (commits `e4773a0` L1, `a892dfe` L2, `d347d0d` L3, `48a02fb` L4).
   Read-only recon RAN (`cc/pm_liveness_deploy_recon.{ps1,sh}`, engine+pm_web PIDs untouched) — results below.
 
-## ★★★ STAGE 1 APPLIED 2026-09-06 ~03:01Z (migration 020 + engine graft). AWAITING JACK RESTART of trading-corp.
+## ★★★ STAGE 1 VERIFIED GREEN 2026-09-06 ~03:17Z (post Jack restart -> engine PID 208950). L3/Stage 2 NEXT.
+Jack restarted trading-corp (206872 -> **208950**, NRestarts=0) ~03:13:32Z. Boot took ~3.5 min (a transient
+"Server disconnected" on the atp boot index-build for BOTH accounts, RECOVERED -- the known cold-start hiccup, boot
+sequence is byte-unchanged by my graft), boot-reconcile came up **reconciled=True latched=False BOTH accounts** at
+03:17:02Z, and the loop's first cycle populated the heartbeats. POST-CHECK GREEN (runners cc/pm_liveness_stage1_
+postcheck.* + cc/pm_liveness_stage1_recheck.*): ★ **ALL 8 SUBS WRITE A HEARTBEAT, ALL THREE GRAINS** (task_alive 2
+accts fresh + reached + evaluated=state 'evaluated' + real n_signals 5/6/15/13,4/22/4/13; subs-missing-grain-3 = 0);
+**read_liveness = all 8 RUNNING, any_alarm=False**; roster `[atp,mlb,ufc,wta]x2 skipped=[]`; **arm 9/9 unchanged**
+(global + 8 subs all armed=True latched=False); engine pm_db_path == the migrated DB; schema head 20; file hashes
+match (39b5ac8e/732fcaab/0dcc1114); 0 PM tracebacks; MACE + divisions online. `placed=0` everywhere is legitimate
+(driver copies whale OPENS; nothing new to mirror this instant). ★ USEFUL PROPERTY OBSERVED: after a restart there is
+a legitimate BOOT WINDOW (~3.5 min here: catalog builds + settlement scans + reconcile all run BEFORE the while-loop,
+so task_alive fires only after boot) during which the monitor honestly shows no heartbeat -- a post-check must wait for
+the `boot-reconcile account=` line, not declare failure early. ★ Two measurement bugs in my FIRST post-check (both
+fixed in the recheck, neither a real fault): the arm read missed `PYTHONPATH=$ROOT` (ModuleNotFoundError), and it ran
+~21s post-wire before boot finished (0 rows -> falsely alarming). [[suspect-the-measurement-first]] again.
+
+## ★★★ STAGE 1 APPLIED 2026-09-06 ~03:01Z (migration 020 + engine graft). (superseded by VERIFIED GREEN above)
 Board-authorized atomic Stage 1 executed via `cc/pm_liveness_stage1b_apply.{ps1,sh}`. ★ DRIFT FOUND + RECONCILED:
 the box engine `db.py` had **drifted from my multicat base** (comment-only — a 4-line migration-017 back-port note +
 one trailing comment near line 811/889, FAR from my insertion points). The FIRST runner (`pm_liveness_stage1_apply`,
