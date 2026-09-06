@@ -5,7 +5,7 @@ Covers the two places Jack pointed the adversarial review at:
     is this platform's worst failure class, so the newest-first precondition is ASSERTED, not assumed;
     the "silent skip" scenario is proven to RAISE instead of skipping.
   * THE SELECTION (`select_candidates`) -- N>=50 with the top-10 thin-sample fallback (Q1), 30d recency
-    via the open-position proxy (Q2), the 15-category allowlist (Q4), cost-ROI rank NEVER win% (F-1),
+    via the open-position proxy (Q2), the 16-category allowlist (Q4), cost-ROI rank NEVER win% (F-1),
     and every dropped row counted (never silent).
 Plus migration 013 (pm_search_run) pure-DDL + schema-head, and structural R7-independence.
 Spec: reports/prediction_markets/STAGE4_SEARCH_PLAN_2026-08-29.md.
@@ -481,9 +481,10 @@ def test_multi_category_grouped_and_sorted():
     assert all(c.rank_in_category in (1, 2) for c in res.candidates)
 
 
-def test_allowlist_has_exactly_15_and_excludes_the_probed():
-    assert len(search.CATEGORY_ALLOWLIST) == 15
-    for c in ("mlb", "nba", "nfl", "nhl", "wnba", "epl", "ucl", "soccer",
+def test_allowlist_has_exactly_16_and_excludes_the_probed():
+    # cfb added 2026-09-06 (paper-lane observation of college football); count 15 -> 16.
+    assert len(search.CATEGORY_ALLOWLIST) == 16
+    for c in ("mlb", "nba", "nfl", "nhl", "wnba", "cfb", "epl", "ucl", "soccer",
               "atp", "wta", "tennis", "cs2", "golf", "ufc", "fed"):
         assert c in search.CATEGORY_ALLOWLIST
     for c in ("cbb", "fifwc", "nascar", "unknown"):

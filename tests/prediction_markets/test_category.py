@@ -70,6 +70,46 @@ def test_no_false_prefix_match():
     assert cat.derive_category_from_slug("mlbpa-vote-2026")[0] == cat.CATEGORY_UNKNOWN
 
 
+def test_cfb_prefix_games_not_futures():
+    # cfb added 2026-09-06: per-game cfb slugs classify as cfb (the copyable single-game moneylines
+    # the paper lane wants). Real box slugs.
+    assert cat.derive_category_from_slug("cfb-usc-nd-2025-10-18") == ("cfb", cat.SOURCE_SLUG)
+    assert cat.derive_category_from_slug("cfb-sacst-emich-2026-08-29")[0] == "cfb"
+    assert cat.derive_category_from_slug("CFB-ALA-UGA-2026-01-01")[0] == "cfb"   # case-insensitive
+    assert cat.derive_category_from_slug("cfb") == ("cfb", cat.SOURCE_SLUG)       # exact prefix
+    # season FUTURES use the 'college-football-*' slug family, NOT the 'cfb' prefix -> STAY unknown
+    # (deliberate: paper copies per-game binaries, not season-long futures)
+    assert cat.derive_category_from_slug("college-football-champion-2025")[0] == cat.CATEGORY_UNKNOWN
+    # boundary guard: 'cfb' matches only exact or 'cfb-...', never 'cfb<other>'
+    assert cat.derive_category_from_slug("cfbloans-promo-2026")[0] == cat.CATEGORY_UNKNOWN
+
+
+def test_cfb_is_the_only_slug_prefix_addition():
+    # ACCEPTANCE: the classifier change adds EXACTLY one key ('cfb'); every prior prefix is intact.
+    assert cat.SLUG_PREFIX_MAP.get("cfb") == "cfb"
+    prior = {"mlb", "nba", "nfl", "nhl", "ufc", "cs2", "atp", "wta", "cbb", "fifwc",
+             "epl", "ucl", "wnba", "nascar", "fed-decision", "fed-interest-rates", "fed-rate", "fed"}
+    assert set(cat.SLUG_PREFIX_MAP) == prior | {"cfb"}
+
+
+def test_adding_cfb_does_not_move_existing_categories():
+    # ACCEPTANCE (Jack's ruling): no existing category's slug may reclassify, and none may derive to cfb.
+    existing = {
+        "mlb-nyy-bos-2026-04-01": "mlb", "nba-lal-bos-2026-01-01": "nba",
+        "nfl-kc-buf-2026-01-01": "nfl", "nhl-bos-mtl-2026-01-01": "nhl",
+        "wnba-lva-nyl-2026-06-01": "wnba", "ufc-jones-aspinall-2026-05-01": "ufc",
+        "atp-alcaraz-sinner-2026-05-01": "atp", "wta-swiatek-gauff-2026-05-01": "wta",
+        "cs2-navi-faze-2026-05-01": "cs2", "epl-ars-che-2026-05-01": "epl",
+        "ucl-rma-bar-2026-05-01": "ucl", "cbb-duke-unc-2026-02-01": "cbb",
+        "nascar-daytona-500-2026": "nascar", "fed-decision-in-september": "fed",
+        "fifwc-usa-bra-2026-06-01": "fifwc",
+    }
+    for slug, expect in existing.items():
+        got, _src = cat.derive_category_from_slug(slug)
+        assert got == expect, "%s -> %s (expected %s)" % (slug, got, expect)
+        assert got != "cfb"
+
+
 async def test_tier2_empty_short_circuits_no_fetch():
     # empty input returns {} WITHOUT invoking fetch (asyncio_mode=auto runs async tests)
     calls = {"n": 0}

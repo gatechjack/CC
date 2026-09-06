@@ -59,7 +59,7 @@ from typing import Any, Callable, Iterable, NamedTuple
 # (PM_REQUIREMENTS R2), no table, no migration. Every entry is a canonical category emitted by
 # category.derive_category_from_slug / category.TAG_SLUG_TO_CATEGORY (verified against both maps).
 CATEGORY_ALLOWLIST: frozenset[str] = frozenset({
-    "mlb", "nba", "nfl", "nhl", "wnba",
+    "mlb", "nba", "nfl", "nhl", "wnba", "cfb",
     "epl", "ucl", "soccer",
     "atp", "wta", "tennis",
     "cs2", "golf", "ufc", "fed",

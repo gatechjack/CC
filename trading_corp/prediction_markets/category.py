@@ -27,6 +27,7 @@ SLUG_PREFIX_MAP: dict[str, str] = {
     "atp": "atp",
     "wta": "wta",
     "cbb": "cbb",
+    "cfb": "cfb",          # college football (US NCAA); per-game 'cfb-<away>-<home>-DATE' slugs. Was 'unknown'.
     "fifwc": "fifwc",
     "epl": "epl",
     "ucl": "ucl",

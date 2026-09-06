@@ -3,7 +3,7 @@ Offline; FastAPI TestClient over a seeded schema-9 PM DB. Encodes the phase-1 ba
 
   - the three NEW routes resolve (/dashboard, /farm, /farm/{category});
   - the legacy /, /scoreboard, /farm still resolve (built ALONGSIDE, nothing removed/rewritten);
-  - the category TILES are the ruled 15-category ALLOWLIST (Jack 2026-08-30, the tile-vanish fix): a category
+  - the category TILES are the ruled 16-category ALLOWLIST (Jack 2026-08-30, the tile-vanish fix): a category
     EXISTS by allowlist membership, NOT by having pinned whales -- so an empty watchlist still renders its tile,
     while a NON-allowlist category (cbb/fifwc/nascar/unknown) yields NO tile and 404s;
   - the per-category page KNOWS its category (heading/breadcrumb);
@@ -69,7 +69,7 @@ def test_farm_league_tiles_are_the_allowlist(tmp_path, monkeypatch):
     """DELIBERATE REVERSAL (Jack 2026-08-30, the tile-vanish defect). Pre-fix the tiles were driven by ACTIVE
     PINNED rows -- so emptying a category's watchlist vanished its tile AND 404'd its page, STRANDING its
     prospects (the exact bug: promote 3 into ATP, demote them all, ATP disappears). The RULE now: a category
-    EXISTS iff it is in the 15-category allowlist. So ALL 15 render as tiles regardless of pinned data (an empty
+    EXISTS iff it is in the 16-category allowlist. So ALL 16 render as tiles regardless of pinned data (an empty
     watchlist is legitimate); a NON-allowlist category never renders, even with an active pinned whale."""
     from trading_corp.prediction_markets import search
     client, p = _client(monkeypatch, tmp_path)
@@ -89,8 +89,8 @@ def test_farm_league_tiles_are_the_allowlist(tmp_path, monkeypatch):
     # non-allowlist categories NEVER render (deactivated by omission), regardless of any pm_watchlist row
     for c in ("cbb", "unknown", "nascar", "fifwc"):
         assert ('href="/farm/%s"' % c) not in body
-    # header count = the FULL allowlist (15), not the pinned-driven number
-    assert "<strong>15</strong>" in body
+    # header count = the FULL allowlist (16), not the pinned-driven number
+    assert "<strong>16</strong>" in body
     # category NAMES render UPPERCASE for display; the URL in the href stays lowercase
     assert 'pm-tile-name">MLB<' in body
 
