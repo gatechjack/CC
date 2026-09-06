@@ -1,3 +1,9 @@
+> ⛔ SUPERSEDED 2026-09-06 by **`TRANSITION_SESSIONWRAP11_2026-09-06.md`** — read SW11 FIRST. Since this doc:
+> multi-category (ufc/atp/wta) went live, the driver was clobbered for ~28h and restored, the UI was rewritten
+> (DEPLOY-5), and DRIVER LIVENESS shipped. The state below (schema 17, mlb-only, engine PID 171106) is STALE — SW11
+> has the current state (schema 20, 8 armed subs, the liveness panel). Only the graft hazards + standing lenses/rules
+> below remain valid, and SW11 carries them forward.
+
 # ★ SESSION WRAP 10 — 2026-09-02 (~23:25Z). SUPERSEDES SW9. FIRST-READ for the next agent.
 > SW9 (`TRANSITION_SESSIONWRAP9_2026-09-02.md`) is the prior first-read. Since SW9: the **multi-category-per-account
 > plan was accepted, WORKSTREAM A (the safety restructure) was BUILT, proven, and DEPLOYED LIVE**, and the UFC
