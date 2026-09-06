@@ -119,6 +119,22 @@ migration-019 banner reserves **020+** for it ("close to deploying").
   Branch `pm-driver-liveness-2026-09-06` PUSHED (commits `e4773a0` L1, `a892dfe` L2, `d347d0d` L3, `48a02fb` L4).
   Read-only recon RAN (`cc/pm_liveness_deploy_recon.{ps1,sh}`, engine+pm_web PIDs untouched) — results below.
 
+## ★★★ STAGE 1 APPLIED 2026-09-06 ~03:01Z (migration 020 + engine graft). AWAITING JACK RESTART of trading-corp.
+Board-authorized atomic Stage 1 executed via `cc/pm_liveness_stage1b_apply.{ps1,sh}`. ★ DRIFT FOUND + RECONCILED:
+the box engine `db.py` had **drifted from my multicat base** (comment-only — a 4-line migration-017 back-port note +
+one trailing comment near line 811/889, FAR from my insertion points). The FIRST runner (`pm_liveness_stage1_apply`,
+box==base identity model) correctly **FAIL-CLOSED** on that drift rather than blind-overwrite. Reconciled file-by-file:
+grafted my two additive MIGRATION_020 hunks onto the **box's** db.py (`box_db.py` sha d43e941f -> grafted 39b5ac8e,
+**0 box lines removed**), keeping the box version as truth (box-is-truth). `live_driver.py` was byte-identical to my
+base (da62db40) so HEAD placed cleanly (sha 732fcaab). `heartbeat.py` new (0dcc1114). Sequence run: preflight (import
+origin) -> gate re-run (head **19** GREEN) -> Gate-1 DB backup + `integrity_check=ok` -> graft db.py -> **init_db ->
+head 20, both heartbeat tables created (0 rows, writer not live yet)** -> graft live_driver.py + drop heartbeat.py ->
+Gate-A (pm_web+heartbeat import OK / live_driver+heartbeat OK / SCHEMA_HEAD=20 contiguous has020) -> HALT. Engine PID
+206872 + pm_web 205353 **UNCHANGED** (no restart). Backup+rollback: `~/pm_liveness_stage1b_backup_20260906T030140Z/`
+(db.py.orig, live_driver.py.orig, prediction_markets.db). ROLLBACK = restore the two .orig + `rm heartbeat.py` (020 is
+additive+fail-soft; tables may stay). Post-check runner staged: `cc/pm_liveness_stage1_postcheck.{ps1,sh}` (read-only)
+— run AFTER Jack's restart; headline = ALL EIGHT SUBS WRITE A HEARTBEAT with all THREE grains populating.
+
 ## ★★ THE STAGED DEPLOY (manifest / ordering / post-check / stop). NOTHING MUTATING RUN. HALTED.
 
 **Global STOP (never depends on any web surface, works with both down):**
