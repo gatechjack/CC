@@ -83,6 +83,25 @@ def test_incident_stale_28h_renders_red_with_age(monkeypatch, tmp_path):
     assert '28h ago' in html                                    # the age is shown, climbing past 28h
 
 
+# ═══════════════════════════ ★ the boot window (must NOT alarm) ═══════════════════════════
+
+def test_boot_window_renders_booting_not_alarm(monkeypatch, tmp_path):
+    """★ THE BOOT-WINDOW FINDING IN THE DISPLAY: after a restart the driver boots for a few minutes (catalog build +
+    reconcile) before the while-loop's first heartbeat, and the prior rows age. The panel must render BOOTING (amber,
+    informational), NEVER the red alarm -- a monitor that reds on every normal restart gets ignored, which is the
+    same as no monitor (the failure this feature exists to prevent). Seed beats ~3 min old (within the 10-min grace)."""
+    cl, p = _mk(monkeypatch, tmp_path)
+    _seed_expected(p, EIGHT)
+    _beat(p, task_age=3 * 60, subs=EIGHT, ev_age=3 * 60, summ={"n_signals": 5, "placed": 1})
+    html = cl.get("/").text
+    assert 'data-liveness-alarm="0"' in html                    # ★ NOT red during a legitimate boot
+    assert 'data-liveness-alarm="1"' not in html
+    assert 'data-liveness-booting="1"' in html
+    assert html.count('data-liveness-state="BOOTING"') == 8
+    assert 'driver restarting' in html
+    assert 'driver NOT running' not in html
+
+
 # ═══════════════════════════ healthy: no false alarm ═══════════════════════════
 
 def test_all_running_renders_green_no_alarm(monkeypatch, tmp_path):

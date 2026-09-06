@@ -37,8 +37,11 @@
   /* informational */
   .pm-lv-st-PENDING{border-color:#7a6a2c;background:#241f10}
   .pm-lv-st-PENDING .pm-lv-state{color:#d9be5c}
+  .pm-lv-st-BOOTING{border-color:#6a6f2c;background:#20220f}
+  .pm-lv-st-BOOTING .pm-lv-state{color:#cdd06a}
   .pm-lv-st-CATEGORY_STARVED{border-color:#9a5f1e;background:#2a1c0c}
   .pm-lv-st-CATEGORY_STARVED .pm-lv-state{color:#eaa23c}
+  .pm-lv-boot{color:#cdd06a;font-weight:600}
   /* ALARMS */
   .pm-lv-st-STALE,.pm-lv-st-NEVER{border-color:#e0403a;background:#2a1414}
   .pm-lv-st-STALE .pm-lv-state,.pm-lv-st-NEVER .pm-lv-state{color:#ff6b64}
@@ -83,8 +86,10 @@
 {% macro liveness_panel(rows, present, alarm, scope='') -%}
   {%- set n = rows|length -%}
   {%- set n_alarm = rows|selectattr('state','in',['STALE','NEVER'])|list|length -%}
+  {%- set n_boot = rows|selectattr('state','equalto','BOOTING')|list|length -%}
   <div class="pm-lv-panel{% if alarm %} pm-lv-panel-alarm{% endif %}"
-       data-liveness-alarm="{{ '1' if alarm else '0' }}" data-liveness-present="{{ '1' if present else '0' }}">
+       data-liveness-alarm="{{ '1' if alarm else '0' }}" data-liveness-present="{{ '1' if present else '0' }}"
+       data-liveness-booting="{{ '1' if n_boot else '0' }}">
     <div class="pm-lv-head">
       <span class="pm-lv-title">Driver liveness{% if scope %} &middot; {{ scope }}{% endif %}</span>
       {%- if not present %}
@@ -93,6 +98,10 @@
         <span class="pm-lv-summary pm-lv-absent">no expected sub-divisions (nothing attached to run)</span>
       {%- elif alarm %}
         <span class="pm-lv-summary pm-lv-alarm-txt">&#9888; driver NOT running &mdash; {{ n_alarm }} of {{ n }} sub-division{{ '' if n == 1 else 's' }} not cycling &middot; PM may not be trading &middot; check the engine</span>
+      {%- elif n_boot %}
+        {# ★ the BOOT WINDOW, in the display: a restart boots for a few minutes (catalog build + reconcile) before
+           heartbeats resume. Amber + informational -- NEVER the red alarm, or the monitor gets ignored on every restart. #}
+        <span class="pm-lv-summary pm-lv-boot">&#8635; driver restarting &mdash; {{ n_boot }} of {{ n }} sub-division{{ '' if n == 1 else 's' }} booting (heartbeats resume after the ~few-minute boot) &middot; normal after a restart, not a fault</span>
       {%- else %}
         <span class="pm-lv-summary pm-lv-ok">&#10003; all {{ n }} sub-division{{ '' if n == 1 else 's' }} cycling</span>
       {%- endif %}

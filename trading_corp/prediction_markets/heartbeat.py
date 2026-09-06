@@ -31,6 +31,17 @@ STALE_MAX_SEC = 300
 # a freshly-attached sub-division has no heartbeat until the NEXT engine restart re-reads the roster -> show PENDING
 # (not an alarm) within this grace of its latest active attachment. Beyond it, no-heartbeat = a real never-spawned.
 ATTACH_GRACE_SEC = 20 * 60
+# ★ BOOT GRACE (2026-09-06): after a restart the driver runs its catalog builds + settlement scans + account-wide
+# boot-reconcile BEFORE the while-loop's first task_alive beat -- observed ~3.5 min (a transient venue "Server
+# disconnected" on the atp index-build stretched it). During that window the driver is ALIVE but writes no heartbeat,
+# and the PRIOR run's rows age. Without this grace the panel would flip STALE->red on EVERY normal restart -- and a
+# monitor that cries wolf on every restart gets ignored, which is the same as no monitor. So: a sub whose task is
+# stale/absent reads BOOTING (informational, NOT an alarm) while the ACCOUNT's most-recent heartbeat is younger than
+# this grace (evidence the driver cycled recently -> a restart in progress). BEYOND it -> the real STALE/NEVER alarm.
+# This is pm_web-side ONLY (no engine boot-marker, no engine change): it keys off the persisted heartbeat timestamps.
+# The 28h incident is FAR past this -> still RED; a real mid-run death alarms ~this-many-seconds late (negligible vs
+# the 28h failure this feature exists to catch). Generous on purpose (a slow boot must never show red).
+BOOT_GRACE_SEC = 10 * 60
 
 
 def _table_exists(conn, name: str) -> bool:
@@ -130,7 +141,7 @@ def liveness_band(age_sec: int, *, fresh: int = FRESH_MAX_SEC, stale: int = STAL
 class SubLiveness:
     account_id: str
     category: str
-    state: str            # RUNNING | IDLE | CATEGORY_STARVED | STALE | NEVER | PENDING
+    state: str            # RUNNING | IDLE | CATEGORY_STARVED | BOOTING | STALE | NEVER | PENDING
     band: str             # 'fresh' | 'stale' | 'dead' | 'none'
     age_sec: int | None   # since this sub last cycled (evaluated_ts, else task last_cycle_ts); None if never
     n_signals: int | None
@@ -139,16 +150,19 @@ class SubLiveness:
     detail: str           # short human note for the display
 
 
-# the six states, precedence highest-severity-last so the display can sort/colour uniformly
-_STATE_SEVERITY = {"RUNNING": 0, "IDLE": 1, "PENDING": 2, "CATEGORY_STARVED": 3, "STALE": 4, "NEVER": 5}
+# the seven states, precedence highest-severity-last so the display can sort/colour uniformly. BOOTING sits with the
+# other informational (non-alarm) states, BELOW the STALE/NEVER alarms -- a restart in progress is not a fault.
+_STATE_SEVERITY = {"RUNNING": 0, "IDLE": 1, "BOOTING": 2, "PENDING": 3, "CATEGORY_STARVED": 4, "STALE": 5, "NEVER": 6}
 
 
 def read_liveness(conn, *, now_ts: int | None = None, fresh: int = FRESH_MAX_SEC, stale: int = STALE_MAX_SEC,
-                  grace: int = ATTACH_GRACE_SEC) -> list[SubLiveness]:
+                  grace: int = ATTACH_GRACE_SEC, boot_grace: int = BOOT_GRACE_SEC) -> list[SubLiveness]:
     """For EVERY EXPECTED sub-division (attachment-gated, the same set the driver would run -- read WITHOUT the
     engine), join the heartbeats and classify liveness. Starting from the EXPECTED set (not from rows that HAVE a
     heartbeat) is what catches a NEVER-spawned sub: it has no heartbeat but is expected -> alarm. Read-only;
-    tolerant of any table being absent (honest-empty). Returns worst-state-last for a stable display order."""
+    tolerant of any table being absent (honest-empty). Returns worst-state-last for a stable display order.
+    States: RUNNING/IDLE (healthy) | BOOTING (a restart in progress, within boot_grace -- NOT an alarm) |
+    PENDING (fresh attach) | CATEGORY_STARVED (task alive, category not evaluating) | STALE/NEVER (the red alarms)."""
     now = int(now_ts if now_ts is not None else time.time())
     # EXPECTED set = active sub-divisions with >=1 active attachment (mirrors driver_roster.active_driver_subdivisions),
     # carrying the latest active-attachment ts for the fresh-attach grace. Absent tables -> no expected subs.
@@ -172,6 +186,24 @@ def read_liveness(conn, *, now_ts: int | None = None, fresh: int = FRESH_MAX_SEC
             cat_hb[(r[0], r[1])] = {"reached_ts": r[2], "evaluated_ts": r[3], "n_signals": r[4], "placed": r[5],
                                     "ceiling_latched": bool(r[6]), "state": r[7]}
 
+    # ★ BOOT GRACE input: each account's MOST-RECENT heartbeat -- task_alive (per-account) OR any EXPECTED category's
+    # evaluated/reached. At a restart ALL of an account's beats freeze together at the last pre-restart cycle, so
+    # 'newest younger than boot_grace' == the driver cycled recently == a restart is booting (not a death).
+    # Per-ACCOUNT, so one genuinely dead account task is never masked by a healthy sibling account. ★ Restricted to
+    # EXPECTED (account,category) pairs: a DETACHED/ghost category's stale row must NOT make the account look alive
+    # (else a never-spawned expected sub would read BOOTING instead of NEVER).
+    expected_pairs = {(a, cat) for a, cat, _ in expected}
+    account_newest: dict = {}
+    for a, t in task_hb.items():
+        if t is not None:
+            account_newest[a] = max(account_newest.get(a, 0), int(t))
+    for (a, cat), cc in cat_hb.items():
+        if (a, cat) not in expected_pairs:
+            continue
+        for _k in ("evaluated_ts", "reached_ts"):
+            if cc.get(_k) is not None:
+                account_newest[a] = max(account_newest.get(a, 0), int(cc[_k]))
+
     out: list[SubLiveness] = []
     for acct, cat, latest_attach_ts in expected:
         c = cat_hb.get((acct, cat))
@@ -186,13 +218,27 @@ def read_liveness(conn, *, now_ts: int | None = None, fresh: int = FRESH_MAX_SEC
         cand = [int(t) for t in (ev_ts, task_ts) if t is not None]
         if cand:
             age = now - max(cand)   # may be negative for a future ts -- the band ('dead'/'stale') conveys that anomaly
+        # ★ BOOT GRACE: is this account's most-recent beat younger than the boot window? -> a restart is likely booting.
+        acct_new = account_newest.get(acct)
+        boot_recent = acct_new is not None and 0 <= (now - int(acct_new)) < boot_grace
 
         if c is None and task_ts is None:
             # never cycled for this sub at all
             if latest_attach_ts is not None and (now - int(latest_attach_ts)) < grace:
                 state, band, detail = "PENDING", "none", "attached; awaiting the next engine restart to spawn"
+            elif boot_recent:
+                state, band, detail = "BOOTING", "stale", ("no heartbeat yet, but this account cycled %ss ago -- a "
+                    "restart is booting (catalog build + reconcile run before heartbeats resume)" % (now - int(acct_new)))
             else:
                 state, band, detail = "NEVER", "none", "NO heartbeat ever -- the driver never spawned this sub-division"
+        elif not task_fresh and boot_recent:
+            # the task beat is stale, but the account cycled within the boot window -> a restart in progress, NOT a
+            # death. Show BOOTING (informational), never the red alarm -- a monitor that reds on every restart is
+            # ignored. It escalates to STALE once the account's newest beat ages past boot_grace (a real outage).
+            band = liveness_band(now - int(task_ts), fresh=fresh, stale=stale) if task_ts else "stale"
+            state, detail = "BOOTING", ("the driver is not cycling this sub yet -- last account beat %ss ago; "
+                "consistent with a restart booting (~a few minutes before heartbeats resume). Escalates to an alarm "
+                "past the boot window." % (now - int(acct_new)))
         elif not task_fresh:
             state, band = "STALE", liveness_band(now - int(task_ts), fresh=fresh, stale=stale) if task_ts else "dead"
             detail = "the account task is not cycling -- last beat %ss ago (driver dead/hung)" % (

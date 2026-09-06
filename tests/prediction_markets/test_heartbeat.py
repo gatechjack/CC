@@ -128,6 +128,40 @@ def test_state_stale_when_task_dead(tmp_path):
         assert _one(rows, "a", "mlb").state == "STALE" and hb.any_alarm(rows) is True
 
 
+def test_state_booting_within_boot_grace(tmp_path):
+    """★ THE BOOT-WINDOW FINDING, in the read: after a restart the driver boots for minutes (catalog build +
+    reconcile) before the while-loop's first beat, so the PRIOR rows age. Within BOOT_GRACE a stale task reads
+    BOOTING (informational), NOT the STALE alarm -- a monitor that reds on EVERY normal restart gets ignored, which
+    is the same as no monitor. Past the grace the SAME shape is the real STALE alarm."""
+    with db.connect(_db(tmp_path)) as conn:
+        _seed_expected(conn, [("a", "mlb"), ("a", "ufc")])
+        # last cycle 3 min ago: STALE band (>90s) but WITHIN the 10-min boot grace -> BOOTING (not an alarm)
+        hb.upsert_task_alive(conn, "a", NOW - 3 * MIN)
+        hb.upsert_evaluated(conn, "a", "mlb", NOW - 3 * MIN, {"n_signals": 5, "placed": 1})
+        hb.upsert_evaluated(conn, "a", "ufc", NOW - 3 * MIN, {"n_signals": 0})
+        rows = hb.read_liveness(conn, now_ts=NOW)
+        assert _one(rows, "a", "mlb").state == "BOOTING" and _one(rows, "a", "ufc").state == "BOOTING"
+        assert hb.any_alarm(rows) is False                         # ★ BOOTING is NOT an alarm (no red on a restart)
+        # ...but tighten the grace below the 3-min age and the SAME data is the real STALE alarm (it still escalates)
+        rows2 = hb.read_liveness(conn, now_ts=NOW, boot_grace=60)
+        assert _one(rows2, "a", "mlb").state == "STALE" and hb.any_alarm(rows2) is True
+
+
+def test_boot_grace_is_per_account_not_masked_by_a_healthy_sibling(tmp_path):
+    """★ Per-ACCOUNT, not system-wide: a genuinely DEAD account (beats 30 min old, past boot grace) must still
+    alarm even while a DIFFERENT account is cycling fresh -- a healthy sibling must never mask a dead account."""
+    with db.connect(_db(tmp_path)) as conn:
+        _seed_expected(conn, [("live", "mlb"), ("dead", "mlb")])
+        hb.upsert_task_alive(conn, "live", NOW)                     # 'live' account cycling now
+        hb.upsert_evaluated(conn, "live", "mlb", NOW, {"n_signals": 3, "placed": 1})
+        hb.upsert_task_alive(conn, "dead", NOW - 30 * MIN)          # 'dead' account: 30 min ago (past boot grace)
+        hb.upsert_evaluated(conn, "dead", "mlb", NOW - 30 * MIN, {"n_signals": 1})
+        rows = hb.read_liveness(conn, now_ts=NOW)
+        assert _one(rows, "live", "mlb").state == "RUNNING"
+        assert _one(rows, "dead", "mlb").state == "STALE"           # NOT masked by the healthy sibling account
+        assert hb.any_alarm(rows) is True
+
+
 def test_pending_vs_never_on_attach_grace(tmp_path):
     with db.connect(_db(tmp_path)) as conn:
         # a freshly-attached sub (added just now) with NO heartbeat -> PENDING, not an alarm
