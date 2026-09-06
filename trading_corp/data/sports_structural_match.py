@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 # reuse mlb's league-agnostic helpers verbatim (accent/case fold, two-known-name side resolve, date conv)
 from .mlb_poly_kalshi_match import _norm, resolve_side, kalshi_to_iso_date, iso_to_kalshi_date  # noqa: F401
 from .sports_team_mapping import MLB_TEAMS, NBA_TEAMS, NHL_TEAMS, NFL_TEAMS, WNBA_TEAMS
+from .cfb_teams import CFB_TEAMS   # US college football: 269 real two-venue codes -> 151 schools (built, not hand-typed)
 
 COPYABLE_MARKET_TYPES = ("moneyline",)
 
@@ -239,5 +240,5 @@ LEAGUES: dict = {
     "nba":  StructuralLeague("nba", "nba", "KXNBAGAME", NBA_TEAMS),
     "nhl":  StructuralLeague("nhl", "nhl", "KXNHLGAME", NHL_TEAMS),
     "wnba": StructuralLeague("wnba", "wnba", "KXWNBAGAME", WNBA_TEAMS),
-    # "cfb":  StructuralLeague("cfb", "cfb", "KXNCAAFGAME", CFB_TEAMS),     # sub-rung C (the hard map)
+    "cfb":  StructuralLeague("cfb", "cfb", "KXNCAAFGAME", CFB_TEAMS),
 }

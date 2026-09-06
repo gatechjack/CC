@@ -38,8 +38,23 @@ Sub-rungs:
       wnba registered in LEAGUES; cross-venue-alias test green. (nfl/nba/nhl maps already existed.)
       ★ local offline venv = C:\Users\AA Incorporado\p2venv (has the SAME broken pytest_ethereum plugin ->
       ALWAYS run local pytest with -p no:pytest_ethereum too, not just the box).
-- [ ] C. cfb team map (THE HARD PART: 272 Poly codes / ~130 FBS / State+Miami+OleMiss collisions; build
-      from REAL codes both venues; prove collisions = SAFE MISS)
+- [x] C. cfb team map DONE (the hard part). Built from REAL two-venue codes (297 live Kalshi KXNCAAFGAME
+      yes_sub_titles via cc/_kalshi_ncaaf_codes.json + 240 Poly cfb slug codes via cc/pm_cfb_polycodes_ro.*),
+      joined by a school-identity key -> `trading_corp/data/cfb_teams.py` CFB_TEAMS = 269 codes / 151 schools.
+      Builder cc/build_cfb_map.py (regen each season). cfb registered in LEAGUES. test_cfb_match.py GREEN (6).
+      ★ COLLISION PROOF (the acceptance test) PASSES: every Jack-named pair -> DISTINCT school -- Miami (MIA)
+      vs Miami OH (MIAOH/MOH); Ole Miss (MISS)/Miss St (MSST)/Miss Valley (MVSU)/Southern Miss (USM); Ohio
+      (OSU)/Oklahoma (OKST)/Oregon (ORST) St; Michigan (MSU)/Missouri (MSRST) St; Kansas St (KSU)/Kansas
+      (KU)/Kentucky (UK); Washington/Washington St; Colorado/Colorado St; San Diego (SDSU)/San Jose
+      (SJSU)/South Dakota (SDKST). Verified EVERY scary shared-initials code on Kalshi (OSU=Ohio St,
+      MSU=Michigan St, USC=USC, MIA=Miami FL, MISS=Ole Miss -- all same school both venues).
+      ★ NAMED UNRESOLVABLE / SAFE MISSES (not silently dropped):
+        - SDST = genuine cross-venue collision (Poly=San Diego St, Kalshi=South Dakota St) -> DROPPED; San
+          Diego St stays reachable via `sdsu`; a bet spelled `sdst` -> fail (safe), proven in test.
+        - KSU/WSU/CSU = Kalshi reuses these for a non-FBS school (Kentucky St/Winona/Central St OH) -> mapped
+          to the FBS meaning (=Poly); the non-FBS meaning is a safe miss (no Poly bet + both-team join key
+          can't wrong-match; proven in test_ambiguous_kalshi_code_cannot_wrong_match).
+        - a NEW/unseen code next season = safe miss until added (regen from live codes).
 - [ ] D. generic ctx builder + register nfl/nba/nhl/wnba/cfb in CATEGORY_CTX_BUILDERS + MATCHER_ADAPTERS + SERIES
 - [ ] E. CYCLE ORDER: volume-first replacing alphabetical (policy + consequence written); decide static vs measured
 - [ ] F. box-scratch (mlb byte-identical on box venv, -p no:pytest_ethereum) + disarmed dry-run vs REAL markets (nfl first)
