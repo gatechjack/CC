@@ -86,7 +86,24 @@ Sub-rungs:
         AND the collision drop on REAL data -> never a wrong pick.
       - nba/nhl/wnba: same shared matcher + maps (nba/nhl exist, wnba built); a dry-run is a pre-arm verification
         item WHEN IN-SEASON (nba/nhl open Oct; wnba ending) -- currently mostly out_of_window. NOT a blocker.
-- [ ] G. stage sub-division CREATE runner (DISARMED, no arm rows) + deploy graft runner -> HALT for Jack (deploy line)
+- [x] G. STAGED + HELD at the deploy line (both are HALT items -- NOT run). Box-truth confirmed the 3 modified
+      box files == my base (execution 09647842 / live_driver 732fcaab / sports_team_mapping ba23801d; the 2 new
+      absent). Two runners authored + validated (ASCII, parse OK):
+      - cc/pm_rung1_deploy.* : delivers the 5-file overlay (_rung1_overlay.b64) + grafts ONLY the 5 code files onto
+        the LIVE tree -- drift-check base, backup, extract, SHA-VERIFY each == committed (execution 8894c6d4 /
+        live_driver 784c04d9 / sports_team_mapping a2a08dab / sports_structural_match 7a6f08bf / cfb_teams 5f3ebd25),
+        restore-on-mismatch, additive-diff, box-venv import-check. NO restart in the runner.
+      - cc/pm_rung1_create.* : creates 10 sub-divisions (kalshi_jack+karen x cfb/nba/nfl/nhl/wnba) DISARMED,
+        market_types='moneyline', standard (default) caps, NO arm rows, NO attachments (dormant); self-verifies
+        arm-count + attachment-count UNCHANGED + 10 created. LIVE DB WRITE.
+      ★ SEQUENCE for Jack (all HALT, his auth): (1) pm_rung1_deploy (graft 5 files) -> (2) restart_tc.ps1 (engine
+      restart to load new live_driver/execution + the volume-first cycle order; bounces EVERY division, warn
+      co-tenants MACE/bitunix/PEAD/coinbase) -> (3) pm_rung1_create (10 disarmed subs). THEN later, his: attach
+      whales (farm Promote) + arm (CLI) + raise caps. New categories stay DORMANT until attached+armed.
+
+## ★ RUNG 1 COMPLETE (A-G), HELD AT THE DEPLOY LINE. Nothing deployed; engine + order path untouched throughout.
+Branch pm-remaining-categories-plan-2026-09-06 (commits ...0e81eea + handoff). 42 tests green on the box venv
+(mlb byte-identical) + 26 local. Disarmed dry-run gate PASSES (nfl + cfb: 0 wrong game, 0 wrong market-type).
 
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
 - **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion
