@@ -16,9 +16,34 @@ build order. Build NOTHING. HALT for deploy/restart/live-DB-write/arm/cap/prod-a
 - [x] Jack RULED (moneyline-1st, soccer incl tier-2 + draw, golf last, sub-divs w/ caps but NO arm rows,
       wants cap arithmetic) + asked fed/cs2 research + added cfb as 11th (Kalshi DOES carry it).
 - [x] POST-RULING RESOLUTIONS written into the plan doc (bottom section) + memory corrected re cfb.
-- [ ] NEXT: proceed to BUILD rung 1 = generalize the structural matcher + US team sports (nfl in-season),
-      after Jack rules the CAP question (needed before arming nfl, the 2nd active category). Build is
-      autonomous; arming/cap changes are HALT.
+- [~] RUNG 1 IN PROGRESS (Jack ruled BUILD it; family = FIVE incl cfb; moneyline-only; sub-divs DISARMED
+      no arm rows; build up to but NOT through the deploy line; cycle order RULED volume-first). Building on
+      this worktree (cc-pm-remaining-cats-wt). Caps: Jack raises at arm — do NOT propose/gate.
+
+## ★ RUNG 1 BUILD — design + sub-rung status
+DESIGN (lowest-risk, satisfies "prove mlb byte-identical"): mlb keeps its OWN module untouched (live
+moneyline+total+spread path byte-identical by construction, like ufc stayed separate when atp/wta got
+tennis). A NEW shared `data/sports_structural_match.py` carries nfl/nba/nhl/wnba/cfb (MONEYLINE-ONLY per
+ruling), parameterized by (poly_prefix, game_series, team_map), DH-aware-but-inert. ACCEPTANCE TEST (B2
+shape): assert generic(mlb-config) == frozen mlb_poly_kalshi_match.match_poly_to_kalshi over real mlb data.
+Sub-rungs:
+- [x] A. `data/sports_structural_match.py` (moneyline-only, config-driven, DH-aware-inert) + tests.
+      ★ ACCEPTANCE GREEN (local p2venv, -p no:pytest_ethereum): test_mlb_equivalence asserts
+      generic(mlb-config) == frozen mlb.match_bet field-for-field over a real-shaped battery (both sides,
+      DH-ambiguous, side-unresolved, out-of-window, no-contract, unrecognized, total/spread/prop skips).
+      46 tests green incl the existing test_b2_dispatch (mlb byte-identical) + test_mlb_match_r2 + test_category
+      -> NO regression to the live mlb path. Collisions stay SAFE MISS (neither-team->side_unresolved no ticker;
+      unmapped->fail; TIE ticker never indexed).
+- [x] B. WNBA_TEAMS added to sports_team_mapping.py (both-venue code aliases GSV/GS, POR/PDX, etc.);
+      wnba registered in LEAGUES; cross-venue-alias test green. (nfl/nba/nhl maps already existed.)
+      ★ local offline venv = C:\Users\AA Incorporado\p2venv (has the SAME broken pytest_ethereum plugin ->
+      ALWAYS run local pytest with -p no:pytest_ethereum too, not just the box).
+- [ ] C. cfb team map (THE HARD PART: 272 Poly codes / ~130 FBS / State+Miami+OleMiss collisions; build
+      from REAL codes both venues; prove collisions = SAFE MISS)
+- [ ] D. generic ctx builder + register nfl/nba/nhl/wnba/cfb in CATEGORY_CTX_BUILDERS + MATCHER_ADAPTERS + SERIES
+- [ ] E. CYCLE ORDER: volume-first replacing alphabetical (policy + consequence written); decide static vs measured
+- [ ] F. box-scratch (mlb byte-identical on box venv, -p no:pytest_ethereum) + disarmed dry-run vs REAL markets (nfl first)
+- [ ] G. stage sub-division CREATE runner (DISARMED, no arm rows) + deploy graft runner -> HALT for Jack (deploy line)
 
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
 - **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion

@@ -137,12 +137,33 @@ NFL_TEAMS: dict[str, str] = {
     "TEN": "Tennessee Titans",       "WAS": "Washington Commanders",
 }
 
+# WNBA (added 2026-09-06, rung 1). Maps BOTH venues' codes to the canonical full name -- Polymarket and
+# Kalshi disagree on a few (Poly `gsv`/`por` vs Kalshi `GS`/`PDX`), so both are listed (the MLB ARI/AZ
+# precedent). 2026 league incl the Golden State Valkyries, Toronto Tempo, Portland Fire expansion sides.
+# ★ Cross-venue code aliases are VERIFIED against live tickers in the sub-rung-F dry-run; an unlisted code
+# is a SAFE MISS (never a wrong pick).
+WNBA_TEAMS: dict[str, str] = {
+    "ATL": "Atlanta Dream",          "CHI": "Chicago Sky",
+    "CON": "Connecticut Sun",        "CONN": "Connecticut Sun",
+    "DAL": "Dallas Wings",           "IND": "Indiana Fever",
+    "GS":  "Golden State Valkyries", "GSV": "Golden State Valkyries",
+    "LV":  "Las Vegas Aces",         "LVA": "Las Vegas Aces",
+    "LA":  "Los Angeles Sparks",     "LAS": "Los Angeles Sparks",
+    "MIN": "Minnesota Lynx",         "NY":  "New York Liberty",
+    "NYL": "New York Liberty",       "PHX": "Phoenix Mercury",
+    "PHO": "Phoenix Mercury",        "POR": "Portland Fire",
+    "PDX": "Portland Fire",          "SEA": "Seattle Storm",
+    "TOR": "Toronto Tempo",          "WAS": "Washington Mystics",
+    "WSH": "Washington Mystics",
+}
+
 LEAGUE_TEAMS: dict[str, dict[str, str]] = {
     "MLB": MLB_TEAMS,
     "NBA": NBA_TEAMS,
     "NHL": NHL_TEAMS,
     "MLS": MLS_TEAMS,
     "NFL": NFL_TEAMS,
+    "WNBA": WNBA_TEAMS,
 }
 
 
