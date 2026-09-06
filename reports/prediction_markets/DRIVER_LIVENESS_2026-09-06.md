@@ -178,7 +178,21 @@ a pm_web failure never stops trading).
    the fake badge (badge-armed removed=1), fake badges=0, real panels=1; new test
    `test_account_page_has_exactly_one_liveness_indicator`. Nothing else on the page changed.
 
-## ★★★ STAGE 2 APPLIED 2026-09-06 ~04:30Z (pm_web web-graft placed). AWAITING JACK pm_web restart.
+## ★★★ FEATURE COMPLETE + LIVE 2026-09-06 ~04:39Z. Stage 2 VERIFIED GREEN (pm_web PID 211803; engine 208950 untouched).
+Jack restarted prediction-markets-web (205353 -> **211803**). Post-check (`cc/pm_liveness_stage2_postcheck.*`) GREEN:
+pages `/`,`/account/kalshi_jack`,`/live/kalshi_jack/mlb` all 200; overview panel `present=1 alarm=0 booting=0` with
+**8 RUNNING**; ★ **EXACTLY ONE liveness indicator on the account page** (real panels=1, fake RUNNING badge=0 -- the
+hardcoded fake is gone); **/pm/arm -> 404 on pm_web** (M5 hazard holds); engine PID **208950 UNCHANGED** NRestarts=0,
+read_liveness all 8 RUNNING any_alarm=False; DEPLOY-5 content intact (TRADING/Realized/Cash-by-shard/Sub-divisions/
+shard-age-band/whale-attribution/poll). NOTE: the live game-card showed bet-slots=0 = data-dependent (no held game
+cards to render right now), NOT a regression -- the betline macro is byte-intact (box-scratch removed=0); whale
+section + poll + badge render. ★ DRIVER LIVENESS DONE: L1 migration 020 + L2 engine 3-grain writer (live since the
+engine restart) + L3 pm_web boot-aware panel (live now). The 2026-09-04 silent 28h outage behind 9 green arm rows
+would now render a RED panel; a normal restart reads amber BOOTING and never cries wolf. Branch pushed
+(pm-driver-liveness-2026-09-06, tip ba27751). Rollbacks: engine ~/pm_liveness_stage1b_backup_20260906T030140Z ;
+pm_web ~/pm_liveness_stage2_backup_20260906T043038Z.
+
+## ★★★ STAGE 2 APPLIED 2026-09-06 ~04:30Z (pm_web web-graft placed). (superseded by COMPLETE above)
 `cc/pm_liveness_stage2_apply.*` ran: drift-check GREEN (all 5 box-live sources == graft targets: heartbeat 0dcc1114 /
 app.py 34bb61ed / pm_accounts 014c03ba / pm_account a5f39df0 / pm_live_subdivision db9cb08c -- pm-ui-rewrite has NOT
 moved them), /pm/arm=0, writers byte-identical, templates additive (pm_account removes ONLY the fake badge, exactly
