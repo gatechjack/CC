@@ -174,6 +174,20 @@ def test_account_page_all_never_alarms(monkeypatch, tmp_path):
     assert html.count('data-liveness-state="NEVER"') == 4
 
 
+def test_account_page_has_exactly_one_liveness_indicator(monkeypatch, tmp_path):
+    """★ Jack's Stage-2 change: the DEPLOY-5 account page carried a HARDCODED always-green 'RUNNING' badge per sub --
+    it would read RUNNING even through a 28h outage (the false reassurance this feature exists to kill; a page showing
+    a reassuring green beside the real red is worse than no monitor). It is REMOVED; the boot-aware panel is the
+    SINGLE, real liveness indicator. Prove: exactly ONE liveness panel + ZERO of the fake hardcoded status badge."""
+    cl, p = _mk(monkeypatch, tmp_path)
+    jack = [("kalshi_jack", c) for c in CATS]
+    _seed_expected(p, jack)
+    _beat(p, task_age=5, subs=jack, ev_age=5, summ={"n_signals": 1, "placed": 1})   # all cycling
+    html = cl.get("/account/kalshi_jack").text
+    assert html.count('data-liveness-present=') == 1            # exactly ONE liveness indicator (the panel)
+    assert '"badge armed"><span class="dot"></span>RUNNING' not in html   # the fake hardcoded badge is GONE
+
+
 def test_account_page_starved_is_not_an_alarm(monkeypatch, tmp_path):
     """★ CATEGORY_STARVED is NOT an alarm: with the account task ALIVE but one category not completing evaluation,
     that category reads CATEGORY_STARVED (a soft, category-level signal) while its siblings run -- the account

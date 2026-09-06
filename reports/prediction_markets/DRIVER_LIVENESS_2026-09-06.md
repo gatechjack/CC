@@ -169,11 +169,24 @@ a pm_web failure never stops trading).
    anonymous client -> it fails against the DEPLOY-5 UI the box actually serves, INDEPENDENT of this graft (the
    DEPLOY-5 UI tests live in the pm-ui-rewrite branch, not on the box). Excluded from the box-scratch with a logged
    reason. Not blocking; worth a `tests/` refresh on the box someday.
-2. **Hardcoded RUNNING badge**: the DEPLOY-5 `pm_account.html` sub-division row has a hardcoded
-   `<span class="badge armed">RUNNING</span>` (pre-existing) -- a fake always-green status that would show RUNNING
-   even during an outage (the exact failure this feature kills). I LEFT it (to honor "adds a panel, subtracts nothing")
-   and added the real boot-aware panel beside it. Recommend replacing that fake badge with the real `b.liveness` badge
-   in a follow-up so it can't contradict the panel -- your call (it changes existing page content).
+2. **Hardcoded RUNNING badge -- RESOLVED per Jack (2026-09-06, NOT a follow-up):** the DEPLOY-5 `pm_account.html`
+   sub-division row had a hardcoded `<span class="badge armed"><span class="dot"></span>RUNNING</span>` -- a fake
+   always-green status that read RUNNING even through the 28h outage. Jack's ruling: false reassurance is the EXACT
+   failure this rung fixes; a page showing the real red panel BESIDE a fake reassuring green is worse than no monitor.
+   REMOVED entirely (not replaced -- replacing would leave two indicators). The boot-aware panel is now the SINGLE,
+   real liveness indicator on the account page. Proven: box-scratch + apply both assert pm_account.html removed=EXACTLY
+   the fake badge (badge-armed removed=1), fake badges=0, real panels=1; new test
+   `test_account_page_has_exactly_one_liveness_indicator`. Nothing else on the page changed.
+
+## ★★★ STAGE 2 APPLIED 2026-09-06 ~04:30Z (pm_web web-graft placed). AWAITING JACK pm_web restart.
+`cc/pm_liveness_stage2_apply.*` ran: drift-check GREEN (all 5 box-live sources == graft targets: heartbeat 0dcc1114 /
+app.py 34bb61ed / pm_accounts 014c03ba / pm_account a5f39df0 / pm_live_subdivision db9cb08c -- pm-ui-rewrite has NOT
+moved them), /pm/arm=0, writers byte-identical, templates additive (pm_account removes ONLY the fake badge, exactly
+ONE real panel), backup `~/pm_liveness_stage2_backup_20260906T043038Z/` (5 .orig), all 6 placed (sha-verified),
+Gate-A green (pm_web imports no engine, py_compile OK). Engine PID **208950** + pm_web **205353 UNCHANGED** (NO
+restart -- pm_web serves OLD code until Jack bounces it; engine never touched by Stage 2). Post-check staged
+`cc/pm_liveness_stage2_postcheck.*`: pages 200 + panel RUNNING + EXACTLY ONE indicator + DEPLOY-5 content intact +
+/pm/arm 404 + engine 208950. ROLLBACK: restore the 5 .orig + rm the partial, then restart pm_web.
 
 ## ★★★ STAGE 1 APPLIED 2026-09-06 ~03:01Z (migration 020 + engine graft). (superseded by VERIFIED GREEN above)
 Board-authorized atomic Stage 1 executed via `cc/pm_liveness_stage1b_apply.{ps1,sh}`. ★ DRIFT FOUND + RECONCILED:
