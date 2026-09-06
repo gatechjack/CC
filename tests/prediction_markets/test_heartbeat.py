@@ -81,6 +81,22 @@ def test_liveness_band_both_directions(tmp_path):
     assert hb.liveness_band(-(hb.STALE_MAX_SEC + 10)) == "dead"    # far-future clock jump -> dead, not fresh
 
 
+def test_safe_beat_swallows_errors(tmp_path):
+    """★ FAIL-SOFT unit: safe_beat must swallow ANY writer error (a liveness write can never kill a trading cycle)."""
+    calls = {"n": 0}
+
+    def _raiser(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("boom")
+    hb.safe_beat(_raiser, 1, 2, log=None)     # must NOT raise
+    assert calls["n"] == 1
+
+    def _ok(x):
+        calls["ok"] = x
+    hb.safe_beat(_ok, 42)
+    assert calls["ok"] == 42                   # the happy path still runs
+
+
 # ═══════════════════════════ the six states ═══════════════════════════
 
 def _one(rows, acct, cat):

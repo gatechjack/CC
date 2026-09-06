@@ -46,7 +46,19 @@ migration-019 banner reserves **020+** for it ("close to deploying").
   `any_alarm`. `test_heartbeat.py` (9 tests) green incl the **incident-shape unit acceptance** (8 expected subs,
   no heartbeats, past grace → all NEVER → alarm), both-directions band, expected-set-driven NEVER detection. Full
   `test_db` + `test_heartbeat` = 22 green.
-- **L2 — engine writer in `live_driver.py` (3 grains, fail-soft, no-lie proof).** pending.
+- **L2 — engine writer in `live_driver.py` (3 grains, fail-soft, no-lie proof).** DONE. `live_driver` imports
+  `heartbeat`; writes wired: **task_alive** per-account at the TOP of the while-loop (OUTSIDE the cycle try, own
+  short-lived connection, own fail-soft); **reached** as the FIRST statement in `for c in cats` (before the
+  no-builder/no-ctx continues) + **mark_skipped** on those two continues; **evaluated**+summary after
+  `run_live_arm_gated_cycle`. Every write via `heartbeat.safe_beat` (swallows any error -> a liveness write NEVER
+  kills a trading cycle). Tests appended to `test_live_driver_r7c.py` (reuses its offline harness) + a `safe_beat`
+  unit in `test_heartbeat.py`: **(1) no-lie** (`_max_cycles=0` -> the loop body never runs -> ZERO heartbeat rows),
+  **(2) three grains on a cycle** (task_alive + reached + evaluated=='evaluated', read_liveness -> RUNNING/IDLE, no
+  alarm; ctx builder injected so the evaluated path runs offline without pykalshi), **(3) fail-soft** (a raising
+  `upsert_evaluated` does NOT propagate; the cycle completes, task_alive still writes). r7c: **7 failed/25 passed
+  (BASE) -> 7 failed/28 passed (L2)** = +3 passing, 0 new failures (the 7 are pre-existing pykalshi box-only tests,
+  green in L4 box-scratch). ★ Trading path otherwise byte-unchanged (only additive heartbeat calls; the arm gate,
+  place path, journal, opposed guard, settlement all untouched -- to be re-confirmed by L4 adversarial review).
 - **L3 — pm_web liveness panel (6 states) + incident acceptance test.** pending.
 - **L4 — box-scratch + adversarial review.** pending.
 - **L5 — stage deploy (manifest, migration ordering, post-check, stop conditions). HALT.** pending.

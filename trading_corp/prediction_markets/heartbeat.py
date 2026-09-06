@@ -98,6 +98,18 @@ def mark_skipped(conn, account_id: str, category: str, ts: int, reason: str) -> 
     conn.commit()
 
 
+def safe_beat(fn, *args, log=None, **kw) -> None:
+    """Call a heartbeat writer, SWALLOWING any error. ★ A liveness write must NEVER kill a trading cycle: the
+    monitor going blind is bad; the monitor taking the engine down is far worse. The driver wraps EVERY heartbeat
+    write in this. (The write itself lives in the driver task's own body, so 'no cycle -> no beat' still holds --
+    this only guarantees a raising write cannot propagate into the trading path.)"""
+    try:
+        fn(*args, **kw)
+    except Exception as e:  # noqa: BLE001 -- fail-soft by design
+        if log is not None:
+            log.warning("pm_live_driver: heartbeat write failed (non-fatal, monitor may go stale): %s", e)
+
+
 # ═══════════════════════════ age banding (both directions) ═══════════════════════════
 
 def liveness_band(age_sec: int, *, fresh: int = FRESH_MAX_SEC, stale: int = STALE_MAX_SEC) -> str:

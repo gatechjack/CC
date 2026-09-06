@@ -17,6 +17,7 @@ import sqlite3
 import pytest
 
 from trading_corp.prediction_markets import arm, db, execution as ex, live_driver as L, boot_reconcile as BR
+from trading_corp.prediction_markets import heartbeat as hb
 from trading_corp.data import mlb_poly_kalshi_match as M
 from trading_corp.data import ufc_poly_kalshi_match as U   # B2: category dispatch is REAL -> the 2nd category is ufc
 from trading_corp.data.polymarket_data_api_client import PositionRow, ActivityRow
@@ -911,3 +912,82 @@ async def test_r2_unflattened_contest_errors_once_and_marks(tmp_path, caplog):
     assert [r for r in caplog.records if "re-suppressed via memory" in r.getMessage() and C in r.getMessage()]  # cycle 2 DEBUG
     with db.connect(p) as conn:
         assert C in ex.account_opposed_cids(conn, ACCT, "mlb")   # ★ the DECISION marker was written + is remembered
+
+
+# ═══════════════════════════ L2: DRIVER LIVENESS heartbeat writer (2026-09-06) ═══════════════════════════
+# The writes live in the driver task's OWN body, so a dead/never-spawned task simply stops writing -> the monitor
+# alarms. These prove: (1) NO write when the loop body does not run (the no-lie property), (2) a running cycle
+# writes all three grains, (3) a raising heartbeat write NEVER kills a trading cycle (fail-soft).
+
+def _hb_counts(p):
+    with db.connect(p) as conn:
+        t = conn.execute("SELECT COUNT(*) FROM pm_driver_task_heartbeat").fetchone()[0]
+        c = conn.execute("SELECT COUNT(*) FROM pm_driver_heartbeat").fetchone()[0]
+    return t, c
+
+
+async def _fake_ctx_builder(client, ts):
+    """A ctx builder that needs NO pykalshi, so the category reaches the EVALUATED path offline (the real builders
+    import pykalshi, absent in the local venv; box-scratch exercises the real builders)."""
+    return _ctx()
+
+
+@pytest.mark.asyncio
+async def test_liveness_NO_write_when_loop_not_running(tmp_path):
+    """★ THE NO-LIE PROPERTY. The heartbeat writes live INSIDE the while-loop body; with _max_cycles=0 the body
+    never executes -> ZERO heartbeat rows. A monitor that could report healthy while the loop is not running is the
+    worst version of this feature; this proves the write is gated on the cycle actually running."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        _seed_money_and_hold(conn, held=0)
+    fake = FakeKalshiClient(positions=[], game_markets=[FakeMarket(T_TOR)])
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(FakeBook([])),
+                                   account_id=ACCT, category=CAT, poll_sec=0, legacy_db_path=leg, _max_cycles=0)
+    assert _hb_counts(p) == (0, 0)     # loop body never ran -> NO beat of any grain
+
+
+@pytest.mark.asyncio
+async def test_liveness_writes_three_grains_on_a_cycle(tmp_path):
+    """A single real cycle writes all three grains: per-account task_alive, and per-(account,category) reached +
+    evaluated with the cheap summary. (Disarmed -> the cycle evaluates but places nothing; liveness is arm-independent.)"""
+    import time
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        _seed_money_and_hold(conn, held=0)
+    fake = FakeKalshiClient(positions=[], game_markets=[FakeMarket(T_TOR), FakeMarket(T_SEA)])
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(FakeBook([])),
+                                   account_id=ACCT, category=CAT, poll_sec=0, legacy_db_path=leg, _max_cycles=1,
+                                   ctx_builders={CAT: _fake_ctx_builder})   # inject -> reaches EVALUATED offline
+    now = int(time.time())
+    with db.connect(p) as conn:
+        ta = conn.execute("SELECT account_id, last_cycle_ts FROM pm_driver_task_heartbeat").fetchone()
+        assert ta["account_id"] == ACCT and (now - ta["last_cycle_ts"]) < 60          # task_alive fresh
+        cat = conn.execute("SELECT reached_ts, evaluated_ts, state FROM pm_driver_heartbeat "
+                           "WHERE account_id=? AND category=?", (ACCT, CAT)).fetchone()
+        assert cat is not None and cat["reached_ts"] is not None and cat["evaluated_ts"] is not None
+        assert cat["state"] == "evaluated"                                            # fully evaluated this cycle
+    # the read side classifies it RUNNING/IDLE (armed-independent), never an alarm
+    with db.connect(p) as conn:
+        rows = hb.read_liveness(conn, now_ts=now)
+    live = next(r for r in rows if r.account_id == ACCT and r.category == CAT)
+    assert live.state in ("RUNNING", "IDLE") and hb.any_alarm(rows) is False
+
+
+@pytest.mark.asyncio
+async def test_liveness_write_failure_never_kills_the_cycle(tmp_path, monkeypatch):
+    """★ FAIL-SOFT: a heartbeat write that RAISES must never propagate into the trading loop. Force upsert_evaluated
+    to blow up; the cycle must still complete (the loop returns normally) and the OTHER grains still write."""
+    leg = _legacy(tmp_path); p = str(tmp_path / "pm.db"); db.init_db(p)
+    with db.connect(p) as conn:
+        _seed_money_and_hold(conn, held=0)
+    def _boom(*a, **k):
+        raise RuntimeError("heartbeat DB blew up")
+    monkeypatch.setattr(L.heartbeat, "upsert_evaluated", _boom)          # the writer the loop calls via safe_beat
+    fake = FakeKalshiClient(positions=[], game_markets=[FakeMarket(T_TOR)])
+    # must NOT raise -- safe_beat swallows the heartbeat failure; the trading cycle is unharmed. Inject the builder
+    # so the category REACHES upsert_evaluated (else it skips and the raise is never exercised).
+    await L.scheduled_pm_live_loop(p, FakeBroker(fake), FakePositionsClient(FakeBook([])),
+                                   account_id=ACCT, category=CAT, poll_sec=0, legacy_db_path=leg, _max_cycles=1,
+                                   ctx_builders={CAT: _fake_ctx_builder})
+    t, _ = _hb_counts(p)
+    assert t == 1                                                        # task_alive still wrote (other grains unaffected)

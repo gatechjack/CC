@@ -50,7 +50,7 @@ import inspect
 import logging
 import time as _time
 
-from . import arm, boot_reconcile, db, execution, paper, settlement, shard_balance, venue_exposure
+from . import arm, boot_reconcile, db, execution, heartbeat, paper, settlement, shard_balance, venue_exposure
 from ..data import mlb_poly_kalshi_match as M
 from ..data import ufc_poly_kalshi_match as U   # B2: UFC fight/distance index builders for fetch_ufc_market_context
 from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) match index builder for fetch_tennis_market_context
@@ -701,6 +701,17 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
     cycles = 0
     while _max_cycles is None or cycles < _max_cycles:
         cycles += 1
+        # ★ LIVENESS task_alive beat -- per ACCOUNT, at the TOP of the loop, OUTSIDE the cycle try below, on its OWN
+        # short-lived connection (the cycle's conn is opened INSIDE the try). This is the "the task is running" signal
+        # pm_web reads: it fires every cycle regardless of whether any category completes, so a task that DIES or was
+        # NEVER SPAWNED (the 2026-09-04 incident) simply stops writing -> the row goes stale -> the monitor alarms.
+        # It CANNOT report healthy while the loop is dead (no timer/thread/at-boot write). safe_beat = fail-soft:
+        # a liveness write NEVER kills a trading cycle.
+        try:
+            with db.connect(pm_db_path) as _hb_conn:
+                heartbeat.safe_beat(heartbeat.upsert_task_alive, _hb_conn, account_id, int(_time.time()), log=log)
+        except Exception as _hbc_e:  # noqa: BLE001 -- even opening the heartbeat connection must never break the loop
+            log.warning("pm_live_driver: task-alive heartbeat connection failed for %s (non-fatal): %s", account_id, _hbc_e)
         # ★ M1: ACCOUNT-LEVEL reads happen ONCE per cycle and are SHARED across every category (fail-closed defaults
         # BOUND before anything can raise). The shared venue-exposure read is the account-wide base gate 6 rebases
         # onto; the shared Journal (below) accumulates every category's in-cycle placements against it.
@@ -733,8 +744,14 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                 # keeps its own daily/order budget.
                 journal = execution.Journal(conn, [account_id], now_ts)
                 for c in cats:                                  # ★ M1: iterate the account's categories SEQUENTIALLY
+                    # ★ LIVENESS reached beat -- FIRST thing per category, BEFORE the no-catalog/no-ctx continues, so
+                    # 'the loop reached this category this cycle' is recorded even if it then skips or (later) throws.
+                    # 'reached fresh + evaluated stale' -> CATEGORY_STARVED (a category bug), distinct from a dead task.
+                    heartbeat.safe_beat(heartbeat.upsert_reached, conn, account_id, c, int(_time.time()), log=log)
                     _bld = builders.get(c)
                     if _bld is None:
+                        heartbeat.safe_beat(heartbeat.mark_skipped, conn, account_id, c, int(_time.time()),
+                                            "skipped_no_builder", log=log)
                         continue                                # no catalog builder -> no signals (fail-safe skip)
                     if ctx_by_cat[c] is None or (_time.time() - last_idx_by_cat[c]) > index_refresh_sec:
                         try:
@@ -743,6 +760,8 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                             log.warning("pm_live_driver: index refresh failed for %s/%s: %s", account_id, c, e)
                     ctx = ctx_by_cat[c]
                     if ctx is None:
+                        heartbeat.safe_beat(heartbeat.mark_skipped, conn, account_id, c, int(_time.time()),
+                                            "skipped_no_ctx", log=log)
                         continue                                # still no catalog this cycle -> skip this category
                     sub = execution.sub_config_from_row(conn.execute(
                         "SELECT * FROM pm_subdivision WHERE account_id=? AND category=?", (account_id, c)).fetchone())
@@ -848,6 +867,9 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                     summ = await run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, place_fn=place_fn,
                                                           shard_balances=shard_bal, venue_exposure=venue_exp,
                                                           legacy_db_path=legacy_db_path, log=log)
+                    # ★ LIVENESS evaluated beat -- this category fully evaluated + the cheap summary (IDLE vs PLACING,
+                    # ceiling_latched=alive-but-intentionally-idle). Fail-soft: never let the monitor take a cycle down.
+                    heartbeat.safe_beat(heartbeat.upsert_evaluated, conn, account_id, c, int(_time.time()), summ, log=log)
                     if summ["placed"] or summ["errors"]:
                         # str(summ): a lone non-empty dict as the sole %-arg is read as a %-MAPPING -> "not all args
                         # converted" and the line is EATEN on active cycles; str() defuses it.
