@@ -87,6 +87,33 @@ are stale.
 - **On failure:** restore from backup, do NOT restart.
 - **Do NOT restart** — the engine restart is Jack's, after he warns co-tenants.
 
+## 0. OUTCOME — M3 RESTORE COMPLETE + LIVE + VERIFIED (2026-09-06 ~19:23Z)
+Applied 19:11Z (`pm_m3_apply`, Gate-A green, added=35/removed=0, MACE survives by count, NO restart). Jack
+restarted the engine 19:14Z (**PID 208950 → 217030**, NRestarts=0). Post-check GREEN
+(`pm_m3_postcheck` + follow-ups):
+- **M3-specific:** `M3 shard-snapshot writer WIRED (2 account(s): [kalshi_jack, kalshi_karen]; 5-min timer)`.
+  Both accounts now producing FRESH snapshots — **ages ~48h → <1 min**. jack total $480.81(stale) → **$486.23**
+  (shard0 $122.82, shard3 $363.41); karen $460.36 → **$463.22** (shard0 $101.41, shard3 $361.82). shard-0-direction
+  current again. ★ jack's FIRST cycle (19:17:43) hit a transient `Server disconnected` and was fail-soft SKIPPED
+  (karen wrote fine); the display correctly showed jack's stale AGE (the design's whole point), and the next
+  5-min tick (19:22:43) wrote jack clean — self-healed, no intervention.
+- roster back: `{jack:[atp,mlb,ufc,wta], karen:[atp,mlb,ufc,wta]} skipped=[]`.
+- **all 9 arm rows unchanged** from persisted ts (global 08-31; jack/karen mlb/ufc/atp/wta), 9/9 armed, 0 latched.
+- boot-reconcile clean both (reconciled=True latched=False latched_categories=()).
+- **liveness panel ALL 8 RUNNING, any_alarm=False.**
+- every division back incl MACE (`config_hash=c382c9370f9b, 4 loops online`), bitunix, PEAD, Donchian, poly_kalshi,
+  web command center.
+
+### ★ NON-PM FINDING TO ROUTE TO MACE (not caused by this graft, not blocking) — noisy log bug in MACE's candle feed
+Post-restart the engine logs ~25 tracebacks/min, ALL `TypeError: not all arguments converted during string
+formatting`, from **`mace/candle_feed.py: run_feed` → `tastytrade/streamer.py` (DXLink websocket `_reader`)** — a
+bad log-format string in the vendored `tastytrade` SDK exercised by MACE's Phase-2 candle feed. **Zero PM/shard
+frames in any traceback; impossible to originate from the M3 block** (self-contained, MACE markers survived by
+count). It is a **logging-only** exception (caught by `logging.handleError`, does not propagate → the feed keeps
+running), so it is log SPAM, not a functional break — but it masks real errors and inflates error counts.
+Pre-existing w.r.t. this graft (candle_feed unchanged). **Route to MACE**: patch/upgrade the tastytrade SDK or
+raise the streamer's logger level. Not PM's to fix.
+
 ## 5b. BUILD STATUS — graft built + box-scratched GREEN (2026-09-06 ~19:04Z), HALTED for apply auth
 - **Base (box):** `main.py` CR-stripped `236a6be054268278` (pure LF; raw==CR-stripped; pulled exact bytes, read-only).
 - **Payload:** M3 block = reference `bba046e8` lines 1627–1660, 34 lines / 2558 bytes LF (sha16 `d3c784e6121574d9`),
