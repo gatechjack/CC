@@ -1,5 +1,19 @@
 # FARM SEARCH BUTTON — build handoff (2026-09-05). KEEP CURRENT AS RUNGS LAND.
 
+## ═══════════════════════════════════════════════════════════════════════════
+## ★★★ STANDING RULE (Jack RULED 2026-09-05, "Option C") — READ BEFORE ANY main.py DEPLOY
+## `trading_corp/main.py` is a SHARED, MULTI-TENANT file with per-division GRAFTED blocks (PM's driver roster,
+## poly_kalshi, bitunix, MACE, PEAD, coinbase, Kalshi-arb ...). It is **GRAFTED, NEVER WHOLESALE-COPIED.** A
+## wholesale write from a branch that predates another division's graft SILENTLY DELETES that division's wiring —
+## no test, no gate, no manifest check stops it. **This is not code, it is a standing rule.**
+## ★ IT ALREADY EXISTED — and lived ONLY in PM's transition docs, which is exactly why the MACE agent never saw it
+## and clobbered PM's driver (2026-09-05, [[shared-mainpy-wholesale-clobber-hazard]], 8 armed subs idle ~28h).
+## **A rule only ONE division knows is not a rule. THIS MUST REACH EVERY DIVISION'S AGENT** (board-level, not a
+## PM handoff) — surfacing it here is necessary but NOT sufficient. Same rule applies to any shared file the box
+## carries per-division grafts on. Detect a clobber after any restart: hash the box file CR-stripped vs your
+## graft-carrying tip + grep your markers (runner `cc/pm_driver_diag.*`).
+## ═══════════════════════════════════════════════════════════════════════════
+
 ## ★★★ DEPLOYED LIVE 2026-09-05 23:22:45Z (pm_web-only; engine 196060 NEVER touched)
 Board-authorized `pm_farmsearch_deploy.ps1`. **The runner executed on the FIRST invocation** (backup
 `~/pm_farmsearch_deploy_backup_20260905T232220Z` at 23:22:20Z -> apply -> Gate-A green -> pm_web restart
