@@ -18,12 +18,15 @@ NON-Kalshi-copyable category? (Execution venue / matching / routing is explicitl
   wallets, Aug-2024→now**, and it is **100% sitting in our `unknown` bucket** (5th-largest token
   in unknown). It is clean single-game moneyline shape (plus spreads/totals/futures). The
   **association-football-at-university reading is a NULL market** — it does not exist on Polymarket.
-- **Q2 (tradeable whales):** **A real double-digit population exists, but every performance
-  number is a loss-omission upper bound and the DB only sees an incidental subset.** 37 wallets
-  bet CFB; **10 clear the platform's ≥50-scoreable bar**; several are active *this* season. But
-  the strongest-looking ones (95–100% "win rates") are exactly the loss-omission mirage profile,
-  and the true CFB-native whale universe is **not enumerable from our data** (ingest is
-  roster-scoped — see caveat B).
+- **Q2 (tradeable whales):** **A real double-digit population bets it, but every performance
+  number is a loss-omission upper bound, the DB only sees an incidental subset — and a
+  concentration follow-up found ZERO CFB specialists.** 37 wallets bet CFB; **10 clear the
+  platform's ≥50-scoreable bar**; several active *this* season. But the strongest-looking ones
+  (95–100% "win rates") are the loss-omission mirage profile, and the **concentration follow-up
+  (below) shows CFB is a <20%-of-book sideline for all 37** — the best-looking candidate `0x2c33`
+  bets $1.6M of CFB inside a **$385M** book (0%). So we have **no ready-to-copy CFB whale today**;
+  any tradeable CFB whale would have to be *found* via a CFB-specific leaderboard sweep (not
+  enumerable from our roster-scoped data — caveat B).
 - **Why "qualified" and not a clean yes/no:** the *signal side* (Polymarket) unambiguously
   clears the bar. The *whale side* is promising but **unverifiable with the data we have**. The
   cheapest way to get trustworthy whale numbers is to admit `cfb` as a category so the platform's
@@ -175,10 +178,44 @@ ways:**
 
 ### Deep enough to matter?
 
-**Yes, within the incidental view — not "three wallets."** 37 bettors, 10 over the bar, several
-active this season, spanning both cross-sport trackers and discovered specialists. And this is a
-**lower bound** — the roster-scoped DB cannot see CFB-native whales we've never ingested. A proper
-population read needs the live grounded sweep (which is the plan's job).
+**Yes as a *population that bets it* — no as a *pool of copy targets*.** 37 bettors, 10 over the
+bar — but see the concentration follow-up: none are CFB specialists. And this is a **lower bound** —
+the roster-scoped DB cannot see CFB-native whales we've never ingested. A proper population read
+needs the live grounded sweep (which is the plan's job).
+
+### Q2 follow-up — concentration: are they CFB natives or dabblers? **All dabblers.**
+
+Ran a second read-only pass (`cc/pm_cfb_concentration_ro.*`) measuring each CFB bettor's CFB
+positions against their **whole book** in our DB:
+
+| Concentration (CFB share of book by cost-basis) | Wallets |
+|---|---:|
+| **NATIVE (≥50%)** | **0** |
+| mixed (20–50%) | 1 (`0x2089…`, but a 17-position / $414k book → noise) |
+| sideline (<20%) | 36 |
+
+**Every meaningful CFB bettor in our data is a multi-sport generalist for whom CFB is a rounding
+error.** Examples:
+- `0x2c33…` (the best-looking Q2 candidate: 65% win, ROI 0.39): CFB $1.6M = **0%** of a **$385M**
+  book (fifwc $216M, mlb $21M, soccer $20M…).
+- **BetMechanic**: CFB 9% of a $39.8M / 17,056-position book (nba $19M, mlb $11M).
+- The un-named high-volume wallets I'd hypothesized might be CFB "natives" (`0xf68a`, `0x5268`,
+  `0xbca0`, `0x6d3c`, `0x84cf`) are all $40–80M multi-sport books with CFB at **0–2%** — they're
+  un-named because they're *un-promoted Search discoveries*, not because they specialize in CFB.
+
+**Split of the $9.05M total CFB cost-basis:** 52% ($4.67M) from named/pinned cross-sport whales we
+already track, 48% ($4.38M) from un-named discovered wallets — but *both groups are generalists*.
+
+**Caveat D (backfill cap):** several books read exactly `8,000` positions — a per-wallet backfill
+ceiling — so those whales' true books are larger and their CFB shares are **upper bounds** (real
+concentration is even lower). This *strengthens* the "sideline" conclusion.
+
+**Implication:** the "different people / CFB specialists exist" hypothesis is **false for our data** —
+there are no CFB natives to copy today. This does **not** prove CFB natives don't exist on
+Polymarket at large (our roster was built from *other* categories' leaderboards, so it structurally
+wouldn't contain them — caveat B); it means **the only path to a copy target is discovery via a
+CFB-specific leaderboard sweep**, which the plan's classify-and-grounded-screen step is exactly what
+enables.
 
 ---
 
@@ -190,12 +227,15 @@ population read needs the live grounded sweep (which is the plan's job).
 - The **market is unambiguously real** (Q1): large, active-now, clean single-game shape, 100% in
   our `unknown` bucket, and completely uncopyable today only because it isn't classified/on a
   venue. On the signal-availability axis it clears the bar comfortably.
-- The **whales are promising but unverified** (Q2): a genuine double-digit population with several
-  credible low-win-rate candidates — but every performance number is a loss-omission upper bound,
-  the flashiest whales are almost certainly mirages, and we can only see an incidental subset.
+- The **whales are the weak leg** (Q2 + follow-up): a double-digit population bets CFB, but every
+  performance number is a loss-omission upper bound, the flashiest whales are almost certainly
+  mirages, **and the concentration follow-up found no CFB specialists — CFB is a sideline for all
+  37 generalists, so we have zero ready-to-copy CFB whales today.** The value of the category is
+  therefore entirely *prospective* (find CFB-native whales we don't yet track), not a harvest of
+  whales we already have.
 
-**The plan's first deliverable should be classification + grounded screening, not execution
-venue.** Concretely, the cheapest path to trustworthy whale numbers is to admit `cfb` as a
+**Because there are no ready copy targets, the plan is a bet on DISCOVERY, and its first deliverable
+must be classification + grounded screening, not execution venue.** Concretely, the cheapest path to trustworthy whale numbers is to admit `cfb` as a
 category (add the `cfb-` prefix to `SLUG_PREFIX_MAP` + `cfb` to `CATEGORY_ALLOWLIST`) so the
 existing Search → Prospects → Analyze machinery can run an `/activity`-grounded screen over the
 CFB-native universe. Only after that grounded screen says the edge survives loss-omission
@@ -207,8 +247,10 @@ that is your clean no — reached cheaply, before any venue work.
 
 ## Method / provenance
 
-- Runner: `cc/pm_cfb_probe_ro.{ps1,sh}` (sanctioned channel; single `sqlite mode=ro` query; no
-  writes; no Polymarket API). DB `~/trading_corp/data/prediction_markets.db` @ 2026-09-06 19:02Z.
+- Runners: `cc/pm_cfb_probe_ro.{ps1,sh}` (main probe @ 2026-09-06 19:02Z) and
+  `cc/pm_cfb_concentration_ro.{ps1,sh}` (concentration follow-up @ 19:21Z). Both sanctioned
+  channel; single `sqlite mode=ro` query each; no writes; **no Polymarket API**. DB
+  `~/trading_corp/data/prediction_markets.db`.
 - DB scope observed: **196,469 closed positions across 102 wallets** (the task's "~121k / 61
   whales / ~22k unknown" was stale; `unknown` is now **41,021** rows). `category_source`:
   slug_prefix 128,456 / gamma_tags 26,992 / unknown 41,021.
@@ -217,6 +259,8 @@ that is your clean no — reached cheaply, before any venue work.
   (`CATEGORY_ALLOWLIST`, `DEFAULT_MIN_RESOLVED_FLOOR=50`, `DEFAULT_RECENCY_DAYS=30`), `stats.py`
   (cost-based ROI, `is_upper_bound`), `farm.py`, `db.py` (`pm_closed_position` schema),
   `loss_grounding.py` / `analyze.py` (F-1 bias), `pm_cli.py` / `rosters.py` (roster-scoped ingest).
+- Per-whale CFB-vs-other-sport concentration: **done** (follow-up; found 0 natives). Backfill
+  caps some books at 8,000 rows (caveat D) → capped whales' CFB shares are upper bounds.
 - **Not done this pass (deliberate, to keep box load nil):** `/activity` loss-omission grounding
-  per whale; per-whale CFB-vs-other-sport concentration; live leaderboard enumeration of
-  CFB-native whales. All are the plan's job.
+  per whale; live leaderboard enumeration of CFB-native whales (needs `cfb` in the allowlist).
+  Both are the plan's job.
