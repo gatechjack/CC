@@ -136,6 +136,45 @@ the `boot-reconcile account=` line, not declare failure early. ★ Two measureme
 fixed in the recheck, neither a real fault): the arm read missed `PYTHONPATH=$ROOT` (ModuleNotFoundError), and it ran
 ~21s post-wire before boot finished (0 rows -> falsely alarming). [[suspect-the-measurement-first]] again.
 
+## ★★ STAGE 2 (L3 pm_web) BUILT + BOX-SCRATCHED GREEN 2026-09-06 ~03:45Z. STAGED. HALTED for Jack's pm_web restart.
+pm_web-ONLY (no engine touch, nothing bounces). Re-grafted file-by-file onto the box's DEPLOY-5 web (NOT a copy of
+my multicat base). ★ THE BOOT-WINDOW FINDING IS IN THE DISPLAY: read_liveness now has a **BOOTING** state
+(commit `4be6163`) -- a sub whose task is stale/absent reads BOOTING (amber, NON-alarm) while the ACCOUNT's most-recent
+beat is younger than `BOOT_GRACE_SEC=10min` (evidence a restart is booting); past the grace it escalates to the real
+STALE/NEVER red. Per-ACCOUNT (a healthy sibling never masks a dead account); ghost/detached categories excluded. The
+28h incident is far past grace -> STILL RED (acceptance holds). Panel renders amber "driver restarting -- N booting,
+normal after a restart, not a fault". pm_web-side ONLY -- no engine boot-marker, so no engine change.
+
+**Files grafted (6):** `heartbeat.py` (+BOOTING, read-side ONLY -- WRITERS byte-identical, engine surface unchanged),
+`web/app.py` (+heartbeat import + liveness in the 3 loaders, adapted to DEPLOY-5's `_load_live_subdivision(...,now_ts)`
++`**ctx`), `web/templates/{pm_accounts,pm_account,pm_live_subdivision}.html` (panel/badge, purely additive), NEW
+`web/templates/partials/pm_liveness.html`. **BOX-SCRATCH GREEN** (`cc/pm_liveness_stage2_scratch.*`, box tree + my
+overlay, box venv): [1] templates **removed=0** each (subtract nothing; betline/whaletag/slots_by_kind intact);
+[2] app.py **/pm/arm=0**, no engine-import leak, only-additive (every original return key kept); [3] heartbeat
+**writers byte-identical** (no writer fn in the diff); [4] **22 tests pass** (test_liveness_web 10 + test_heartbeat 12)
+against the DEPLOY-5 web; [5] pm_web imports NO engine; [6] engine+pm_web PIDs untouched.
+
+**Deploy runners (staged, NOT run):** `cc/pm_liveness_stage2_apply.*` -- drift-check gate (box-live source sha ==
+what I grafted onto: heartbeat 0dcc1114 / app.py 34bb61ed / pm_accounts 014c03ba / pm_account a5f39df0 /
+pm_live_subdivision db9cb08c; ABORT+re-graft on any mismatch) -> writers-untouched + /pm/arm=0 re-verify -> backup ->
+place the 6 files -> Gate-A (pm_web imports no engine) -> **NO restart, HALT**. Then Jack restarts ONLY
+`prediction-markets-web`. `cc/pm_liveness_stage2_postcheck.*` (read-only, after the restart): pages 200 + panel
+renders + live state (RUNNING, engine live from Stage 1) + DEPLOY-5 content intact (TRADING/Realized/shard/bet-slots/
+whale) + **/pm/arm 404 on pm_web** (M5) + engine PID still 208950. STOP CONDITIONS: pm_web 500 / healthz fail /
+DEPLOY-5 content regressed / isolation import fails -> restore the backup + restart pm_web (engine + arm untouched, so
+a pm_web failure never stops trading).
+
+### ★ TWO FLAGS FOR JACK (Stage 2)
+1. **Stale box tests/**: the box's `tests/prediction_markets/test_accounts_m2.py` asserts OLD-web content + runs an
+   anonymous client -> it fails against the DEPLOY-5 UI the box actually serves, INDEPENDENT of this graft (the
+   DEPLOY-5 UI tests live in the pm-ui-rewrite branch, not on the box). Excluded from the box-scratch with a logged
+   reason. Not blocking; worth a `tests/` refresh on the box someday.
+2. **Hardcoded RUNNING badge**: the DEPLOY-5 `pm_account.html` sub-division row has a hardcoded
+   `<span class="badge armed">RUNNING</span>` (pre-existing) -- a fake always-green status that would show RUNNING
+   even during an outage (the exact failure this feature kills). I LEFT it (to honor "adds a panel, subtracts nothing")
+   and added the real boot-aware panel beside it. Recommend replacing that fake badge with the real `b.liveness` badge
+   in a follow-up so it can't contradict the panel -- your call (it changes existing page content).
+
 ## ★★★ STAGE 1 APPLIED 2026-09-06 ~03:01Z (migration 020 + engine graft). (superseded by VERIFIED GREEN above)
 Board-authorized atomic Stage 1 executed via `cc/pm_liveness_stage1b_apply.{ps1,sh}`. ★ DRIFT FOUND + RECONCILED:
 the box engine `db.py` had **drifted from my multicat base** (comment-only — a 4-line migration-017 back-port note +

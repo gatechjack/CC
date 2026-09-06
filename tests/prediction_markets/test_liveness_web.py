@@ -195,4 +195,4 @@ def test_live_subdivision_page_shows_single_badge(monkeypatch, tmp_path):
     _beat(p, task_age=5, subs=[("kalshi_jack", "mlb")], ev_age=5, summ={"n_signals": 0, "placed": 0})
     html = cl.get("/live/kalshi_jack/mlb").text
     assert 'data-liveness-state="IDLE"' in html                 # cycling, 0 signals -> IDLE
-    assert '>Driver<' in html                                   # the Driver section heading rendered
+    assert 'pm-lv-badge' in html                                # the liveness badge rendered on the live page
