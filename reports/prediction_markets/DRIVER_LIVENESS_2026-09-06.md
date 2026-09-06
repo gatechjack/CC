@@ -115,8 +115,79 @@ migration-019 banner reserves **020+** for it ("close to deploying").
     freebie): mirror `account_page`/`_load_account` — resolve `identity, is_admin` in `live_subdivision_page`, pass
     into `_load_live_subdivision`, return `_FORBIDDEN` (403) when `account_id not in visible_account_ids(...)`,
     guarding the schema-9/no-account cases. All current `/live` tests run as admin, so admins are unaffected.
-- **L5 — stage deploy (manifest, migration ordering, post-check, stop conditions). HALT.** in progress (below).
+- **L5 — stage deploy (manifest, migration ordering, post-check, stop conditions). BUILT + STAGED. HALTED for Jack.**
+  Branch `pm-driver-liveness-2026-09-06` PUSHED (commits `e4773a0` L1, `a892dfe` L2, `d347d0d` L3, `48a02fb` L4).
+  Read-only recon RAN (`cc/pm_liveness_deploy_recon.{ps1,sh}`, engine+pm_web PIDs untouched) — results below.
+
+## ★★ THE STAGED DEPLOY (manifest / ordering / post-check / stop). NOTHING MUTATING RUN. HALTED.
+
+**Global STOP (never depends on any web surface, works with both down):**
+`cd /home/azureuser/trading_corp && PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global`
+
+**Recon result (2026-09-06 ~02:29Z, READ-ONLY):**
+- **[A] MIGRATION GATE = GREEN:** box live PM DB `/home/azureuser/trading_corp/data/prediction_markets.db`
+  schema head = **19**, applied versions contiguous 1..19, both heartbeat tables ABSENT. **-> PROCEED with 020**
+  (pm-ui-rewrite has not taken it). ★ RE-RUN THIS GATE immediately before Stage 1; if head moved to 20, ABORT +
+  renumber 020->021 (still contiguous) + re-graft db.py, then proceed.
+- **[B] ENGINE files graftable:** `heartbeat.py` ABSENT (new-file drop); `live_driver.py` anchors present at the
+  SAME line numbers as my base (`cycles += 1`@703, `for c in cats`@735, `run_live_arm_gated_cycle`@848) with ZERO
+  `heartbeat.` refs -> additive hunks apply cleanly; `db.py` carries `(19, MIGRATION_019)`, no 020. Confirm by a
+  CR-stripped compare at Stage-1 build.
+- **[C] PM_WEB base-mismatch CONFIRMED (DEPLOY-5 lineage):** the box web HAS `live_view.py` (my multicat base does
+  NOT); the loaders sit at different lines; **`_load_live_subdivision` has a DIFFERENT signature**
+  (`(account_id, category, now_ts)` + a `**ctx` merge from live_view); the templates are the larger pm-ui-rewrite
+  versions (`pm_live_subdivision.html` 211+ lines vs my ~60). So **L3 must be RE-GRAFTED onto the box's DEPLOY-5
+  web at deploy time, not file-copied.** `_load_accounts_overview`/`_load_account` signatures + the
+  `shard_snapshot.read_latest`/return anchors DO match -> those two grafts map directly. `partials/` exists;
+  `pm_liveness.html` drops in new.
+
+### STAGE 1 — L1 + L2 (ONE engine bounce; migration LEADS the code). HALT: needs a live DB write + engine restart.
+Files: `db.py` (+`MIGRATION_020` block after 019, +`(20, MIGRATION_020)` in `MIGRATIONS`; `SCHEMA_HEAD` auto-follows
+the `max(...)`), `heartbeat.py` (NEW), `live_driver.py` (+`heartbeat` import, +3 grains, +2 mark_skipped). GRAFT
+`db.py`+`live_driver.py` file-by-file (CR-stripped compare to prove only my additive hunks differ); drop `heartbeat.py`.
+Ordering (mirrors the M3 shard-snapshot precedent — migration BEFORE the writer restart):
+  1. Backup: `cp -r` the three engine files + a `sqlite3 .backup` of the PM DB to `~/pm_liveness_stage1_backup_<TS>/`.
+  2. Re-run the [A] drift-check gate (head==19 or ABORT+renumber).
+  3. **Apply migration 020 (LIVE DB WRITE — Jack authorizes):** `PYTHONPATH=. venv/bin/python -c "from
+     trading_corp.prediction_markets import db; db.init_db()"` -> creates the two heartbeat tables, writes
+     schema_version row 20. Idempotent; the writer also fail-softs if the table is absent.
+  4. Place the grafted `db.py`/`live_driver.py` + new `heartbeat.py` into the live tree.
+  5. **Restart `trading-corp` (ENGINE BOUNCE — Jack authorizes; warn co-tenants FIRST — it bounces EVERY division,
+     mace + all 8 PM subs).**
+POST-CHECK (Stage 1): engine MainPID changed + NRestarts sane + start clean; `schema_version` MAX=20 + both
+heartbeat tables exist; within ~15s the driver writes rows — `SELECT account_id,category,state FROM
+pm_driver_heartbeat` shows the 8 expected subs RUNNING/IDLE (not NEVER); `pm_driver_task_heartbeat` has 2 fresh
+account rows; boot-reconcile clean; arm rows BYTE-UNCHANGED + still armed (global + jack/karen × mlb/ufc/atp/wta);
+0 Traceback / 0 exposure_unknown; the 3 file hashes match the grafted versions. STOP CONDITIONS: any of — migration
+did not reach 20, heartbeat tables absent after init_db, arm rows changed, a driver Traceback, or subs read NEVER
+after ~1 min -> `live-disarm --global`, restore from the Stage-1 backup, restart, investigate.
+
+### STAGE 2 — L3 (pm_web restart ONLY; no engine touch). HALT: needs a pm_web restart + prod file writes.
+Because the box web is DEPLOY-5, this is a fresh graft built AT DEPLOY TIME against the then-current box web (NOT a
+copy of my base files — those are the older multicat templates). Steps:
+  1. Fetch the box's live `web/app.py` + `web/templates/{pm_accounts,pm_account,pm_live_subdivision}.html` +
+     `web/live_view.py`; build the graft: (a) add `heartbeat` to the app.py `from .. import ...` line; (b) add the
+     liveness read to `_load_accounts_overview` (anchor `shard_snapshot.read_latest`@~560 — direct) + `_load_account`
+     (return anchor@~607 — direct) + `_load_live_subdivision` (ADAPT to its `(…, now_ts)` + `**ctx` shape); (c) gate
+     every alarm bool on `liveness_present`; (d) re-apply the template edits (import `lv`, `liveness_assets()`, the
+     panel/badge) to the DEPLOY-5 templates at their real structure; (e) drop in `partials/pm_liveness.html` (new).
+  2. Box-scratch the grafted pm_web on the box venv (`test_liveness_web` + `test_web_healthz` + `test_web_r4/r6` +
+     `test_accounts_m2` must pass; the pm_web-imports-no-engine invariant MUST hold).
+  3. Backup the box web files; place the grafted files; **restart `prediction-markets-web` (Jack authorizes).**
+POST-CHECK (Stage 2): pm_web MainPID changed + healthz 200; `/`, `/account/{id}`, `/live/{acct}/{cat}` all 200; the
+liveness panel renders (RUNNING/IDLE after Stage 1) with `data-liveness-present="1"`; a deliberate read shows a
+green panel now (not red); the pm-ui-rewrite DEPLOY-5 content (bet slots, whales, MLB card) is byte-intact (I only
+ADDED a panel). STOP CONDITIONS: pm_web 500 / healthz fail / the pm-ui-rewrite content regressed / isolation import
+guard fails -> restore the box web backup + restart pm_web. (The engine + arm state are untouched by Stage 2, so a
+pm_web failure never stops trading.)
+
+### Deploy-shape answer to Jack's question
+L1+L2 = ONE engine bounce (migration 020 leads). L3 = a SEPARATE pm_web restart, no engine touch. Two restarts on
+two different services (engine once, pm_web once) — never two engine bounces.
 
 ## Open rulings (write here; keep building around them)
-- The migration-number contention with pm-ui-rewrite (above) — recommendation given (020 + deploy-drift-check);
-  Jack to coordinate or confirm.
+- **Migration number:** recon says box head==19 -> **020 is free; PROCEED** (re-check at deploy). No renumber needed
+  now. The contiguity invariant still means whoever deploys first takes 020; the drift-check handles the race.
+- **★ Finding #4 — the unscoped `/live` GET route (L4 review):** pre-existing + documented-intentional. Ruling
+  needed: leave as-is (my liveness badge is marginal on an already-open route) OR close it (own test pass — the
+  minimal fix + its schema-9/tile-on-create risk are in the L4 section). Not blocking the liveness deploy either way.
