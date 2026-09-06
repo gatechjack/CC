@@ -869,6 +869,46 @@ MIGRATION_019: list[str] = [
     "ALTER TABLE pm_account ADD COLUMN multi_category_ok INTEGER NOT NULL DEFAULT 0",
 ]
 
+# migration 020 (2026-09-06, DRIVER LIVENESS -- L1). ★★ SCHEMA NUMBER 020 IS CLAIMED BY THIS WORKSTREAM
+# (pm-driver-liveness). ★★ CONTESTED WITH pm-ui-rewrite, which the migration-019 banner reserves "020+" for
+# ("carries 017, close to deploying"). WHY 020 AND NOT A HIGHER 'safe' NUMBER: db.py migrations are CONTIGUOUS by
+# a tested invariant (test_schema_head_tracks_migrations: `[v...] == range(1, HEAD+1)`), so a gap number (021 with
+# 020 empty) is NOT viable -- it breaks that invariant, and weakening it would also mask ACCIDENTAL gaps. So the
+# next migration is necessarily 020. init_db uses a SINGLE MAX(version) counter (`if version <= current: skip`), so
+# if the box already reached 20 our DDL SILENTLY SKIPS -- the exact class of hazard that let the driver-clobber pass
+# 28h. ★★ THE COLLISION IS RESOLVED AT DEPLOY, NOT BY THE NUMBER: the deploy GATE drift-checks the LIVE box schema
+# head == 19 immediately before applying. If it moved (pm-ui-rewrite shipped their 020 first, box=20) -> ABORT and
+# renumber THIS to 021 (still contiguous, after the box's 20) + graft db.py file-by-file (box-is-truth). Either way
+# our table is applied, never silently skipped. Coordinate the number with pm-ui-rewrite. Additive; two tables;
+# both read/write guard on table existence -> a pre-migration schema degrades to honest-empty (code preceding the
+# migration cannot crash).
+# The driver LIVENESS heartbeat: born from the 2026-09-04 incident (driver deleted from main.py -> PM did not trade
+# ~28h, undetected because arm state was correct -- arm != liveness). Records "the driver cycled at T for
+# sub-division X" so a dead/never-spawned task is VISIBLE. THREE grains (a per-sub heartbeat alone is a liar -- the
+# cycle body is one try/except, so one category throwing starves its siblings' writes while the task is alive):
+# per-account task_alive (the task is running), per-(account,category) reached (the loop reached this category),
+# per-(account,category) evaluated + a cheap summary (this category fully evaluated + what it did).
+MIGRATION_020: list[str] = [
+    "CREATE TABLE IF NOT EXISTS pm_driver_task_heartbeat ("
+    " account_id    TEXT    NOT NULL PRIMARY KEY,"
+    " last_cycle_ts INTEGER NOT NULL,"            # bumped at the TOP of the driver's while-loop -> the task is alive
+    " updated_ts    INTEGER"
+    ")",
+    "CREATE TABLE IF NOT EXISTS pm_driver_heartbeat ("
+    " account_id      TEXT    NOT NULL,"
+    " category        TEXT    NOT NULL,"
+    " reached_ts      INTEGER,"                   # first thing in the category loop -> the loop reached this category
+    " evaluated_ts    INTEGER,"                   # after the arm-gated cycle returns -> this category fully evaluated
+    " n_signals       INTEGER,"                   # the cheap summary: IDLE (0 signals) vs PLACING (placed>0)
+    " placed          INTEGER,"
+    " errors          INTEGER,"
+    " ceiling_latched INTEGER,"                   # alive-but-intentionally-not-placing -> NOT a fault on the display
+    " state           TEXT,"                      # 'evaluated' | 'skipped_no_builder' | 'skipped_no_ctx'
+    " updated_ts      INTEGER,"
+    " PRIMARY KEY (account_id, category)"
+    ")",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -889,6 +929,9 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (17, MIGRATION_017),   # back-ported from loss-omission (box already has it) -- keeps [1..18] contiguous
     (18, MIGRATION_018),   # opposed-guard R2: pm_opposed_marker (decision-keyed memory)
     (19, MIGRATION_019),   # M4: pm_account.multi_category_ok (per-account fail-closed opt-in) -- DROPPABLE with M4
+    (20, MIGRATION_020),   # DRIVER LIVENESS: pm_driver_task_heartbeat + pm_driver_heartbeat (3-grain liveness).
+                           # ★ CONTESTED with pm-ui-rewrite's reserved 020 -- resolved at DEPLOY by the box-head
+                           # drift-check + renumber-to-021 (see the MIGRATION_020 banner). Contiguous by design.
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"
