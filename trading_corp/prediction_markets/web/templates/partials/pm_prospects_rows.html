@@ -1,4 +1,4 @@
-{% from "pm_macros.html" import whale_label, flag_badges %}
+{% from "pm_macros.html" import whale_label, flag_badges, omission_cell %}
 {# PROSPECTS rows -- COMPLETED basis (pm_category_stats via the F-4 repurposed query_scoreboard ranker, filtered
    to this category's candidates). DEFAULT ORDER cost-ROI desc; columns sortable (client-side, progressive
    enhancement -- JS-off keeps the default order). Every aggregate drills through to its rows via the EXISTING
@@ -44,7 +44,13 @@
     <tr>
       <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
       <td class="pm-num" data-sort-value="{{ r.n_resolved or 0 }}">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
-      <td class="pm-num pm-muted">{% if r.win_rate is not none %}{{ '%.0f'|format(r.win_rate * 100) }}%{% else %}&mdash;{% endif %}</td>
+      {# ★ win% + its per-whale F-1 omission caveat, IN THE SAME CELL (the caveat travels with the number). When the
+         whale is UN-analyzed the caveat IS an [Analyze] control (omission_cell macro) -- the instruction is
+         actionable where it appears; once analyzed the figure replaces it in place (OOB from the result). #}
+      <td class="pm-num pm-muted pm-winpct-cell">
+        <span class="pm-winpct{% if r.win_rate is not none and (not r.loss_omission.known or (r.loss_omission.omission_pct is not none and r.loss_omission.omission_pct > 0)) %} pm-winpct-caveated{% endif %}">{% if r.win_rate is not none %}{{ '%.0f'|format(r.win_rate * 100) }}%{% else %}&mdash;{% endif %}</span>
+        {{ omission_cell(r.loss_omission, r.wallet, r.category) }}
+      </td>
       <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}" data-sort-value="{{ r.roi if r.roi is not none else -999 }}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
       <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}" data-sort-value="{{ r.net_realized_pnl if r.net_realized_pnl is not none else -1000000000000 }}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
       {# LAST-UPDATED per whale: band + age; a NULL ts is RED "never" -- staleness visible, never silent. sort by ts. #}

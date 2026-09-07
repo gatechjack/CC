@@ -72,6 +72,16 @@ a{color:inherit; text-decoration:none}
 .pm-table th.pm-num{text-align:right}
 .pm-mono{font-family:"JetBrains Mono",Consolas,monospace; font-size:.78rem; max-width:14rem; overflow:hidden; text-overflow:ellipsis}
 .pm-muted{color:var(--muted)}
+.pm-ticker-raw{font-size:.82em;font-family:"JetBrains Mono",Consolas,monospace}
+.pm-arm-state{display:flex;align-items:center;gap:.6rem;margin:.3rem 0 1.1rem;flex-wrap:wrap}
+.pm-badge-armed{background:rgba(16,185,129,.15);color:var(--gain);border:1px solid var(--gain)}
+.pm-badge-disarmed{background:rgba(148,163,184,.12);color:var(--muted);border:1px solid var(--muted)}
+.pm-flag-thin{color:var(--warn)}
+.pm-empty-inline{color:var(--muted)}
+/* snapshot AGE bands -- must be obvious at a glance; very_stale looks WRONG (a healthy-looking stale number is the Karen-death shape) */
+.pm-age-fresh{background:rgba(16,185,129,.15);color:var(--gain);border:1px solid var(--gain)}
+.pm-age-stale{background:rgba(245,158,11,.18);color:var(--warn);border:1px solid var(--warn)}
+.pm-age-very_stale{background:rgba(244,63,94,.22);color:var(--loss);border:1px solid var(--loss);font-weight:700}
 .pm-primary{font-weight:700}
 th.pm-primary{color:var(--mono)}
 .pm-gain{color:var(--gain)}
@@ -267,10 +277,10 @@ th.pm-primary{color:var(--mono)}
 .pm-analyze-cost strong{color:var(--mono)}
 .pm-analyze-prov{margin-left:auto}
 
-/* ── Stage 2 phase 1: navigation skeleton (dashboard shell -> farm-league tiles -> per-category shell) ──
-   ADDITIVE ONLY. These classes are referenced solely by the new pm_shell hierarchy (pm_dashboard.html,
-   pm_farm_league.html, pm_farm_category.html, pm_category_404.html). The legacy pages (pm_scoreboard.html,
-   pm_farm.html) do NOT use them, so appending this block leaves their rendering byte-for-byte unchanged.
+/* ── Stage 2 phase 1: navigation skeleton (accounts shell -> farm-league tiles -> per-category shell) ──
+   ADDITIVE ONLY. These classes are referenced solely by the new pm_shell hierarchy (pm_accounts.html + M2's
+   pm_account.html, pm_farm_league.html, pm_farm_category.html, pm_category_404.html). The legacy pages
+   (pm_scoreboard.html, pm_farm.html) do NOT use them, so appending this block leaves their rendering unchanged.
    Retired together with those templates when phase 3 repoints /dashboard->/ and /farm-league->/farm. */
 
 /* dashboard menu cards (Live sub-divisions [P3, disabled] + Farm League) */
@@ -341,3 +351,19 @@ th.pm-primary{color:var(--mono)}
 .pm-btn-refresh.htmx-request{opacity:.6; cursor:progress}
 .pm-refresh-notice{margin:.2rem 0 .6rem; padding:.4rem .6rem; font-size:.8rem; color:var(--warn);
   background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.4); border-radius:5px}
+
+/* ── Stage 5: loss-omission % travels BESIDE win% (never a separate footnote; UNKNOWN, never a 0 that means unchecked) ── */
+.pm-winpct-cell{white-space:normal}
+.pm-winpct-caveated{text-decoration:underline dotted rgba(244,63,94,.55); text-underline-offset:2px}
+.pm-omit{display:block; margin-top:.12rem; font-size:.68rem; line-height:1.25; font-weight:600; white-space:normal}
+.pm-omit-bad{color:var(--red)}
+.pm-omit-unknown{color:var(--amber)}
+.pm-omit-ok{color:var(--green)}
+.pm-omit-floor{opacity:.85; font-weight:700}
+/* the un-analyzed omission caveat IS the ungated [Analyze] control -- a button reset to look like the caveat but
+   clearly clickable; only on un-analyzed rows (cost-safe), disables while the LLM call is in flight. */
+.pm-omit-analyze{background:none; border:none; padding:0; font-family:inherit; text-align:left; cursor:pointer;
+  text-decoration:underline dotted}
+.pm-omit-analyze:hover{filter:brightness(1.15)}
+.pm-omit-analyze .pm-omit-cta{font-weight:700; text-decoration:underline}
+.pm-omit-analyze[disabled]{cursor:progress; opacity:.6}

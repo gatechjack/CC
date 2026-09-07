@@ -1,0 +1,105 @@
+{% extends "pm_shell.html" %}
+{% block title %}{{ account.account_label or account.account_id }} &middot; Prediction Markets{% endblock %}
+{% block main_class %}class="wrap desk"{% endblock %}
+{% from "partials/pm_arm_badge.html" import arm_badge as armbadge %}
+{% import "partials/pm_liveness.html" as lv %}
+
+{% macro agechip(age_sec, stale_after=180) %}
+  {%- set stale = age_sec is not none and stale_after is not none and age_sec > stale_after -%}
+  <span class="chip {% if stale %}stale{% endif %}" data-age0="{{ age_sec if age_sec is not none else '' }}" data-stale="{{ stale_after if stale_after is not none else '' }}">{{ age_sec|agefmt }}{% if stale %} &middot; stale{% endif %}</span>
+{%- endmacro %}
+
+{# current value ALWAYS carries its mark coverage (Jack's ruling): 'N of M priced' under every figure. #}
+{% macro openvalue(ov) %}
+  {%- if not ov or ov.n_total == 0 -%}{{ 0.0|money }} <span class="dim">(0 positions)</span>
+  {%- elif ov.n_priced == 0 -%}<span class="wsm">no mark</span> <span class="wsm">(0 of {{ ov.n_total }} priced)</span>
+  {%- else -%}{{ ov.value|money }} {% if ov.complete %}<span class="dim">({{ ov.n_priced }} of {{ ov.n_total }} priced)</span>{% else %}<span class="wsm">(partial: {{ ov.n_priced }} of {{ ov.n_total }} priced)</span>{% endif %}
+  {%- endif -%}
+{% endmacro %}
+
+{% macro shardtable(snap) %}
+  {% if snap %}
+  <table class="sh"><thead><tr><th>Shard</th><th>Balance age</th><th>Cash</th></tr></thead><tbody>
+    {% if snap.has_breakdown %}
+      {% for idx, cash in snap.by_shard|dictsort %}
+      <tr><td>Shard {{ idx }}</td><td>{{ agechip(snap.age_sec, 900) }}</td><td>{{ cash|money }}</td></tr>
+      {% endfor %}
+    {% else %}
+      <tr><td>All shards</td><td>{{ agechip(snap.age_sec, 900) }}</td><td>{{ snap.total_dollars|money }} <span class="dim">(split unknown)</span></td></tr>
+    {% endif %}
+    <tr class="baseball"><td><b>Total</b></td><td></td><td><b>{{ snap.total_dollars|money }}</b></td></tr>
+  </tbody></table>
+  <p class="caveat" style="margin:10px 0 0">Only the division's funding shard can be spent on this division. Each balance shows its own age.</p>
+  {% else %}
+  <p class="caveat" style="margin:10px 0 0">No balance snapshot yet{% if not shard_snap_table %} (the snapshot store is not present){% else %} (snapshots are written every 5 minutes){% endif %}.</p>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+  <div class="crumb"><a href="/">Accounts</a> / {{ account.account_label or account.account_id }}</div>
+  <div style="display:flex;align-items:center;gap:14px;margin-top:4px;flex-wrap:wrap">
+    <h1>{{ account.account_label or account.account_id }} &middot; {{ account.venue or 'kalshi' }}</h1>
+    <span class="tag trading">TRADING</span>
+    {{ armbadge(arm_badge.global_state, arm_badge.global_age, 'GLOBAL ') }}
+    <span class="caveat" style="margin-left:2px">read-only &mdash; arming is done from the service, not here</span>
+  </div>
+
+  {# DRIVER LIVENESS (L3) for this account's sub-divisions -- per-sub grid + a red alarm on any STALE/NEVER, amber
+     BOOTING during a restart. NOTE: the per-sub row below still shows a HARDCODED 'RUNNING' badge (pre-existing,
+     DEPLOY-5) -- this panel is the real signal; the fake badge is flagged for replacement, left to subtract nothing. #}
+  {{ lv.liveness_assets() }}
+  {{ lv.liveness_panel(liveness_rows, liveness_present, liveness_alarm, scope=account.account_label or account.account_id) }}
+
+  <h2>Aggregate performance</h2>
+  <div class="panel pad">
+    <div class="figs">
+      <div class="fig"><div class="lbl">Realized P&amp;L</div>
+        <div class="val {{ account.realized_pnl|pnlcls }}">{{ account.realized_pnl|signed }}</div>
+        <div class="caveat"><span class="wsm">{{ account.n_closed }} settled trade{{ '' if account.n_closed == 1 else 's' }}</span> &mdash; {% if account.thin_sample %}a sample this small tells you the plumbing works, not that the strategy wins.{% else %}outcome, not proven edge.{% endif %}</div></div>
+      <div class="fig"><div class="lbl">Record</div>
+        <div class="val">{{ account.wins }}&ndash;{{ account.losses }}</div>
+        <div class="caveat">Settled positions, not games. One game can settle three ways.</div></div>
+      <div class="fig"><div class="lbl">Open exposure &mdash; at cost</div>
+        <div class="val">{{ account.open_cost_usd|money }}</div>
+        <div class="caveat">{{ account.n_open }} unsettled position{{ '' if account.n_open == 1 else 's' }}. Not what they are worth.</div></div>
+      <div class="fig"><div class="lbl">Open positions &mdash; current value</div>
+        <div class="val">{{ openvalue(account.open_value) }}</div>
+        <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if value_as_of %}, {{ agechip(now_ts - value_as_of, 180) }}{% endif %}.</div></div>
+    </div>
+  </div>
+
+  <h2>Sub-divisions</h2>
+  {% if account.subdivisions %}
+  {% for b in account.subdivisions %}
+  <div class="panel" style="margin-bottom:12px">
+    <div class="pad" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+      <div>
+        <div style="font-family:var(--dmono);font-size:15px">{% if b.sub_label %}{{ b.sub_label }}{% else %}{{ account.account_label }} &middot; {{ b.category|upper }}{% endif %}</div>
+        <div class="caveat" style="margin-top:4px">
+          {{ b.market_types or b.category|upper }}
+          {% if b.n_whales is not none %} &middot; {{ b.n_whales }} whale{{ '' if b.n_whales == 1 else 's' }} followed{% endif %}
+          {% if b.n_live_trades is not none %} &middot; {{ b.n_live_trades }} order{{ '' if b.n_live_trades == 1 else 's' }} placed{% endif %}
+        </div>
+        <div class="caveat" style="margin-top:6px">Realized <span class="{{ b.realized_pnl|pnlcls }}">{{ b.realized_pnl|signed }}</span> over {{ b.n_closed }} settled ({{ b.wins }}W / {{ b.losses }}L){% if b.thin_sample %} <span class="wsm">&mdash; thin sample</span>{% endif %} &middot; open {{ b.open_cost_usd|money }} at cost / {{ openvalue(b.open_value) }} value</div>
+      </div>
+      {# the hardcoded always-green 'RUNNING' badge was REMOVED here (2026-09-06): it read RUNNING even during an
+         outage -- exactly the false reassurance the Driver-liveness panel above exists to replace. The panel is the
+         SINGLE, real, boot-aware liveness indicator on this page; the row keeps only its P&L + the drill link. #}
+      <div style="margin-left:auto;display:flex;align-items:center;gap:16px">
+        <a href="/live/{{ b.account_id }}/{{ b.category }}">Open division &rarr;</a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="panel pad"><p class="caveat" style="margin:0">No sub-divisions on this account yet.</p></div>
+  {% endif %}
+
+  <h2>Cash by shard</h2>
+  <div class="panel pad" style="max-width:680px">
+    {{ shardtable(shard_snap) }}
+    {% if shard_dir and shard_dir.n_snapshots and shard_dir.n_snapshots > 1 %}<p class="caveat" style="margin:12px 0 0">Shard-0 is <b>{{ shard_dir.verdict }}</b> across {{ shard_dir.n_snapshots }} snapshots ({{ shard_dir.shard0_first|money }} &rarr; {{ shard_dir.shard0_last|money }}).</p>{% endif %}
+  </div>
+{% endblock %}
+
+{% block scripts %}<script src="/static/pm_live.js" defer></script>{% endblock %}

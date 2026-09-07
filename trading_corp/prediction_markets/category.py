@@ -27,9 +27,16 @@ SLUG_PREFIX_MAP: dict[str, str] = {
     "atp": "atp",
     "wta": "wta",
     "cbb": "cbb",
+    "cfb": "cfb",          # college football (US NCAA); per-game 'cfb-<away>-<home>-DATE' slugs. Was 'unknown'.
     "fifwc": "fifwc",
     "epl": "epl",
     "ucl": "ucl",
+    # rung 3 follow-up (2026-09-07, Jack ruled per-league): the 8 built soccer leagues classify PER-LEAGUE
+    # from here on (was coarse 'soccer' via the tier-2 gamma tag). Slug prefix keyed -- stable per league,
+    # already in the data; adding a league is one line, nothing goes stale. The coarse 'soccer' tag is retired
+    # below. The deferred tail (col/elc/efl/nor/tur/arg/... -- no matcher yet) becomes 'unknown', not 'soccer'.
+    "lal": "lal", "fl1": "fl1", "uel": "uel", "mls": "mls",
+    "sea": "sea", "bun": "bun", "bra": "bra", "mex": "mex",
     "wnba": "wnba",
     "nascar": "nascar",
     # Fed rate markets appear under several event-slug shapes; all -> 'fed'.
@@ -76,7 +83,12 @@ TAG_SLUG_TO_CATEGORY: dict[str, str] = {
     "ufc": "ufc",
     "nfl": "nfl",
     "nhl": "nhl",
-    "soccer": "soccer",
+    # 'soccer' RETIRED as a category (2026-09-07, Jack ruled per-league): the driver copies per-league
+    # (epl/lal/fl1/sea/bun/mls/bra/mex/ucl/uel), and a whale's per-league record is exactly the signal an
+    # umbrella would hide. Soccer bets classify per-league via the slug prefix (tier-1) now. A soccer bet whose
+    # league is NOT yet built (the deferred tail) no longer falls back to coarse 'soccer' -> it is 'unknown'
+    # (correct: uncopyable until its matcher is built). Nothing else keys off 'soccer' (verified: only the
+    # separate arbitrage-broker _SPORTS_SERIES + a legacy title-keyword taxonomy, both untouched).
     "golf": "golf",
     "tennis": "tennis",
     "cs2": "cs2",

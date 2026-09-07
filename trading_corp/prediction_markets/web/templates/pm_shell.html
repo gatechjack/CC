@@ -5,37 +5,35 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}Prediction Markets{% endblock %}</title>
   {# VENDORED, loopback-served assets ONLY (NO CDN on this network-exposed host, no build step).
-     pm_shell is THE base for the whole Prediction Markets app -- Dashboard (/) / Farm League (/farm) /
-     per-category (/farm/{cat}) / the whale + watchlist details. Stage 2 phase 3 retired the flat scoreboard
-     and farm pages and the old pm_base.html, and repointed the hierarchy onto the good URLs. #}
-  <link rel="stylesheet" href="/static/pm.css" />
-  <script src="/static/htmx.min.js" defer></script>
+     pm.css keeps the Farm-League / whale pages' styling; pm_desk.css (loaded after) is the copy-desk design
+     system for the Accounts / Account / Live pages + the shared shell. Bare h1/h2/a in pm_desk are scoped
+     under .desk so they never restyle the farm pages. #}
+  {# CACHE-BUST (item 1): the static server sends no far-future max-age, so a browser holds a stale copy of a
+     changed asset -- exactly why the shipped .toggle .tgl rule did not appear on prod after DEPLOY 2 (the CSS was
+     correct on the box; the browser served an old pm_desk.css). The ?v= is the asset's own CR-stripped sha8, so a
+     changed file gets a new URL and is always re-fetched. test_asset_cache_bust keeps these in sync with the
+     files, so a CSS/JS change that forgets to bump the hash fails CI rather than shipping stale. #}
+  <link rel="stylesheet" href="/static/pm.css?v=204d9051" />
+  <link rel="stylesheet" href="/static/pm_desk.css?v=8121e8e0" />
+  <script src="/static/htmx.min.js?v=491955cd" defer></script>
 </head>
 <body class="pm-body">
-  <header class="pm-header">
-    <div class="pm-header-inner">
-      <a href="/" class="pm-brand">
-        <span class="pm-logo">PM</span>
-        <span class="pm-brand-txt">Prediction Markets<span class="pm-brand-sub">dashboard</span></span>
-      </a>
-      {# THE navigation hierarchy (Dashboard=/, Farm League=/farm, Live sub-divisions=/live). Stage 3 R3 enabled
-         the Live link (read-only list); it is honest-empty until a sub-division is created. #}
-      <nav class="pm-nav">
+  <header class="top">
+    <div class="in">
+      <a href="/" class="brand" style="text-decoration:none;color:var(--text)">Prediction Markets <span>&mdash;</span> Live Copy</a>
+      {# THE navigation hierarchy: Accounts (money is watched) / Farm League (whales are found) / Live
+         Sub-divisions (positions run). An /account path keeps Accounts active; /live keeps Live active. #}
+      <nav class="nav">
         {% set path = request.url.path %}
-        <a href="/" class="pm-nav-link {% if path == '/' %}pm-nav-active{% endif %}">Dashboard</a>
-        <a href="/farm" class="pm-nav-link {% if path.startswith('/farm') %}pm-nav-active{% endif %}">Farm League</a>
-        <a href="/live" class="pm-nav-link {% if path.startswith('/live') %}pm-nav-active{% endif %}">Live sub-divisions</a>
+        <a class="ni" href="/" {% if path == '/' or path.startswith('/account') %}aria-current="page"{% endif %}><b>Accounts</b><em>where money is watched</em></a>
+        <a class="ni" href="/farm" {% if path.startswith('/farm') %}aria-current="page"{% endif %}><b>Farm League</b><em>where whales are found</em></a>
+        <a class="ni" href="/live" {% if path.startswith('/live') %}aria-current="page"{% endif %}><b>Live Sub-divisions</b><em>where positions run</em></a>
       </nav>
-      <div class="pm-header-right">{% block header_extras %}{% endblock %}</div>
+      <div class="right">{% block header_extras %}{% endblock %}</div>
     </div>
   </header>
 
-  <main class="pm-main">{% block content %}{% endblock %}</main>
-
-  <footer class="pm-footer">
-    <span>pm_web &middot; farm-league navigation (Stage 2 &middot; phase 1 skeleton)</span>
-    <span class="pm-footer-right">bias down, never up &middot; caveats travel with the number</span>
-  </footer>
+  <main {% block main_class %}class="pm-main"{% endblock %}>{% block content %}{% endblock %}</main>
 
   {% block scripts %}{% endblock %}
 </body>

@@ -85,12 +85,20 @@ class ArmVerdict:
 
 
 # ── READ (mode=ro; FAIL-SAFE DISARMED on any error) ──────────────────────────
-def _load_row(legacy_db_path: str | None, key: str) -> dict | None:
-    """mode=ro read of agent_state(pm_live, key) -> dict, or None. FAIL-SAFE: a missing file, a missing
-    agent_state table, malformed json, or ANY error returns None (the caller treats None as DISARMED)."""
+def _read_row_status(legacy_db_path: str | None, key: str):
+    """mode=ro read of agent_state(pm_live, key) that DISTINGUISHES a definitive ABSENCE from an
+    INDETERMINATE read. Returns (status, row): 'ok' -> row is a dict; 'absent' -> there is definitively no
+    persisted state (no file, or the table read cleanly and this scope has no row); 'error' -> the state
+    could NOT be determined (locked DB / missing table / io error / corrupt-or-non-dict json).
+
+    Why the distinction matters (the latch-clear guard): the READ path (read_arm_verdict) treats BOTH
+    'absent' and 'error' as DISARMED (fail-safe OFF -- correct, an unreadable arm state must never place).
+    But the LATCH-CLEAR guard needs more: it must let a cold-start ('absent') scope arm, yet must NEVER
+    clear a latch it cannot read ('error'). Collapsing the two (the old `_load_row` -> None) let a transient
+    read failure skip the latch guard and re-arm a killed account. `_scope_latched_failsafe` uses this."""
     path = resolve_legacy_db_path(legacy_db_path)
     if not os.path.exists(path):
-        return None                                     # no legacy DB yet -> disarmed (never create it here)
+        return ("absent", None)                         # no legacy DB yet -> genuinely no persisted latch
     try:
         conn = sqlite3.connect("file:%s?mode=ro" % os.path.abspath(path), uri=True)
         try:
@@ -99,14 +107,39 @@ def _load_row(legacy_db_path: str | None, key: str) -> dict | None:
         finally:
             conn.close()
     except Exception:
-        return None                                     # locked / no table / io error -> disarmed
+        return ("error", None)                          # locked / no table / io error -> INDETERMINATE
     if not r or r[0] is None:
-        return None
+        return ("absent", None)                         # table read cleanly; this scope simply has no row
     try:
         v = json.loads(r[0])
     except (TypeError, ValueError):
-        return None
-    return v if isinstance(v, dict) else None
+        return ("error", None)                          # corrupt json -> INDETERMINATE (never 'no latch')
+    if not isinstance(v, dict):
+        return ("error", None)                          # not our shape -> INDETERMINATE
+    return ("ok", v)
+
+
+def _load_row(legacy_db_path: str | None, key: str) -> dict | None:
+    """mode=ro read of agent_state(pm_live, key) -> dict, or None. FAIL-SAFE: a missing file, a missing
+    agent_state table, malformed json, or ANY error returns None (the caller treats None as DISARMED).
+    Both ABSENT and INDETERMINATE collapse to None here -- correct for the READ/verdict path, which is
+    DISARMED either way. The latch-clear guard uses `_scope_latched_failsafe` instead (it must NOT)."""
+    status, row = _read_row_status(legacy_db_path, key)
+    return row if status == "ok" else None
+
+
+def _scope_latched_failsafe(legacy_db_path: str | None, key: str):
+    """(latched, auto_trigger, manual_exit_required) for the latch-clear guard. FAIL-SAFE: an INDETERMINATE
+    read ('error') is treated as LATCHED (never clear a latch we cannot confirm is absent); a definitively
+    ABSENT scope ('absent', e.g. cold start) is NOT latched (so a first arm still works); an 'ok' row
+    reports its real latch. This closes the hole where a transient read failure skipped the guard and let a
+    killed account be re-armed without the human --clear-latch."""
+    status, row = _read_row_status(legacy_db_path, key)
+    if status == "error":
+        return (True, "unreadable_state", True)         # cannot confirm unlatched -> refuse to clear (worst-case flags)
+    if status == "absent":
+        return (False, None, False)                     # no persisted latch to clear (cold start / never latched)
+    return (bool(row.get("latched")), row.get("auto_trigger"), bool(row.get("manual_exit_required")))
 
 
 def _row_armed(row) -> bool:
@@ -162,6 +195,108 @@ def read_status(account_id: str | None = None, category: str | None = None, *,
     return out
 
 
+def read_display(account_id: str | None = None, category: str | None = None, *,
+                 legacy_db_path: str | None = None) -> dict:
+    """A DISPLAY snapshot for pm_web's READ-ONLY arm badge -- the TRUTH is the persisted agent_state row + its
+    ts. Unlike read_status()/read_arm_verdict() (which fail-safe-COLLAPSE an INDETERMINATE read to DISARMED --
+    correct for the GATE, WRONG for a display), this DISTINGUISHES a real state from an unreadable one:
+
+      global_state / sub_state / effective_state in {'armed','disarmed','absent','unavailable'}
+        'armed'       -- the persisted row says armed=True.
+        'disarmed'    -- the persisted row says armed=False (a real human/auto disarm).
+        'absent'      -- the table read CLEANLY and there is no row (cold start -> disarmed-by-absence).
+        'unavailable' -- the row could NOT be read (mode=ro error / locked / missing table). This is the
+                         FALSE-disarm the engine team flagged: a status read near a restart looks disarmed.
+                         The badge shows 'unavailable' (never 'disarmed'), so a transient read is never
+                         mistaken for a human kill.
+
+    `*_ts` is the row's own write timestamp (ISO8601) -- the badge renders it as an age chip like every other
+    feed value. effective_state is 'armed' only if BOTH global and sub rows read OK and armed; 'unavailable'
+    if EITHER read failed. Read-only: never writes; pulls no engine code."""
+    def _state(status, row):
+        if status == "error":
+            return "unavailable"
+        if status == "absent":
+            return "absent"
+        return "armed" if _row_armed(row) else "disarmed"
+
+    gstatus, grow = _read_row_status(legacy_db_path, GLOBAL_KEY)
+    out = {"global_state": _state(gstatus, grow), "global_ts": (grow or {}).get("ts"),
+           "global_reason": (grow or {}).get("reason")}
+    if account_id and category:
+        sstatus, srow = _read_row_status(legacy_db_path, sub_key(account_id, category))
+        if gstatus == "error" or sstatus == "error":
+            eff = "unavailable"                                        # cannot confirm -> not a real disarm
+        elif _row_armed(grow) and _row_armed(srow):
+            eff = "armed"
+        else:
+            eff = "disarmed"
+        out.update({"sub_state": _state(sstatus, srow), "sub_ts": (srow or {}).get("ts"),
+                    "sub_reason": (srow or {}).get("reason"), "effective_state": eff,
+                    "effective_ts": (srow or {}).get("ts") or (grow or {}).get("ts")})
+    return out
+
+
+def read_display_all(pairs, *, legacy_db_path: str | None = None) -> dict:
+    """BATCHED read_display for the tile page: ONE mode=ro open of the legacy agent_state DB, classify the GLOBAL
+    master and EACH (account_id, category) in `pairs` into armed/disarmed/absent/unavailable + the effective state
+    (armed iff BOTH global and sub are armed). Semantics identical to read_display (which does per-scope reads); this
+    just avoids opening the DB 2x per sub for a 40+ tile page. Read-only; an unreadable DB -> every scope
+    'unavailable' (never a false disarm); an absent file -> every scope 'absent' (never armed); a corrupt/non-dict
+    row -> that scope 'unavailable' (never mistaken for a kill). Returns {'global': {'state','ts'},
+    'subs': {(account_id, category): {'sub_state','sub_ts','effective_state'}}}."""
+    pairs = list(pairs)
+    parsed: dict = {}
+    bad: set = set()
+    status = "ok"
+    path = resolve_legacy_db_path(legacy_db_path)
+    rows = []
+    if not os.path.exists(path):
+        status = "absent"                                  # no legacy DB yet -> nothing armed anywhere
+    else:
+        try:
+            conn = sqlite3.connect("file:%s?mode=ro" % os.path.abspath(path), uri=True)
+            try:
+                rows = conn.execute("SELECT key, value_json FROM agent_state WHERE agent=? AND key LIKE 'arm:%'",
+                                    (PM_LIVE_ACTOR,)).fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            status = "error"                               # locked / no table / io error -> INDETERMINATE (never a disarm)
+        for k, vj in rows:
+            try:
+                v = json.loads(vj)
+            except (TypeError, ValueError):
+                bad.add(k); continue
+            if isinstance(v, dict):
+                parsed[k] = v
+            else:
+                bad.add(k)
+
+    def _state(key):
+        if status == "error" or key in bad:
+            return "unavailable"
+        if status == "absent" or key not in parsed:
+            return "absent"
+        return "armed" if _row_armed(parsed[key]) else "disarmed"
+
+    gstate = _state(GLOBAL_KEY)
+    grow = parsed.get(GLOBAL_KEY)
+    out = {"global": {"state": gstate, "ts": (grow or {}).get("ts")}, "subs": {}}
+    for (a, c) in pairs:
+        sk = sub_key(a, c)
+        sstate = _state(sk)
+        srow = parsed.get(sk)
+        if gstate == "unavailable" or sstate == "unavailable":
+            eff = "unavailable"                            # cannot confirm -> not a real disarm
+        elif gstate == "armed" and sstate == "armed":
+            eff = "armed"
+        else:
+            eff = "disarmed"
+        out["subs"][(a, c)] = {"sub_state": sstate, "sub_ts": (srow or {}).get("ts"), "effective_state": eff}
+    return out
+
+
 # ── WRITE (ENGINE / CLI side only; lazy engine import) ───────────────────────
 def _write(key: str, value: dict, *, legacy_db_path: str | None = None) -> None:
     """Reuse the engine's set_agent_state (the migration-010-sanctioned mechanism). Lazily imported so
@@ -191,11 +326,16 @@ def arm(account_id: str | None = None, category: str | None = None, *, by: str |
     silently re-arms. Arming a NON-latched scope needs no flag."""
     key = GLOBAL_KEY if global_ else sub_key(account_id, category)
     if not require_latch_clear:
-        cur = _load_row(legacy_db_path, key)
-        if isinstance(cur, dict) and cur.get("latched"):
+        # FAIL-SAFE latch guard: refuse if the scope is latched OR if the latch state cannot be read
+        # (locked/corrupt). The old guard read `_load_row` and skipped on None -- but None also means an
+        # INDETERMINATE read, so a transient read failure let a killed account re-arm without the ack. Now
+        # only a definitively-ABSENT (cold-start) scope arms without the flag.
+        latched, trigger, _mx = _scope_latched_failsafe(legacy_db_path, key)
+        if latched:
             raise LatchedError(
-                "refusing to arm %s: a LATCHED auto-disarm (%s) is set; a human must acknowledge it "
-                "(require_latch_clear=True / CLI --clear-latch) before arming" % (key, cur.get("auto_trigger")))
+                "refusing to arm %s: a LATCHED auto-disarm (%s) is set or the latch state is UNREADABLE; a "
+                "human must acknowledge it (require_latch_clear=True / CLI --clear-latch) before arming"
+                % (key, trigger))
     _write(key, _armed_value(reason="operator_arm", source=source, by=by), legacy_db_path=legacy_db_path)
 
 
@@ -208,11 +348,14 @@ def disarm(account_id: str | None = None, category: str | None = None, *, reason
     its trigger + manual-exit flag), so the invariant holds: ONLY arm(require_latch_clear=True) clears a
     latch. A manual disarm of a non-latched scope stays non-latched."""
     key = GLOBAL_KEY if global_ else sub_key(account_id, category)
-    cur = _load_row(legacy_db_path, key) or {}
-    latched = bool(cur.get("latched"))
+    # FAIL-SAFE latch preservation: an INDETERMINATE read must NOT drop a latch (the old `_load_row or {}`
+    # coalesced a failed read to {} -> latched=False -> the latch silently vanished, letting a later arm skip
+    # the ack). `_scope_latched_failsafe` returns latched=True on an unreadable row, so a manual disarm can
+    # never clear an auto-disarm latch it could not read. armed is ALWAYS False here (disarm never arms).
+    latched, trigger, manual_exit = _scope_latched_failsafe(legacy_db_path, key)
     _write(key, {"armed": False, "latched": latched,
-                 "auto_trigger": cur.get("auto_trigger") if latched else None,
-                 "manual_exit_required": bool(cur.get("manual_exit_required")) if latched else False,
+                 "auto_trigger": trigger if latched else None,
+                 "manual_exit_required": manual_exit if latched else False,
                  "reason": reason, "source": source, "by": by, "ts": _now_iso()},
            legacy_db_path=legacy_db_path)
 

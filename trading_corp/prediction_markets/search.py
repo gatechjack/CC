@@ -59,8 +59,12 @@ from typing import Any, Callable, Iterable, NamedTuple
 # (PM_REQUIREMENTS R2), no table, no migration. Every entry is a canonical category emitted by
 # category.derive_category_from_slug / category.TAG_SLUG_TO_CATEGORY (verified against both maps).
 CATEGORY_ALLOWLIST: frozenset[str] = frozenset({
-    "mlb", "nba", "nfl", "nhl", "wnba",
-    "epl", "ucl", "soccer",
+    "mlb", "nba", "nfl", "nhl", "wnba", "cfb",
+    # soccer is PER-LEAGUE (2026-09-07, Jack ruled): the 10 built leagues each admit as their own Farm-League
+    # category (tile + page + prospect screen). 'soccer' RETIRED (removed) -- it stops being a farm bucket and a
+    # pin target. NOTE: farm.py league_categories()/is_live_farm_category derive tiles FROM this allowlist, so
+    # these render (empty until Jack's Search sweep) on the next pm_web restart -- no separate tile code.
+    "epl", "ucl", "lal", "fl1", "uel", "mls", "sea", "bun", "bra", "mex",
     "atp", "wta", "tennis",
     "cs2", "golf", "ufc", "fed",
 })

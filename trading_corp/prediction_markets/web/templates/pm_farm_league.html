@@ -9,6 +9,32 @@
       allowlist. A category stays here even with an empty Watchlist; click one for its Watchlist and Prospects.</p>
   </div>
 
+  {# ★ SEARCH (prospect discovery) -- admin-only. Structurally ALL-CATEGORIES: the Polymarket leaderboard knows
+     only coarse buckets (no per-sport query), so this searches EVERYTHING from the main page, never per-tile.
+     Styling is a scoped block below (NOT pm.css -- that file is owned by a concurrent UI workstream). #}
+  {% if is_admin %}
+  <style>
+    .pm-search-panel{border:1px solid var(--line2,#2a3444);border-radius:8px;padding:.75rem 1rem;margin:0 0 1.25rem;background:var(--panel,#141b26)}
+    .pm-search-panel .pm-h2{margin:0 0 .4rem;font-size:1rem}
+    .pm-search-warn{margin:.25rem 0 .6rem}
+    .pm-search-status{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem .9rem}
+    .pm-search-status .pm-ss-line{margin:0;flex:1 1 22rem;min-width:16rem}
+    .pm-search-status.pm-ss-running .pm-ss-line::before{content:"\2022";color:var(--live,#3b82f6);font-weight:700;margin-right:.4rem;animation:pm-ss-pulse 1.2s ease-in-out infinite}
+    .pm-search-status.pm-ss-error .pm-ss-line,.pm-search-status.pm-ss-stale .pm-ss-line{color:var(--warn,#d08b2c)}
+    @keyframes pm-ss-pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  </style>
+  <div class="pm-search-panel" data-search-panel="1">
+    <h2 class="pm-h2">Prospect discovery</h2>
+    <div class="pm-caveat pm-caveat-loss pm-search-warn" role="note" data-search-warn="1">
+      <span class="pm-caveat-tag">HEADS UP</span>A search takes roughly <strong>90 minutes</strong> and pulls from
+      Polymarket over the <strong>same network path the live trading engine uses</strong> (it polls whale positions
+      every few seconds). A sweep <strong>may briefly compete with live copying</strong> &mdash; heavy API use can
+      push the engine into rate-limit backoff, so a copy could be placed late or missed. It searches <strong>all
+      categories at once</strong> (the leaderboard cannot be narrowed to one sport). Admin-only.</div>
+    {% include "partials/pm_search_status.html" %}
+  </div>
+  {% endif %}
+
   {% if categories %}
   <div class="pm-tilegrid">
     {% for c in categories %}

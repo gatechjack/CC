@@ -6,8 +6,9 @@ STANDALONE by construction: imports ONLY fastapi + the PM package (db / stats / 
 Reads/writes ONLY data/prediction_markets.db (prediction_markets.db._assert_not_legacy hard-guards the path).
 Reuses the engine web IDIOM (FastAPI + the off-loop `asyncio.to_thread` read pattern, mace_view) but not the process.
 
-ROUTES (Stage 2 phase 3 -- the Farm-League hierarchy IS the app; the flat scoreboard/farm pages were RETIRED):
-  GET  /                              -> the main Predictions-Market Dashboard (pm_dashboard.html)
+ROUTES (M2 2026-09-01: multi-account -- / is the ACCOUNTS OVERVIEW, the new top of the hierarchy, R1):
+  GET  /                              -> accounts overview (pm_accounts.html): per-account PM P&L, DISPLAY-ONLY
+  GET  /account/{account_id}         -> one account's per-sub-division P&L (pm_account.html); display-only note if untraded
   GET  /farm                          -> the Farm-League category tiles (pm_farm_league.html)
   GET  /farm/{category}               -> the per-category page: Watchlist (paper) + Prospects (completed)
   GET  /whale/{wallet}[/{category}]   -> a PROSPECT / completed drill-through (reuses pm_position_rows.html)
@@ -20,17 +21,26 @@ Spec: reports/prediction_markets/PM_REBUILD_PLAN_2026-08-26.md (Stage 2, the pha
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from ..db import connect
-from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search
-from ..category import NON_SINGLE_GAME_CATEGORIES
+from ..db import connect, pm_db_path
+from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot, heartbeat
+from . import authz   # M4: fail-closed identity/admin resolution + account-visibility scoping (reads headers+env only)
+from . import live_view, poller, ui_cache   # UI rewrite: game-card assembly + the 60s feed/marks poller + its cache
+from ..market_describe import describe_market
+from ..category import NON_SINGLE_GAME_CATEGORIES, derive_category_from_slug
+
+log = logging.getLogger(__name__)
 
 _PKG_DIR = Path(__file__).resolve().parent
 _TEMPLATE_DIR = _PKG_DIR / "templates"
@@ -49,6 +59,10 @@ templates.env.globals["non_single_game_categories"] = sorted(NON_SINGLE_GAME_CAT
 # fallback) is likewise the ruled constant -- a candidate with n_resolved < floor is thin-sample by construction.
 templates.env.globals["loss_omission_caveat"] = search.LOSS_OMISSION_CAVEAT
 templates.env.globals["thin_sample_floor"] = search.DEFAULT_MIN_RESOLVED_FLOOR
+# Plain-language market descriptions (interim item a): translate a Kalshi ticker (+ held leg) to a human sentence
+# in the /live table. Pure/standalone -- market_describe imports only the data-layer team map + ticker parsers.
+# The RAW ticker stays shown beneath it (translated + raw -- honest, and the raw is still there for precision).
+templates.env.globals["describe_market"] = describe_market
 
 
 def _utcdate(ts) -> str:
@@ -60,6 +74,121 @@ def _utcdate(ts) -> str:
 
 
 templates.env.filters["utcdate"] = _utcdate
+
+
+def _utcdatetime(ts) -> str:
+    """unix ts -> 'YYYY-MM-DD HH:MM:SSZ' (UTC); em-dash for missing/zero. Registered as the `utcdt` Jinja filter
+    for the live-trade rows, where an intraday order needs the TIME, not just the date (an order and its exit can
+    share a date)."""
+    if isinstance(ts, (int, float)) and ts:
+        return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(int(ts)))
+    return "—"
+
+
+templates.env.filters["utcdt"] = _utcdatetime
+
+
+# ── UI-rewrite display filters (money / signed / p&l class / relative age). Cost basis and current value are
+# ALWAYS distinct strings, and a None value renders an em-dash, never $0.00 (unknown is not zero). ──────────────
+def _money(v) -> str:
+    if v is None:
+        return "—"
+    return ("-$%.2f" % abs(v)) if v < 0 else ("$%.2f" % v)
+
+
+def _signed(v) -> str:
+    if v is None:
+        return "—"
+    return ("+$%.2f" % v) if v >= 0 else ("-$%.2f" % abs(v))
+
+
+def _pnlcls(v) -> str:
+    if v is None or v == 0:
+        return ""
+    return "pos" if v > 0 else "neg"
+
+
+def _agefmt(sec) -> str:
+    """Relative age for a feed value. None -> 'unknown' (a value with no age is not a current value)."""
+    if sec is None:
+        return "unknown"
+    sec = max(0, int(sec))
+    if sec < 60:
+        return "%ds ago" % sec
+    if sec < 3600:
+        return "%dm ago" % (sec // 60)
+    return "%dh %dm ago" % (sec // 3600, (sec % 3600) // 60)
+
+
+def _et(ts):
+    from datetime import datetime, timezone
+    if not ts:
+        return None
+    return live_view.feed_mlb.utc_to_eastern(datetime.fromtimestamp(int(ts), tz=timezone.utc))
+
+
+def _ettime(ts) -> str:
+    """unix ts -> 'HH:MM:SS' Eastern (the timezone MLB games + Kalshi tickers use); em-dash for missing."""
+    et = _et(ts)
+    return et.strftime("%H:%M:%S") if et else "—"
+
+
+def _etdate(ts) -> str:
+    et = _et(ts)
+    return et.strftime("%Y-%m-%d") if et else "—"
+
+
+def _etdt(ts) -> str:
+    et = _et(ts)
+    return et.strftime("%m-%d %H:%M ET") if et else "—"
+
+
+templates.env.filters["money"] = _money
+templates.env.filters["signed"] = _signed
+templates.env.filters["pnlcls"] = _pnlcls
+templates.env.filters["agefmt"] = _agefmt
+templates.env.filters["ettime"] = _ettime
+templates.env.filters["etdate"] = _etdate
+templates.env.filters["etdt"] = _etdt
+
+
+# ── the 60s feed/marks poller: ONE background task, started with the app, writing ui_cache (single-worker
+# uvicorn). It does no DB access and reaches no order path -- purely network-into-cache. Guarded so a double
+# startup (e.g. a test harness) never spawns two loops. ────────────────────────────────────────────────────────
+_poller_task = None
+
+
+def _held_series_provider():
+    """The Kalshi series the mark poller should fetch, derived from every ticker we CURRENTLY HOLD across all
+    sub-divisions (item 3) -- so ATP/UFC/WTA get priced the same as MLB, never a hardcoded MLB list. A short-lived
+    read connection; returns () on any DB blip so the poller falls back to its MLB default. Runs inside the
+    poller's synchronous refresh pass (already off the event loop), so a blocking DB read is fine here."""
+    try:
+        with connect() as conn:
+            return subdivision.traded_series(conn)
+    except Exception:   # noqa: BLE001 -- a series-read blip must not sink the refresh; MLB default takes over
+        return ()
+
+
+@app.on_event("startup")
+async def _start_poller() -> None:
+    global _poller_task
+    if _poller_task is None or _poller_task.done():
+        _poller_task = asyncio.create_task(
+            poller.poll_loop(ui_cache.cache(), series_provider=_held_series_provider))
+        log.info("pm_web: feed/marks poller started")
+
+
+@app.on_event("shutdown")
+async def _stop_poller() -> None:
+    global _poller_task
+    if _poller_task is not None and not _poller_task.done():
+        _poller_task.cancel()
+        try:
+            await _poller_task
+        except (asyncio.CancelledError, Exception):   # noqa: BLE001 -- shutdown must not raise
+            pass
+        _poller_task = None
 
 
 def _pm_db_schema_version() -> int | None:
@@ -176,26 +305,116 @@ async def whale_positions(request: Request, wallet: str, category: str, drill: s
 # "only successful verdicts are cached" rule live in analyze.analyze_whale. The key is NOT wired (e3) so today
 # every call returns the llm_unavailable reasoned-null and the deterministic report renders without a verdict.
 
-def _run_analyze(wallet: str, category: str, force: bool, now_ts: int) -> dict:
+def _row_category(row) -> str:
+    """Category of an Activity/Closed row via the platform's TIER-1 slug-prefix deriver (sync, NO network) -- the
+    SAME axis pm_closed_position.category is built on, so the re-grounded loss set filters on the same category as
+    the deterministic core. Rows tier-1 cannot place (unknown) fall OUT of the category filter -> for them a_only is
+    a conservative LOWER bound, never an over-count. (No tier-2 gamma-tag join here: grounding is a caveat, and one
+    network round per analyze click is already the /activity + /closed-positions paging.)"""
+    return derive_category_from_slug(getattr(row, "event_slug", None), getattr(row, "slug", None))[0]
+
+
+# ── Stage 5 loss-omission SURFACING (2026-09-01): the omission % + its coverage travel BESIDE win% on both the ──────
+# Analyze result and the Prospects LIST. The figure is COMPUTED ON ANALYZE (which already pays the /activity + gamma
+# fetch) and CACHED per whale in pm_loss_grounding_cache with its own age; the LIST reads that cache -- grounding 131
+# rows on render is not viable, and a background job would hammer the shared prod IP. A whale never Analyzed has NO
+# cache row -> UNKNOWN, never 0% (a 0 that means 'nobody checked' is the safety-check-that-stops-checking shape).
+def _upsert_loss_grounding(conn, wallet: str, category: str, g, now_ts: int) -> None:
+    """Cache this whale's re-grounded loss omission so the Prospects LIST can show it without re-fetching. Written on
+    every Analyze (re)grounding; PK (wallet, category) -> one row per slice, grounded_ts = the figure's OWN age."""
+    conn.execute(
+        "INSERT OR REPLACE INTO pm_loss_grounding_cache(wallet, category, honest_wins, honest_losses, a_only_losses, "
+        "loss_omission_pct, coverage_pct, activity_truncated, n_activity_held_resolved, completeness, grounded_ts) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (wallet, category, g.honest_wins, g.honest_losses, g.a_only_losses, g.loss_omission_pct, g.coverage_pct,
+         1 if g.activity_truncated else 0, g.n_activity_held_resolved, g.completeness, int(now_ts)))
+    conn.commit()
+
+
+def _loss_omission_cell(entry: dict | None, now_ts: int) -> dict:
+    """Render-ready omission cell for a prospect row. entry=None (this whale was NEVER Analyzed) -> known=False =
+    UNKNOWN (the template shows 'omission unknown -- Analyze'), NEVER 0%. A 0 that means 'nobody looked' is exactly the
+    display Jack flagged as the worst possible: it reads as 'no omission' when it means 'unchecked'."""
+    if not entry:
+        return {"known": False}
+    ts = entry.get("grounded_ts") or 0
+    cov = entry.get("coverage_pct")
+    truncated = bool(entry.get("activity_truncated"))
+    return {"known": True, "omission_pct": entry.get("loss_omission_pct"), "coverage_pct": cov,
+            "a_only_losses": entry.get("a_only_losses"), "honest_wins": entry.get("honest_wins"),
+            "honest_losses": entry.get("honest_losses"), "truncated": truncated,
+            # FLOOR = truncated OR under-covered (older losers beyond the window) -- NOT truncation alone, so a
+            # low-coverage-but-untruncated omission is not shown as a full measurement.
+            "floor": bool(truncated or (cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)),
+            "age_days": ((now_ts - ts) / 86400.0) if ts else None}
+
+
+def _load_loss_grounding_map(conn, category: str) -> dict:
+    """{wallet: <cache row dict>} for every Analyzed whale in this category. Absent wallets stay absent ->
+    _loss_omission_cell(None) = UNKNOWN. One scan of the per-category-indexed cache; ~O(candidates)."""
+    return {r["wallet"]: dict(r) for r in conn.execute(
+        "SELECT wallet, honest_wins, honest_losses, a_only_losses, loss_omission_pct, coverage_pct, "
+        "activity_truncated, grounded_ts FROM pm_loss_grounding_cache WHERE category=?", (category,)).fetchall()}
+
+
+def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grounding=None) -> dict:
     """Run Analyze on ONE short-lived connection, OFF the event loop. WRITES the PM DB (cache + cost ledger);
     reads/writes ONLY prediction_markets.db (db._assert_not_legacy guards the path). Sync (analyze narrates
-    synchronously) so it drops straight into asyncio.to_thread with no nested event loop."""
+    synchronously) so it drops straight into asyncio.to_thread with no nested event loop. `loss_grounding` (Stage 5)
+    is the re-grounded loss set the async route fetched on a miss; None -> the report renders ungrounded."""
     with connect() as conn:
-        rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force)
+        rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force, loss_grounding=loss_grounding)
+        if loss_grounding is not None:                        # (re)grounded THIS click -> cache the omission so the
+            _upsert_loss_grounding(conn, wallet, category, loss_grounding, now_ts)   # Prospects LIST can show it beside win%
         day = analyze._utc_day(now_ts)
         spent, n_calls = analyze.daily_cost(conn, day)
     return {"report": rep, "flags": analyze.analysis_flags(rep),
             "cost_today": spent, "cost_cap": analyze.PM_ANALYZE_DAILY_CAP_USD, "cost_day": day}
 
 
+def _analysis_is_cached(wallet: str, category: str) -> bool:
+    """Off-loop cache PEEK: is there a stored verdict for this (wallet, category, current skill_version)? Governs
+    whether the route pays for the /activity loss-grounding fetch AT ALL -- a cache HIT skips the network entirely,
+    so the 'a hit spends nothing' contract holds for the /activity fetch too, not just the LLM call."""
+    with connect() as conn:
+        return analyze.is_cached(conn, wallet, category)
+
+
+async def _ground_losses(wallet: str, category: str):
+    """Re-ground the whale's LOSS set for (wallet, category) from /activity (Stage 5, the F-1 held-to-worthless
+    bias). Returns a LossGrounding or None. FAIL-SOFT: any network/parse failure -> None and Analyze proceeds
+    UNGROUNDED (the honest-loss block simply does not render) -- the grounding is a caveat enrichment, NEVER
+    load-bearing for the deterministic report. Network runs ON the loop (its awaits yield); the lazy import keeps
+    the data-layer client off the module import surface (the standalone-imports guard, test_pm_web_imports_no_engine)."""
+    try:
+        from ...data.polymarket_data_api_client import PolymarketDataAPIClient
+        async with PolymarketDataAPIClient() as client:
+            g = await loss_grounding.fetch_and_ground_losses(client, wallet, category, category_of=_row_category)
+        # Only surface a grounded block when /activity actually yielded in-category held-to-resolution decisions to
+        # compare against. A zero-decision fetch has NOTHING to affirm -- rendering "0W/0L honest" would imply we
+        # checked and found nothing when we may simply have no activity feed for this slice -- so treat it as
+        # UNGROUNDED (no block), the honest degrade.
+        return g if (g is not None and g.n_activity_held_resolved > 0) else None
+    except Exception as exc:   # noqa: BLE001 -- caveat enrichment must never break Analyze; degrade to ungrounded
+        log.warning("pm analyze: loss-grounding failed for %s/%s (%s) -- rendering ungrounded",
+                    wallet[:10], category, type(exc).__name__)
+        return None
+
+
 @app.post("/farm/analyze/{wallet}/{category}", response_class=HTMLResponse)
 async def farm_analyze(request: Request, wallet: str, category: str, force: str | None = None):
     """Analyze a (wallet, category) and swap in the result partial. POST because it may WRITE (narrate ->
     cache + cost). `?force=1` re-analyzes (evicts the cached verdict first). Identity is the (wallet, category),
-    not which list the button sat in."""
+    not which list the button sat in. Stage 5: re-ground the loss set from /activity ONLY when we will actually
+    (re)build -- a cache HIT skips the /activity fetch, so a hit still spends nothing."""
     wallet = (wallet or "").lower()
+    category = (category or "").strip().lower()
     do_force = str(force or "").strip().lower() in ("1", "true", "yes", "on")
-    data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, int(time.time()))
+    now_ts = int(time.time())
+    grounding = None
+    if do_force or not await asyncio.to_thread(_analysis_is_cached, wallet, category):
+        grounding = await _ground_losses(wallet, category)               # async network ON the loop; None on failure
+    data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, now_ts, grounding)
     return templates.TemplateResponse(request, "partials/pm_analyze_result.html", {"request": request, **data})
 
 
@@ -205,27 +424,18 @@ async def farm_analyze(request: Request, wallet: str, category: str, force: str 
 # bases by construction: Watchlist(pinned) -> pm_paper_category_stats (paper); Prospects(candidate) ->
 # query_scoreboard over pm_category_stats (completed). The three-lists / three-bases invariant holds on one page.
 
-def _load_dashboard() -> dict:
-    """Dashboard read: the active Farm-League category COUNT + the LIVE sub-division COUNT (both data-driven,
-    honest-empty; 0 sub-divisions pre-migration-010 since the tables are absent -> honest, not an error). The Live
-    section carries NO live-trade data (P3). OFF the loop, PM DB only."""
-    # n_categories = the LEAGUE category set (the ruled allowlist), so the dashboard count matches the /farm tile
-    # count (both labelled "Kalshi-copyable categories"). NOT the pinned-data count -- a category exists by allowlist
-    # membership, not by having pinned whales (Jack 2026-08-30, the tile-vanish fix).
-    n_categories = len(farm.league_categories())
-    with connect() as conn:
-        n_subdivisions = len(subdivision.list_subdivisions(conn))
-    return {"n_categories": n_categories, "n_subdivisions": n_subdivisions}
-
-
 def _load_farm_league() -> dict:
     """Farm-League tile read. Tiles = `farm.league_categories()` = the RULED 15-category allowlist (Jack
     2026-08-30, the tile-vanish fix). A category EXISTS iff it is in the allowlist and not deactivated (deactivated
     = not in the allowlist). NOT driven by pinned rows: an empty watchlist is legitimate, so a category with
     prospects-but-no-pinned (or with neither) STILL renders its tile -- data stranded behind a missing tile is the
     class of defect this closes. The pair-grain active flag governs list membership, not tile existence. The
-    allowlist is a constant -> no DB read. OFF the loop."""
-    return {"categories": farm.league_categories()}
+    allowlist is a constant. Also reads the latest SEARCH run state (the single-flight status the discovery
+    panel shows: idle / running / done / error / stale) -- one small DB read. OFF the loop."""
+    from ..search_run import latest_search_status
+    with connect() as conn:
+        search_status = latest_search_status(conn, now_ts=int(time.time()))
+    return {"categories": farm.league_categories(), "search_status": search_status}
 
 
 def _load_farm_category(category: str, now_ts: int) -> dict | None:
@@ -253,6 +463,7 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
         # ranker's own ORDER BY leads with score; here the SCREEN's default axis is cost-ROI (roi-None sorts last).
         # The client-side column sort re-orders on demand; this only sets the LOAD order.
         prospects.sort(key=lambda r: (r.get("roi") is None, -(r.get("roi") or 0.0)))
+        lg_map = _load_loss_grounding_map(conn, category)                               # per-whale omission cache (Analyze-fed)
         for r in prospects:
             r["flags"] = stats.scoreboard_flags(r)                                      # same tokens as CLI/scoreboard
             # THIN-SAMPLE (visible, not inferable): a candidate BELOW the N floor came in via the <10-qualifier
@@ -260,6 +471,9 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
             r["thin_sample"] = (r.get("n_resolved") or 0) < search.DEFAULT_MIN_RESOLVED_FLOOR
             # LAST-UPDATED per whale (on-demand ruling): staleness VISIBLE per-whale, never silent.
             r["last_refresh"] = stats.refresh_band_state(r.get("last_refresh_ts"), now_ts)
+            # ★ LOSS-OMISSION BESIDE win% (Stage 5): the caveat travels with the number it corrupts. UNKNOWN (not 0%)
+            # for a whale never Analyzed -- the omission is COMPUTED ON ANALYZE and cached, not grounded on list render.
+            r["loss_omission"] = _loss_omission_cell(lg_map.get(r["wallet"]), now_ts)
         refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
         # R6: the ACTIVE accounts = the promote-to-LIVE targets. Auto-create (ruling 1) makes the (account,
         # category) sub-division on demand, so a Watchlist row offers "promote to <account>", not a pre-existing
@@ -269,13 +483,173 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
             "live_accounts": live_accounts}
 
 
+# ── Multi-account (M2, 2026-09-01): the accounts overview (the new top of the hierarchy, R1) + per-account page. ──
+# DISPLAY-ONLY (ruled): these render PM's journal-derived P&L per account; they carry NO arm/attach control (R4:
+# the global arm STATE is visible read-only, the CONTROL is admin-only + M5). An account with 0 PM sub-divisions is
+# NOT traded by PM -- the page states that in the copy, never an empty frame implying it will fill (per-account
+# TRADING is a filed, gated phase -- NOT_SCOPED_REVIEW_2026-09-01.md). realized/win-loss/SAMPLE/open-at-cost are
+# shown SEPARATELY with the thin-sample caveat travelling WITH the number (the R2c display discipline).
+
+def _annotate_pnl(a: dict, floor: int) -> None:
+    a["pm_traded"] = a.get("n_subdivisions", 0) > 0
+    a["thin_sample"] = a.get("n_closed", 0) < floor
+
+
+def _iso_age(ts_str, now_ts: int):
+    """ISO8601 arm-row write-timestamp -> age in seconds vs now_ts, or None -- the arm badge's age chip."""
+    if not ts_str:
+        return None
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+        return max(0, now_ts - int(dt.timestamp()))
+    except (ValueError, TypeError, OSError):
+        return None
+
+
+def _arm_badge(account_id: str | None = None, category: str | None = None, *, now_ts: int) -> dict:
+    """The READ-ONLY arm badge context from the PERSISTED agent_state rows (arm.read_display). State is one of
+    armed/disarmed/absent/unavailable; 'unavailable' (an INDETERMINATE mode=ro read) is shown as such, NEVER as
+    a disarm -- a status read near a restart is a false disarm, and the persisted row + its ts are the truth.
+    The row's own ts becomes the badge age. pm_web only DISPLAYS; the CLI stays the authoritative kill path."""
+    d = arm.read_display(account_id, category)
+    d["global_age"] = _iso_age(d.get("global_ts"), now_ts)
+    if account_id and category:
+        d["effective_age"] = _iso_age(d.get("effective_ts"), now_ts)
+    return d
+
+
+def _cache_marks():
+    """The cached Kalshi marks (dict) + the cache's refresh age, or ({}, None). pm_web NEVER reads the venue --
+    this is the background poller's cache."""
+    snap = ui_cache.cache().snapshot()
+    marks = snap.marks.marks if (snap.marks is not None and getattr(snap.marks, "marks", None)) else {}
+    return marks, snap.refreshed_ts
+
+
+def _account_open_value(conn, account_row: dict, marks: dict) -> dict:
+    """Current value of an account's OPEN positions at contracts x held-leg BID (across its sub-divisions), from
+    the cached marks. Honest coverage flags travel with it (see live_view.value_positions)."""
+    positions = []
+    for sub in account_row.get("subdivisions", []) or []:
+        positions.extend(subdivision.live_positions(conn, sub["account_id"], sub["category"]))
+    return live_view.value_positions(positions, marks)
+
+
+# M4 account SCOPING: the overview + the account page are filtered by web.authz.visible_account_ids (fail-closed --
+# admin sees all; a non-admin sees ONLY accounts whose owner_identity == their Authelia identity; a NULL owner is
+# admin-only; no identity -> nothing). identity + admin are resolved ON the loop from the request (headers+env, cheap)
+# and passed into the OFF-loop loader, so the thread never touches the request object. _FORBIDDEN distinguishes an
+# account that EXISTS but this identity may not see (403) from one that does not exist (None -> 404).
+_FORBIDDEN = object()
+
+
+def _load_accounts_overview(identity: str | None = None, is_admin_flag: bool = False) -> dict:
+    """Every VISIBLE active account with its PM realized P&L / win-loss / sample size / open-at-cost + whether PM
+    trades it, a COMPACT balance (latest snapshot total + age band), plus the GLOBAL arm state (read-only, R4). The
+    account set is SCOPED to `identity`/`is_admin_flag` (fail-closed) BEFORE any balance read -- a non-admin never
+    sees, nor loads a balance for, an account that is not theirs. OFF the loop; PM DB + a read-only legacy
+    agent_state read. NEVER a venue read (pm_web is credential-free)."""
+    floor = search.DEFAULT_MIN_RESOLVED_FLOOR
+    marks, value_as_of = _cache_marks()
+    with connect() as conn:
+        accounts = subdivision.accounts_overview(conn)                    # each row carries owner_identity (M4)
+        visible = authz.visible_account_ids(identity, is_admin_flag, accounts)
+        accounts = [a for a in accounts if a["account_id"] in visible]    # SCOPE first -> then read balances
+        # L3 DRIVER LIVENESS (read-only): the EXPECTED (attachment-gated) set + heartbeats, banded by age -- the
+        # signal arm state cannot give. table_present distinguishes 'migration 020 not applied' from 'not written yet';
+        # alarm bool is GATED on it so a not-deployed monitor reads NEUTRAL, never red (don't cry wolf about the monitor).
+        liveness_present = heartbeat.table_present(conn)
+        all_liveness = heartbeat.read_liveness(conn, now_ts=int(time.time()))
+        for a in accounts:
+            a["shard_snap"] = shard_snapshot.read_latest(conn, a["account_id"])   # None -> tile omits balance (honest)
+            a["open_value"] = _account_open_value(conn, a, marks)         # contracts x bid (cached marks), coverage-honest
+            a["liveness"] = [r for r in all_liveness if r.account_id == a["account_id"]]
+            a["liveness_alarm"] = liveness_present and heartbeat.any_alarm(a["liveness"])
+    for a in accounts:
+        _annotate_pnl(a, floor)
+    now_ts = int(time.time())
+    visible_liveness = [r for r in all_liveness if r.account_id in visible]
+    return {"accounts": accounts, "arm_badge": _arm_badge(now_ts=now_ts), "thin_floor": floor,
+            "value_as_of": value_as_of, "now_ts": now_ts,
+            "liveness_present": liveness_present, "liveness": visible_liveness,
+            "any_liveness_alarm": liveness_present and heartbeat.any_alarm(visible_liveness)}
+
+
+def _load_account(account_id: str, identity: str | None = None, is_admin_flag: bool = False):
+    """One account's per-sub-division P&L breakdown + the global arm state (read-only). None -> 404 (account absent
+    or inactive); `_FORBIDDEN` -> 403 (account EXISTS but this identity may not see it -- fail-closed scoping). The
+    display-only note is data-driven (0 sub-divisions -> PM does not trade it)."""
+    floor = search.DEFAULT_MIN_RESOLVED_FLOOR
+    with connect() as conn:
+        accts = {a["account_id"]: a for a in subdivision.active_accounts(conn)}   # carries owner_identity (M4)
+        if account_id not in accts:
+            return None                                                  # does not exist -> 404
+        if account_id not in authz.visible_account_ids(identity, is_admin_flag, accts.values()):
+            return _FORBIDDEN                                            # exists but not yours -> 403
+        agg = subdivision.account_pnl(conn, account_id)
+        marks, value_as_of = _cache_marks()
+        agg["open_value"] = _account_open_value(conn, agg, marks)         # contracts x bid (cached marks)
+        meta_by_cat = {s["category"]: s for s in subdivision.list_subdivisions(conn)
+                       if s["account_id"] == account_id}                  # sub_label / market_types / whale+order counts
+        for b in agg["subdivisions"]:
+            b["open_value"] = live_view.value_positions(
+                subdivision.live_positions(conn, b["account_id"], b["category"]), marks)
+            m = meta_by_cat.get(b["category"], {})
+            b["sub_label"] = m.get("sub_label")
+            b["market_types"] = m.get("market_types")
+            b["n_whales"] = m.get("n_whales")
+            b["n_live_trades"] = m.get("n_live_trades")
+    meta = accts[account_id]
+    agg["account_label"] = meta.get("account_label")
+    agg["venue"] = meta.get("venue")
+    _annotate_pnl(agg, floor)
+    for b in agg["subdivisions"]:
+        _annotate_pnl(b, floor)
+    # M3 balance: the LATEST per-shard snapshot (+ its age band) + the two distinct honest-empty states (table absent
+    # vs present-but-empty) + the shard-0-direction line (return-to-3 vs sweeping). All from the snapshot -- never the venue.
+    with connect() as conn:
+        snap = shard_snapshot.read_latest(conn, account_id)
+        snap_table = shard_snapshot.table_present(conn)
+        snap_dir = shard_snapshot.shard_direction(conn, account_id)
+        # L3 DRIVER LIVENESS per sub-division (read-only), keyed by category for the per-sub grid + a per-account alarm.
+        liveness_present = heartbeat.table_present(conn)
+        live_rows = {r.category: r for r in heartbeat.read_liveness(conn, now_ts=int(time.time()))
+                     if r.account_id == account_id}
+    for b in agg["subdivisions"]:
+        b["liveness"] = live_rows.get(b.get("category"))
+    now_ts = int(time.time())
+    return {"account": agg, "arm_badge": _arm_badge(now_ts=now_ts), "thin_floor": floor,
+            "shard_snap": snap, "shard_snap_table": snap_table, "shard_dir": snap_dir,
+            "value_as_of": value_as_of, "now_ts": now_ts,
+            "liveness_present": liveness_present, "liveness_rows": list(live_rows.values()),
+            "liveness_alarm": liveness_present and heartbeat.any_alarm(list(live_rows.values()))}
+
+
 @app.get("/", response_class=HTMLResponse)
-async def dashboard_page(request: Request):
-    """The main Predictions-Market Dashboard: the Live sub-division menu option (P3, visibly disabled) + the Farm
-    League menu option. (Phase 3 repointed this from the temporary /dashboard onto the root; the flat scoreboard
-    page that used to live here was retired.)"""
-    data = await asyncio.to_thread(_load_dashboard)
-    return templates.TemplateResponse(request, "pm_dashboard.html", {"request": request, **data})
+async def accounts_overview_page(request: Request):
+    """The ACCOUNTS OVERVIEW -- the top of the hierarchy (R1: replaces the old 2-card dashboard). Per-account PM
+    P&L, whether PM trades each account, and the global arm state (read-only). Read-only; no arm/attach control.
+    SCOPED (M4): the list shows only the accounts the requester may see (admin -> all)."""
+    identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
+    data = await asyncio.to_thread(_load_accounts_overview, identity, is_admin_flag)
+    return templates.TemplateResponse(request, "pm_accounts.html", {"request": request, **data})
+
+
+@app.get("/account/{account_id}", response_class=HTMLResponse)
+async def account_page(request: Request, account_id: str):
+    """One account's PM sub-divisions with per-sub-division P&L (realized / win-loss / sample / open-at-cost). A
+    display-only account (0 PM sub-divisions) states its limitation in the copy. Unknown/inactive -> 404; an account
+    that exists but is not the requester's (and they are not admin) -> 403 (M4 scoping). Read-only."""
+    account_id = (account_id or "").strip()
+    identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
+    data = await asyncio.to_thread(_load_account, account_id, identity, is_admin_flag)
+    if data is None:
+        return templates.TemplateResponse(request, "pm_account_404.html",
+                                          {"request": request, "account_id": account_id}, status_code=404)
+    if data is _FORBIDDEN:
+        return PlainTextResponse("forbidden: not your account", status_code=403)
+    return templates.TemplateResponse(request, "pm_account.html", {"request": request, **data})
 
 
 @app.get("/farm", response_class=HTMLResponse)
@@ -283,8 +657,10 @@ async def farm_league_page(request: Request):
     """The Farm-League category tiles (the active Kalshi-copyable categories, data-driven). Each tile links to its
     per-category page. (Phase 3 repointed this from /farm-league onto /farm; the flat farm page it replaces was
     retired.)"""
+    is_admin_flag = authz.is_admin(request)   # M4: the Search (discovery) panel is admin-only, like promote/refresh
     data = await asyncio.to_thread(_load_farm_league)
-    return templates.TemplateResponse(request, "pm_farm_league.html", {"request": request, **data})
+    return templates.TemplateResponse(
+        request, "pm_farm_league.html", {"request": request, "is_admin": is_admin_flag, **data})
 
 
 @app.get("/farm/{category}", response_class=HTMLResponse)
@@ -301,14 +677,26 @@ async def farm_league_category(request: Request, category: str):
 
 
 # ── THE THREE FARM ACTIONS (Stage 3 R6) -- the FIRST mutating POST routes besides Analyze ────────────────────
-# WHAT PROTECTS THESE: Authelia at the reverse proxy (identity); the app has NO authz layer by design (ruling:
-# NO pm_user/pm_role/pm_grant -- Authelia owns identity). WHAT DOES NOT: there is no CSRF token and no per-user
-# permission check in the app -- anyone Authelia lets through can POST. Mitigations that ARE in place: every
-# action is IDEMPOTENT (a double-submit / concurrent click is a no-op, never a duplicate); mutation is POST-ONLY
-# (no GET mutates -- a crawler/prefetch/refresh cannot demote a whale); and NONE of these reaches the execution
-# chokepoint (promote-to-live writes an ATTACHMENT row, never an order; pm_web imports no broker). Pattern =
-# Post/Redirect/Get: the write runs OFF the loop, then a 303 redirect to the GET page (a browser refresh re-GETs,
-# never re-POSTs -> double-submit-safe at the transport layer too).
+# WHAT PROTECTS THESE: Authelia at the reverse proxy (identity) + the M4 ADMIN GATE below (authorization). The app
+# has NO pm_user/pm_role/pm_grant table (Authelia owns identity); the gate is a single fail-closed check --
+# `_forbid_if_not_admin` -- enforced SERVER-SIDE at the top of each mutating route. This is the boundary, NOT the
+# hidden button: a non-admin who POSTs directly (curl, replay, a stale tab) is REFUSED here regardless of what the
+# UI rendered. Analyze is deliberately NOT gated (Karen may run it -- the promotion judge, spend-capped). WHAT IS
+# STILL NOT COVERED: there is no CSRF token -- but every action is IDEMPOTENT (a double-submit / concurrent click is
+# a no-op, never a duplicate); mutation is POST-ONLY (no GET mutates -- a crawler/prefetch/refresh cannot demote a
+# whale); and NONE of these reaches the execution chokepoint (promote-to-live writes an ATTACHMENT row, never an
+# order; pm_web imports no broker). Pattern = Post/Redirect/Get: the write runs OFF the loop, then a 303 redirect to
+# the GET page (a browser refresh re-GETs, never re-POSTs -> double-submit-safe at the transport layer too).
+
+def _forbid_if_not_admin(request: Request):
+    """M4 SERVER-SIDE admin gate for the mutating farm/live POST routes. Returns a 403 PlainTextResponse if the
+    requester is NOT an admin (fail-closed: no identity, or PM_ADMIN_IDENTITIES unset -> not admin), else None so the
+    caller proceeds. Hiding the button is a UI HINT, not the gate -- THIS is the boundary; a direct POST from a
+    non-admin (e.g. Karen) is refused here, server-side, whatever the page rendered. Analyze is NOT gated with this."""
+    if not authz.is_admin(request):
+        return PlainTextResponse("forbidden: admin only", status_code=403)
+    return None
+
 
 def _promote_watchlist(wallet: str, category: str, now_ts: int) -> dict:
     with connect() as conn:
@@ -328,7 +716,10 @@ def _promote_live(account_id: str, category: str, wallet: str, now_ts: int) -> d
 @app.post("/farm/{category}/promote/{wallet}")
 async def promote_watchlist_action(request: Request, category: str, wallet: str):
     """PROMOTE-TO-WATCHLIST (Prospect -> Watchlist): candidate -> pinned. Idempotent; writes ONLY pm_watchlist.
-    303 back to the category page (PRG)."""
+    303 back to the category page (PRG). ADMIN-ONLY (M4, server-side)."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
     category = (category or "").strip().lower()
     await asyncio.to_thread(_promote_watchlist, (wallet or "").lower(), category, int(time.time()))
     return RedirectResponse("/farm/%s" % category, status_code=303)
@@ -337,7 +728,10 @@ async def promote_watchlist_action(request: Request, category: str, wallet: str)
 @app.post("/farm/{category}/demote/{wallet}")
 async def demote_action(request: Request, category: str, wallet: str):
     """DEMOTE (Watchlist -> Prospect): pinned -> candidate. Idempotent; writes ONLY pm_watchlist -- pm_paper_trade
-    rows are PRESERVED (F-5). 303 back to the category page."""
+    rows are PRESERVED (F-5). 303 back to the category page. ADMIN-ONLY (M4, server-side)."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
     category = (category or "").strip().lower()
     await asyncio.to_thread(_demote_prospect, (wallet or "").lower(), category, int(time.time()))
     return RedirectResponse("/farm/%s" % category, status_code=303)
@@ -384,7 +778,12 @@ async def refresh_action(request: Request, category: str, wallet: str):
     button disabled while it runs (hx-disabled-elt) so the operator sees it working and cannot double-fire; JS-off
     blocks on the browser's native load, then a 303 back to the page. A failed/partial refresh is SAFE (see
     _refresh_whale) -- the whale is never left half-populated or ranked on incomplete data, and a NOTICE explains a
-    partial/failed outcome so a dropped whale is never a silent vanish."""
+    partial/failed outcome so a dropped whale is never a silent vanish. ADMIN-ONLY (M4, Jack ruled 2026-09-01):
+    Karen is the promotion JUDGE (Analyze is judgment, ungated), but refresh is a ~30-call API pull against a SHARED
+    budget -- a data-operator action, so it joins promote/attach/demote behind the server-side gate."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
     category = (category or "").strip().lower()
     outcome = await _refresh_whale((wallet or "").lower(), int(time.time()))
     if request.headers.get("HX-Request"):
@@ -397,11 +796,119 @@ async def refresh_action(request: Request, category: str, wallet: str):
     return RedirectResponse("/farm/%s" % category, status_code=303)
 
 
+# ── SEARCH (whale discovery -> Prospects) -- the Farm-League-page button. Structurally ALL-CATEGORIES: the
+# Polymarket leaderboard knows only coarse buckets (no "mlb whales" query), backfill is all-categories, and the
+# 15-category filter applies only at the candidate WRITE -- so this searches EVERYTHING, on the main page, never
+# per-category (per-category would be a 92-min sweep masquerading as a one-category refresh). It is a ~90-min job
+# hitting Polymarket from the SAME prod IP the armed engine polls every ~7s, so: admin-only (the Refresh precedent
+# at 50x scale), SINGLE-FLIGHTED server-side (a disabled button is a UI hint; two tabs / a refresh / a direct POST
+# all bypass it, and two concurrent sweeps double the API load on the live-copy path), and run as a DETACHED
+# subprocess (survives a pm_web restart; crash-isolated from the web loop) that ADOPTS the pre-acquired lock.
+
+_SEARCH_BUCKET = "Sports"   # the discovery bucket the button uses (where the sports whales live)
+
+
+def _spawn_search(run_id: int, *, category: str, db_path: str) -> None:
+    """Launch `pm_cli search --run-id <id>` as a DETACHED subprocess that ADOPTS the pre-acquired single-flight
+    lock. Mirrors the proven cron/service invocation (cwd=<root>, PYTHONPATH=<root>, venv python `sys.executable`,
+    the script by path). `start_new_session=True` detaches it so a pm_web restart/deploy does NOT kill a 90-min
+    sweep; stdout/stderr -> a per-run log so a failure is diagnosable. Raises if the process cannot be launched
+    (the caller then releases the lock so it is never stranded 'running')."""
+    root = Path(__file__).resolve().parents[3]                      # <root>/trading_corp/prediction_markets/web/app.py
+    script = root / "trading_corp" / "scripts" / "pm_cli.py"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    logdir = root / "data"                                          # azureuser-writable + gitignored (NOT the repo root)
+    try:
+        logdir.mkdir(exist_ok=True)
+    except Exception:   # noqa: BLE001 -- data/ already exists in every real deployment; a log dir is best-effort
+        logdir = root
+    logf = open(logdir / ("pm_search_ui_run%d.log" % run_id), "ab")  # noqa: SIM115 -- child dups the fd; closed below
+    try:
+        subprocess.Popen(
+            [sys.executable, str(script), "--db", db_path, "search", "--run-id", str(run_id),
+             "--category", category],
+            cwd=str(root), env=env, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True)
+    finally:
+        logf.close()   # the parent's copy; the detached child holds its own dup
+
+
+def _acquire_and_launch(now_ts: int) -> dict:
+    """Atomically take the single-flight lock and, if acquired, launch the detached sweep. Returns the acquire
+    result dict ({'acquired': bool, 'run_id', ...}). A REFUSAL (a live run already in flight) launches nothing.
+    If the launch itself fails, the lock is RELEASED (row -> error) so a failed spawn never strands 'running'."""
+    from ..search_run import acquire_search_lock, close_search_run, DEFAULT_LEADERBOARD_LIMIT
+    db_path = os.path.abspath(pm_db_path())    # the EXACT file connect() opens -> the detached child hits the same DB
+    with connect() as conn:
+        lk = acquire_search_lock(
+            conn, now_ts=now_ts, leaderboard_category=_SEARCH_BUCKET,
+            leaderboard_limit=DEFAULT_LEADERBOARD_LIMIT, min_resolved=search.DEFAULT_MIN_RESOLVED_FLOOR,
+            recency_window_days=search.DEFAULT_RECENCY_DAYS, thin_sample_target=search.DEFAULT_THIN_TARGET,
+            launcher="ui")
+    if not lk.get("acquired"):
+        return lk
+    try:
+        _spawn_search(lk["run_id"], category=_SEARCH_BUCKET, db_path=db_path)
+    except Exception as e:   # noqa: BLE001 -- a failed spawn must not strand the lock
+        log.exception("pm_web: search sweep failed to launch (run_id=%s)", lk.get("run_id"))
+        with connect() as conn:
+            close_search_run(conn, lk["run_id"], finished_ts=now_ts, n_discovered=0, n_backfilled=0,
+                             status="error", summary="failed to launch sweep: %s" % (repr(e)[:200]))
+        return {"acquired": False, "run_id": lk["run_id"], "reason": "launch_failed"}
+    return lk
+
+
+def _read_search_status(now_ts: int) -> dict:
+    from ..search_run import latest_search_status
+    with connect() as conn:
+        return latest_search_status(conn, now_ts=now_ts)
+
+
+async def _render_search_status(request: Request):
+    """Render the discovery-panel status fragment (the htmx poll target): reads the latest run's live state
+    (idle/running/done/error/stale) + whether the requester is admin (the button is admin-only)."""
+    is_admin_flag = authz.is_admin(request)
+    status = await asyncio.to_thread(_read_search_status, int(time.time()))
+    return templates.TemplateResponse(
+        request, "partials/pm_search_status.html",
+        {"request": request, "search_status": status, "is_admin": is_admin_flag})
+
+
+@app.post("/farm/search")
+async def farm_search_action(request: Request):
+    """START a Search sweep (admin-only, single-flighted). ADMIN-ONLY server-side (M4) -- Search spends ~1900
+    Polymarket calls over ~90 min against the shared prod IP, the Refresh concern at ~50x scale, so a non-admin
+    POST (curl / stale tab / second browser) is refused here regardless of what the page rendered. The
+    single-flight lock (acquire_search_lock) refuses a SECOND concurrent run BELOW the UI -- the boundary, not
+    the disabled button. On acquire, a detached subprocess runs the ~90-min sweep; the response is the 'underway'
+    status fragment so the operator sees it started + cannot double-fire. POST-only (no GET mutates)."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
+    await asyncio.to_thread(_acquire_and_launch, int(time.time()))   # acquire + (if taken) launch; refusal is a no-op
+    if request.headers.get("HX-Request"):
+        return await _render_search_status(request)                 # swap in the running/underway (or already-running) panel
+    return RedirectResponse("/farm", status_code=303)               # JS-off: PRG back to /farm (panel re-reads state)
+
+
+@app.get("/farm/search/status", response_class=HTMLResponse)
+async def farm_search_status(request: Request):
+    """The discovery panel's status fragment, polled by htmx WHILE a sweep runs so the operator learns it
+    FINISHED (done: N candidates) or FAILED (error/stale), not only that it started. Read-only."""
+    return await _render_search_status(request)
+
+
 @app.post("/live/{account_id}/{category}/attach/{wallet}")
 async def promote_to_live_action(request: Request, account_id: str, category: str, wallet: str):
     """PROMOTE-TO-LIVE: attach a pinned pair to the (account_id, category) sub-division (joined ON CATEGORY).
     Creates the ATTACHMENT and nothing else -- NEVER an order. Idempotent (no duplicate attachment). 303 to the
-    sub-division page so the operator SEES the whale now in its copy list; a bad target is a no-op (honest)."""
+    sub-division page so the operator SEES the whale now in its copy list; a bad target is a no-op (honest).
+    ADMIN-ONLY (M4, server-side) -- attach is the highest-stakes farm action (it is what makes an account copy a
+    whale), so the gate matters most here; a non-admin POST is refused before any write."""
+    forbidden = _forbid_if_not_admin(request)
+    if forbidden is not None:
+        return forbidden
     # account_id is an EXACT-MATCH slug PK (strip-only, NOT lowercased) -- consistent with R3's /live/{account_id}
     # route; wallet/category are normalized because they are case-insensitive by nature, a slug is not. A mixed-case
     # account_id simply misses -> honest no_such_subdivision no-op (never a wrong write).
@@ -417,23 +924,68 @@ async def promote_to_live_action(request: Request, account_id: str, category: st
 # (pre-migration-010) -> honest-empty, so /live deploys on a pm_web restart independent of the migration-010 deploy.
 
 def _load_live_list() -> dict:
-    """LIVE list read: the ACTIVE sub-divisions as tiles (tile-on-CREATE -- a tile the moment the sub-division
-    exists, before it trades). No live-trade data (P3). OFF the loop, read-only."""
+    """LIVE sub-division TILES (Phase 2, 2026-09-07): EVERY active sub-division (attached AND unattached, R2),
+    segmented by account, each with arm state (agent_state), driver LIVENESS (heartbeat), attached whales, lifetime
+    + last-24h realized P&L, and open count / at-cost / current-value+coverage. R1: an ARMED sub whose driver reads
+    STALE/NEVER rides a page-top alarm strip -- the DB says trade, the engine isn't (the 28h divergence). All
+    read-only: journal + persisted arm state + the poller's mark cache; NO venue, NO order path. OFF the loop."""
+    from .. import heartbeat        # box top-imports it; a LOCAL import keeps this hunk purely additive (graft-clean)
+    now_ts = int(time.time())
+    marks, _ = _cache_marks()
+    floor = search.DEFAULT_MIN_RESOLVED_FLOOR
     with connect() as conn:
-        subdivisions = subdivision.list_subdivisions(conn)
-    return {"subdivisions": subdivisions}
+        subs = subdivision.tiles_all(conn)
+        pairs = [(s["account_id"], s["category"]) for s in subs]
+        arm_all = arm.read_display_all(pairs)
+        liveness_present = heartbeat.table_present(conn)
+        liveness_by_sub = {(r.account_id, r.category): r
+                           for r in heartbeat.read_liveness(conn, now_ts=now_ts)} if liveness_present else {}
+        pnl_all = subdivision.subdivision_pnl_all(conn)
+        pnl24_all = subdivision.realized_24h_all(conn, now_ts)
+        # attachments + open positions ONLY for the attached subs (unattached render compact -- R2, "no whales attached")
+        whales_by_sub, positions_by_sub = {}, {}
+        for s in subs:
+            if int(s.get("n_whales") or 0) > 0:
+                key = (s["account_id"], s["category"])
+                whales_by_sub[key] = subdivision.attached_whales(conn, s["account_id"], s["category"])
+                positions_by_sub[key] = subdivision.live_positions(conn, s["account_id"], s["category"])
+    return live_view.build_tiles_context(
+        subs=subs, arm_all=arm_all, liveness_by_sub=liveness_by_sub, liveness_present=liveness_present,
+        whales_by_sub=whales_by_sub, pnl_all=pnl_all, pnl24_all=pnl24_all, positions_by_sub=positions_by_sub,
+        marks=marks, now_ts=now_ts, thin_floor=floor)
 
 
-def _load_live_subdivision(account_id: str, category: str) -> dict | None:
-    """Per-sub-division read: its config + the whales it copies (R6 attachments, READ-ONLY list), or None -> 404.
-    LIVE trades/stats are P3 (not built) -> the page renders an honest-empty live list. Read-only -- no form,
-    no order path, no arm control (detach is a CLI action, so /live stays read-only)."""
+def _load_live_subdivision(account_id: str, category: str, now_ts: int) -> dict | None:
+    """Per-sub-division read for the GAME-CARD view (UI rewrite): its config + copied whales + the journal, joined
+    to the cached sports feed + Kalshi marks into game cards. None -> 404. Read-only -- no form, no order path, no
+    arm control (arming is CLI/engine-console; /live only DISPLAYS the arm state). The DB reads run here (off the
+    loop); the feed/marks come from ui_cache (written by the background poller), so the render never blocks on the
+    network. The cards degrade honestly: feed-unavailable renders nothing feed-derived, a position with no mark
+    renders 'no mark', and cost basis is always distinct from current value."""
     with connect() as conn:
         sub = subdivision.get_subdivision(conn, account_id, category)
         if sub is None:
             return None
         attached = subdivision.attached_whales(conn, account_id, category)
-    return {"sub": sub, "attached": attached}
+        orders = subdivision.live_orders(conn, account_id, category)
+        n_live_trades = subdivision.live_order_count(conn, account_id, category)   # uncapped -> honest 'N of M' when truncated
+        open_positions = subdivision.live_positions(conn, account_id, category)           # net-open per ticker (marks target)
+        positions_by_whale = subdivision.live_positions_by_whale(conn, account_id, category)   # open per (ticker, whale)
+        floor = search.DEFAULT_MIN_RESOLVED_FLOOR
+        copies_by_whale = subdivision.live_copies_by_whale(conn, account_id, category, thin_floor=floor)
+        # L3 DRIVER LIVENESS for THIS sub (read-only): the one matching row from the expected-set liveness read.
+        liveness_present = heartbeat.table_present(conn)
+        _live = [r for r in heartbeat.read_liveness(conn, now_ts=now_ts)
+                 if r.account_id == account_id and r.category == category]
+    ctx = live_view.build_from_cache(orders=orders, open_positions=open_positions,
+                                     open_positions_by_whale=positions_by_whale,
+                                     cache=ui_cache.cache(), now_ts=now_ts, category=category)
+    return {"sub": sub, "attached": attached, "n_live_trades": n_live_trades,
+            "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
+            "account_id": account_id, "category": category,
+            "arm_badge": _arm_badge(account_id, category, now_ts=now_ts),
+            "liveness_present": liveness_present, "liveness": _live[0] if _live else None,
+            "sizing_summary": subdivision.sizing_summary(sub), **ctx}
 
 
 @app.get("/live", response_class=HTMLResponse)
@@ -445,16 +997,19 @@ async def live_list_page(request: Request):
 
 
 @app.get("/live/{account_id}/{category}", response_class=HTMLResponse)
-async def live_subdivision_page(request: Request, account_id: str, category: str):
-    """One Account-Category sub-division: its config + an honest-empty live list ('created, never traded'; live
-    copies arrive with the execution engine, R4). A sub-division that doesn't exist -> 404. READ-ONLY."""
+async def live_subdivision_page(request: Request, account_id: str, category: str, tab: str | None = None):
+    """One Account-Category sub-division as the GAME-CARD page: a card per game we hold, with the box score
+    (cached sports feed), three fixed bet slots valued at contracts x BID (cached Kalshi marks), and a trade
+    drawer. `?tab=complete` shows settled cards (server-rendered so it works JS-off). A sub-division that doesn't
+    exist -> 404. READ-ONLY (no order path). SAME template/code path for EVERY account -- nothing hardcodes jack."""
     account_id = (account_id or "").strip()
     category = (category or "").strip().lower()
-    data = await asyncio.to_thread(_load_live_subdivision, account_id, category)
+    data = await asyncio.to_thread(_load_live_subdivision, account_id, category, int(time.time()))
     if data is None:
         return templates.TemplateResponse(
             request, "pm_live_404.html",
             {"request": request, "account_id": account_id, "category": category}, status_code=404)
+    data["tab"] = "complete" if (tab or "").strip().lower() == "complete" else "active"
     return templates.TemplateResponse(request, "pm_live_subdivision.html", {"request": request, **data})
 
 
