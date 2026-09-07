@@ -24,6 +24,11 @@ import yaml
 _ENFORCEMENT_MODES = ("off", "pause_entries", "halt_flat")
 _WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 _ACCT_RE = re.compile(r"^\d+$")
+# Which snapshot figure the reserve/deployment-cap gate (strategy filter 9) sizes
+# on. 'equity' = settled-cash sizing basis (legacy default); 'available_buying_power'
+# = free/available BP after existing option collateral (2026-08-25 risk-envelope
+# change). Per-rung contract sizing ALWAYS stays on equity regardless.
+_DEPLOYMENT_BASES = ("equity", "available_buying_power")
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,11 @@ class SizingConfig:
     rung_risk_pct: float
     deployment_target_pct: float
     equity_snapshot_time_et: str
+    # Reserve/deployment-cap sizing basis (see _DEPLOYMENT_BASES). Defaults to the
+    # legacy 'equity' basis so a config that omits the key (and any direct
+    # SizingConfig construction in tests) is byte-compatible; the shipped
+    # config/mace.yaml sets it explicitly.
+    deployment_basis: str = "equity"
 
 
 @dataclass(frozen=True)
@@ -280,6 +290,13 @@ def load_mace_config(
     rung_risk = num(s, "rung_risk_pct", "sizing", lo=0.0, hi=1.0, lo_excl=True)
     deploy_target = num(s, "deployment_target_pct", "sizing", lo=0.0, hi=1.0,
                         lo_excl=True)
+    # Optional (default 'equity' = legacy behavior). Present in the shipped config
+    # as a documented knob; must be one of _DEPLOYMENT_BASES if given.
+    deploy_basis = s.get("deployment_basis", "equity")
+    if deploy_basis not in _DEPLOYMENT_BASES:
+        errs.append(
+            f"sizing.deployment_basis: {deploy_basis!r} not in {_DEPLOYMENT_BASES}"
+        )
     snap_t = hhmm(s, "equity_snapshot_time_et", "sizing")
     if snap_t and eval_t and snap_t >= eval_t:
         errs.append(
@@ -454,6 +471,7 @@ def load_mace_config(
             rung_risk_pct=float(rung_risk),
             deployment_target_pct=float(deploy_target),
             equity_snapshot_time_et=snap_t,
+            deployment_basis=str(deploy_basis),
         ),
         management=ManagementConfig(
             check_interval_sec=int(check_iv),

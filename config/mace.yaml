@@ -16,7 +16,7 @@ universe: [IBIT, XLE, GDX, FXI, IWM, SPY]  # 2026-08-14 PM: 6 actives — CP0 3-
                                         # budget; OQ-2 audits window_skip if the round is exhausted.
                                         # FXI dead book (OI 0) -> frequent no_wing skips (accepted, CP0).
                                         # SPY RE-ENABLED: new entries on top of its 2 open W33 rungs. GLD stays off.
-max_contracts: 1                        # LAUNCH cap (Board memo)
+max_contracts: 2                        # LAUNCH cap (Board memo)
 
 entry:
   eval_time_et: "15:45"
@@ -51,7 +51,12 @@ entry:
                                         # (SPY 0.272 == IVR 27.2; stage-A probe-proven)
   weekly_new_rungs_per_symbol: 5        # 2026-08-13 Board: back to 1/week at 3 actives
                                         # (3 symbols x 1 rung replaces 1-2 symbols x 2)
-  max_rungs_per_symbol: 5
+  max_rungs_per_symbol: 25         # 2026-08-24 Jack: 5 -> 25. Deployment cap
+                                        # (sizing.deployment_target_pct reserve gate) is the
+                                        # real binding control — unfundable rungs skip at entry
+                                        # (SKIP_RESERVE), so 25 cannot over-deploy absent capital.
+                                        # Removes max_rungs as the binding limit so the engine
+                                        # deploys available capital fast and scales with equity.
   stop_cooldown_sessions: 2
   ibit_overflow_cap: 6                  # vestigial at 3-active (IBIT is a primary now; no
                                         # overflow_only receiver exists) — key retained
@@ -68,11 +73,31 @@ sizing:
   rung_risk_pct: 0.14                   # 2026-08-20 Jack: 0.10 -> 0.14 so a $5-wide GDX/XLE
                                         # condor (per-contract risk ~$400-450) sizes to 1
                                         # contract at ~$3.2k equity (floor(0.14*3218/450)=1);
-                                        # max_contracts:1 caps it at ONE. The 0.95 deployment
-                                        # cap is the binding total-book control (see below).
-  deployment_target_pct: 0.95           # 2026-08-13 Board: 0.80 -> 0.95 (reserve gate;
-                                        # worst-case book ~5 rungs x $260 = $1.3k << 0.95*E)
-  equity_snapshot_time_et: "15:40"      # settled snapshot-E; never intraday buying power
+                                        # max_contracts:1 caps it at ONE. PER-RUNG sizing stays
+                                        # on the equity/settled-cash basis (deployment_basis
+                                        # below only moves the total-book RESERVE cap).
+  deployment_target_pct: 0.90           # 2026-08-25 Jack: 0.95 -> 0.90 alongside the BP basis
+                                        # change below (put idle capital to work without
+                                        # over-deploying). Reserve cap = deployment_basis * 0.90.
+                                        # ★ Option A (Jack ruling): with available_buying_power
+                                        # the base is ALREADY net of collateral for pre-existing
+                                        # open positions, so the gate does NOT re-subtract open
+                                        # max_risk (no double-count); it counts only rungs placed
+                                        # WITHIN THE CURRENT eval (base snapshotted once/eval) so
+                                        # one eval can't over-commit. equity basis = total-book
+                                        # (all open rungs count). (2026-08-13 Board had 0.80->0.95.)
+  deployment_basis: available_buying_power  # 2026-08-25 Jack: the reserve/deployment-cap
+                                        # DENOMINATOR. equity | available_buying_power.
+                                        # available_buying_power = FREE buying power after
+                                        # existing option collateral (the RH "margin available
+                                        # to invest" figure ~ unleveraged_buying_power), so the
+                                        # cap never authorizes rungs the account can't margin.
+                                        # ★ REVERSES the prior "settled-E, never intraday buying
+                                        # power" intent (rh_broker/robinhood.py). Falls back to
+                                        # equity (total-book) if the broker doesn't expose it.
+                                        # ★ EXACT RH field pending Jack's review — see report.
+  equity_snapshot_time_et: "15:40"      # 15:40 snapshot feeds BOTH the equity/settled-cash
+                                        # per-rung basis AND available_buying_power (reserve cap)
 
 management:
   check_interval_sec: 300

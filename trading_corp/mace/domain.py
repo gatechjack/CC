@@ -111,12 +111,31 @@ class OptionQuote:
     ask: float | None
     delta: float | None = None
     option_id: str | None = None  # opaque broker handle — never interpreted here
+    mark: float | None = None     # RH adjusted_mark_price; wing buy price when one-sided
 
     @property
     def mid(self) -> float | None:
         if self.bid is None or self.ask is None:
             return None
         return (self.bid + self.ask) / 2.0
+
+    @property
+    def long_price(self) -> float | None:
+        """Price to BUY this leg (a long / protective wing). Unlike `mid` — used
+        for SHORT legs, which must SELL at a real bid — a far-OTM long wing is
+        purchasable with no resting bid, so this does NOT require a two-sided
+        market. It prefers the two-sided mid when present (parity with the short
+        basis and with liquid names), else RH's adjusted_mark (a fair one-sided
+        estimate), else the ask (the actual price we'd pay). None ONLY when there
+        is truly no market (no ask and no mark). SHORT-leg pricing is unchanged;
+        nothing on the short/exit path calls this."""
+        if self.mid is not None:
+            return self.mid
+        if self.mark is not None and self.mark > 0.0:
+            return self.mark
+        if self.ask is not None and self.ask > 0.0:
+            return self.ask
+        return None
 
 
 @dataclass(frozen=True)

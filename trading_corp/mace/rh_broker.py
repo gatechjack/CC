@@ -169,7 +169,8 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
                     quotes[(target, otype, round(k, 4))] = OptionQuote(
                         symbol=symbol, expiry=target, strike=k, opt_type=otype,
                         bid=_fopt(r.get("bid")), ask=_fopt(r.get("ask")),
-                        delta=_fopt(r.get("delta")), option_id=r.get("option_id"))
+                        delta=_fopt(r.get("delta")), option_id=r.get("option_id"),
+                        mark=_fopt(r.get("mark_price")))
         return ChainView(symbol=symbol, spot=spot, expiries=all_expiries, quotes=quotes)
 
     async def _rows(self, symbol: str, expiry: date, opt_type: str) -> list[dict]:
@@ -186,7 +187,8 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
                 return OptionQuote(
                     symbol=symbol, expiry=expiry, strike=float(strike), opt_type=opt_type,
                     bid=_fopt(r.get("bid")), ask=_fopt(r.get("ask")),
-                    delta=_fopt(r.get("delta")), option_id=r.get("option_id"))
+                    delta=_fopt(r.get("delta")), option_id=r.get("option_id"),
+                    mark=_fopt(r.get("mark_price")))
         return None
 
     # ── order placement ──────────────────────────────────────────────────
@@ -357,11 +359,14 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
     # ── account ──────────────────────────────────────────────────────────
     async def snapshot(self) -> PortSnapshot:
         s = await self._broker.snapshot()
-        # equity = SETTLED, placeable cash (the defined-risk sizing basis; plan
-        # § Sizing/E "never intraday buying power"), falling back to portfolio
-        # equity only if the broker doesn't expose settled cash.
+        # equity = SETTLED, placeable cash — the PER-RUNG contract-sizing basis
+        # (size_contracts); falls back to portfolio equity if the broker doesn't
+        # expose settled cash. UNCHANGED so per-rung sizing is byte-identical.
+        # available_buying_power = the free/available BP the deployment-cap gate now
+        # sizes on (2026-08-25 basis change); None -> gate falls back to equity.
         equity = s.settled_cash if s.settled_cash is not None else s.equity
-        return PortSnapshot(equity=equity, cash=s.cash, market_value=None)
+        return PortSnapshot(equity=equity, cash=s.cash, market_value=None,
+                            available_buying_power=s.available_buying_power)
 
     async def account_assertions(self) -> AccountInfo:
         acct = getattr(self._broker, "_account_number", "") or None

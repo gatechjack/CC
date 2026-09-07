@@ -333,8 +333,67 @@ window.addEventListener('resize', function() {
   }, 80);
 });
 
-/* ── re-init after htmx:afterSettle (30s poll replaces #mace-rungs) ──────── */
+/* ── expanded-row persistence across the 30s outerHTML swap ──────────────────
+ * The open-positions table (#mace-rungs) is replaced wholesale every 30s, which
+ * re-renders every detail panel back to `hidden` and would collapse whatever the
+ * user had open. Source of truth = _openRungs (keyed by STABLE rung_id, updated on
+ * every user toggle), reconciled onto the fresh DOM after each settle. Keying by
+ * rung_id (not the positional row index) keeps the right row open if a rung closes
+ * between polls. Pure front-end state — no server/poll/interval change.
+ */
+var _openRungs = {};   // rung_id -> true for each currently-expanded row
+
+/* Draw the payoff canvas(es) inside a detail panel. Needed on expand because a
+ * canvas in a hidden (display:none) panel has clientWidth/Height 0, so draw()
+ * bailed for it at boot -> it stays blank until some later event (previously only
+ * hover/resize/poll) redraws. Hover is already attached by initAll, so this only
+ * DRAWS (no re-attach -> no duplicate listeners). */
+function drawRung(detailId) {
+  var d = document.getElementById(detailId);
+  if (!d) return;
+  d.querySelectorAll('canvas.mace-payoff').forEach(function(canvas) {
+    var islandId = canvas.getAttribute('data-island');
+    var island = islandId && document.getElementById(islandId);
+    if (!island) return;
+    try {
+      var p = JSON.parse(island.textContent || island.innerText || '');
+      if (p && typeof p === 'object') draw(canvas, p);
+    } catch (e) { /* malformed island -> skip */ }
+  });
+}
+
+function maceToggleRung(detailId, rungId) {
+  var d = document.getElementById(detailId);
+  if (!d) return;
+  var c = document.getElementById(detailId + '-caret');
+  if (d.classList.contains('hidden')) {
+    d.classList.remove('hidden');
+    if (c) c.style.transform = 'rotate(90deg)';
+    if (rungId) _openRungs[rungId] = true;
+    drawRung(detailId);   // draw the now-visible canvas (was 0-size while hidden)
+  } else {
+    d.classList.add('hidden');
+    if (c) c.style.transform = 'rotate(0deg)';
+    if (rungId) delete _openRungs[rungId];
+  }
+}
+
+function restoreOpenRungs() {
+  document.querySelectorAll('[data-rung-detail]').forEach(function(d) {
+    var id = d.getAttribute('data-rung-id');
+    if (!id || !_openRungs[id]) return;
+    d.classList.remove('hidden');
+    var c = document.getElementById(d.id + '-caret');
+    if (c) c.style.transform = 'rotate(90deg)';
+  });
+}
+
+/* ── after htmx:afterSettle (30s poll replaces #mace-rungs): restore open rows
+ *    FIRST, then initAll() so it draws the now-visible restored canvases and
+ *    attaches hover to the fresh DOM (order matters: a canvas still hidden when
+ *    initAll runs would draw blank). ── */
 document.addEventListener('htmx:afterSettle', function() {
+  restoreOpenRungs();
   initAll();
 });
 

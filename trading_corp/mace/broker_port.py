@@ -56,12 +56,16 @@ class MaceOrderRejected(Exception):
 
 @dataclass(frozen=True)
 class PortSnapshot:
-    """Account snapshot on the MACE-bound account (acct-scoped). equity is the
-    settled-cash sizing basis owner (execution decides how to use it)."""
+    """Account snapshot on the MACE-bound account (acct-scoped). `equity` is the
+    settled-cash per-rung sizing basis owner (execution decides how to use it);
+    `available_buying_power` is the free/available BP the reserve/deployment-cap
+    gate sizes on (None if the broker doesn't expose it -> gate falls back to
+    equity)."""
 
     equity: float | None
     cash: float | None = None
     market_value: float | None = None
+    available_buying_power: float | None = None
 
 
 @dataclass(frozen=True)

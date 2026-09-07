@@ -66,6 +66,7 @@ from trading_corp.mace.domain import (
     RUNG_ABANDONED, RUNG_CLOSED, RUNG_CLOSING, RUNG_OPEN, RUNG_SUBMITTING,
     EXIT_PT,
 )
+from trading_corp.mace.disposition import exit_disposition_line
 from trading_corp.mace.notify import MaceNotifier
 from trading_corp.mace.strategy import business_sessions_between
 from trading_corp.utils.time import now_et, now_utc, to_et
@@ -804,7 +805,9 @@ class MaceExecutor:
 
         # 2) mark CLOSING (crash-recoverable) then run the debit ladder.
         self.store.mark_closing(rung_id)
-        self._audit("mace_exit_start", rung_id=rung_id, reason=reason)
+        self._audit("mace_exit_start", rung_id=rung_id, reason=reason,
+                    symbol=spec.symbol,
+                    line=exit_disposition_line(spec, reason, phase="start"))
         x = self.cfg.execution
         ceiling = spec.width_dollars * x.exit_hard_ceiling_mult_of_width
 
@@ -895,7 +898,9 @@ class MaceExecutor:
                            contracts=rung.contracts, reason=reason, debit=exit_debit,
                            pnl=realized, pct_of_credit=pct)
         self._audit("mace_exit_fill", rung_id=rung.rung_id, reason=reason,
-                    exit_debit=exit_debit, realized=realized)
+                    exit_debit=exit_debit, realized=realized, symbol=rung.symbol,
+                    line=exit_disposition_line(rung.spec, reason, debit=exit_debit,
+                                               realized=realized, pct_of_credit=pct))
         return ExitOutcome(rung.rung_id, True, reason=reason, exit_debit=exit_debit,
                            realized_pnl=realized)
 
@@ -910,7 +915,10 @@ class MaceExecutor:
         self.notifier.exit(symbol=rung.symbol, expiry=rung.expiry.isoformat(),
                            contracts=rung.contracts, reason=EXIT_PT, debit=pt_debit,
                            pnl=realized, pct_of_credit=pct)
-        self._audit("mace_pt_fill", rung_id=rung.rung_id, pt_debit=pt_debit, realized=realized)
+        self._audit("mace_pt_fill", rung_id=rung.rung_id, pt_debit=pt_debit,
+                    realized=realized, symbol=rung.symbol,
+                    line=exit_disposition_line(rung.spec, EXIT_PT, debit=pt_debit,
+                                               realized=realized, pct_of_credit=pct))
         return ExitOutcome(rung.rung_id, True, reason=EXIT_PT, exit_debit=pt_debit,
                            realized_pnl=realized, pt_race=True)
 

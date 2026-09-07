@@ -45,6 +45,7 @@ MACE_TABLES = (
 # the verify must also confirm on an upgraded prod DB.
 MACE_COLUMNS = (
     ("mace_rung", "entry_atm_iv"),   # A3 — durable per-rung entry ATM IV
+    ("mace_equity_snapshot", "available_buying_power"),  # 2026-08-25 — reserve/deployment-cap sizing basis
 )
 MACE_INDEXES = (
     "ix_mace_rung_symbol_status",

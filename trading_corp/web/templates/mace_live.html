@@ -127,20 +127,29 @@
 {# ── TOP METRICS ROW ─────────────────────────────────────────────────────── #}
 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
 
-  {# ── Equity panel ──────────────────────────────────────────────────────── #}
+  {# ── Capital / sizing-basis panel (BP-basis 2026-08-26) ─────────────────── #}
   <div class="bg-pane border border-edge rounded-lg p-4 relative overflow-hidden">
-    <div class="text-[10px] text-muted uppercase tracking-wider mb-2">
-      Equity (sizing basis E)
+    {% set sz = equity.sizing if equity else None %}
+    <div class="flex items-baseline justify-between mb-2">
+      <span class="text-[10px] text-muted uppercase tracking-wider">Capital — sizing basis</span>
+      {% if sz and sz.basis %}
+        <span class="text-[8.5px] font-mono px-1.5 py-0.5 rounded {{ 'text-gain border border-gain/30 bg-gain/8' if sz.is_bp else 'text-muted border border-edge' }}">
+          {{ 'BUYING POWER' if sz.is_bp else 'EQUITY' }}{{ ' · BP n/a' if (sz.basis == 'available_buying_power' and not sz.is_bp) else '' }}
+        </span>
+      {% endif %}
     </div>
     {% if equity and equity.latest %}
       {% set eq = equity.latest %}
+      {# PRIMARY = the figure that DRIVES sizing (available BP under the BP basis,
+         else equity). BOTH raw numbers are shown in the footer, driver marked. #}
       <div class="flex items-end gap-2">
         <span class="font-mono text-3xl font-semibold text-mono leading-none private-money">
-          {{ eq.equity | money }}
+          {{ (sz.base if (sz and sz.base is not none) else eq.equity) | money }}
         </span>
+        <span class="text-[9px] text-muted font-mono mb-0.5">drives sizing</span>
       </div>
       <div class="text-[10px] text-muted font-mono mt-1">
-        snapshot {{ eq.snap_date }}
+        snapshot {{ eq.snap_date }}{% if sz and sz.ceiling is not none %} · deploy cap {{ sz.ceiling | money }} <span class="text-muted/60">({{ '%.0f' % (sz.target * 100) }}%×base, per-eval)</span>{% endif %}
       </div>
 
       {# equity sparkline — inline SVG polyline from equity.curve #}
@@ -170,16 +179,19 @@
         </svg>
       {% endif %}
 
+      {# BOTH equity + gross buying power shown, the sizing DRIVER marked (· sizing). #}
       <div class="grid grid-cols-3 gap-1 mt-2 pt-2 border-t border-edge text-[10px] font-mono">
         <div>
-          <div class="text-muted uppercase tracking-wider text-[8px]">Cash</div>
-          <div class="text-mono private-money">{{ eq.cash | money if eq.cash is not none else '—' }}</div>
+          <div class="text-{{ 'muted' if (sz and sz.is_bp) else 'gain' }} uppercase tracking-wider text-[8px]">
+            Equity{{ '' if (sz and sz.is_bp) else ' · sizing' }}
+          </div>
+          <div class="text-mono private-money">{{ eq.equity | money if eq.equity is not none else '—' }}</div>
         </div>
         <div>
-          <div class="text-muted uppercase tracking-wider text-[8px]">Mkt Val</div>
-          <div class="text-mono private-money">
-            {{ eq.market_value | money if eq.market_value is not none else '—' }}
+          <div class="text-{{ 'gain' if (sz and sz.is_bp) else 'muted' }} uppercase tracking-wider text-[8px]">
+            Buying Pwr{{ ' · sizing' if (sz and sz.is_bp) else '' }}
           </div>
+          <div class="text-mono private-money">{{ eq.available_buying_power | money if eq.available_buying_power is not none else '—' }}</div>
         </div>
         <div>
           <div class="text-muted uppercase tracking-wider text-[8px]">HWM</div>
@@ -255,38 +267,44 @@
     {% endif %}
   </div>
 
-  {# ── Blackout calendar ──────────────────────────────────────────────────── #}
+  {# ── Underlyings — live prices + mini candlestick charts ───────────────── #}
+  {% set mace_syms = ['SPY', 'IWM', 'GDX', 'IBIT', 'XLE', 'FXI'] %}
   <div class="bg-pane border border-edge rounded-lg p-4">
     <div class="flex justify-between items-baseline mb-3">
-      <span class="text-[10px] text-muted uppercase tracking-wider">Blackout Calendar</span>
-      <span class="font-mono text-[9px] text-muted/70">next 7d</span>
+      <span class="text-[10px] text-muted uppercase tracking-wider">Underlyings</span>
+      <span class="font-mono text-[9px] text-muted/70">prices refresh ~60s</span>
     </div>
-    {% if events %}
-      <div class="flex flex-col gap-1.5">
-        {% for e in events %}
-          <div class="flex items-baseline justify-between border-t border-edge/40 pt-1.5 first:border-t-0 first:pt-0">
-            <div class="flex items-baseline gap-2">
-              <span class="font-mono text-[10px] font-semibold text-warn uppercase">{{ e.event_type }}</span>
-              {% if e.symbol_scope %}
-                <span class="font-mono text-[9px] text-muted">{{ e.symbol_scope }}</span>
-              {% endif %}
-            </div>
-            <div class="flex items-baseline gap-2 font-mono text-[9px]">
-              <span class="text-mono">{{ e.event_date }}</span>
-              <span class="text-warn/70">
-                {% if e.in_days == 0 %}today
-                {% elif e.in_days == 1 %}+1d (tomorrow)
-                {% else %}+{{ e.in_days }}d{% endif %}
-              </span>
-            </div>
+    <div class="grid grid-cols-2 gap-3">
+      {% for sym in mace_syms %}
+        <div class="border border-edge/60 rounded-md bg-bg p-2">
+          <div class="flex items-baseline justify-between mb-1">
+            <span class="font-mono text-[11px] font-semibold text-mono">{{ sym }}</span>
+            <span id="mace-price-{{ sym }}"
+                  class="font-mono text-[10px] text-muted">—</span>
           </div>
-        {% endfor %}
-      </div>
-    {% else %}
-      <div class="text-sm text-muted font-mono py-2">
-        — no events in the next 7 days
-      </div>
-    {% endif %}
+          {# timeframe toggle #}
+          <div class="flex gap-1 mb-1.5" data-mace-toggle="{{ sym }}">
+            <button data-sym="{{ sym }}" data-iv="5m"
+                    class="mace-tf-btn mace-tf-active
+                           px-1.5 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider
+                           border border-accent/40 bg-accent/15 text-accent">
+              1D
+            </button>
+            <button data-sym="{{ sym }}" data-iv="1d"
+                    class="mace-tf-btn
+                           px-1.5 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider
+                           border border-edge text-muted">
+              1M
+            </button>
+          </div>
+          {# chart container — 140px tall, JS mounts LightweightCharts here #}
+          <div id="mace-chart-{{ sym }}"
+               data-symbol="{{ sym }}"
+               data-interval="5m"
+               style="height:140px;width:100%;"></div>
+        </div>
+      {% endfor %}
+    </div>
   </div>
 
 </div>
@@ -335,7 +353,9 @@
             </span>
             <span class="font-mono text-[10.5px] text-mono/80 truncate">
               {% if a.payload.get('symbol') %}[{{ a.payload.symbol }}] {% endif %}
-              {% if a.payload.get('reason') %}{{ a.payload.reason }}
+              {# rich exit-disposition line (FIX 2) takes precedence; entries have no 'line' #}
+              {% if a.payload.get('line') %}{{ a.payload.line }}
+              {% elif a.payload.get('reason') %}{{ a.payload.reason }}
               {% elif a.payload.get('detail') %}{{ a.payload.detail }}
               {% else %}{{ a.kind | replace('_', ' ') }}{% endif %}
             </span>
@@ -388,7 +408,7 @@
                   {{ rv }}{% if rlim is not none %} / {{ rlim }}{% endif %}
                 {% endif %}
               {% elif rvp is not none %}
-                {{ '%.1f' % rvp }}%
+                {{ '%.1f' % rvp }}%{% if rlim is not none %} <span class="text-muted/60">/ {{ '%.0f' % rlim }}%</span>{% endif %}
               {% else %}
                 —
               {% endif %}
@@ -412,6 +432,75 @@
   </div>
 
 </div>
+
+{# ── DIVISION P&L (Part C, Source C — FINAL; semantics closed Jack 2026-09-04) ── #}
+{% if pnl %}
+<div class="mb-4 bg-pane border border-edge rounded-lg p-4">
+  <div class="flex items-center gap-2 mb-3">
+    <span class="text-[10px] text-muted uppercase tracking-wider">Division P&amp;L</span>
+    <span class="font-mono text-[8.5px] text-muted/60 hidden sm:inline"
+          title="computed-from-rungs (Source C): realized from closed rungs, GROSS of reg fees; 1D=today's ET session (reconciles with Daily P&L), 1W/1MO=trailing calendar; cumulative curve is realized-only and accrues FORWARD from build date.">
+      computed-from-rungs · gross of reg fees · 1D=session, 1W/1MO=calendar · curve accrues forward
+    </span>
+  </div>
+
+  {# ── window stats ─────────────────────────────────────────────────── #}
+  {% set wins = pnl.windows or {} %}
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+    {% for key, label in [('1d','1D'), ('1w','1W'), ('1mo','1MO'), ('all','ALL')] %}
+      {% set val = wins.get(key) %}
+      <div class="border border-edge/60 rounded-md p-2 bg-bg">
+        <div class="text-[8.5px] text-muted uppercase tracking-wider font-mono mb-1">{{ label }}</div>
+        {% if val is not none %}
+          <div class="font-mono text-sm font-semibold private-money
+                      {{ 'text-gain' if val >= 0 else 'text-loss' }}">
+            {{ val | money_signed }}
+          </div>
+        {% else %}
+          <div class="font-mono text-sm text-muted">—</div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
+  {# ── realized curve sparkline ─────────────────────────────────────── #}
+  {% set curve = pnl.curve or [] %}
+  {% if curve | length >= 2 %}
+    {% set rtd_vals = curve | map(attribute='realized_to_date') | list %}
+    {% set lo_rtd = rtd_vals | min %}
+    {% set hi_rtd = rtd_vals | max %}
+    {% set rtd_rng = (hi_rtd - lo_rtd) or 1 %}
+    {% set n_rtd = rtd_vals | length %}
+    {% set sw_rtd = 400 %}
+    {% set sh_rtd = 40 %}
+    {% set pad_rtd = 3 %}
+    {% set pts_rtd = namespace(v='') %}
+    {% for v in rtd_vals %}
+      {% set xi = (loop.index0 / (n_rtd - 1) * sw_rtd) | round(1) %}
+      {% set yi = (pad_rtd + (1 - (v - lo_rtd) / rtd_rng) * (sh_rtd - pad_rtd * 2)) | round(1) %}
+      {% set pts_rtd.v = pts_rtd.v ~ xi ~ ',' ~ yi ~ ' ' %}
+    {% endfor %}
+    {% set last_rtd = rtd_vals | last %}
+    {% set spark_color = '#10b981' if (last_rtd is not none and last_rtd >= 0) else '#ef4444' %}
+    <svg viewBox="0 0 {{ sw_rtd }} {{ sh_rtd }}" preserveAspectRatio="none"
+         class="w-full mt-1" style="height:36px"
+         title="Realized P&L curve (forward-only, accrues from build date)">
+      <polyline points="{{ pts_rtd.v ~ sw_rtd ~ ',' ~ sh_rtd ~ ' 0,' ~ sh_rtd }}"
+                fill="{{ spark_color }}22" stroke="none"/>
+      <polyline points="{{ pts_rtd.v }}"
+                fill="none" stroke="{{ spark_color }}" stroke-width="1.4"
+                vector-effect="non-scaling-stroke"/>
+    </svg>
+    <div class="font-mono text-[8px] text-muted/60 mt-1">
+      realized curve · {{ curve | length }} day(s) · forward-only from build date
+    </div>
+  {% else %}
+    <div class="font-mono text-[9px] text-muted py-2 border border-edge/40 rounded-md px-3">
+      curve accrues from today (forward-only) — no historical snapshot rows yet
+    </div>
+  {% endif %}
+</div>
+{% endif %}
 
 {# ── RECENTLY CLOSED ─────────────────────────────────────────────────────── #}
 <div class="mb-4 bg-pane border border-edge rounded-lg overflow-hidden">
@@ -545,6 +634,40 @@
   </details>
 </div>
 
+{# ── Blackout Calendar (moved from top grid) ─────────────────────────────── #}
+<div class="mb-4 bg-pane border border-edge rounded-lg p-4">
+  <div class="flex justify-between items-baseline mb-3">
+    <span class="text-[10px] text-muted uppercase tracking-wider">Blackout Calendar</span>
+    <span class="font-mono text-[9px] text-muted/70">next 7d</span>
+  </div>
+  {% if events %}
+    <div class="flex flex-col gap-1.5">
+      {% for e in events %}
+        <div class="flex items-baseline justify-between border-t border-edge/40 pt-1.5 first:border-t-0 first:pt-0">
+          <div class="flex items-baseline gap-2">
+            <span class="font-mono text-[10px] font-semibold text-warn uppercase">{{ e.event_type }}</span>
+            {% if e.symbol_scope %}
+              <span class="font-mono text-[9px] text-muted">{{ e.symbol_scope }}</span>
+            {% endif %}
+          </div>
+          <div class="flex items-baseline gap-2 font-mono text-[9px]">
+            <span class="text-mono">{{ e.event_date }}</span>
+            <span class="text-warn/70">
+              {% if e.in_days == 0 %}today
+              {% elif e.in_days == 1 %}+1d (tomorrow)
+              {% else %}+{{ e.in_days }}d{% endif %}
+            </span>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="text-sm text-muted font-mono py-2">
+      — no events in the next 7 days
+    </div>
+  {% endif %}
+</div>
+
 {# ── FOOTER FOOTNOTE ─────────────────────────────────────────────────────── #}
 <div class="text-center text-muted/50 text-[9.5px] font-mono py-2">
   Robinhood MACE · v1 · zero-HITL · open-rungs HTMX-poll ~30s ·
@@ -568,5 +691,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/mace_payoff.js"></script>
+<script src="/static/js/mace_payoff.js?v={{ asset_v('js/mace_payoff.js') }}"></script>
+<script src="/static/js/mace_candles.js?v={{ asset_v('js/mace_candles.js') }}"></script>
 {% endblock %}

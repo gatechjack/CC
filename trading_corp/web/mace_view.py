@@ -46,7 +46,7 @@ from statistics import NormalDist
 from typing import Any, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from trading_corp.persistence import db
 from trading_corp.utils.time import now_et, now_utc
@@ -130,6 +130,7 @@ def _config_ctx(cfg) -> Optional[dict]:
                        ("weekly new / max rungs", f"{e.weekly_new_rungs_per_symbol} / {e.max_rungs_per_symbol}"),
                        ("stop cooldown sessions", e.stop_cooldown_sessions)]),
             ("sizing", [("rung risk %", s.rung_risk_pct),
+                        ("deployment basis", getattr(s, "deployment_basis", "equity")),
                         ("deployment target %", s.deployment_target_pct),
                         ("equity snapshot ET", s.equity_snapshot_time_et)]),
             ("management", [("interval sec", m.check_interval_sec),
@@ -223,11 +224,52 @@ def _latest_equity(db_url: str) -> Optional[dict]:
     with db.connect(db_url) as conn:
         try:
             r = conn.execute(
-                "SELECT snap_date, equity, cash, market_value FROM mace_equity_snapshot "
-                "ORDER BY snap_date DESC LIMIT 1").fetchone()
-        except Exception:  # noqa: BLE001
+                "SELECT snap_date, equity, cash, market_value, available_buying_power "
+                "FROM mace_equity_snapshot ORDER BY snap_date DESC LIMIT 1").fetchone()
+        except Exception:  # noqa: BLE001 — legacy DB w/o the column -> honest empty
             return None
     return dict(r) if r is not None else None
+
+
+def _sizing_block(cfg: Any, latest: Optional[dict], open_risk: float,
+                  committed_today: float = 0.0) -> Optional[dict]:
+    """The effective sizing / deployment-cap facts for the capital panel
+    (2026-08-26 BP-basis). Mirrors strategy.deployment_base EXACTLY: the base is
+    available_buying_power when cfg.sizing.deployment_basis selects it AND a usable
+    value is present, else equity (legacy / broker-didn't-expose fall-back). It
+    READS the engine's OWN audited available_buying_power from the snapshot — the
+    view NEVER recomputes BP (no divergence); basis selection is a cfg lookup only.
+
+    The sizing base is GROSS buying power (2:1 Reg-T; Jack 2026-08-26) when the BP
+    basis is active — the same value robinhood.py stores as available_buying_power.
+
+    NOTE (Option A): the engine's per-eval reserve gate charges only rungs placed
+    WITHIN an eval; pre-existing open max_risk is NOT charged against the cap (the
+    base is snapshotted once/eval). So `util_pct` (open_risk / base) is a book-vs-base
+    CONTEXT ratio, and `ceiling` (base x target) is the max NEW risk a single eval may
+    add — the operative per-eval headroom (starts fresh each eval).
+
+    `within_eval_pct` (committed_today / ceiling) is that operative gauge: the risk
+    placed by TODAY's eval as a share of the per-eval deploy cap. It reads ~0% on a
+    fresh eval and climbs only as that eval places — the honest gate headroom, unlike
+    `util_pct` (the standing book, a CONTEXT ratio that does not gate). Display only;
+    the reserve gate in strategy.py is unchanged."""
+    s = getattr(cfg, "sizing", None)
+    if s is None:
+        return None
+    basis = getattr(s, "deployment_basis", "equity")
+    target = getattr(s, "deployment_target_pct", None)
+    eq = (latest or {}).get("equity")
+    abp = (latest or {}).get("available_buying_power")
+    is_bp = (basis == "available_buying_power" and abp is not None and abp > 0)
+    base = abp if is_bp else eq
+    ceiling = (target * base) if (target is not None and base is not None) else None
+    util_pct = (open_risk / base * 100.0) if base else None
+    within_eval_pct = (committed_today / ceiling * 100.0) if ceiling else None
+    return {"basis": basis, "is_bp": is_bp, "equity": eq, "available_bp": abp,
+            "base": base, "target": target, "ceiling": ceiling,
+            "open_risk": open_risk, "util_pct": util_pct,
+            "committed_today": committed_today, "within_eval_pct": within_eval_pct}
 
 
 def _latest_ivr(db_url: str) -> list[dict]:
@@ -520,10 +562,15 @@ def _ivr_for_view(deps: Any, db_url: str) -> list[dict]:
     return out
 
 
-def _equity_ctx(db_url: str) -> dict:
+def _equity_ctx(db_url: str, cfg: Any = None) -> dict:
     """G4: latest snapshot + HWM (MAX equity) + a curve series for the sparkline,
-    all from mace_equity_snapshot (broker-free)."""
+    PLUS the effective sizing block (2026-08-26 BP-basis): which capital figure
+    DRIVES sizing (cfg.sizing.deployment_basis) + the per-eval deployment ceiling.
+    All from mace_equity_snapshot / mace_rung (broker-free). The single source of
+    the capital/sizing math the capital panel AND the breaker board render."""
     latest = _latest_equity(db_url)
+    open_risk = 0.0
+    committed_today = 0.0
     with db.connect(db_url) as conn:
         try:
             hwm_row = conn.execute(
@@ -531,12 +578,26 @@ def _equity_ctx(db_url: str) -> dict:
             curve = conn.execute(
                 "SELECT snap_date, equity FROM mace_equity_snapshot "
                 "ORDER BY snap_date DESC LIMIT 30").fetchall()
+            open_risk = float(conn.execute(
+                "SELECT COALESCE(SUM(max_risk_usd),0) FROM mace_rung "
+                "WHERE status IN ('open','closing')").fetchone()[0] or 0.0)
+            # Within-eval (today's) placed risk — the reserve gate's operative
+            # numerator resets each eval, so rungs entered today == this eval's
+            # charge against the per-eval cap (broker-free; SELECT only). MACE
+            # enters at ~15:45 ET (~19:45 UTC) so the UTC date == the ET date.
+            committed_today = float(conn.execute(
+                "SELECT COALESCE(SUM(max_risk_usd),0) FROM mace_rung "
+                "WHERE status IN ('submitting','open','closing') "
+                "AND substr(entry_ts,1,10)=?",
+                (now_et().date().isoformat(),)).fetchone()[0] or 0.0)
         except Exception:  # noqa: BLE001
-            return {"latest": latest, "hwm": None, "curve": []}
+            return {"latest": latest, "hwm": None, "curve": [],
+                    "sizing": _sizing_block(cfg, latest, open_risk, committed_today)}
     hwm = hwm_row["hwm"] if hwm_row else None
     series = [{"snap_date": c["snap_date"], "equity": c["equity"]}
               for c in reversed(curve)]
-    return {"latest": latest, "hwm": hwm, "curve": series}
+    return {"latest": latest, "hwm": hwm, "curve": series,
+            "sizing": _sizing_block(cfg, latest, open_risk, committed_today)}
 
 
 def _session_ctx(request: Request, deps: Any) -> dict:
@@ -576,15 +637,28 @@ _MACE_ERROR_KINDS = (
 )
 
 
-def _recent_audits(db_url: str, limit: int = 40) -> list[dict]:
+# Pulse feed noise: per-tick, low-signal kinds that saturate the LIMIT window and
+# crowd real lifecycle events (entry/fill/exit/close/halt) off the visible feed.
+# Filtered from the VIEW only — audit_event itself is never modified.
+# mace_mark_unavailable alone is ~1/3 of MACE audits and says nothing a feed needs.
+_PULSE_NOISE_KINDS = ("mace_mark_unavailable",)
+
+
+def _recent_audits(db_url: str, limit: int = 120) -> list[dict]:
     """MACE audit_event rows for the activity feed + audit trail (SELECT-only).
-    actor 'robinhood_mace' (engine) or 'mace_operations' (UI halt/arm)."""
+    actor 'robinhood_mace' (engine) or 'mace_operations' (UI halt/arm). High-volume
+    low-signal kinds (_PULSE_NOISE_KINDS) are excluded from the feed so real lifecycle
+    events stay visible within the LIMIT window; the DB is unchanged. LIMIT raised
+    40->120 (a single busy session logged 92 rows, saturating the old window)."""
     with db.connect(db_url) as conn:
         try:
+            noise = ",".join("?" * len(_PULSE_NOISE_KINDS))
             rows = conn.execute(
                 "SELECT ts, actor, kind, payload_json FROM audit_event "
                 "WHERE actor IN ('robinhood_mace','mace_operations') "
-                "ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+                "AND kind NOT IN (%s) "
+                "ORDER BY ts DESC LIMIT ?" % noise,
+                (*_PULSE_NOISE_KINDS, limit)).fetchall()
         except Exception:  # noqa: BLE001
             return []
     out = []
@@ -610,15 +684,13 @@ def _breakers_ctx(deps: Any, db_url: str, equity: Optional[dict]) -> dict:
     hour_ago = (now_utc() - timedelta(hours=1)).isoformat()
     eq = (equity or {}).get("latest") or {}
     equity_val = eq.get("equity")
+    sz = (equity or {}).get("sizing") or {}     # engine's sizing/BP block (single source)
     rows: list[dict] = []
     with db.connect(db_url) as conn:
         try:
             open_n = conn.execute(
                 "SELECT COUNT(*) FROM mace_rung WHERE status IN ('open','closing')"
             ).fetchone()[0]
-            open_risk = conn.execute(
-                "SELECT COALESCE(SUM(max_risk_usd),0) FROM mace_rung "
-                "WHERE status IN ('open','closing')").fetchone()[0]
             day_pnl = conn.execute(
                 "SELECT COALESCE(SUM(realized_pnl),0) FROM mace_rung "
                 "WHERE status='closed' AND substr(exit_ts,1,10)=?", (today,)
@@ -645,11 +717,30 @@ def _breakers_ctx(deps: Any, db_url: str, equity: Optional[dict]) -> dict:
     day_loss_pct = getattr(brk, "day_loss_pct", None) if brk else None
     day_limit = (-abs(day_loss_pct) * equity_val
                  if (day_loss_pct and equity_val) else None)
-    bp_pct = (open_risk / equity_val * 100.0) if equity_val else None
+    # BP UTILIZATION — denominator is the ENGINE'S deployment base (available BP when
+    # cfg.sizing.deployment_basis selects it, else equity), read from the shared
+    # sizing block so this gauge can NEVER diverge from the capital panel. Limit =
+    # deployment target (0.90). ★ NOTE (Option A): open risk is the standing book;
+    # the per-eval reserve gate charges only WITHIN-EVAL placements (pre-existing is
+    # already netted from the base), so a reading over the limit here does NOT mean
+    # entries are blocked — the per-eval deploy cap resets to the full ceiling each
+    # eval (shown in the capital panel).
+    # DEPLOY (THIS EVAL): the HONEST gate gauge — this eval's placed risk ÷ the
+    # per-eval deploy cap (0.90 x base). Reads ~0% on a fresh eval and climbs only as
+    # that eval places. The old "BP UTILIZATION" (standing book ÷ base) implied a
+    # binding 85%/90% limit it is NOT: the reserve gate resets its baseline each eval,
+    # so the book is a CONTEXT ratio (surfaced in the note, not a gate). Display only —
+    # strategy.py gate logic is untouched.
+    within_pct = sz.get("within_eval_pct")
+    book_pct = sz.get("util_pct")
+    base_lbl = "gross BP" if sz.get("is_bp") else "equity"
+    deploy_note = "this eval's risk / per-eval cap (0.90x %s); resets each eval" % base_lbl
+    if book_pct is not None:
+        deploy_note += " - book %.0f%% is context, not a gate" % book_pct
     rows = [
         {"k": "DAILY P&L", "v": day_pnl, "limit": day_limit, "note": "realized today"},
         {"k": "OPEN RUNGS", "v": open_n, "limit": cap, "note": "portfolio cap"},
-        {"k": "BP UTILIZATION", "v_pct": bp_pct, "note": "open risk / settled equity"},
+        {"k": "DEPLOY (THIS EVAL)", "v_pct": within_pct, "limit": 100.0, "note": deploy_note},
         {"k": "CONSEC LOSSES", "v": consec, "limit": 3, "note": "cool-down on trip"},
         {"k": "MACE ERRORS (1h)", "v": errs, "note": "engine error audits"},
     ]
@@ -713,6 +804,224 @@ def _halt_ctx(deps: Any, db_url: str) -> dict:
                      "auto_execute": badge["auto_execute"]}}
 
 
+# ── candle-cache reads (Part B — broker-free SELECT-only) ────────────────────
+_MACE_SYMBOLS = {"SPY", "IWM", "GDX", "IBIT", "XLE", "FXI"}
+_MACE_INTERVALS = {"5m", "1d"}
+
+
+def _candle_series(
+    db_url: str,
+    symbol: str,
+    interval: str,
+    limit: int = 500,
+) -> list[dict]:
+    """Return ascending OHLC series from ``mace_candle`` for (symbol, interval).
+
+    Reads at most ``limit`` most-recent bars and returns them sorted oldest
+    first (ascending bar_time), as a list of dicts with keys:
+    ``time`` (epoch seconds), ``open``, ``high``, ``low``, ``close``.
+
+    Broker-free, SELECT-only.  Any exception returns [].
+    """
+    try:
+        with db.connect(db_url) as conn:
+            rows = conn.execute(
+                "SELECT bar_time, open, high, low, close "
+                "FROM mace_candle WHERE symbol=? AND interval=? "
+                "ORDER BY bar_time DESC LIMIT ?",
+                (symbol, interval, limit),
+            ).fetchall()
+        return [
+            {
+                "time": r["bar_time"],
+                "open": r["open"],
+                "high": r["high"],
+                "low": r["low"],
+                "close": r["close"],
+            }
+            for r in reversed(rows)  # ascending
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _latest_prices(db_url: str, symbols) -> dict:
+    """Return {symbol: latest_close} for each symbol.
+
+    Prefers ``interval='5m'`` (intraday), falls back to ``'1d'`` when no 5m
+    bar is present.  Uses ``MAX(bar_time)`` to pick the most-recent bar.
+
+    Broker-free, SELECT-only.  Any exception returns {}.
+    """
+    try:
+        result: dict = {}
+        with db.connect(db_url) as conn:
+            for sym in symbols:
+                row = conn.execute(
+                    "SELECT close FROM mace_candle "
+                    "WHERE symbol=? AND interval='5m' "
+                    "ORDER BY bar_time DESC LIMIT 1",
+                    (sym,),
+                ).fetchone()
+                if row is None:
+                    row = conn.execute(
+                        "SELECT close FROM mace_candle "
+                        "WHERE symbol=? AND interval='1d' "
+                        "ORDER BY bar_time DESC LIMIT 1",
+                        (sym,),
+                    ).fetchone()
+                if row is not None and row["close"] is not None:
+                    try:
+                        result[sym] = float(row["close"])
+                    except (TypeError, ValueError):
+                        pass
+        return result
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+# ── realized P&L / PnL curve reads (Part C) ──────────────────────────────────
+#
+# RECOMMENDED DEFAULTS (NOT FINAL — pending Jack's decisions doc):
+#   Q1  Realized = gross (credit received - exit debit) × 100 × contracts, as
+#       stored in mace_rung.realized_pnl.  No commission adjustment here;
+#       commissions are handled at the broker layer and should be reflected in
+#       the fill prices that produce realized_pnl.  "Gross as stored" is the
+#       default — flip to net when commission capture is confirmed.
+#   Q2  PnL curve default = realized_to_date only; open_unrealized is captured
+#       separately in mace_pnl_snapshot for display but is NOT summed into the
+#       curve series.  Flip when Jack confirms mark-to-market inclusive display.
+#   Q3  PnL windows = CALENDAR days (not trading days).  Calendar is the
+#       recommended default for Q3 because it is timezone-aware, simple, and
+#       matches user expectations for "last week" on a weekly options book.
+#       RECOMMENDED DEFAULT (Q3): calendar days; flip to trading days pending
+#       Jack's ruling.
+#   Q4  Snapshot timing = post-close (best triggered by the manage loop after
+#       the final tick of the ET session).  The write side is the engine's job;
+#       the view is read-only.
+#
+_PNL_WINDOWS_CALENDAR = True  # Q3 FINAL (Jack 2026-09-04): 1w/1mo = trailing calendar days (ET); 1d = today's ET session (reconciles with the Daily P&L tile).
+
+
+def _realized_pnl_windows(db_url: str) -> dict:
+    """Sum of realized_pnl for closed rungs within calendar-day windows.
+
+    Returns ``{"1d": x, "1w": y, "1mo": z, "all": a}`` where each value is a
+    float (sum of realized_pnl for closed rungs whose exit_ts falls within the
+    window) or 0.0 if no rows match.  Any exception returns zeros.
+
+    Uses ET now as the reference timestamp.  Window edges (Q3 FINAL):
+      1d  = TODAY'S ET SESSION — same SQL as the Daily P&L "realized today" tile
+            (substr(exit_ts,1,10)==today ET) so the two reconcile exactly
+      1w  = last 7 calendar days (ET)
+      1mo = last 30 calendar days (ET)
+      all = all time (no date filter)
+    """
+    try:
+        now_e = now_et()
+        # ET midnight today expressed as UTC ISO prefix for string comparison.
+        from datetime import timezone as _tz
+        et_tz = now_e.tzinfo
+
+        def _et_midnight(days_back: int) -> str:
+            d = (now_e - timedelta(days=days_back)).date()
+            # Midnight ET, converted to UTC ISO for string prefix comparison.
+            from datetime import datetime as _dt
+            midnight_et = _dt(d.year, d.month, d.day, tzinfo=et_tz)
+            return midnight_et.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+        today_iso = now_e.date().isoformat()
+        cutoffs = {
+            "1w": _et_midnight(6),    # today + 6 prior = 7 calendar days
+            "1mo": _et_midnight(29),  # today + 29 prior = 30 calendar days
+        }
+
+        result: dict[str, float] = {"1d": 0.0, "1w": 0.0, "1mo": 0.0, "all": 0.0}
+        with db.connect(db_url) as conn:
+            # all-time
+            row = conn.execute(
+                "SELECT COALESCE(SUM(realized_pnl),0) FROM mace_rung "
+                "WHERE status='closed' AND realized_pnl IS NOT NULL"
+            ).fetchone()
+            result["all"] = float(row[0]) if row else 0.0
+            # 1d = TODAY'S ET SESSION — byte-identical SQL to the Daily P&L
+            # "realized today" tile (_breakers_ctx) so the two ALWAYS reconcile
+            # (Q3 FINAL, Jack 2026-09-04). exit_ts is UTC; substr(...,1,10) vs the
+            # ET date matches for MACE exits (market-hours -> same UTC/ET date).
+            row = conn.execute(
+                "SELECT COALESCE(SUM(realized_pnl),0) FROM mace_rung "
+                "WHERE status='closed' AND substr(exit_ts,1,10)=?",
+                (today_iso,),
+            ).fetchone()
+            result["1d"] = float(row[0]) if row else 0.0
+            # 1w / 1mo = trailing calendar days (ET), unchanged
+            for key, cutoff in cutoffs.items():
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(realized_pnl),0) FROM mace_rung "
+                    "WHERE status='closed' AND realized_pnl IS NOT NULL "
+                    "AND exit_ts >= ?",
+                    (cutoff,),
+                ).fetchone()
+                result[key] = float(row[0]) if row else 0.0
+        return result
+    except Exception:  # noqa: BLE001
+        return {"1d": 0.0, "1w": 0.0, "1mo": 0.0, "all": 0.0}
+
+
+def _pnl_curve(db_url: str) -> list[dict]:
+    """Return the daily realized P&L curve from ``mace_pnl_snapshot``.
+
+    Rows sorted ascending by ``snap_date``.  Each dict has keys:
+    ``snap_date`` (ET date string), ``realized_to_date``, ``open_unrealized``,
+    ``open_rungs``.
+
+    Broker-free, SELECT-only.  Any exception returns [].
+    """
+    try:
+        with db.connect(db_url) as conn:
+            rows = conn.execute(
+                "SELECT snap_date, realized_to_date, open_unrealized, open_rungs "
+                "FROM mace_pnl_snapshot ORDER BY snap_date"
+            ).fetchall()
+        return [
+            {
+                "snap_date": r["snap_date"],
+                "realized_to_date": r["realized_to_date"],
+                "open_unrealized": r["open_unrealized"],
+                "open_rungs": r["open_rungs"],
+            }
+            for r in rows
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _pnl_ctx(db_url: str) -> dict:
+    """Build the PnL context dict for the /mace page template.
+
+    Returns ``{"windows": _realized_pnl_windows(db_url),
+               "curve":   _pnl_curve(db_url),
+               "preliminary": False}``.
+
+    Q1-Q5 are CLOSED (Jack 2026-09-04, see PNL_DECISIONS_2026-09-04.md) so the
+    surface is final: realized is gross of reg fees (Q1), curve is realized-only
+    and accrues forward from build date (Q2/Q5e), 1d = today's ET session and
+    1w/1mo = trailing calendar (Q3), snapshot 16:15 ET (Q4). ``preliminary`` is
+    retained as False for template compatibility.
+
+    Fail-safe: any exception returns ``{"windows": {}, "curve": [], "preliminary": False}``.
+    """
+    try:
+        return {
+            "windows": _realized_pnl_windows(db_url),
+            "curve": _pnl_curve(db_url),
+            "preliminary": False,
+        }
+    except Exception:  # noqa: BLE001
+        log.warning("mace_view: _pnl_ctx failed", exc_info=True)
+        return {"windows": {}, "curve": [], "preliminary": False}
+
+
 def register(app: FastAPI) -> None:
     templates = app.state.templates
     deps = app.state.deps
@@ -727,7 +1036,7 @@ def register(app: FastAPI) -> None:
     @app.get("/mace", response_class=HTMLResponse)
     async def mace_cockpit(request: Request):
         cfg = _cfg(deps)
-        equity = await _q(_equity_ctx, db_url)
+        equity = await _q(_equity_ctx, db_url, cfg)
         ctx = {
             "badge": mace_badge(deps),
             "config": _config_ctx(cfg),
@@ -740,6 +1049,7 @@ def register(app: FastAPI) -> None:
             "audits": await _q(_recent_audits, db_url, 40),
             "breakers": await _q(_breakers_ctx, deps, db_url, equity),
             "mode": getattr(deps, "mode", "PAPER"),
+            "pnl": await _q(_pnl_ctx, db_url),
             **(await _q(_halt_ctx, deps, db_url)),
             **(await _rungs_ctx()),
         }
@@ -788,3 +1098,36 @@ def register(app: FastAPI) -> None:
         """Clear the entry-halt latch (entries resume at the next eval slot)."""
         await asyncio.to_thread(_set_latch, False, "mace_ui_arm")
         return await _halt_partial(request)
+
+    @app.get("/mace/partials/candles")
+    async def mace_candles(symbol: str = "SPY", interval: str = "5m"):
+        """Return OHLC candle series for a (symbol, interval) pair.
+
+        Query params:
+          symbol   — one of SPY/IWM/GDX/IBIT/XLE/FXI (default: SPY)
+          interval — '5m' or '1d' (default: '5m')
+
+        Response JSON:
+          {"symbol": "SPY", "interval": "5m",
+           "candles": [{"time": 1234567890, "open": 1.0, "high": 1.1,
+                        "low": 0.9, "close": 1.05}, ...]}
+        """
+        sym = symbol.strip().upper()
+        ivl = interval.strip()
+        if sym not in _MACE_SYMBOLS or ivl not in _MACE_INTERVALS:
+            return JSONResponse({"error": "invalid symbol or interval"}, status_code=400)
+        series = await asyncio.to_thread(_candle_series, db_url, sym, ivl)
+        return JSONResponse({"symbol": sym, "interval": ivl, "candles": series})
+
+    @app.get("/mace/partials/prices")
+    async def mace_prices():
+        """Return the latest close price for each of the 6 MACE underlyings.
+
+        Prefers the most-recent 5m bar; falls back to 1d when 5m is absent.
+
+        Response JSON:
+          {"SPY": 541.23, "IWM": 208.11, ...}
+          (symbol absent from dict when no candle data available)
+        """
+        prices = await asyncio.to_thread(_latest_prices, db_url, list(_MACE_SYMBOLS))
+        return JSONResponse(prices)

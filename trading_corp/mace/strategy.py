@@ -81,6 +81,19 @@ class EntryContext:
     chains: Mapping[str, ChainView]
     next_session_date: date | None = None
     risk_gate: Callable[[str, CondorSpec, int], bool] | None = None
+    # Free/available buying power (the "margin available to invest" figure) — the
+    # reserve/deployment-cap sizing basis when cfg.sizing.deployment_basis ==
+    # 'available_buying_power'. None => not captured (gate falls back to equity).
+    # Per-rung contract sizing (size_contracts) never uses this — always equity.
+    available_buying_power: float | None = None
+    # Open max_risk at THIS eval's start (Option A, 2026-08-25). The available-BP
+    # base is already net of collateral for positions open at the 15:40 snapshot AND
+    # is snapshotted once per eval, so the reserve gate counts only rungs placed
+    # WITHIN THIS EVAL = sum_open_max_risk(now) - this baseline. None on a direct
+    # call (= a fresh eval, nothing placed yet -> within-eval committed is 0). The
+    # manager sets it in build_entry_context; it survives the per-placement
+    # dataclasses.replace(rungs=...). Unused by the legacy 'equity' (total-book) basis.
+    eval_start_open_max_risk: float | None = None
 
     def next_session(self) -> date:
         return self.next_session_date or next_session(self.session_date)
@@ -179,6 +192,53 @@ def sessions_since_last_stop(
 def sum_open_max_risk(rungs: Sequence[RungState]) -> float:
     return sum(float(r.max_risk_usd or 0.0)
                for r in rungs if r.status in _LIVE_STATUSES)
+
+
+def _uses_available_bp(cfg: "MaceConfig", ctx: "EntryContext") -> bool:
+    """True when the reserve gate should run in the Option-A available-BP model:
+    the configured basis is available_buying_power AND a usable value is present.
+    When False (legacy 'equity' basis, OR available_buying_power configured but the
+    broker didn't expose it) the gate degrades to the equity total-book model —
+    base AND committed-risk are then chosen together, never mixed."""
+    return (cfg.sizing.deployment_basis == "available_buying_power"
+            and ctx.available_buying_power is not None
+            and ctx.available_buying_power > 0)
+
+
+def deployment_base(cfg: "MaceConfig", ctx: "EntryContext") -> float:
+    """The reserve/deployment-cap DENOMINATOR (strategy filter 9):
+      available_buying_power (present) -> ctx.available_buying_power — free BP after
+          existing option collateral (the "margin available to invest" figure), so
+          the cap never authorizes a rung the account can't actually margin.
+      else                              -> ctx.equity — the settled-cash basis
+          (legacy 'equity' basis, or a safe fall-back when available BP is absent).
+    Per-rung contract sizing (size_contracts) always stays on ctx.equity — this only
+    moves the reserve cap denominator."""
+    if _uses_available_bp(cfg, ctx):
+        return float(ctx.available_buying_power)
+    return float(ctx.equity or 0.0)
+
+
+def reserve_committed(cfg: "MaceConfig", ctx: "EntryContext") -> float:
+    """Risk that counts against the deployment cap, per basis (Option A ruling,
+    Jack 2026-08-25):
+      available_buying_power (present): ONLY rungs placed WITHIN THIS EVAL. The base
+          is already net of collateral for positions open at the 15:40 snapshot, so
+          re-subtracting pre-existing open rungs would DOUBLE-COUNT. But the base is
+          snapshotted once per eval, so a single eval's sequential placements are not
+          yet reflected -> subtract them (= sum_open_max_risk(now) - eval-start
+          baseline) so one eval can't over-commit against the stale snapshot. On a
+          direct/first-pass call (eval_start_open_max_risk is None) nothing has been
+          placed yet -> 0.
+      equity (legacy / available-BP fall-back): ALL open rungs — the total-book cap
+          on gross account value (pre-existing rungs consume it)."""
+    total_open = sum_open_max_risk(ctx.rungs)
+    if _uses_available_bp(cfg, ctx):
+        baseline = ctx.eval_start_open_max_risk
+        if baseline is None:                      # direct call = fresh eval start
+            baseline = total_open
+        return max(0.0, total_open - float(baseline))
+    return total_open
 
 
 def day_realized(rungs: Sequence[RungState], session_date: date) -> float:
@@ -293,13 +353,14 @@ def _cand(c) -> str:
 
 def _wing_leg_diag(chain: "ChainView", expiry, opt_type: str, strike: float,
                    band: float, spot) -> str:
-    """Why one wing leg is unusable: unpriceable (listed, no mid), out-of-band
-    (absent AND beyond +/-band of spot -> the chain() fetch clipped it), or
-    unlisted (absent, inside band)."""
+    """Why one wing leg is unusable: unpriceable (listed, but no buyable price --
+    no ask AND no mark; a bare zero-bid with a valid ask is now priceable, since
+    we BUY the wing), out-of-band (absent AND beyond +/-band of spot -> the
+    chain() fetch clipped it), or unlisted (absent, inside band)."""
     tag = ("P" if opt_type == "put" else "C") + f"{strike:g}"
     q = chain.get(expiry, opt_type, strike)
     if q is not None:
-        return f"{tag}=unpriceable" if q.mid is None else f"{tag}=ok"
+        return f"{tag}=unpriceable" if q.long_price is None else f"{tag}=ok"
     if spot and band and abs(float(strike) / float(spot) - 1.0) > band:
         return f"{tag}=out-of-band"
     return f"{tag}=unlisted"
@@ -455,10 +516,13 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
             long_put, long_call, eff_width = snapped
             lp_q = chain.get(expiry, "put", long_put)
             lc_q = chain.get(expiry, "call", long_call)
-            if lp_q is None or lc_q is None or lp_q.mid is None or lc_q.mid is None:
-                continue                              # wing unpriceable
+            # Long wings we BUY: priceable on a valid ask/mark even with no bid
+            # (long_price), NOT the two-sided mid the shorts require. Shorts still
+            # price at .mid below, so the credit basis for the sold legs is UNCHANGED.
+            if lp_q is None or lc_q is None or lp_q.long_price is None or lc_q.long_price is None:
+                continue                              # wing unpriceable (no ask AND no mark)
             p_wing = True
-            credit_mid = (sp_q.mid - lp_q.mid) + (sc_q.mid - lc_q.mid)
+            credit_mid = (sp_q.mid - lp_q.long_price) + (sc_q.mid - lc_q.long_price)
             if e.enforce_risk_band:
                 max_risk = (eff_width - credit_mid) * 100.0
                 if not (e.risk_band_min_per_width_usd * eff_width <= max_risk <= e.risk_band_max_usd):
@@ -616,8 +680,16 @@ def evaluate_entry(symbol: str, cfg: MaceConfig, ctx: EntryContext,
                      ivr_value=ivr_value, overflow=is_overflow)
     mr = max_risk_usd(b.width, b.credit_mid, contracts)
 
-    # 9. reserve
-    if sum_open_max_risk(ctx.rungs) + mr > cfg.sizing.deployment_target_pct * ctx.equity:
+    # 9. reserve — deployment cap. deployable = deployment_basis * deployment_target_pct;
+    #    a new rung SKIPs if committed + this rung's max_risk would breach it.
+    #    committed is basis-dependent (see reserve_committed): available-BP counts only
+    #    WITHIN-EVAL placements (the base already nets pre-existing collateral, Option A);
+    #    equity counts all open rungs (total-book). Enforced HERE at entry eval BEFORE
+    #    any placement, and again on the per-placement fresh-rungs recheck in the manager
+    #    (so N rungs in ONE eval cannot collectively exceed base*target). Per-rung sizing
+    #    above stays on equity.
+    if (reserve_committed(cfg, ctx) + mr
+            > cfg.sizing.deployment_target_pct * deployment_base(cfg, ctx)):
         return _skip(symbol, SKIP_RESERVE, ivr_status=ivr_status,
                      ivr_value=ivr_value, overflow=is_overflow)
 

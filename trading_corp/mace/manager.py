@@ -31,6 +31,7 @@ from typing import Callable, Optional
 from trading_corp.mace import ivr_provider as ivr
 from trading_corp.mace import strategy as st
 from trading_corp.mace.config import MaceConfig
+from trading_corp.mace.disposition import disposition_line, exit_disposition_line
 from trading_corp.mace.domain import EvalResult, RungState
 from trading_corp.mace.execution import EntryOutcome, ExitOutcome, MaceExecutor, RungStore
 from trading_corp.mace.notify import MaceNotifier
@@ -91,6 +92,21 @@ class MaceManager:
                 _LOG.exception("mace manager audit hook failed: %s", kind)
         _LOG.info("mace.%s %s", kind, payload)
 
+    def _emit_entry_eval(self, r: EvalResult, reason: str) -> None:
+        """Emit ONE per-symbol `mace_entry_eval` audit — the durable "why did X
+        (not) enter" trail (skipped symbols leave no rung). `entered`/`skip_reason`
+        are the PURE pipeline DECISION (byte-unchanged); `reason` is the human
+        terminal disposition. For an entered symbol `reason` is filled in AFTER its
+        placement resolves so it reflects the REAL outcome (TAKEN=filled+booked,
+        entry_standdown=attempted-no-fill, ATTEMPT=decided-but-not-placed) instead
+        of the pre-placement intent (the premature-"TAKEN" fix, 2026-08-25).
+        Exactly one record per symbol per round."""
+        self._audit("mace_entry_eval", symbol=r.symbol, entered=r.entered,
+                    skip_reason=r.skip_reason, reason=reason,
+                    ivr_status=r.ivr_status, ivr_value=r.ivr_value,
+                    credit_mid=r.credit_mid, contracts=r.contracts,
+                    max_risk_usd=r.max_risk_usd, overflow=r.overflow, detail=r.detail)
+
     def _enabled_symbols(self) -> list[str]:
         return [s for s, c in self.cfg.symbols.items() if c.enabled]
 
@@ -133,6 +149,25 @@ class MaceManager:
             return None
         try:
             return float(row["equity"])
+        except (TypeError, ValueError):
+            return None
+
+    def _load_available_bp(self) -> Optional[float]:
+        """Latest snapshot's free/available BP (the reserve-cap basis when
+        deployment_basis='available_buying_power'). None on a legacy row (column
+        absent/NULL) or read error -> the reserve gate falls back to equity."""
+        try:
+            row = self.store.conn.execute(
+                "SELECT available_buying_power FROM mace_equity_snapshot "
+                "ORDER BY snap_date DESC LIMIT 1"
+            ).fetchone()
+        except Exception:  # noqa: BLE001 — legacy DB w/o the column, etc.
+            return None
+        if row is None:
+            return None
+        try:
+            v = row["available_buying_power"]
+            return float(v) if v is not None else None
         except (TypeError, ValueError):
             return None
 
@@ -201,6 +236,7 @@ class MaceManager:
 
         events = self._load_events()
         equity = self._load_equity()
+        available_bp = self._load_available_bp()
 
         # IV snapshot corpus from day 1 (self-sufficiency) — never blocks eval.
         try:
@@ -210,7 +246,13 @@ class MaceManager:
 
         return st.EntryContext(
             session_date=session_date, equity=equity, rungs=rungs, events=events,
-            ivr=ivr_readings, chains=chains, risk_gate=self._risk_gate)
+            ivr=ivr_readings, chains=chains, risk_gate=self._risk_gate,
+            available_buying_power=available_bp,
+            # Option A baseline: open max_risk at eval start. The per-placement
+            # recheck reloads rungs (via replace) but keeps this baseline, so the
+            # available-BP reserve gate counts only rungs placed WITHIN THIS EVAL
+            # (pre-existing risk is already netted from the available-BP snapshot).
+            eval_start_open_max_risk=st.sum_open_max_risk(rungs))
 
     async def evaluate_and_enter(self, session_date: date) -> EntryRoundResult:
         ctx = await self.build_entry_context(session_date)
@@ -218,25 +260,36 @@ class MaceManager:
         overflow = st.route_overflow(primary, self.cfg, ctx)
 
         # Per-symbol eval record — the ONLY durable "why did X (not) enter" trail for
-        # a no-HITL division (skipped symbols leave no rung). Emitted regardless of
-        # auto_execute so standby/halt rounds are diagnosable too.
+        # a no-HITL division (skipped symbols leave no rung), rendered payload.reason
+        # first by the /mace Activity Pulse. SKIPPED symbols are terminal at eval
+        # time (no rung will ever exist) so they are recorded now. ENTERED symbols
+        # get their record AFTER their placement resolves (below) so the disposition
+        # reflects the ACTUAL outcome (filled -> TAKEN, no fill -> entry_standdown)
+        # rather than the pre-placement intent — a stood-down entry must not log
+        # "TAKEN". Emitted regardless of auto_execute so standby/halt rounds stay
+        # diagnosable. Exactly one record per symbol per round. Decisions above are
+        # byte-unchanged; this is formatting + WHEN it is emitted only.
+        entered_evals = [r for r in list(primary) + list(overflow) if r.entered]
         for r in list(primary) + list(overflow):
-            self._audit("mace_entry_eval", symbol=r.symbol, entered=r.entered,
-                        skip_reason=r.skip_reason, ivr_status=r.ivr_status,
-                        ivr_value=r.ivr_value, credit_mid=r.credit_mid,
-                        contracts=r.contracts, max_risk_usd=r.max_risk_usd,
-                        overflow=r.overflow, detail=r.detail)
+            if not r.entered:
+                self._emit_entry_eval(r, disposition_line(r, self.cfg, ctx))
 
         auto = bool(self._auto_execute_fn())
         result = EntryRoundResult(session_date=session_date, primary=primary,
                                   overflow=overflow, auto_execute=auto)
         if not auto:
+            # Standby: nothing is placed -> each entered symbol WOULD have attempted
+            # (ATTEMPT, filled=None), which is the honest terminal disposition here.
+            for r in entered_evals:
+                self._emit_entry_eval(r, disposition_line(r, self.cfg, ctx))
             self._audit("mace_entry_halted", reason="auto_execute=false",
-                        entered=sum(1 for r in primary + overflow if r.entered))
+                        entered=len(entered_evals))
             return result
         if self._entry_halted():
+            for r in entered_evals:
+                self._emit_entry_eval(r, disposition_line(r, self.cfg, ctx))
             self._audit("mace_entry_halted", reason="operator_halt_latch",
-                        entered=sum(1 for r in primary + overflow if r.entered))
+                        entered=len(entered_evals))
             return result
 
         # Place each ENTER, RE-VALIDATING against post-placement state: the
@@ -271,6 +324,10 @@ class MaceManager:
                     self._audit("mace_entry_halted_midround",
                                 remaining=[r.symbol for r in to_place[i:]],
                                 reason="operator_halt_latch")
+                    # The remaining entered symbols were never placed -> ATTEMPT
+                    # (decided to enter, halted before their turn), not TAKEN.
+                    for r in to_place[i:]:
+                        self._emit_entry_eval(r, disposition_line(r, self.cfg, ctx))
                     break
                 now = self._now_et()
                 # P1.5: anchor the cutoff to the SESSION date, not now's — an
@@ -287,6 +344,9 @@ class MaceManager:
                     self._audit("mace_entry_window_skip", symbol=res.symbol,
                                 position=i + 1, of=len(to_place),
                                 reason="window_exhausted")
+                    self._emit_entry_eval(res, disposition_line(
+                        res, self.cfg, ctx, filled=False,
+                        standdown_reason="window_exhausted"))
                     continue
                 deadline = now + timedelta(seconds=remaining / (len(to_place) - i))
                 recheck = st.evaluate_entry(
@@ -295,7 +355,13 @@ class MaceManager:
                     is_overflow=res.overflow)
                 if not recheck.entered:
                     self._audit("mace_entry_superseded", symbol=res.symbol,
-                                skip_reason=recheck.skip_reason, detail=res.detail)
+                                skip_reason=recheck.skip_reason,
+                                reason=f"SKIP superseded -> {recheck.skip_reason}",
+                                detail=res.detail)
+                    # Superseded by post-placement state (e.g. capacity/reserve
+                    # taken by an earlier fill this round) -> the re-eval SKIP is
+                    # this symbol's honest terminal disposition.
+                    self._emit_entry_eval(recheck, disposition_line(recheck, self.cfg, ctx))
                     continue
                 # A3: capture the symbol's fresh ATM IV as this rung's permanent
                 # entry IV. None when IV was unavailable this round (promote_open
@@ -307,8 +373,17 @@ class MaceManager:
                                                     halt_fn=self._entry_halted,
                                                     entry_atm_iv=entry_iv)
                 result.outcomes.append(out)
+                # Terminal disposition NOW reflects the REAL executor outcome:
+                # filled -> TAKEN, no fill (floor-drift/cutoff/reject/…) ->
+                # entry_standdown. This is the premature-"TAKEN" fix.
+                self._emit_entry_eval(recheck, disposition_line(
+                    recheck, self.cfg, ctx, filled=out.filled,
+                    standdown_reason=out.standdown_reason))
             except Exception as exc:  # noqa: BLE001 — top-level loop guard
-                self._audit("mace_entry_exception", symbol=res.symbol, error=str(exc))
+                self._audit("mace_entry_exception", symbol=res.symbol,
+                            reason=f"EXCEPTION {exc}", error=str(exc))
+                self._emit_entry_eval(res, disposition_line(
+                    res, self.cfg, ctx, filled=False, standdown_reason="error"))
                 self.notifier.error(loop="entry", exc=exc)
         return result
 
@@ -367,7 +442,10 @@ class MaceManager:
         if not decision.should_exit:
             return None
         self._audit("mace_manage_exit", rung_id=rung.rung_id,
-                    reason=decision.exit_reason, detail=decision.detail)
+                    reason=decision.exit_reason, detail=decision.detail,
+                    symbol=rung.symbol,
+                    line=exit_disposition_line(rung.spec, decision.exit_reason,
+                                               phase="decision"))
         return await self.executor.close_rung(rung, decision.exit_reason)
 
     async def _spot(self, symbol: str) -> Optional[float]:
@@ -391,11 +469,20 @@ class MaceManager:
         sd = session_date or self._now_et().date()
         snap = await self.port.snapshot()
         ts = self._now_utc().isoformat(timespec="seconds")
+        # available_buying_power (free BP) persists alongside equity so the reserve
+        # gate at 15:45 reads the same 15:40 basis. NULL when the broker doesn't
+        # expose it -> the gate falls back to equity (see strategy.deployment_base).
+        avail_bp = getattr(snap, "available_buying_power", None)
         self.store.conn.execute(
             "INSERT OR REPLACE INTO mace_equity_snapshot "
-            "(snap_date, equity, cash, market_value, ts) VALUES (?,?,?,?,?)",
-            (sd.isoformat(), snap.equity, snap.cash, snap.market_value, ts))
-        self._audit("mace_equity_snapshot", snap_date=sd.isoformat(), equity=snap.equity)
+            "(snap_date, equity, cash, market_value, available_buying_power, ts) "
+            "VALUES (?,?,?,?,?,?)",
+            (sd.isoformat(), snap.equity, snap.cash, snap.market_value, avail_bp, ts))
+        # Audit the basis figures so a box/live run reveals whether the deployment
+        # cap actually ran on available BP (not a silent fall-back to equity).
+        self._audit("mace_equity_snapshot", snap_date=sd.isoformat(),
+                    equity=snap.equity, available_buying_power=avail_bp,
+                    deployment_basis=self.cfg.sizing.deployment_basis)
         return snap
 
     # ── daily summary (15:50 slot) ───────────────────────────────────────
