@@ -255,7 +255,7 @@ divisions:
     benchmark: SPY
     target_annual_return: 0.50
     standby: true
-    enabled: true
+    enabled: false  # R7.e exclusivity 2026-08-29: OFF the KALSHI-original account (reversible: restore true)
 
   # Phase K3 placeholder (added 2026-05-11): Kalshi Copy Trading. Mirrors
   # polymarket_copy_trading — registered now as STANDBY so the dashboard
@@ -303,7 +303,7 @@ divisions:
     benchmark: SPY
     target_annual_return: 0.50
     standby: false
-    enabled: true
+    enabled: false  # R7.e exclusivity 2026-08-29: OFF the KALSHI-original account (reversible: restore true)
 
   # Two-division split Phase 1 (2026-08-16): LIVE Poly->Kalshi MLB copy. The
   # poly_kalshi_mlb strategy detects roster whales' Polymarket moneyline bets

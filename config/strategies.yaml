@@ -2045,3 +2045,15 @@ bitunix_sfp:
     "ETH/USDT.P": { bos_tf: "3m", arm: "trading" }   # live Mode B, trivial size
     "SOL/USDT.P": { bos_tf: "3m", arm: "trading" }   # re-armed 2026-07-01 (regime-aware)
     "XRP/USDT.P": { bos_tf: "3m", arm: "trading" }   # re-armed 2026-07-01 (regime-aware)
+
+# ── Prediction Markets LIVE DRIVER (Stage 3 R7.e, 2026-08-29) ──
+# Wires the engine-task driver (prediction_markets/live_driver.py) via main.py:run(). enabled:true => the
+# task RUNS (polls /positions, boot-reconciles, runs the chokepoint) but the ARM STATE (default DISARMED)
+# gates every POST. R7.e comes up DISARMED; R7.f is the first arm (separate authorization).
+pm_live_driver:
+  enabled: true
+  account_id: kalshi_jack
+  category: mlb
+  poll_interval_sec: 7
+  index_refresh_sec: 900
+  max_slippage_cents: 2
