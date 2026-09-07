@@ -153,7 +153,26 @@ is attached to one of the 10 and the engine restarts, that (account,cat) enters 
 Branch pm-remaining-categories-plan-2026-09-06 (commits ...0e81eea + handoff). 42 tests green on the box venv
 (mlb byte-identical) + 26 local. Disarmed dry-run gate PASSES (nfl + cfb: 0 wrong game, 0 wrong market-type).
 
-## ★★ RUNG 2 (cs2) — BUILT + BOX-SCRATCHED GREEN + STAGED, HELD AT THE DEPLOY LINE 2026-09-07 ~01:30Z
+## ★★ RUNG 2 (cs2) — LANDED LIVE 2026-09-07 ~03:25Z (deployed + engine restarted + 2 disarmed subs created; all post-checks GREEN)
+- **DEPLOY 03:10Z** (cc/pm_cs2_deploy.*): drift-check box==rung-1 base (exec 8894c6d4 / live_driver 784c04d9),
+  backup ~/pm_cs2_deploy_backup_20260907T031048Z, SHA-VERIFY placed==COMMITTED (exec 4ad71e1a / live_driver
+  91d218a3 / cs2 e0063823), additive (exec +19/-0, live_driver +30/-0), box-venv import OK. NO restart in runner.
+- **RESTART** by Jack (engine 222109->224045, NRestarts=0, since 03:13:41Z). **POST-CHECK GREEN** (cc/pm_cs2_postcheck_ro.*,
+  boot-aware): cs2 adapter+ctx loaded (series KXCS2GAME, alias_n=6, cs2_index default None); ★ 4 live matchers
+  byte-identical (additive-only diff + cs2_index None + 8 live tasks RUNNING); 9 arm rows 9-armed 0-latched; boot-
+  reconcile both clean; liveness 8 RUNNING; ★ engine-logged cycle order = ['mlb','atp','wta','ufc'] BOTH accounts
+  (unchanged); MACE back (config_hash c382c9370f9b, aux loops online); 0 tracebacks. cs2 INVISIBLE (0 subs).
+  ★ QUERY-ARTIFACT NAMED: the recompute over `active=1` showed 9 cats because the 10 dormant rung-1 subs carry
+  active=1 -> use the ROSTER (driver_roster.active_driver_subdivisions), NOT active=1 (see [[active-flag-not-a-proxy-for-trades]]).
+- **CREATE 03:25Z** (cc/pm_cs2_create.*): 2 cs2 subs (jack+karen) DISARMED, moneyline, NO arm rows, NO attachments.
+  pm_subdivision 18->20. **POST-VERIFY GREEN** (cc/pm_cs2_createverify_ro.*): original-8 content sha == rung-1
+  baseline 198f61354e17187f (UNCHANGED); rung1-10 intact; arm 9/9/0 (no cs2 arm key); attachments 17->17 (cs2=0);
+  liveness 8 RUNNING; roster 8 entries (cs2 NOT in roster -> dormant); engine 224045 unchanged. full 20-row
+  content sha = 7f6a83f98423d31e (record for the next family's create diff). cs2 INERT until attach+arm+restart.
+- **REMAINING (Jack's):** attach whale (farm Promote) + arm (CLI) + set caps. cs2 is already dry-run-proven on
+  real data (unlike nba/nhl/wnba, which still owe a real-market dry-run before arming per the ARM-GATE).
+
+## ★★ RUNG 2 (cs2) — build detail (was: BUILT + BOX-SCRATCHED GREEN + STAGED) 2026-09-07 ~01:30Z
 **Commit 1f5768f (pushed, local==origin). Branch pm-remaining-categories-plan-2026-09-06.** Reuses the tennis
 PAIR-KEY construct but with EXACT-normalized org matching, NEVER fuzzy (its own module, tennis untouched/byte-
 identical). Report detail = `CS2_MATCH_2026-09-07.md`; runners cc/pm_cs2_*.
