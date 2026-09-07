@@ -57,6 +57,7 @@ from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) match ind
 from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): structural game-index builder for nfl/nba/nhl/wnba/cfb
 from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pair-keyed match index builder for fetch_cs2_market_context
 from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): soccer 3-way game-index builder for fetch_soccer_market_context
+from ..data import fed_poly_kalshi_match as FED   # rung 4 (2026-09-07): fed bucket-index builder for fetch_fed_market_context
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
@@ -68,6 +69,7 @@ UFC_SERIES = ("KXUFCFIGHT", "KXUFCDISTANCE")          # B2: UFC moneyline (per-f
 # builder fetches exactly one series per category (match-winner only -- no set/game/futures/table-tennis).
 TENNIS_SERIES = {"atp": "KXATPMATCH", "wta": "KXWTAMATCH"}
 CS2_SERIES = "KXCS2GAME"   # rung 2 (2026-09-06): the single Kalshi cs2 match/series-winner series (both YES tickers/match)
+FED_SERIES = "KXFEDDECISION"   # rung 4 (2026-09-07): the single Kalshi FOMC rate-decision series (5 buckets/meeting)
 _SETTLED_LOOKBACK_SEC = 160 * 86400
 # ★ SUSTAINED-SHARD-UNDERFUNDING alarm threshold (gate 6b, Jack RULED 2026-08-30: SURFACED, NOT latched). N=3 cycles:
 # Kalshi auto-rebalances every 10s and the driver polls ~7s, so a transient gap while a rebalance is mid-flight lasts
@@ -310,6 +312,30 @@ def _soccer_ctx_builder(cfg):
     async def _b(client, now_ts: int) -> execution.MarketContext:
         return await fetch_soccer_market_context(client, now_ts, cfg)
     return _b
+
+
+async def fetch_fed_market_context(client, now_ts: int) -> execution.MarketContext:
+    """rung 4 (2026-09-07): fetch OPEN + recent-SETTLED KXFEDDECISION markets and build the {meeting:
+    {bucket: ticker}} index. MIRRORS the other builders -- SAME get_markets, _market_quote_dict, raw
+    exchange_index merge. The bucket code comes from the ticker; build_bucket_index validates it against
+    the market's own yes_sub_title (independent-evidence check). Event+bucket (no teams/date)."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    fed_markets: list = []       # [{ticker, yes_sub_title}] -> build_bucket_index
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+        ms = await client.get_markets(series_ticker=FED_SERIES, status=status, limit=1000,
+                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+        for m in (ms or []):
+            tk = getattr(m, "ticker", "") or ""
+            if not tk:
+                continue
+            markets[tk.upper()] = _market_quote_dict(m)
+            fed_markets.append({"ticker": tk, "yes_sub_title": getattr(m, "yes_sub_title", None)})
+    await _merge_raw_market_fields(client, markets, series_list=(FED_SERIES,))   # exchange_index (SDK-dropped) from raw
+    fed_idx = FED.build_bucket_index(fed_markets)
+    dates = frozenset(fed_idx.keys())                   # the MEETINGS (not ISO dates); match_bet keys on them
+    return execution.MarketContext({}, {}, {}, dates, markets, fed_index=fed_idx)
 
 
 async def fetch_cs2_market_context(client, now_ts: int) -> execution.MarketContext:
@@ -740,6 +766,8 @@ CATEGORY_CTX_BUILDERS["cs2"] = fetch_cs2_market_context
 # rung 3 (2026-09-07): soccer -- one builder per league (its own KX{LG}GAME series). Tier-A + UCL/UEL; tail deferred.
 for _soccat in SOC.LEAGUES:
     CATEGORY_CTX_BUILDERS[_soccat] = _soccer_ctx_builder(SOC.LEAGUES[_soccat])
+# rung 4 (2026-09-07): fed -- single KXFEDDECISION builder (event+bucket).
+CATEGORY_CTX_BUILDERS["fed"] = fetch_fed_market_context
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────

@@ -52,6 +52,7 @@ from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) matcher; 
 from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): shared structural matcher, nfl/nba/nhl/wnba/cfb
 from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pair-keyed matcher, EXACT-normalized org join
 from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): soccer 3-way (win+draw->TIE), per-league
+from ..data import fed_poly_kalshi_match as FED   # rung 4 (2026-09-07): fed event+bucket matcher (FOMC rate decision)
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 _LOG = logging.getLogger(__name__)
@@ -156,6 +157,10 @@ class MarketContext:
     # Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the soccer ctx builder sets it and leaves the
     # rest empty. Read only by the soccer adapters below.
     soccer_index: dict | None = None
+    # fed (2026-09-07, rung 4): the {meeting: {bucket: ticker}} KXFEDDECISION index (event+bucket, no teams/date).
+    # Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the fed ctx builder sets it and leaves the
+    # rest empty. Read only by the fed adapter below.
+    fed_index: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -447,6 +452,19 @@ def _cs2_match(parsed, ctx, allowed_market_types):
                          allowed_market_types=allowed_market_types)
 
 
+def _fed_parse(slug, outcome, title=None):
+    # event+bucket: parse the FOMC meeting + the rate-change bucket from the title (direction+bps+modifier).
+    # Coarse ("25+"/no-magnitude), political, parlay -> classified skip here (never a match).
+    return FED.parse_poly_bet(slug, outcome, title)
+
+
+def _fed_match(parsed, ctx, allowed_market_types):
+    # fed reads ctx.fed_index ({meeting: {bucket: ticker}}); the meetings set is its keys. `fed_index or {}`
+    # fail-safes a non-fed ctx to "no contract"; the registry routes fed to the fed ctx builder.
+    idx = ctx.fed_index or {}
+    return FED.match_bet(parsed, idx, set(idx), allowed_market_types=allowed_market_types)
+
+
 def _soccer_adapter(cfg):
     """(parse, match) for a soccer league `cfg` (epl/lal/fl1/sea/bun/mls/bra/mex/ucl/uel). 3-way: a team-win
     Yes/No -> "{team} wins" yes/no leg; a draw Yes/No -> the TIE market yes/no leg. Reads ctx.soccer_index
@@ -489,6 +507,8 @@ for _cat in ("nfl", "nba", "nhl", "wnba", "cfb"):
 # MONEYLINE result only. The tail (tier-2 leagues, UECL, cups, Nations League) is a LISTED DEFERRAL (see report).
 for _cat in SOC.LEAGUES:
     MATCHER_ADAPTERS[_cat] = _soccer_adapter(SOC.LEAGUES[_cat])
+# rung 4 (2026-09-07): fed -- event+bucket (FOMC). Coarse hikes gated; political/parlay excluded. One matcher.
+MATCHER_ADAPTERS["fed"] = (_fed_parse, _fed_match)
 
 
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,
