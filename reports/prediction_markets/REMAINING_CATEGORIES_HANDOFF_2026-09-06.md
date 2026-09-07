@@ -28,11 +28,28 @@ picks across every dry-run**.
    buildable when he says. ★ KEY finding to preserve: NO season code table needed -- golf is NAME-MATCHABLE from
    the live Kalshi feed (see the GOLF section + GOLF_SCOPING_2026-09-07.md). Build scope: accent-fold golfer names,
    a tournament-alias table (cs2 shape), esports-'Masters' exclusion, field/futures settlement, a loud unmapped guard.
-3. ★ **WHAT IS JACK'S, IN ORDER:** (a) the SEARCH SWEEP to populate the 8 new soccer-league leaderboards (a fresh
-   pm_cli search subprocess -- NO restart needed; it reclassifies the 24k coarse-'soccer' rows per-wallet too);
-   (b) PIN whales per league; (c) ATTACH per league (farm Promote); (d) ARM per category (respecting the arm-gate).
+3. ★ **WHAT IS JACK'S, IN ORDER -- ★ THE STANDING ORDER IS: SWEEP -> ROLLUP -> PIN -> ATTACH -> ARM:**
+   (a) SEARCH SWEEP (`pm_cli search`, a fresh subprocess -- NO restart; reclassifies the 24k coarse-'soccer' rows
+       per-wallet too). ★ IT DOES NOT SCORE. `_cmd_search` calls `stats.rollup` (pm_category_stats) but OMITS
+       `stats.compute_scores` (pm_score_snapshot) -- unlike `_cmd_backfill`/`_cmd_rollup` which call BOTH. So a
+       sweep ALONE leaves the RANKED leaderboard STALE (candidates + raw stats are fresh; scores are not). This is
+       the trap the 2026-09-07 sweep hit: the 8 leagues had candidates + stats but 0 scored entries.
+   (b) ★ ROLLUP to score them. EXACT: `cd /home/azureuser/trading_corp && PYTHONPATH=. venv/bin/python
+       trading_corp/scripts/pm_cli.py rollup` (verified `rollup --help` exit 0). Recomputes pm_category_stats +
+       pm_category_onesided_stats + pm_score_snapshot from pm_closed_position -- WRITES ONLY those 3 leaderboard
+       tables, READS pm_closed_position. ★ CANNOT reach the order path (no pm_subdivision/attachment/arm/order/
+       journal writes -- grep-verified in stats.py) -> the 8 armed subs are unreachable. Local recompute, NO
+       network, seconds-to-~2min. DB is WAL (busy_timeout 5000ms) -> readers never block; writers serialize (a
+       collision = a <=5s wait, never corruption). SAFE WINDOW: off the :00/:30 (*/30 paper-poll) marks + outside
+       the 05:00-05:50 nightly block (refresh/adjudicate/paper-rollup). Verify after: the 8 leagues appear in
+       pm_score_snapshot with plausible counts (>= min_resolved 50), epl/ucl intact, live division untouched.
+   (c) PIN whales per league; (d) ATTACH per league (farm Promote); (e) ARM per category (respecting the arm-gate).
    Plus: pm_web restart AFTER the sweep (surfaces the 8 farm tiles); an engine restart bundled with a future arm
-   restart (makes the running poller categorize per-league; low urgency, no live effect since nothing soccer-armed).
+   restart (running poller categorizes per-league; low urgency, no live effect since nothing soccer-armed).
+   ★ SMALL RUNG FILED (fix the trap): add `stats.compute_scores(conn, now_ts=_now())` after the `stats.rollup`
+   call in `_cmd_search` (pm_cli.py, ~line 77) -- one line, matching backfill/rollup -- so a sweep is
+   self-complete (candidates + stats + scores) and SWEEP->ROLLUP collapses to one step. No good reason they are
+   separate; it is an omission, not a design.
 
 **Task (original):** research-only consolidated plan for the 10 remaining Kalshi-copyable categories
 (cs2, epl, fed, golf, nba, nfl, nhl, soccer, ucl, wnba). Viability + whale supply are SETTLED
