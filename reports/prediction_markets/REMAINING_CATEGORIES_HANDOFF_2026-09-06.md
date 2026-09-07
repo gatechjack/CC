@@ -304,7 +304,46 @@ identical). Report detail = `CS2_MATCH_2026-09-07.md`; runners cc/pm_cs2_*.
 - **NEXT: fed, then golf** (the last two categories). fed = KXFEDDECISION event+bucket (cut/no-change 1:1, HIKE
   = wrong-bucket gate); golf = KXPGATOUR/KXLIVTOUR field/futures (messiest, do last).
 
-## ★★ RUNG 4 (fed) — BUILT + BOX-SCRATCHED GREEN + STAGED, HELD AT THE DEPLOY LINE 2026-09-07 ~04:56Z
+## ★★ RUNG 4 (fed) — LANDED LIVE 2026-09-07 ~05:24Z (deployed + engine restarted + 2 disarmed subs created; post-checks GREEN)
+- **DEPLOY 05:01Z** (cc/pm_fed_deploy.*): drift-check box==rung-3 base, backup ~/pm_fed_deploy_backup_20260907T050148Z,
+  SHA-VERIFY placed==COMMITTED (exec b33a8d8c / live_driver ed9ddd1f / fed_match 3c30720b), additive (exec +20, live_driver +28), import OK. NO restart in runner.
+- **RESTART** by Jack (engine 225544->226641). **POST-CHECK GREEN** (cc/pm_fed_postcheck_ro.*): fed adapter+ctx loaded,
+  fed_index default None (6 live matchers byte-identical); fed INVISIBLE (0 subs, 0 in roster); arm 9/9/0; boot-reconcile
+  clean; volume order ['mlb','atp','wta','nfl','ufc']; MACE back (config_hash c382c9370f9b), 0 tracebacks.
+- **CREATE 05:23Z** (cc/pm_fed_create.*): 2 fed subs (jack+karen) DISARMED, moneyline, NO arm/attach. pm_subdivision
+  41->43 (base 41 = 40 + the orphan 'soccer' sub, see below). **POST-VERIFY GREEN** (cc/pm_fed_createverify_ro.* +
+  supplementary): ORIGINAL-8 sha == 198f61354e17187f UNCHANGED; EXACTLY 2 rows carry this run's ts=1788758610 (jack/fed,
+  karen/fed); the 33 created-since (10 rung1 + 2 cs2 + 20 soccer + 1 orphan) all OLD created_ts (untouched); arm 9/9/0
+  (no fed arm key); fed NOT in roster; full 43-row sha 8508325113394ebb, created-since sha 4150da4d705243b2.
+- **REMAINING (Jack's):** attach whale + arm + caps. fed dry-run-proven (100% in-window, 0 wrong bucket) -> arm-eligible.
+
+## ★★ SOCCER MIS-ATTACH REVERSED + THE ORPHAN 'soccer' SUB-DIVISION 2026-09-07 ~05:23Z
+Jack attached whale 0x7ad71d79a3bb90d0a87a06500fa0fe11663842aa to a coarse **category='soccer'** sub-division on
+kalshi_jack (created ~05:07Z by the farm promote-to-live flow, market_types='moneyline,total,spread'). ★ There is NO
+'soccer' matcher/ctx-builder (the driver copies PER-LEAGUE epl/lal/.../uel), so it read CATEGORY_STARVED ("task alive,
+category not evaluating, no catalog") -- SAFE (disarmed + no builder -> nothing placed, any_alarm=False). Jack RULED
+KEEP PER-LEAGUE (whales specialise by league; an umbrella hides that). REVERSED via farm_actions.detach_from_live
+(cc/pm_soccer_detach.*, active=0 + removed_ts; reversible). ★ VERIFIED the CATEGORY_STARVED reading CLEARED WITHOUT A
+RESTART (read_liveness iterates the attachment-gated roster -> detach removes soccer from `expected` -> no row):
+liveness back to 10 RUNNING, any_alarm=False. ★ THE ORPHAN: pm_subdivision rows are PERMANENT by design, so the
+kalshi_jack/'soccer' row SURVIVES with 0 active attachments + no matcher -- it is an ORPHAN from a mis-targeted attach,
+NOT a category meant to work. Do not read it as a real category.
+
+## ★★ FARM ↔ PER-LEAGUE SOCCER GAP (scoped READ-ONLY 2026-09-07; report=FARM_SOCCER_SCOPING_2026-09-07.md; DO NOT BUILD)
+The mis-attach exposed a 4-lane mismatch. ★ EMPIRICALLY ESTABLISHED (not assumed): only **epl** (2829 rows/$43.0M) and
+**ucl** (1777/$37.4M) are classified PER-LEAGUE in the DB (slug_prefix); the other 8 built leagues (lal/fl1/uel/mls/sea/
+bun/bra/mex) + the whole tail = **23,977 rows / $132.9M lumped under coarse 'soccer'** (gamma_tags). So the per-league
+WHALE RECORDS for those 8 DO NOT EXIST YET -- Jack cannot see a La Liga whale to decide to attach them. Cause:
+category.py SLUG_PREFIX_MAP maps only epl/ucl; the rest fall to the tier-2 'soccer' gamma tag. search.py
+CATEGORY_ALLOWLIST = {epl, ucl, soccer, ...} (not the 8). The DRIVER (rung 3) is the ONLY per-league lane. TO EXPOSE
+the 10 in the farm (4 steps, scoped not built): (1) add the 8 to SLUG_PREFIX_MAP [LOW]; (2) re-classify the 24k coarse
+rows per-league [MEDIUM, DETERMINISTIC from slug prefix, its own auth + box-scratch]; (3) add to CATEGORY_ALLOWLIST +
+discovery sweep [LOW code, records need the sweep]; (4) farm UI tiles/promote per-league [UI]. ★ Steps 1-3 MUST precede
+4 (a farm tile with no leaderboard behind it is useless). ★ epl+ucl are ALREADY end-to-end per-league (attachable
+today if the farm renders their tiles). ★ Maintenance is LOW (slug-prefix keyed, stable per league, not season-stale
+like golf); one-time cost = the 24k re-classify + the sweep. HELD for Jack's ruling on whether/when to do Steps 1-3.
+
+## ★★ RUNG 4 (fed) — build detail (was: BUILT + BOX-SCRATCHED GREEN + STAGED) 2026-09-07 ~04:56Z
 **The ODD one: event+bucket, no teams/players/date. Commit 3c30720b-family (pushed).** Report =
 `FED_MATCH_2026-09-07.md`; runners cc/pm_fed_*.
 - **Matcher `trading_corp/data/fed_poly_kalshi_match.py`** (NEW, committed sha 3c30720b80365986). Join =
