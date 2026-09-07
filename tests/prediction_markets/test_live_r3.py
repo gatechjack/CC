@@ -75,7 +75,7 @@ def test_live_list_honest_empty_when_tables_absent_schema9(monkeypatch, tmp_path
     cl = _client(monkeypatch, tmp_path, schema=9)
     r = cl.get("/live")
     assert r.status_code == 200
-    assert "No live sub-divisions yet" in r.text
+    assert "No sub-divisions yet" in r.text                 # honest-empty (redesign wording), tolerant of absent tables
     assert "Live sub-divisions" in r.text
 
 
@@ -83,28 +83,30 @@ def test_live_list_honest_empty_when_no_subdivisions_schema10(monkeypatch, tmp_p
     cl = _client(monkeypatch, tmp_path, schema=10, seed=False)
     r = cl.get("/live")
     assert r.status_code == 200
-    assert "No live sub-divisions yet" in r.text
+    assert "No sub-divisions yet" in r.text
 
 
 def test_live_tile_on_create_schema10(monkeypatch, tmp_path):
-    """Tile-on-CREATE: a sub-division that exists but has never traded still shows a tile with an honest empty
-    hint -- information, not an error. With no orders the hint stays 'created ... no live trades yet'."""
+    """Tile-on-CREATE (redesign): a sub-division that exists (attached, never traded) shows a TILE, not the empty
+    state -- information, not an error. The rich tile carries its category + arm state (NEVER ARMED here, no arm
+    row seeded); with no orders it reads '$0.00' / 'none open', never a crash."""
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True)
     r = cl.get("/live")
     assert r.status_code == 200
     assert 'href="/live/kalshi_jack/mlb"' in r.text
     assert "Jack (KALSHI)" in r.text and "MLB" in r.text
-    assert "no live trades yet" in r.text
-    assert "No live sub-divisions yet" not in r.text
+    assert "NEVER ARMED" in r.text                          # no arm row -> its true state, shown on the tile
+    assert "No sub-divisions yet" not in r.text             # a created sub is a tile, not the empty state
 
 
 def test_live_tile_shows_trade_count_once_traded(monkeypatch, tmp_path):
-    """★ THE TILE STOPS SAYING 'no live trades yet' ONCE A REAL ORDER EXISTS (the tile-hint half of the defect)."""
-    cl = _client(monkeypatch, tmp_path, schema=10, seed=True, orders=[{}])   # one real fill
+    """★ THE TILE REFLECTS REAL DB ACTIVITY once an order exists (redesign): a filled ENTRY nets one OPEN
+    position, so the tile's open section reads '1 pos' (DB-derived, never a hardcoded placeholder)."""
+    cl = _client(monkeypatch, tmp_path, schema=10, seed=True, orders=[{}])   # one real fill (entry -> 1 open pos)
     r = cl.get("/live")
     assert r.status_code == 200
-    assert "1 live trade" in r.text
-    assert "no live trades yet" not in r.text
+    assert "1 pos" in r.text                                # the real open position, DB-derived
+    assert "no live trades yet" not in r.text               # the old sparse placeholder is gone
 
 
 def test_live_subdivision_honest_empty_wording(monkeypatch, tmp_path):
@@ -286,12 +288,13 @@ def test_live_positions_signed_convention_and_exit_nets_flat(tmp_path):
 
 
 def test_live_tile_count_increments_with_two_orders(monkeypatch, tmp_path):
-    """The tile count must be DB-derived, not a hardcoded '1': two real orders -> '2 live trades'."""
+    """DB-derived, not hardcoded (redesign): two filled entries on DIFFERENT tickers net TWO open positions, so
+    the tile's open section reads '2 pos'."""
     cl = _client(monkeypatch, tmp_path, schema=10, seed=True,
-                 orders=[{}, {"client_order_id": "order-2"}])
+                 orders=[{}, {"client_order_id": "order-2", "ticker": "KXMLBGAME-26AUG301920OTHER-XYZ"}])
     r = cl.get("/live")
     assert r.status_code == 200
-    assert "2 live trades" in r.text
+    assert "2 pos" in r.text
 
 
 def test_division_strip_coverage_label_shown_at_full_coverage(monkeypatch, tmp_path):
