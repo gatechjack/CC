@@ -50,6 +50,7 @@ from ..data import mlb_poly_kalshi_match as M
 from ..data import ufc_poly_kalshi_match as U   # B2: the UFC matcher (category dispatch below); pure/stdlib like M
 from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) matcher; pair-keyed, pure/stdlib like M/U
 from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): shared structural matcher, nfl/nba/nhl/wnba/cfb
+from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pair-keyed matcher, EXACT-normalized org join
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 _LOG = logging.getLogger(__name__)
@@ -146,6 +147,10 @@ class MarketContext:
     # Optional + defaulted so mlb/ufc/tennis constructions stay BYTE-IDENTICAL; the structural ctx builder sets it and
     # leaves the rest empty. Read only by the structural adapters below.
     structural_index: dict | None = None
+    # cs2 (2026-09-06, rung 2): the {date_iso: [KalshiCs2Match]} index (pair-keyed like tennis, EXACT-normalized org
+    # join). Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the cs2 ctx builder sets it and leaves
+    # the rest empty. Read only by the cs2 adapter below.
+    cs2_index: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -424,6 +429,19 @@ def _tennis_match(parsed, ctx, allowed_market_types):
                         allowed_market_types=allowed_market_types)
 
 
+def _cs2_parse(slug, outcome, title=None):
+    # Pair-keyed on the title "A vs B" with EXACT-normalized org matching (never fuzzy). Moneyline is REQUIRED to be an
+    # outcome that equals one of the two title sides -- a handicap/spread/total outcome is classified non_moneyline here.
+    return CS2.parse_poly_cs2_bet(slug, outcome, title)
+
+
+def _cs2_match(parsed, ctx, allowed_market_types):
+    # cs2 needs only the match index ({date:[KalshiCs2Match]}) + the ISO dates present. `cs2_index or {}` fail-safes a
+    # non-cs2 ctx to "no contract"; the registry routes cs2 to the cs2 ctx builder (category-keyed).
+    return CS2.match_bet(parsed, ctx.cs2_index or {}, ctx.kalshi_dates,
+                         allowed_market_types=allowed_market_types)
+
+
 def _structural_adapter(cfg):
     """(parse, match) for a structural category `cfg` (nfl/nba/nhl/wnba/cfb). Mirrors the mlb/tennis adapter
     surface: parse(slug, outcome, title) -> ParsedBet; match(parsed, ctx, allowed) -> MatchResult reading
@@ -443,6 +461,7 @@ MATCHER_ADAPTERS = {
     "ufc": (_ufc_parse, _ufc_match),
     "atp": (_tennis_parse, _tennis_match),   # both tennis categories share ONE matcher; the ctx builder picks the series
     "wta": (_tennis_parse, _tennis_match),
+    "cs2": (_cs2_parse, _cs2_match),         # rung 2 (2026-09-06): pair-keyed, EXACT-normalized org join (never fuzzy)
 }
 # rung 1 (2026-09-06): nfl/nba/nhl/wnba/cfb SHARE the structural matcher (as atp/wta share tennis); one config each.
 # MONEYLINE ONLY (Jack ruled); mlb keeps its own 3-market module (byte-identical). Unknown category still -> fail-safe skip.

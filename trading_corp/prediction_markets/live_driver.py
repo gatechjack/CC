@@ -55,6 +55,7 @@ from ..data import mlb_poly_kalshi_match as M
 from ..data import ufc_poly_kalshi_match as U   # B2: UFC fight/distance index builders for fetch_ufc_market_context
 from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) match index builder for fetch_tennis_market_context
 from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): structural game-index builder for nfl/nba/nhl/wnba/cfb
+from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pair-keyed match index builder for fetch_cs2_market_context
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
@@ -65,6 +66,7 @@ UFC_SERIES = ("KXUFCFIGHT", "KXUFCDISTANCE")          # B2: UFC moneyline (per-f
 # tennis (2026-09-04): the category -> Kalshi MATCH series map. atp/wta split men's/women's on BOTH venues; the ctx
 # builder fetches exactly one series per category (match-winner only -- no set/game/futures/table-tennis).
 TENNIS_SERIES = {"atp": "KXATPMATCH", "wta": "KXWTAMATCH"}
+CS2_SERIES = "KXCS2GAME"   # rung 2 (2026-09-06): the single Kalshi cs2 match/series-winner series (both YES tickers/match)
 _SETTLED_LOOKBACK_SEC = 160 * 86400
 # ★ SUSTAINED-SHARD-UNDERFUNDING alarm threshold (gate 6b, Jack RULED 2026-08-30: SURFACED, NOT latched). N=3 cycles:
 # Kalshi auto-rebalances every 10s and the driver polls ~7s, so a transient gap while a rebalance is mid-flight lasts
@@ -273,6 +275,32 @@ def _structural_ctx_builder(cfg):
     async def _b(client, now_ts: int) -> execution.MarketContext:
         return await fetch_structural_market_context(client, now_ts, cfg)
     return _b
+
+
+async def fetch_cs2_market_context(client, now_ts: int) -> execution.MarketContext:
+    """rung 2 (2026-09-06): fetch OPEN + recent-SETTLED KXCS2GAME markets and build the pair-keyed cs2 match index.
+    MIRRORS fetch_tennis_market_context -- SAME `client.get_markets`, SAME `_market_quote_dict` quote fields, SAME raw
+    `exchange_index` merge. The org name is on the title ("{Org} wins", getattr, no raw merge -- like tennis/ufc); the
+    builder also passes `yes_sub_title` when the SDK exposes it (build_kalshi_match_index prefers it, else parses the
+    title). The join date is the card-LOCAL date in the ticker. Match/series-winner (moneyline) only."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    match_markets: list = []       # [{ticker, title, yes_sub_title}] -> build_kalshi_match_index
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+        ms = await client.get_markets(series_ticker=CS2_SERIES, status=status, limit=1000,
+                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+        for m in (ms or []):
+            tk = getattr(m, "ticker", "") or ""
+            if not tk:
+                continue
+            markets[tk.upper()] = _market_quote_dict(m)
+            match_markets.append({"ticker": tk, "title": getattr(m, "title", None),
+                                  "yes_sub_title": getattr(m, "yes_sub_title", None)})
+    await _merge_raw_market_fields(client, markets, series_list=(CS2_SERIES,))   # exchange_index (SDK-dropped) from raw
+    cs2_idx = CS2.build_kalshi_match_index(match_markets)
+    dates = frozenset(cs2_idx.keys())                   # ISO dates FROM THE TICKER (card-local), never occurrence
+    return execution.MarketContext({}, {}, {}, dates, markets, cs2_index=cs2_idx)
 
 
 # ── signal source: attached whales' /positions -> entry CopySignals (chokepoint dedups already-placed) ───
@@ -672,6 +700,8 @@ CATEGORY_CTX_BUILDERS = {"mlb": fetch_market_context, "ufc": fetch_ufc_market_co
 # is still SKIPPED every cycle (fail-SAFE: no catalog -> no signals -> nothing placed).
 for _scat in ("nfl", "nba", "nhl", "wnba", "cfb"):
     CATEGORY_CTX_BUILDERS[_scat] = _structural_ctx_builder(SS.LEAGUES[_scat])
+# rung 2 (2026-09-06): cs2 has its own pair-keyed builder (KXCS2GAME); registered like tennis's per-category builders.
+CATEGORY_CTX_BUILDERS["cs2"] = fetch_cs2_market_context
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
