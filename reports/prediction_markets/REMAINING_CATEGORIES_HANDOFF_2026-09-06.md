@@ -153,6 +153,66 @@ is attached to one of the 10 and the engine restarts, that (account,cat) enters 
 Branch pm-remaining-categories-plan-2026-09-06 (commits ...0e81eea + handoff). 42 tests green on the box venv
 (mlb byte-identical) + 26 local. Disarmed dry-run gate PASSES (nfl + cfb: 0 wrong game, 0 wrong market-type).
 
+## ★★ RUNG 2 (cs2) — BUILT + BOX-SCRATCHED GREEN + STAGED, HELD AT THE DEPLOY LINE 2026-09-07 ~01:30Z
+**Commit 1f5768f (pushed, local==origin). Branch pm-remaining-categories-plan-2026-09-06.** Reuses the tennis
+PAIR-KEY construct but with EXACT-normalized org matching, NEVER fuzzy (its own module, tennis untouched/byte-
+identical). Report detail = `CS2_MATCH_2026-09-07.md`; runners cc/pm_cs2_*.
+- **Matcher `trading_corp/data/cs2_poly_kalshi_match.py`** (NEW, committed CR-stripped sha e0063823e2dba1e4):
+  pair-key on the Poly title "A vs B" + KXCS2GAME two-side markets (both YES tickers share a (date,blob)),
+  joined by EXACT normalize (accent-fold + lowercase + strip-punct + collapse-ws; reuses ufc `_norm` +
+  `kalshi_to_iso_date`) + a 6-entry data-verified alias table + a ±1 day window (AP matches straddle UTC
+  midnight). ★ EXACT never fuzzy = cs2's Cerundolo case: `ENCE`≠`ENCE Academy`, `FURIA`≠`FURIA fe`,
+  `MOUZ`≠`MOUZ NXT`, `G2`≠`G2 Ares`, `ex-<Org>`≠`<Org>` (distinct rosters). MONEYLINE only: an outcome that
+  is not one of the two title sides (map handicap / spread / total) is classified non_moneyline and NEVER placed.
+- **Wired** (execution.py `MATCHER_ADAPTERS["cs2"]`, sha 4ad71e1a5b7c95e2; live_driver.py `CATEGORY_CTX_BUILDERS
+  ["cs2"]=fetch_cs2_market_context` + `CS2_SERIES="KXCS2GAME"`, sha 91d218a315fe4f88). New `MarketContext.cs2_index`
+  field DEFAULTED None -> mlb/ufc/tennis/structural constructions BYTE-IDENTICAL (proven in test + box-scratch).
+- **ALIAS TABLE = 6, small + mostly stable** (Jack's "how small / how volatile"): 322/514 real moneyline orgs
+  join with ZERO aliases (both venues publish full display names). The 6 are same-team UNIFICATIONS built from
+  the REAL two-venue data (not typed): `b8 esports→b8`, `betboom team→betboom`, `themongolz→the mongolz`,
+  `liquid→team liquid`, `sinners→sinners esports`, `kaleido gaming→kaleido`. Each key is an EXACT full string,
+  so an academy/junior variant is NEVER touched (verified no collision). **DEFERRED as accepted safe-misses**
+  (the volatile/fragile class): `BET-M 33→33` (sponsor prefix — sponsors change) + `Honvéd` (Kalshi stores the
+  name with a corrupt byte → normalizes to `honv d`). A miss is acceptable; a wrong pick is not.
+- **DRY-RUN GATE PASSED (the gate) — 4182 real Poly moneyline bets vs the real KXCS2GAME index** (Poly bets from
+  box read-only sqlite = 0 Kalshi load; Kalshi fetched off-box local IP; cc/cs2_dryrun.py):
+  ★ **wrong_team=0, wrong_market_type=0** on 1725 real matches. **In-window match = 95.8% (1725/1800)** — the
+  honest live number (Kalshi exposes only 2026-06-30..09-09; older Poly bets are out_of_window fetch artifacts,
+  irrelevant to near-real-time copying). In-window misses all classified SAFE: 53 one-org-absent (small orgs
+  Kalshi doesn't list + the 2 deferred aliases), 19 rematch-in-±1d (ambiguous → safe miss), 3 both-absent.
+  ★ NOTE: the dry-run's wrong_team check CANNOT validate an alias (a bad alias corrupts both sides consistently);
+  each alias was verified as an unambiguous same-team rename against the data (2 forms, no academy collision) —
+  NOT inferred from a shared opponent (that gives false positives, e.g. "100 Thieves opp=OG").
+- **TESTS**: test_cs2_match.py (Cerundolo parametrized across 8 parent/variant pairs both directions + the
+  strongest case: both parent AND variant listed → each routes to its OWN ticker; map/handicap/total gating;
+  ±1d window; rematch-ambiguous; alias unifies but never bleeds into academy) + test_cs2_wiring.py (registry +
+  cs2_index byte-identity + dispatch + fail-safe). 24 local green.
+- **BOX-SCRATCH GREEN** (cc/pm_cs2_scratch.* + cc/_cs2_overlay.b64; box venv; live tree/engine UNTOUCHED): import
+  OK, cs2 adapter+ctx present, cs2_index default None, all 10 live categories intact, alias_n=6; **133 tests**
+  incl mlb/ufc/tennis/structural byte-identity regressions; engine 222109 + pm_web 218797 UNTOUCHED; scratch cleaned.
+- **STAGED + HELD at the deploy line** (all HALT items — NOT run). ★ READ-ONLY PRE-CHECK GREEN (cc/pm_cs2_precheck_ro.*):
+  box execution.py==8894c6d4 + live_driver.py==784c04d9 (rung-1 base, no drift), cs2 module absent, 0 cs2 subs,
+  engine 222109 — so the deploy will NOT drift-abort. Runners:
+  - cc/pm_cs2_deploy.* : delivers the overlay (_cs2_overlay.b64) + grafts ONLY the 3 code files (1 new + 2
+    modified) — drift-check box==rung-1 base, backup, extract, **SHA-VERIFY each == COMMITTED artifact**
+    (execution 4ad71e1a / live_driver 91d218a3 / cs2 e0063823), restore-on-mismatch, additive-diff, box-venv
+    import-check. NO restart in the runner.
+  - cc/pm_cs2_create.* : creates 2 sub-divisions (kalshi_jack+karen × cs2) DISARMED, market_types='moneyline',
+    default caps, NO arm rows, NO attachments (dormant). LIVE DB WRITE. Self-proves: 2 created, arm+attachment
+    counts unchanged, ORIGINAL-8 content sha unchanged (== rung-1 baseline 198f6135), full post-create content sha.
+  - cc/pm_cs2_postcheck_ro.* (after Jack's restart): cs2 code loaded + cs2 invisible pre-create; 9 arm rows; 8
+    RUNNING; boot-reconcile clean; volume-first order unchanged (cs2 not attached). Boot-aware (waits for reconcile).
+  - cc/pm_cs2_createverify_ro.* (after create): 2 cs2 disarmed/unattached; original-8 == 198f6135; rung1-10
+    present; arm 9; attachments unchanged; 8 RUNNING; engine PID unchanged; roster excludes cs2 (dormant).
+  ★ SEQUENCE for Jack (all HALT, his auth): (1) pm_cs2_deploy (graft 3 files) → (2) engine restart (load cs2
+  matcher+ctx; bounces EVERY division, warn co-tenants MACE/bitunix/PEAD/coinbase) → pm_cs2_postcheck_ro →
+  (3) pm_cs2_create (2 disarmed subs) → pm_cs2_createverify_ro. THEN later, his: attach whale (farm Promote) +
+  arm (CLI) + set caps. cs2 stays DORMANT until attached+armed+restart. **ARM-GATE note:** cs2 is already
+  dry-run-proven on real data (unlike nba/nhl/wnba which still owe a real-market dry-run before arming).
+- **NEXT FAMILY = RUNG 3 (soccer: epl+ucl+tier-2 as one variant build; draw→-TIE; 90-min settlement; order
+  leagues by whale volume; any skipped league = a LISTED deferral). Then fed, then golf.** Not started (cs2
+  is staged, awaiting the deploy authorization).
+
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
 - **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion
   was wrong (premise never probed). Heaviest team map in the batch (272 Poly codes / ~130 FBS, State/Miami/
