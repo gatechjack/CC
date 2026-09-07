@@ -417,6 +417,24 @@ Commit on branch; deploy shas category.py 0c8d2820599dade6 / search.py b01306742
 - **NEXT: golf (LAST, as ruled)** -- KXPGATOUR/KXLIVTOUR field/futures, season lookup table + diacritic name
   normalization (Åberg/Muñoz/Højgaard). The messiest; the final category.
 
+## ★★ GOLF (the LAST category) — SCOPED READ-ONLY, RECOMMEND AGAINST BUILDING (report GOLF_SCOPING_2026-09-07.md)
+Jack's bar: if golf decays yearly into SILENT MISSES with unowned maintenance, recommend against. Findings:
+- Kalshi KXPGATOUR (1387)+KXLIVTOUR (179): `KX{TOUR}-{EVENTCODE}{YY}-{GOLFER}`, opaque event codes (TOC26/IND26),
+  yes_sub=golfer full name, title "Will {G} win the {Tournament}?". Field/futures (~150 golfers/event, weeks open).
+- Poly golf: 738 rows -> **535 WIN-copyable = $2.26M** (rest = top-N/H2H/FRL/props + esports-'masters' contaminants).
+  36 win tournaments / 139 golfers.
+- ★ THE DECAY PREMISE IS AVOIDABLE: the research assumed a hardcoded tournament->event-CODE season table (would
+  rot yearly, silent). But the tournament NAME is in BOTH venues' titles -> name-matchable from the LIVE Kalshi
+  feed (golfer 124/139 accent-fold; tournaments match in-window, the 28 "misses" are OUT-OF-WINDOW past events,
+  not name diffs). So golf need NOT silently decay: golfer accent-fold + tournament name-match off the live feed +
+  a LOUD unmapped-tournament guard = no hardcoded code table, no silent misses.
+- ★ RECOMMEND AGAINST anyway (LOWEST ROI of the program): $2.26M win-only (vs epl $43M); messiest normalization
+  (sponsor-prefixed names + a tournament-name alias burden for yearly renames); esports-contaminant risk;
+  field/futures settlement complexity; and the alias/contaminant upkeep has NO owner (Jack: "drop rather than
+  carry unowned maintenance"). Close the program at the built categories (mlb/ufc/atp/wta + nfl/nba/nhl/wnba/cfb +
+  cs2 + 10 soccer + fed). IF Jack wants golf: build name-based (NOT a code table) + loud unmapped guard + explicit
+  esports exclusion + a NAMED owner for the tournament-alias refresh -- only on his explicit "yes, despite ROI".
+
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
 - **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion
   was wrong (premise never probed). Heaviest team map in the batch (272 Poly codes / ~130 FBS, State/Miami/
