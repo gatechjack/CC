@@ -130,7 +130,26 @@ VOLUME-FIRST ORDER TOOK: engine LOGGED cycle order = ['mlb','atp','wta','ufc'] B
 changed=True vs alphabetical ['atp','mlb','ufc','wta']) -> mlb (highest 30d volume) first, ufc (quiet) last.
 The 5 registry entries + reordered claim loop changed NOTHING for the live four except the intended ordering.
 
-## ★ RUNG 1 COMPLETE (A-G), CODE DEPLOYED + POST-CHECK GREEN. Engine order-path healthy. NEXT: pm_rung1_create.* (Jack, separate auth) -> then attach+arm+caps (his) with the nba/nhl/wnba arm-gate above.
+## ★ SUB-DIVISIONS CREATED 2026-09-07 00:47Z (cc/pm_rung1_create.*): 10 disarmed subs (jack+karen x cfb/nba/nfl/
+nhl/wnba), market_types='moneyline', standard default caps, NO arm rows, NO attachments. pm_subdivision 8->18.
+POST-VERIFY GREEN (cc/pm_rung1_createverify_ro.*): the 10 new all active/moneyline/unattached; ★ the ORIGINAL 8
+BYTE-UNCHANGED (all carry OLD created_ts, none == this run's 1788742063 -> INSERT OR IGNORE re-inserted/modified
+nothing; 8-row content sha 198f6135 recorded); arm still 9 armed latched=0 ts-unchanged; attachments 17->17;
+liveness 8 RUNNING; engine 222109 unchanged. ★ ROSTER UNCHANGED: driver_roster.active_driver_subdivisions
+returns ONLY the 8 attached subs (0 of the 10 new -> unattached -> dormant -> NO task). The 10 new are INERT
+until Jack: attach whale (farm Promote) + engine restart (re-read roster) + arm.
+
+## ★ THE SHA-VERIFY NEAR-MISS (record it -- a guardrail earning its cost, not a formality): the FIRST deploy run
+ABORTED fail-closed because the overlay was STALE (built in F1, before F2's LA/WSH/LAS team-map fixes). Had the
+runner trusted the overlay, it would have shipped the matcher WITHOUT the three fixes the dry-run found -- SILENTLY,
+surfacing only as unexplained NFL misses in October. The sha-verify (placed==committed) caught it, restored the
+box, refused to proceed; overlay rebuilt from current committed files, re-ran clean. LESSON: a deploy overlay
+built before later edits is stale -- the byte-level sha-verify-vs-committed is what makes a multi-file graft safe.
+
+## ★ RUNG 1 LANDED (A-G): code deployed + engine restarted + 10 disarmed subs created, all post-checks GREEN.
+NEXT (Jack's): attach whales (farm Promote) + arm (CLI) + raise caps, per category. ARM-GATE STANDS: nba/nhl/wnba
+each get a real-market dry-run (cc/build_dryrun.py) BEFORE arming. nfl + cfb are dry-run-proven now; when a whale
+is attached to one of the 10 and the engine restarts, that (account,cat) enters the roster and trades once armed.
 Branch pm-remaining-categories-plan-2026-09-06 (commits ...0e81eea + handoff). 42 tests green on the box venv
 (mlb byte-identical) + 26 local. Disarmed dry-run gate PASSES (nfl + cfb: 0 wrong game, 0 wrong market-type).
 
