@@ -1,6 +1,40 @@
 # Remaining-Categories Plan — LIVE HANDOFF (read this instead of scrollback)
 
-**Task:** research-only consolidated plan for the 10 remaining Kalshi-copyable categories
+## ★★★ PROGRAM WRAP (FIRST READ) — all 10 remaining categories resolved, 2026-09-07
+**What was delivered:** the 10 remaining Kalshi-copyable categories taken from research to LIVE-AND-DISARMED
+(golf on hold), across **4 matcher families**, **5 new matchers**, **30+ sub-divisions**, with **ZERO wrong
+picks across every dry-run**.
+- **Matcher families (4):** (1) STRUCTURAL ticker-join — mlb (own module) + the shared sports_structural_match
+  for nfl/nba/nhl/wnba/cfb; (2) TITLE/NAME pair-key — ufc + tennis(atp/wta) + cs2 (exact-normalized, never fuzzy);
+  (3) SOCCER 3-way (team-win + draw->TIE), per-league, 10 leagues; (4) fed EVENT+BUCKET (no teams/date).
+- **5 new matchers:** sports_structural_match (rung 1), cs2 (rung 2), soccer (rung 3), fed (rung 4), + the
+  per-league soccer CLASSIFIER change (retire coarse 'soccer'). golf = scoped, on hold (name-matchable, no code table).
+- **LIVE + DISARMED now:** cs2, nfl/nba/nhl/wnba/cfb, epl/ucl/lal/fl1/uel/mls/sea/bun/bra/mex (10 soccer), fed --
+  all deployed, engine-restarted, sub-divisions created disarmed+unattached (dormant). The original 8 (atp/mlb/ufc/
+  wta x2) traded UNTOUCHED throughout; nfl attached (jack+karen), in the roster, disarmed.
+- **Discipline that held every time:** box-is-truth grafts (drift-check base -> sha-VERIFY placed==COMMITTED
+  artifact, never the overlay) -> restore-on-mismatch; disarmed dry-run as the gate; created_ts + content-SHA
+  proofs that pre-existing rows never moved; and -- the sharpest lesson -- **a gate cannot validate its own
+  transform** (cs2 alias caveat -> PSG near-miss, the first that would've placed a real order on the wrong club;
+  auto-generated maps validated against INDEPENDENT EVIDENCE, never the gate that uses them).
+
+### THREE THINGS THE NEXT AGENT INHERITS
+1. ★ **THE STANDING ARM-GATE (a gate, not a nice-to-have):** nba, nhl, wnba AND mex each need a real-market
+   dry-run (cc/build_dryrun.py: box-RO Poly bets + off-box KX{X}GAME fetch + local match; gate = 0 wrong team,
+   0 wrong market-type, misses classified) BEFORE arming. nfl + cfb are ALREADY dry-run-proven (both surfaced
+   real bugs ONLY against live data -- nfl LA/WSH/LAS, cfb the SDST collision). Do NOT skip this. cs2 + the
+   soccer leagues (epl/ucl/lal/fl1/uel/mls/sea/bun/bra/mex) + fed are dry-run-proven at build.
+2. ★ **GOLF ON HOLD (not dropped):** Jack rules every Kalshi-copyable category goes live; golf qualifies;
+   buildable when he says. ★ KEY finding to preserve: NO season code table needed -- golf is NAME-MATCHABLE from
+   the live Kalshi feed (see the GOLF section + GOLF_SCOPING_2026-09-07.md). Build scope: accent-fold golfer names,
+   a tournament-alias table (cs2 shape), esports-'Masters' exclusion, field/futures settlement, a loud unmapped guard.
+3. ★ **WHAT IS JACK'S, IN ORDER:** (a) the SEARCH SWEEP to populate the 8 new soccer-league leaderboards (a fresh
+   pm_cli search subprocess -- NO restart needed; it reclassifies the 24k coarse-'soccer' rows per-wallet too);
+   (b) PIN whales per league; (c) ATTACH per league (farm Promote); (d) ARM per category (respecting the arm-gate).
+   Plus: pm_web restart AFTER the sweep (surfaces the 8 farm tiles); an engine restart bundled with a future arm
+   restart (makes the running poller categorize per-league; low urgency, no live effect since nothing soccer-armed).
+
+**Task (original):** research-only consolidated plan for the 10 remaining Kalshi-copyable categories
 (cs2, epl, fed, golf, nba, nfl, nhl, soccer, ucl, wnba). Viability + whale supply are SETTLED
 (not re-asked). Output = ONE consolidated document + this handoff, then HALT for Jack's ruling on
 build order. Build NOTHING. HALT for deploy/restart/live-DB-write/arm/cap/prod-advance.
@@ -417,23 +451,23 @@ Commit on branch; deploy shas category.py 0c8d2820599dade6 / search.py b01306742
 - **NEXT: golf (LAST, as ruled)** -- KXPGATOUR/KXLIVTOUR field/futures, season lookup table + diacritic name
   normalization (Åberg/Muñoz/Højgaard). The messiest; the final category.
 
-## ★★ GOLF (the LAST category) — SCOPED READ-ONLY, RECOMMEND AGAINST BUILDING (report GOLF_SCOPING_2026-09-07.md)
-Jack's bar: if golf decays yearly into SILENT MISSES with unowned maintenance, recommend against. Findings:
-- Kalshi KXPGATOUR (1387)+KXLIVTOUR (179): `KX{TOUR}-{EVENTCODE}{YY}-{GOLFER}`, opaque event codes (TOC26/IND26),
-  yes_sub=golfer full name, title "Will {G} win the {Tournament}?". Field/futures (~150 golfers/event, weeks open).
-- Poly golf: 738 rows -> **535 WIN-copyable = $2.26M** (rest = top-N/H2H/FRL/props + esports-'masters' contaminants).
-  36 win tournaments / 139 golfers.
-- ★ THE DECAY PREMISE IS AVOIDABLE: the research assumed a hardcoded tournament->event-CODE season table (would
-  rot yearly, silent). But the tournament NAME is in BOTH venues' titles -> name-matchable from the LIVE Kalshi
-  feed (golfer 124/139 accent-fold; tournaments match in-window, the 28 "misses" are OUT-OF-WINDOW past events,
-  not name diffs). So golf need NOT silently decay: golfer accent-fold + tournament name-match off the live feed +
-  a LOUD unmapped-tournament guard = no hardcoded code table, no silent misses.
-- ★ RECOMMEND AGAINST anyway (LOWEST ROI of the program): $2.26M win-only (vs epl $43M); messiest normalization
-  (sponsor-prefixed names + a tournament-name alias burden for yearly renames); esports-contaminant risk;
-  field/futures settlement complexity; and the alias/contaminant upkeep has NO owner (Jack: "drop rather than
-  carry unowned maintenance"). Close the program at the built categories (mlb/ufc/atp/wta + nfl/nba/nhl/wnba/cfb +
-  cs2 + 10 soccer + fed). IF Jack wants golf: build name-based (NOT a code table) + loud unmapped guard + explicit
-  esports exclusion + a NAMED owner for the tournament-alias refresh -- only on his explicit "yes, despite ROI".
+## ★★ GOLF (the LAST category) — ON HOLD, NOT DROPPED. Scoped read-only (report GOLF_SCOPING_2026-09-07.md).
+★ JACK RULED (2026-09-07): golf is ON HOLD, buildable when he says -- NOT dropped. His direction is that EVERY
+Kalshi-copyable category goes live, and golf qualifies; ROI is NOT his criterion (my recommend-against was on ROI,
+which he overrode). The value of the scoping was DISSOLVING the premise, not answering it:
+- ★★ THE HEADLINE FINDING (preserve this so nobody reintroduces a code table): a hardcoded tournament->event-CODE
+  SEASON TABLE is NOT NECESSARY. The tournament NAME is in BOTH venues' titles, so golf is NAME-MATCHABLE from the
+  LIVE Kalshi feed -> NO hardcoded codes, NO annual rot, NO silent decay. This removed the only thing that would
+  have made golf droppable. DO NOT build a season code table when golf is built.
+- Kalshi KXPGATOUR (1387)+KXLIVTOUR (179): `KX{TOUR}-{EVENTCODE}{YY}-{GOLFER}`, opaque codes (TOC26/IND26), yes_sub
+  = golfer full name, title "Will {G} win the {Tournament}?". Poly: 738 rows -> 535 WIN-copyable ($2.26M); rest =
+  top-N/H2H/FRL/props (out of scope). 36 win tournaments / 139 golfers; golfer name-match 124/139 (accent-fold).
+- **BUILD SCOPE for later (the familiar costs, all cs2/soccer-shaped -- NOT a season table):** (1) accent-fold on
+  golfer names (124/139 already clean); (2) a TOURNAMENT-ALIAS table for sponsor renames = the cs2 alias shape,
+  data-derived + collision-checked, NOT a season code table; (3) an explicit ESPORTS EXCLUSION for "Masters"/
+  "tournament" contaminants (Valorant/StarCraft "masters" share the word); (4) FIELD/FUTURES settlement to
+  understand (~150 golfers/event, futures open for weeks -- a separate validation from the game dry-runs);
+  (5) a LOUD unmapped-tournament guard (never a silent miss). Same shape at the end: box-scratch, stage, hold.
 
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
 - **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion

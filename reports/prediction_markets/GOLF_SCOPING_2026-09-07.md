@@ -46,14 +46,17 @@ Even with the decay avoided, golf is the **weakest-ROI category of the program**
 5. **No owner for the alias/contaminant upkeep** — smaller than a code table, but still unowned; Jack: "I would
    rather drop golf than carry a maintenance burden nobody owns."
 
-## Recommendation
-**RECOMMEND AGAINST building golf now (defer/drop).** Not because it must decay silently — it need not (name-based
-+ live-feed + a loud unmapped guard avoids that) — but because it is the lowest-ROI, messiest category, carrying a
-tournament-name-alias + contaminant-exclusion burden with no owner, for the smallest copyable surface. The
-remaining-categories program is better closed at the categories already built (mlb/ufc/atp/wta + nfl/nba/nhl/wnba/
-cfb + cs2 + the 10 soccer leagues + fed), which cover the volume.
+## Ruling (Jack, 2026-09-07): ON HOLD, NOT DROPPED
+Jack's criterion is COVERAGE, not ROI: every Kalshi-copyable category goes live, and golf qualifies. My
+recommend-against was on ROI and is OVERRIDDEN. Golf is PARKED as the last item, buildable when Jack says.
+★ The finding that matters and MUST be preserved: **a hardcoded tournament->event-CODE season table is NOT
+NECESSARY** -- the tournament NAME is in both venues' titles, so golf matches from the LIVE Kalshi feed with no
+codes and no annual rot. That dissolved the only thing that would have made golf droppable. When golf is built,
+DO NOT reintroduce a code table.
 
-**If Jack wants golf anyway**, the safe build is: golfer accent-fold name-match + tournament name-match from the
-LIVE Kalshi feed (NO hardcoded code table) + a LOUD unmapped-tournament guard + explicit esports-contaminant
-exclusion + an owner for the tournament-name alias refresh. That is buildable — but I would not build it without
-Jack's explicit "yes, despite the ROI," and an owner named for the upkeep.
+## Build scope (for later, on Jack's go)
+The real costs are all familiar (cs2/soccer-shaped, NOT a season table): (1) accent-fold golfer names (124/139
+already clean); (2) a TOURNAMENT-ALIAS table for sponsor renames (the cs2 alias shape -- data-derived,
+collision-checked); (3) an explicit ESPORTS EXCLUSION for "Masters"/"tournament" contaminants; (4) FIELD/FUTURES
+settlement to understand (~150 golfers/event, futures open for weeks -- a separate validation); (5) a LOUD
+unmapped-tournament guard (never a silent miss). Same shape at the end: box-scratch, stage, hold at the deploy line.
