@@ -51,6 +51,7 @@ from ..data import ufc_poly_kalshi_match as U   # B2: the UFC matcher (category 
 from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) matcher; pair-keyed, pure/stdlib like M/U
 from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): shared structural matcher, nfl/nba/nhl/wnba/cfb
 from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pair-keyed matcher, EXACT-normalized org join
+from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): soccer 3-way (win+draw->TIE), per-league
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 _LOG = logging.getLogger(__name__)
@@ -151,6 +152,10 @@ class MarketContext:
     # join). Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the cs2 ctx builder sets it and leaves
     # the rest empty. Read only by the cs2 adapter below.
     cs2_index: dict | None = None
+    # soccer (2026-09-07, rung 3): the {date_iso: [SoccerGame]} index (3-way win+draw->TIE, per-league exact club join).
+    # Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the soccer ctx builder sets it and leaves the
+    # rest empty. Read only by the soccer adapters below.
+    soccer_index: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -442,6 +447,19 @@ def _cs2_match(parsed, ctx, allowed_market_types):
                          allowed_market_types=allowed_market_types)
 
 
+def _soccer_adapter(cfg):
+    """(parse, match) for a soccer league `cfg` (epl/lal/fl1/sea/bun/mls/bra/mex/ucl/uel). 3-way: a team-win
+    Yes/No -> "{team} wins" yes/no leg; a draw Yes/No -> the TIE market yes/no leg. Reads ctx.soccer_index
+    (fail-safe {} for a non-soccer ctx -- the registry never routes there). title carries the team(s)."""
+    def _parse(slug, outcome, title=None):
+        return SOC.parse_poly_bet(slug, outcome, cfg, title)
+
+    def _match(parsed, ctx, allowed_market_types):
+        return SOC.match_bet(parsed, ctx.soccer_index or {}, ctx.kalshi_dates, cfg,
+                             allowed_market_types=allowed_market_types)
+    return _parse, _match
+
+
 def _structural_adapter(cfg):
     """(parse, match) for a structural category `cfg` (nfl/nba/nhl/wnba/cfb). Mirrors the mlb/tennis adapter
     surface: parse(slug, outcome, title) -> ParsedBet; match(parsed, ctx, allowed) -> MatchResult reading
@@ -467,6 +485,10 @@ MATCHER_ADAPTERS = {
 # MONEYLINE ONLY (Jack ruled); mlb keeps its own 3-market module (byte-identical). Unknown category still -> fail-safe skip.
 for _cat in ("nfl", "nba", "nhl", "wnba", "cfb"):
     MATCHER_ADAPTERS[_cat] = _structural_adapter(SS.LEAGUES[_cat])
+# rung 3 (2026-09-07): soccer -- one config per league (Tier-A domestic + UCL/UEL). 3-way (win + draw->TIE),
+# MONEYLINE result only. The tail (tier-2 leagues, UECL, cups, Nations League) is a LISTED DEFERRAL (see report).
+for _cat in SOC.LEAGUES:
+    MATCHER_ADAPTERS[_cat] = _soccer_adapter(SOC.LEAGUES[_cat])
 
 
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,

@@ -56,6 +56,7 @@ from ..data import ufc_poly_kalshi_match as U   # B2: UFC fight/distance index b
 from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) match index builder for fetch_tennis_market_context
 from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): structural game-index builder for nfl/nba/nhl/wnba/cfb
 from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pair-keyed match index builder for fetch_cs2_market_context
+from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): soccer 3-way game-index builder for fetch_soccer_market_context
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
@@ -274,6 +275,40 @@ def _structural_ctx_builder(cfg):
     """A category-keyed builder closure carrying `cfg` (the ctx registry maps category -> builder(client, now_ts))."""
     async def _b(client, now_ts: int) -> execution.MarketContext:
         return await fetch_structural_market_context(client, now_ts, cfg)
+    return _b
+
+
+async def fetch_soccer_market_context(client, now_ts: int, cfg) -> execution.MarketContext:
+    """rung 3 (2026-09-07): fetch OPEN + recent-SETTLED KX{LG}GAME markets for a soccer league and build the
+    3-way game index (per (date,blob): "{A} wins"/"{B} wins"/TIE). MIRRORS fetch_structural_market_context --
+    SAME get_markets, _market_quote_dict, raw exchange_index merge. The club name is on `yes_sub_title`
+    ("{Club}", or "Reg Time: {Club}" for UCL/UEL 90-min knockouts -- stripped in build_game_index); pass title
+    too as a fallback. MONEYLINE result only (win/draw); totals/spreads are parsed out. Returns a MarketContext
+    with soccer_index set (the rest empty)."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    game_markets: list = []       # [{ticker, title, yes_sub_title}] -> build_game_index
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+        ms = await client.get_markets(series_ticker=cfg.game_series, status=status, limit=1000,
+                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+        for m in (ms or []):
+            tk = getattr(m, "ticker", "") or ""
+            if not tk:
+                continue
+            markets[tk.upper()] = _market_quote_dict(m)
+            game_markets.append({"ticker": tk, "title": getattr(m, "title", None),
+                                 "yes_sub_title": getattr(m, "yes_sub_title", None)})
+    await _merge_raw_market_fields(client, markets, series_list=(cfg.game_series,))   # exchange_index (SDK-dropped) from raw
+    soc_idx = SOC.build_game_index(game_markets, cfg)
+    dates = frozenset(soc_idx.keys())
+    return execution.MarketContext({}, {}, {}, dates, markets, soccer_index=soc_idx)
+
+
+def _soccer_ctx_builder(cfg):
+    """A category-keyed builder closure carrying the soccer league `cfg`."""
+    async def _b(client, now_ts: int) -> execution.MarketContext:
+        return await fetch_soccer_market_context(client, now_ts, cfg)
     return _b
 
 
@@ -702,6 +737,9 @@ for _scat in ("nfl", "nba", "nhl", "wnba", "cfb"):
     CATEGORY_CTX_BUILDERS[_scat] = _structural_ctx_builder(SS.LEAGUES[_scat])
 # rung 2 (2026-09-06): cs2 has its own pair-keyed builder (KXCS2GAME); registered like tennis's per-category builders.
 CATEGORY_CTX_BUILDERS["cs2"] = fetch_cs2_market_context
+# rung 3 (2026-09-07): soccer -- one builder per league (its own KX{LG}GAME series). Tier-A + UCL/UEL; tail deferred.
+for _soccat in SOC.LEAGUES:
+    CATEGORY_CTX_BUILDERS[_soccat] = _soccer_ctx_builder(SOC.LEAGUES[_soccat])
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
