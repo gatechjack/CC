@@ -167,8 +167,11 @@ async def _cmd_search(args) -> int:
             n_backfilled = counts["backfilled_complete"] + counts["backfilled_partial"]
             search_run.close_search_run(conn, run_id, finished_ts=_now(), n_discovered=n,
                                         n_backfilled=n_backfilled, status="ok", summary=json.dumps({"counts": counts}))
-            print("SEARCH: rollup (pm_closed_position -> pm_category_stats)...", flush=True)
+            print("SEARCH: rollup (pm_closed_position -> pm_category_stats) + scores...", flush=True)
             stats.rollup(conn, now_ts=_now())
+            stats.compute_scores(conn, now_ts=_now())   # 2026-09-07: search must SCORE too, matching _cmd_backfill/
+            # _cmd_rollup -- else a sweep leaves the RANKED leaderboard (pm_score_snapshot) stale (candidates + stats
+            # fresh, scores not). Collapses the SWEEP->ROLLUP two-step into one; the documented gotcha disappears.
             print("SEARCH: /positions recency pull for %d wallets..." % n, flush=True)
             await search_run.refresh_positions_for(conn, [w for w, _ in discovered], client=client, now_ts=_now())
             print("SEARCH: selecting + writing candidates (N>=%d, %dd recency, 15-cat allowlist, complete-only)..."
