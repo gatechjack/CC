@@ -205,3 +205,81 @@ package/venv/systemd change. The engine + both trading accounts + the order path
 APPENDIX -- runners / harness (cc/, read-only)
   pm_tiles_boxfetch_ro.*   (box-current app.py region + shas)   pm_tiles_boxscratch_ro.*  (readers vs live data)
   pm_tiles_render.py       (render harness + PNGs at 1600/1280)
+
+
+================================================================================================================
+DEPLOY 6 -- 2026-09-07 (DEPLOYED LIVE; pm_web-only + ONE pm_web restart; engine never touched)
+================================================================================================================
+Board-authorized 2026-09-07. Shipped the Phase-2 Live Sub-divisions tile page to prod: 6 files wholesale + app.py
+GRAFTED (box 069d7a25 + the _load_live_list hunk), ONE pm_web restart via az vm run-command. Engine (trading-corp
+PID 232440, ARMED, 8 armed sub-divisions across two accounts) was NOT restarted, reloaded, or touched at any step.
+All gates passed; no rollback. DEPLOYED. Deploy target = branch pm-tiles-2026-09-07 @ df38514.
+
+MEASUREMENT RULE applied throughout: box-vs-git shas CR-stripped both sides.
+
+PRE-CHECK (cc/pm_deploy6_precheck_ro.*, 2026-09-07T17:46Z) -- ALL GATES PASS
+  1. engine MainPID 232440 NRestarts 0 active; pm_web 232084 active; schema head 20. Arm rows: global +
+     8 subs (jack+karen x atp/mlb/ufc/wta) all armed=True latched=False. Heartbeat: 28 rows, all RUNNING/IDLE,
+     STALE/NEVER=0. COUNTS total=43 attached=28 unattached=15 armed=8. Journal orders: jack 193, karen 94.
+  2. 6 wholesale files CR-stripped16 == box-capture BEFORE (subdivision 863af1d1, arm 60f44720, live_view 8fb7db15,
+     pm_live_list 6fd8aad7, pm_desk 18454d56, pm_shell 934c258c). Box app.py = 069d7a255a9f4ebc, is_admin=14,
+     /pm/arm=0. NO drift -> no STOP.
+  3. Backup = /home/azureuser/pm_deploy6_backup_20260907T175044Z (all 7 files; see the backup NOTE below).
+  4. Served pm_desk.css BEFORE = 18454d5690a316ed, shell ?v=18454d56; /live 200, 28 old sparse tiles.
+
+DEPLOY (cc/gen_deploy6.py -> pm_deploy6_apply.sh; app graft via patch --fuzz=0)
+  5. Drift RE-GATE at apply time: all 7 box shas re-confirmed == BEFORE (box had not moved). 6 files written
+     (base64 -> temp -> CR-strip -> sha16 gate == target -> mv), each verified on the box:
+       subdivision.py     863af1d1522fb364 -> 752e244af0af9e2a
+       arm.py             60f447207d52694a -> b542e9fff3e54e59
+       web/live_view.py   8fb7db158e4a5af8 -> e514a47ad49fd2f7
+       web/templates/pm_live_list.html   6fd8aad7a1b25d71 -> 7821241509ce44e2
+       web/static/pm_desk.css            18454d5690a316ed -> 8121e8e010e9efde
+       web/templates/pm_shell.html       934c258ce953b18d -> d8076b29874f927f
+  6. app.py GRAFTED (never wholesale): patch --fuzz=0 applied the _load_live_list hunk (Hunk #1 succeeded at 924,
+     offset 128 -- the box's _load_live_list matched the aad4dea context). NEW box app.py reference =
+     eeac337d17a84fc7, is_admin=14, /pm/arm=0, py_compile OK, imports with ZERO engine imports (engine_imports=[]),
+     _load_live_list present. main.py NOT shipped.
+  7. No package/venv/unit changes.
+  ** BACKUP NOTE (process defect, remediated -- no impact on the deploy):** the apply backup loop lacked a
+     mkdir -p "$BK" before the two ROOT-level files, so subdivision.py + arm.py were overwritten before $BK existed
+     (the other 5 backed up fine -- the web/ mkdir created $BK too late for the two). Caught immediately in the
+     apply output. REMEDIATED (cc/pm_deploy6_bkfix.*): the pre-deploy originals (== aad4dea == the box-capture
+     BEFORE shas) were written into $BK and verified (subdivision.py 863af1d1, arm.py 60f44720). The backup dir is
+     now COMPLETE + rollback-ready (7 files). The deploy itself was correct (all target shas verified); the pre-
+     deploy state was always recoverable from git aad4dea.
+
+RESTART (cc/pm_deploy6_restart_az.ps1) -- pm_web ONLY
+  8. az vm run-command RunShellScript `systemctl restart prediction-markets-web`. pm_web 232084 -> 234853
+     active/running. Engine trading-corp 232440 -> 232440 UNCHANGED, NRestarts 0 immediately after. Exit 0.
+
+POST-CHECK (cc/pm_deploy6_postcheck_ro.*, after a poll cycle, 2026-09-07T17:58Z) -- checks 9-16 ALL PASS
+  9.  /live 200; new tiles render: tl-tile=43, tl-compact=15, account groups=2 (== the step-1 enumeration
+      43/28/15). DB-side counts re-confirmed 43/28/15/8.
+  10. Alarm strip ABSENT ("DRIVER NOT RUNNING" occurrences = 0) -- correct, no sub is armed+STALE/NEVER.
+  11. All 8 armed subs (jack+karen x atp/mlb/ufc/wta) show ARMED + liveness RUNNING; spot-check of
+      /live/kalshi_jack/mlb, /kalshi_jack/atp, /kalshi_karen/mlb sub-pages shows the SAME arm=ARMED +
+      pm-lv-st-RUNNING -> tile == sub-page == DB.
+  12. jack/mlb realized $10.34, booked 70 + unbooked 6 = 76 == terminal closes 76 (True) -- the R3 split ties out
+      to the journal.
+  13. 62 pages checked (/, both account pages, /farm + 15 farm categories, all 43 /live/{acct}/{cat}) -> NON-200 = 0
+      (/farm/cs excluded, pre-existing). /live styled (pm_desk link present).
+  14. Cache-bust: served pm_desk.css = 8121e8e010e9efde (changed from 18454d56, == target); shell ?v=8121e8e0;
+      pm.css / pm_desk.css / htmx.min.js all 200 -> no 404, no rollback condition.
+  15. Engine MainPID 232440 UNCHANGED, NRestarts 0, ZERO journalctl -p err entries since the restart; order counts
+      UNCHANGED (jack 193, karen 94) -- pm_web placed nothing (credential-free, imports no broker).
+  16. Zero double-escaped entities on /live (&amp;middot;/&amp;mdash;/&amp;ndash;/&amp;# all 0). Served /live
+      rendered at 1600 + 1280 (cc/pm_deploy6_render.py -> renders/deploy6_live_{1600,1280}.png, VIEWED): 43 tiles,
+      two account segments, armed-first sort, rich + dashed-compact tiles, no alarm strip, legible at 1280.
+
+FILE LIST -- before(box)/after CR-stripped sha16 (see step 5 for the 6 wholesale; app.py below)
+  web/app.py  069d7a255a9f4ebc (M4+farm-search+liveness) -> eeac337d17a84fc7 (+ the _load_live_list tile hunk).
+  ** NEW BOX app.py REFERENCE = eeac337d17a84fc7 (is_admin=14, /pm/arm=0) -- supersedes 069d7a25 for the next deploy.**
+  heartbeat.py (57afdcc6) + partials/pm_liveness.html (9c87b830): already on box, NOT shipped.
+
+PIDs: pm_web 232084 -> 234853. Engine 232440 UNCHANGED, NRestarts 0 throughout.
+Backup: /home/azureuser/pm_deploy6_backup_20260907T175044Z (7 files; rollback = restore + pm_web-only restart).
+Skipped/notes: no app.py wholesale (grafted); no main.py; no migration; no package/venv change. The backup-loop
+  mkdir defect above was remediated before the restart. Runners: cc/pm_deploy6_{precheck_ro,apply,bkfix,restart_az,
+  postcheck_ro,render}.* + gen_deploy6.py + pm_deploy6_app.patch. NOTHING ELSE deployed or restarted; the engine
+  and both trading accounts were untouched.

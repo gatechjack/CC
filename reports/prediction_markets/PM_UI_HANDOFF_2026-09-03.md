@@ -1,14 +1,20 @@
 # PM UI — HANDOFF for the next UI code agent
 
-**STATUS: CURRENT — last updated 2026-09-04 (folds in DEPLOY 5: settled-slot whale + the bet-slot pass). The
-live-copy UI workstream is WRAPPED at DEPLOY 5. This is the current handoff; the filename keeps its original date so
-existing references resolve.**
+**STATUS: CURRENT — last updated 2026-09-07 (folds in DEPLOY 6: the Live Sub-divisions TILE page). Prior: DEPLOY 5
+(settled-slot whale + bet-slot pass). This is the current handoff; the filename keeps its original date so existing
+references resolve. ★ The pm-ui-rewrite branch is now a STALE SUBSET of the box — the box has advanced via the
+driver-liveness (heartbeat + account-page liveness panel), farm-search, remaining-categories, and DEPLOY-6 tile
+deploys; repo reconciliation is DEFERRED, so graft every deploy onto BOX-CURRENT (drift map:
+PM_TILES_PHASE1_INVENTORY_2026-09-07.md).**
 
 Workstream: the Prediction Markets `pm_web` UI rewrite. This doc is the starting point for the next UI pass.
 Branch `pm-ui-rewrite-2026-09-02` (pushed to origin), worktree `C:\Users\AA Incorporado\cc-pm-ui-rewrite-wt`.
-Deployed code = **`8978a2c`** (DEPLOY 5, tag `pm-ui-deploy5-2026-09-04`). Full narrative:
+Deployed code (live-copy UI) = **`8978a2c`** (DEPLOY 5, tag `pm-ui-deploy5-2026-09-04`). Full narrative:
 `PM_UI_REWRITE_REPORT_2026-09-02.md` (PLAN / FIX PASS / DEPLOY 1-3 / CARD POLISH / MULTI-CATEGORY FIX / DEPLOY 4 /
 BET-SLOT PASS / DEPLOY 5).
+★ **DEPLOY 6 (2026-09-07): the Live Sub-divisions TILE page** (GET /live rebuilt) — branch `pm-tiles-2026-09-07`
+(tag `pm-tiles-deploy6-2026-09-07`), reports `PM_TILES_PHASE2_BUILD_2026-09-07.md` (build+deploy) +
+`PM_TILES_PHASE1_INVENTORY_2026-09-07.md` (inventory + box-drift map).
 
 --------------------------------------------------------------------------------
 ## 1. WHAT IS LIVE ON PROD
@@ -20,8 +26,11 @@ through `az vm run-command` (root); the engine `trading-corp` (ARMED, 8 sub-divi
 touched.
 
 Deploy history (all pm_web-only, engine never restarted):
-  DEPLOY 1 `9c2eeb3` -> 2 `cafb132` -> 3 `431ec76` -> 4 `86744ac` (multi-category fix) -> **5 `8978a2c`** (current
-  LIVE; bet-slot pass + settled-slot whale).
+  DEPLOY 1 `9c2eeb3` -> 2 `cafb132` -> 3 `431ec76` -> 4 `86744ac` (multi-category fix) -> 5 `8978a2c` (bet-slot +
+  settled-slot whale) -> **6 (2026-09-07) the Live Sub-divisions TILE page** (branch pm-tiles-2026-09-07 @ df38514).
+★ NOTE: between DEPLOY 5 and 6 the box ALSO took non-UI-rewrite-branch deploys (driver-liveness incl. the heartbeat
+tables + the account-page liveness panel; farm-search; remaining-categories), so the box pm_web is AHEAD of the
+pm-ui-rewrite branch. Always graft onto BOX-CURRENT; do not wholesale-copy from a branch.
 
 Post-DEPLOY-5 box shipped-file set (the 4 files that changed 86744ac->8978a2c; box == these, CR-stripped sha16 @
 `8978a2c`):
@@ -36,11 +45,12 @@ pm.css 204d9051, pm_live.js b4c557fc, htmx.min.js 491955cd, pm_trade_drawer.html
 deploy the same way: `git show <sha>:file | tr -d '\r' | sha256sum` vs `tr -d '\r' < boxfile | sha256sum`.
 
 **Two standing deploy rules (unchanged):**
-  * **app.py is GRAFTED, never wholesale-copied.** The box runs M4 + the DEPLOY-4 multi-category hunks. **Current
-    box app.py CR-stripped sha16 = `c2e4ddef85b4460b`** (was M4 `8b7d35ca88432603`), `grep -c is_admin` = **10**,
-    `grep -c /pm/arm` = **0**. The BRANCH app.py (`86744ac:web/app.py` = `7edce7a5a8164256`) is the M5 version
-    (is_admin=12, /pm/arm=1 — the admin arm-control surface, NOT shipped). A wholesale app.py copy would LEAK M5
-    early. Graft your app.py hunks onto the box's current file; verify is_admin=10 / /pm/arm=0 + a `c2e4ddef` base.
+  * **app.py is GRAFTED, never wholesale-copied.** ★ **Current box app.py CR-stripped sha16 = `eeac337d17a84fc7`**
+    (DEPLOY 6), `grep -c is_admin` = **14**, `grep -c /pm/arm` = **0**. Lineage: M4 `8b7d35ca` -> DEPLOY-4
+    `c2e4ddef` (is_admin=10) -> farm-search graft (is_admin 10->14, 2026-09-05) + driver-liveness panel loaders
+    (2026-09-06) = `069d7a25` -> DEPLOY-6 `_load_live_list` tile hunk = **`eeac337d`**. The M5 `/pm/arm` admin
+    arm-control surface is STILL NOT on the box (/pm/arm=0); NEVER ship a branch app.py wholesale (it carries M5).
+    Graft your app.py hunks onto the box's current file; verify is_admin=14 / /pm/arm=0 + an `eeac337d` base.
   * **main.py NEVER ships from this branch** (it carries the engine's per-account driver wiring). UI deploys are
     pm_web-only. `git diff --name-only <deployed> <target> -- .../main.py` must be empty before any deploy.
 
