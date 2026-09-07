@@ -447,6 +447,85 @@ def account_pnl(conn, account_id: str) -> dict:
     }
 
 
+# ── TILE-PAGE BATCHED READERS (Phase 2, 2026-09-07) ────────────────────────────────────────────────────────────
+# The Live Sub-divisions TILE page shows ALL sub-divisions (R2: attached AND unattached), each with lifetime +
+# last-24h realized P&L. These read the SAME journal the per-sub readers do, but BATCHED (one GROUP BY across all
+# sub-divisions) so a 43-tile page is a handful of queries, not 43x. Read-only, journal-only; the standalone guard
+# holds. All keyed by (account_id, category).
+
+def tiles_all(conn) -> list[dict]:
+    """EVERY active sub-division as a tile row -- like list_subdivisions but WITHOUT the >=1-attachment visibility
+    gate, because the tile page shows attached AND unattached sub-divisions (R2: a division that cannot trade must be
+    visibly present, marked 'no whales attached', never hidden). `n_whales` = active attachment count (0 for an
+    unattached sub). `n_live_trades` = real (dry_run=0) orders placed. Sorted account_label, category. Empty if the
+    money tables are absent. Read-only."""
+    if not _ready(conn):
+        return []
+    has_att = _table_exists(conn, "pm_subdivision_attachment")
+    join = ("LEFT JOIN (SELECT account_id, category, COUNT(*) n FROM pm_subdivision_attachment WHERE active=1 "
+            "GROUP BY account_id, category) at ON at.account_id=s.account_id AND at.category=s.category "
+            if has_att else "")
+    n_whales = "COALESCE(at.n, 0) AS n_whales, " if has_att else "0 AS n_whales, "
+    has_ord = _table_exists(conn, "pm_subdivision_order")
+    n_ord = ("(SELECT COUNT(*) FROM pm_subdivision_order o WHERE o.account_id = s.account_id "
+             "AND o.category = s.category AND o.dry_run = 0) AS n_live_trades, " if has_ord else "0 AS n_live_trades, ")
+    rows = conn.execute(
+        "SELECT s.account_id, s.category, s.label AS sub_label, s.market_types, s.sizing_mode, s.fixed_stake_usd, "
+        "       " + n_whales + n_ord + "s.created_ts, COALESCE(a.label, s.account_id) AS account_label, a.venue "
+        "FROM pm_subdivision s LEFT JOIN pm_account a ON a.account_id = s.account_id " + join +
+        "WHERE s.active = 1 ORDER BY account_label, s.category").fetchall()
+    return [dict(r) for r in rows]
+
+
+def subdivision_pnl_all(conn) -> dict:
+    """BATCHED lifetime realized P&L per (account, category), splitting BOOKED vs UNBOOKED terminal closes (R3).
+    A terminal close is is_exit=1, dry_run=0, filled. `realized` = SUM(realized_pnl) over the BOOKED closes
+    (realized_pnl IS NOT NULL -- settlements + whale-exits that booked a P&L); NET of fees (entry fees are in the
+    cost basis, settlement fee=0). `wins`/`losses` are the SETTLEMENT record (won=1/0), so wins+losses can be
+    < booked_closes (a booked whale-exit has won NULL). `unbooked_closes` = closes with realized_pnl NULL
+    (opposed/exit without a booked P&L) -- counted separately so the gap is VISIBLE, never folded into realized or
+    the W-L. Returns {(account_id, category): {realized, booked_closes, wins, losses, unbooked_closes}}. Read-only."""
+    out: dict = {}
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return out
+    for r in conn.execute(
+            "SELECT account_id, category, "
+            "  COALESCE(SUM(CASE WHEN realized_pnl IS NOT NULL THEN realized_pnl ELSE 0 END), 0) realized, "
+            "  SUM(CASE WHEN realized_pnl IS NOT NULL THEN 1 ELSE 0 END) booked_closes, "
+            "  SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) wins, "
+            "  SUM(CASE WHEN won = 0 THEN 1 ELSE 0 END) losses, "
+            "  SUM(CASE WHEN realized_pnl IS NULL THEN 1 ELSE 0 END) unbooked_closes "
+            "FROM pm_subdivision_order WHERE dry_run = 0 AND is_exit = 1 AND outcome_status = 'filled' "
+            "GROUP BY account_id, category").fetchall():
+        d = dict(r)
+        out[(d["account_id"], d["category"])] = {
+            "realized": float(d["realized"] or 0.0), "booked_closes": int(d["booked_closes"] or 0),
+            "wins": int(d["wins"] or 0), "losses": int(d["losses"] or 0),
+            "unbooked_closes": int(d["unbooked_closes"] or 0)}
+    return out
+
+
+def realized_24h_all(conn, now_ts: int, *, window_sec: int = 86400) -> dict:
+    """BATCHED last-24h realized P&L per (account, category), from SETTLEMENTS whose settled_ts is within the window
+    (R3: 'settlements with settled_ts in the last 24h'). Keyed on settled_ts (the settlement's own timestamp), NOT
+    response_ts, and restricted to settlement closes -- a whale-exit/opposed close is not a settlement and carries no
+    settled_ts. Returns {(account_id, category): {realized_24h, n_24h}}; a sub-division with no settlement in the
+    window is simply absent from the dict (caller renders $0.00 / 0). Read-only."""
+    out: dict = {}
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return out
+    cutoff = int(now_ts) - int(window_sec)
+    for r in conn.execute(
+            "SELECT account_id, category, COALESCE(SUM(realized_pnl), 0) realized_24h, COUNT(*) n_24h "
+            "FROM pm_subdivision_order WHERE dry_run = 0 AND is_exit = 1 AND outcome_status = 'filled' "
+            "  AND close_source LIKE 'settlement%' AND settled_ts IS NOT NULL AND settled_ts >= ? "
+            "GROUP BY account_id, category", (cutoff,)).fetchall():
+        d = dict(r)
+        out[(d["account_id"], d["category"])] = {"realized_24h": float(d["realized_24h"] or 0.0),
+                                                 "n_24h": int(d["n_24h"] or 0)}
+    return out
+
+
 def held_tickers(conn) -> list[str]:
     """Every DISTINCT ticker CURRENTLY HELD across ALL active sub-divisions (both accounts, every category) --
     journal-derived (live_positions), so a position that is open in ANY sub-division is represented exactly once.

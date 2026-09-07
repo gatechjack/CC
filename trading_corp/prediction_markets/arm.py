@@ -237,6 +237,66 @@ def read_display(account_id: str | None = None, category: str | None = None, *,
     return out
 
 
+def read_display_all(pairs, *, legacy_db_path: str | None = None) -> dict:
+    """BATCHED read_display for the tile page: ONE mode=ro open of the legacy agent_state DB, classify the GLOBAL
+    master and EACH (account_id, category) in `pairs` into armed/disarmed/absent/unavailable + the effective state
+    (armed iff BOTH global and sub are armed). Semantics identical to read_display (which does per-scope reads); this
+    just avoids opening the DB 2x per sub for a 40+ tile page. Read-only; an unreadable DB -> every scope
+    'unavailable' (never a false disarm); an absent file -> every scope 'absent' (never armed); a corrupt/non-dict
+    row -> that scope 'unavailable' (never mistaken for a kill). Returns {'global': {'state','ts'},
+    'subs': {(account_id, category): {'sub_state','sub_ts','effective_state'}}}."""
+    pairs = list(pairs)
+    parsed: dict = {}
+    bad: set = set()
+    status = "ok"
+    path = resolve_legacy_db_path(legacy_db_path)
+    rows = []
+    if not os.path.exists(path):
+        status = "absent"                                  # no legacy DB yet -> nothing armed anywhere
+    else:
+        try:
+            conn = sqlite3.connect("file:%s?mode=ro" % os.path.abspath(path), uri=True)
+            try:
+                rows = conn.execute("SELECT key, value_json FROM agent_state WHERE agent=? AND key LIKE 'arm:%'",
+                                    (PM_LIVE_ACTOR,)).fetchall()
+            finally:
+                conn.close()
+        except Exception:
+            status = "error"                               # locked / no table / io error -> INDETERMINATE (never a disarm)
+        for k, vj in rows:
+            try:
+                v = json.loads(vj)
+            except (TypeError, ValueError):
+                bad.add(k); continue
+            if isinstance(v, dict):
+                parsed[k] = v
+            else:
+                bad.add(k)
+
+    def _state(key):
+        if status == "error" or key in bad:
+            return "unavailable"
+        if status == "absent" or key not in parsed:
+            return "absent"
+        return "armed" if _row_armed(parsed[key]) else "disarmed"
+
+    gstate = _state(GLOBAL_KEY)
+    grow = parsed.get(GLOBAL_KEY)
+    out = {"global": {"state": gstate, "ts": (grow or {}).get("ts")}, "subs": {}}
+    for (a, c) in pairs:
+        sk = sub_key(a, c)
+        sstate = _state(sk)
+        srow = parsed.get(sk)
+        if gstate == "unavailable" or sstate == "unavailable":
+            eff = "unavailable"                            # cannot confirm -> not a real disarm
+        elif gstate == "armed" and sstate == "armed":
+            eff = "armed"
+        else:
+            eff = "disarmed"
+        out["subs"][(a, c)] = {"sub_state": sstate, "sub_ts": (srow or {}).get("ts"), "effective_state": eff}
+    return out
+
+
 # ── WRITE (ENGINE / CLI side only; lazy engine import) ───────────────────────
 def _write(key: str, value: dict, *, legacy_db_path: str | None = None) -> None:
     """Reuse the engine's set_agent_state (the migration-010-sanctioned mechanism). Lazily imported so

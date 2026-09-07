@@ -687,3 +687,103 @@ def build_from_cache(*, orders, open_positions, open_positions_by_whale, cache, 
     return build_live_context(orders=orders, open_positions=open_positions,
                               open_positions_by_whale=open_positions_by_whale, slate=merged,
                               marks_result=snap.marks, now_ts=now_ts, category=category) | {"warming": not snap.ready}
+
+
+# ── LIVE SUB-DIVISIONS TILE PAGE (Phase 2, 2026-09-07) ─────────────────────────────────────────────────────────
+# A PURE assembler (no DB / no network): the app loader fetches the journal + arm + heartbeat + mark-cache data and
+# hands it here to build the segmented tile context. Testable in isolation. Honesty rules preserved: realized is
+# NEVER open value; open shows THREE separate figures (count / at-cost / current value + 'N of M priced'); arm and
+# liveness are shown SEPARATELY (arm = should it trade; liveness = is the engine actually evaluating it); an ARMED
+# sub whose driver is STALE/NEVER is the divergence R1 exists to surface -> it rides the page-top alarm strip.
+
+_LV_ALARM_STATES = ("STALE", "NEVER")
+
+
+def _ts_age(iso_ts, now_ts):
+    """Age (seconds) of an ISO8601 agent_state write-timestamp vs now_ts, for the arm badge's age chip. None when
+    absent/unparseable (the badge then draws no chip). Pure."""
+    if not iso_ts:
+        return None
+    try:
+        import datetime as _dt
+        return int(now_ts) - int(_dt.datetime.fromisoformat(str(iso_ts)).timestamp())
+    except Exception:
+        return None
+
+
+def build_tiles_context(*, subs, arm_all, liveness_by_sub, liveness_present, whales_by_sub, pnl_all, pnl24_all,
+                        positions_by_sub, marks, now_ts: int, thin_floor: int) -> dict:
+    """Assemble the Live Sub-divisions tile context from already-fetched data. `subs` = subdivision.tiles_all rows
+    (ALL active sub-divisions, attached + unattached -- R2). `arm_all` = arm.read_display_all output.
+    `liveness_by_sub` = {(acct,cat): SubLiveness}. `whales_by_sub`/`positions_by_sub` = {(acct,cat): [...]} for the
+    ATTACHED subs. `pnl_all`/`pnl24_all` = subdivision.subdivision_pnl_all / realized_24h_all. `marks` =
+    {ticker: Mark}. Returns `accounts` (segmented; each account's tiles sorted armed -> attached-disarmed ->
+    unattached), the page-top `alarm_subs` strip (armed + STALE/NEVER, R1), the global arm state, and counts.
+    Pure -- no DB, no network."""
+    arm_subs = (arm_all or {}).get("subs", {})
+    by_account: dict = {}
+    order: list = []                              # account order = first appearance (tiles_all is account_label-sorted)
+    alarm = []
+    n_attached = n_unattached = n_armed = 0
+    for s in subs:
+        aid, cat = s["account_id"], s["category"]
+        key = (aid, cat)
+        attached = int(s.get("n_whales") or 0) > 0
+        a = arm_subs.get(key) or {"sub_state": "absent", "sub_ts": None, "effective_state": "disarmed"}
+        eff_armed = a.get("effective_state") == "armed"
+        tile = {
+            "account_id": aid, "category": cat, "account_label": s.get("account_label") or aid,
+            "sub_label": s.get("sub_label"), "created_ts": s.get("created_ts"),
+            "attached": attached, "n_whales": int(s.get("n_whales") or 0),
+            "n_live_trades": int(s.get("n_live_trades") or 0),
+            "arm_state": a.get("sub_state"), "arm_ts_age": _ts_age(a.get("sub_ts"), now_ts),
+            "effective_arm": a.get("effective_state"),
+            "liveness": None, "whale_tag": None, "is_alarm": False,
+            "realized": None, "booked_closes": 0, "wins": 0, "losses": 0, "unbooked_closes": 0, "realized_thin": False,
+            "realized_24h": None, "n_24h": 0,
+            "open_count": 0, "open_at_cost": 0.0, "open_value": None, "open_priced": 0, "open_total": 0,
+            "open_known": False, "open_complete": False,
+        }
+        if attached:
+            n_attached += 1
+            labels = [(w.get("user_name") or w.get("wallet")) for w in (whales_by_sub.get(key) or [])]
+            tile["whale_tag"] = _whale_tag(labels)
+            lv = liveness_by_sub.get(key) if liveness_present else None
+            tile["liveness"] = lv
+            p = pnl_all.get(key) or {}
+            tile["realized"] = float(p.get("realized", 0.0))
+            tile["booked_closes"] = int(p.get("booked_closes", 0))
+            tile["wins"] = int(p.get("wins", 0)); tile["losses"] = int(p.get("losses", 0))
+            tile["unbooked_closes"] = int(p.get("unbooked_closes", 0))
+            tile["realized_thin"] = 0 < tile["booked_closes"] < int(thin_floor)   # few booked closes -> W-L unreliable
+            p24 = pnl24_all.get(key) or {}
+            tile["realized_24h"] = float(p24.get("realized_24h", 0.0))
+            tile["n_24h"] = int(p24.get("n_24h", 0))
+            pos = positions_by_sub.get(key) or []
+            v = value_positions(pos, marks)
+            tile["open_count"] = len(pos)
+            tile["open_at_cost"] = sum(float(x.get("cost_basis_usd") or 0.0) for x in pos)
+            tile["open_value"] = v["value"]; tile["open_priced"] = v["n_priced"]; tile["open_total"] = v["n_total"]
+            tile["open_known"] = v["known"]; tile["open_complete"] = v["complete"]
+            # R1: armed in the DB but the driver reads STALE/NEVER -> the exact 28h divergence. Page-top alarm strip.
+            if eff_armed and lv is not None and getattr(lv, "state", None) in _LV_ALARM_STATES:
+                tile["is_alarm"] = True
+                alarm.append({"account_id": aid, "category": cat, "account_label": tile["account_label"],
+                              "state": lv.state, "age_sec": getattr(lv, "age_sec", None)})
+        else:
+            n_unattached += 1
+        if eff_armed:
+            n_armed += 1
+        tile["_rank"] = 0 if eff_armed else (1 if attached else 2)   # armed -> attached-disarmed -> unattached
+        if aid not in by_account:
+            by_account[aid] = {"account_id": aid, "account_label": tile["account_label"], "tiles": []}
+            order.append(aid)
+        by_account[aid]["tiles"].append(tile)
+    for aid in order:
+        by_account[aid]["tiles"].sort(key=lambda t: (t["_rank"], t["category"]))
+    accounts = [by_account[aid] for aid in order]
+    g = (arm_all or {}).get("global", {"state": "absent", "ts": None})
+    return {"accounts": accounts, "alarm_subs": alarm, "liveness_present": liveness_present,
+            "global_arm": {"state": g.get("state"), "ts_age": _ts_age(g.get("ts"), now_ts)},
+            "counts": {"total": len(subs), "attached": n_attached, "unattached": n_unattached, "armed": n_armed},
+            "now_ts": now_ts}

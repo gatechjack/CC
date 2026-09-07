@@ -1,25 +1,93 @@
 {% extends "pm_shell.html" %}
+{% import "partials/pm_arm_badge.html" as ab %}
+{% import "partials/pm_liveness.html" as lv %}
 {% block title %}Live sub-divisions &middot; Prediction Markets{% endblock %}
 {% block content %}
-<section>
+{{ lv.liveness_assets() }}{# pm-lv-* liveness chip styles (self-contained), reused on each tile #}
+<section class="desk tiles">
   <nav class="pm-crumb"><a href="/">Dashboard</a> &rsaquo; Live sub-divisions</nav>
-  <div class="pm-section-head">
+  <div class="tl-head">
     <h1 class="pm-h1">Live sub-divisions</h1>
-    <p class="pm-sub">Account-Category sub-divisions that place live Kalshi copies. Read-only view &mdash; a tile
-      appears the moment a sub-division is created, before it ever trades.</p>
+    {{ ab.arm_badge(global_arm.state, global_arm.ts_age, prefix='GLOBAL ') }}
   </div>
+  <p class="pm-sub">All {{ counts.total }} sub-divisions, both accounts &mdash; {{ counts.attached }} attached ({{ counts.armed }} armed), {{ counts.unattached }} with no whales. Read-only. <b>Arm</b> = should it trade (persisted state); <b>liveness</b> = is the engine actually evaluating it (heartbeat). The two are shown separately on purpose.</p>
 
-  {% if subdivisions %}
-  <div class="pm-tilegrid">
-    {% for s in subdivisions %}
-      <a class="pm-tile" href="/live/{{ s.account_id }}/{{ s.category }}">
-        <span class="pm-tile-name">{{ s.account_label }} &middot; {{ s.category|upper }}</span>
-        <span class="pm-tile-hint">{% if s.n_live_trades %}{{ s.n_live_trades }} live trade{{ '' if s.n_live_trades == 1 else 's' }}{% else %}created &middot; no live trades yet{% endif %}</span>
-      </a>
-    {% endfor %}
+  {# R1: page-top ALARM STRIP -- the divergence that cost 28h: ARMED in the DB but the driver reads STALE/NEVER.
+     Rendered as the most prominent thing on the page (not just a tile colour), listing each offending sub. #}
+  {% if alarm_subs %}
+  <div class="tl-alarm" role="alert" data-alarm-count="{{ alarm_subs|length }}">
+    <div class="tl-alarm-hd">&#9888; DRIVER NOT RUNNING &mdash; {{ alarm_subs|length }} ARMED sub-division{{ '' if alarm_subs|length == 1 else 's' }} not cycling</div>
+    <div class="tl-alarm-body">The DB says these should be trading, but the engine is not evaluating them. PM may not be trading &mdash; check the engine.</div>
+    <ul class="tl-alarm-list">
+      {% for s in alarm_subs %}<li>{{ s.account_label }} &middot; <b>{{ s.category|upper }}</b> &mdash; <span class="tl-alarm-state">{{ s.state }}</span> <span class="tl-age">{{ lv.liveness_age(s.age_sec) }}</span></li>{% endfor %}
+    </ul>
   </div>
-  {% else %}
-  <div class="pm-empty">No live sub-divisions yet. One appears here the moment it is created.</div>
+  {% endif %}
+
+  {% if not liveness_present %}
+  <div class="tl-note">Driver-liveness monitor not deployed here (heartbeat table absent, migration 020 pending) &mdash; liveness reads &lsquo;n/a&rsquo;, never a false alarm.</div>
+  {% endif %}
+
+  {% for acct in accounts %}
+  <div class="tl-acct">
+    <h2 class="tl-acct-hd">{{ acct.account_label }} <span class="tl-acct-n">{{ acct.tiles|length }} sub-divisions</span></h2>
+    <div class="tl-grid">
+      {% for t in acct.tiles %}
+      {% if t.attached %}
+      {# -- RICH tile (attached: can trade) -- #}
+      <a class="tl-tile{% if t.is_alarm %} tl-tile-alarm{% endif %}" href="/live/{{ t.account_id }}/{{ t.category }}">
+        <div class="tl-top">
+          <span class="tl-cat">{{ t.category|upper }}</span>
+          {{ ab.arm_badge(t.arm_state, t.arm_ts_age) }}
+        </div>
+        <div class="tl-live">
+          {% if t.liveness %}<span class="pm-lv-badge pm-lv-st-{{ t.liveness.state }}" title="{{ t.liveness.detail }}"><span class="pm-lv-state">{{ t.liveness.state|replace('_',' ') }}</span> <span class="pm-lv-age">{{ lv.liveness_age(t.liveness.age_sec) }}</span></span>
+          {% elif liveness_present %}<span class="pm-lv-badge pm-lv-st-NEVER" title="attached + expected but no heartbeat row"><span class="pm-lv-state">NO HEARTBEAT</span></span>
+          {% else %}<span class="tl-dim">liveness n/a</span>{% endif %}
+        </div>
+        <div class="tl-whales">
+          {% if t.whale_tag %}<span class="tl-k">copies</span> <span class="wtag"><span class="wn">{{ t.whale_tag.first }}</span>{% if t.whale_tag.extra %}<span class="wx">+{{ t.whale_tag.extra }}</span>{% endif %}</span><span class="tl-dim"> of {{ t.n_whales }}</span>
+          {% else %}<span class="tl-dim">{{ t.n_whales }} whale{{ '' if t.n_whales == 1 else 's' }} attached</span>{% endif %}
+        </div>
+        <div class="tl-metrics">
+          <div class="tl-m">
+            <div class="tl-k">realized <span class="tl-dim">net of fees</span></div>
+            <div class="tl-v {{ t.realized|pnlcls }}">{{ t.realized|money }}</div>
+            <div class="tl-sub">{{ t.booked_closes }} booked close{{ '' if t.booked_closes == 1 else 's' }} &middot; {{ t.wins }}&ndash;{{ t.losses }} settled{% if t.realized_thin %} <span class="tl-thin" title="fewer than {{ thin_sample_floor }} settled closes -- the W-L rate is not yet reliable">THIN &lt;{{ thin_sample_floor }}</span>{% endif %}{% if t.unbooked_closes %} &middot; <span class="tl-dim">{{ t.unbooked_closes }} unbooked</span>{% endif %}</div>
+          </div>
+          <div class="tl-m">
+            <div class="tl-k">last 24h <span class="tl-dim">settled</span></div>
+            <div class="tl-v {{ t.realized_24h|pnlcls }}">{{ t.realized_24h|money }}</div>
+            <div class="tl-sub">{{ t.n_24h }} settlement{{ '' if t.n_24h == 1 else 's' }} in the last 24h</div>
+          </div>
+        </div>
+        <div class="tl-open">
+          <span class="tl-k">open</span>
+          {% if t.open_count %}
+            <span class="tl-of">{{ t.open_count }} pos</span>
+            <span class="tl-of">{{ t.open_at_cost|money }} <span class="tl-dim">cost</span></span>
+            <span class="tl-of">{% if t.open_known %}{{ t.open_value|money }}{% else %}<span class="tl-dim">no mark</span>{% endif %} <span class="tl-dim">value</span></span>
+            <span class="tl-cov{% if t.open_total and not t.open_complete %} tl-cov-partial{% endif %}">{{ t.open_priced }} of {{ t.open_total }} priced</span>
+          {% else %}<span class="tl-dim">none open</span>{% endif %}
+        </div>
+      </a>
+      {% else %}
+      {# -- COMPACT tile (unattached: cannot trade) -- #}
+      <a class="tl-tile tl-compact" href="/live/{{ t.account_id }}/{{ t.category }}">
+        <div class="tl-top">
+          <span class="tl-cat">{{ t.category|upper }}</span>
+          {{ ab.arm_badge(t.arm_state, t.arm_ts_age) }}
+        </div>
+        <div class="tl-noattach">no whales attached &mdash; cannot trade</div>
+      </a>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+
+  {% if not accounts %}
+  <div class="pm-empty">No sub-divisions yet. One appears here the moment it is created.</div>
   {% endif %}
 </section>
 {% endblock %}

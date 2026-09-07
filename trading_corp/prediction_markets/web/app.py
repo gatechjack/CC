@@ -796,11 +796,35 @@ async def promote_to_live_action(request: Request, account_id: str, category: st
 # (pre-migration-010) -> honest-empty, so /live deploys on a pm_web restart independent of the migration-010 deploy.
 
 def _load_live_list() -> dict:
-    """LIVE list read: the ACTIVE sub-divisions as tiles (tile-on-CREATE -- a tile the moment the sub-division
-    exists, before it trades). No live-trade data (P3). OFF the loop, read-only."""
+    """LIVE sub-division TILES (Phase 2, 2026-09-07): EVERY active sub-division (attached AND unattached, R2),
+    segmented by account, each with arm state (agent_state), driver LIVENESS (heartbeat), attached whales, lifetime
+    + last-24h realized P&L, and open count / at-cost / current-value+coverage. R1: an ARMED sub whose driver reads
+    STALE/NEVER rides a page-top alarm strip -- the DB says trade, the engine isn't (the 28h divergence). All
+    read-only: journal + persisted arm state + the poller's mark cache; NO venue, NO order path. OFF the loop."""
+    from .. import heartbeat        # box top-imports it; a LOCAL import keeps this hunk purely additive (graft-clean)
+    now_ts = int(time.time())
+    marks, _ = _cache_marks()
+    floor = search.DEFAULT_MIN_RESOLVED_FLOOR
     with connect() as conn:
-        subdivisions = subdivision.list_subdivisions(conn)
-    return {"subdivisions": subdivisions}
+        subs = subdivision.tiles_all(conn)
+        pairs = [(s["account_id"], s["category"]) for s in subs]
+        arm_all = arm.read_display_all(pairs)
+        liveness_present = heartbeat.table_present(conn)
+        liveness_by_sub = {(r.account_id, r.category): r
+                           for r in heartbeat.read_liveness(conn, now_ts=now_ts)} if liveness_present else {}
+        pnl_all = subdivision.subdivision_pnl_all(conn)
+        pnl24_all = subdivision.realized_24h_all(conn, now_ts)
+        # attachments + open positions ONLY for the attached subs (unattached render compact -- R2, "no whales attached")
+        whales_by_sub, positions_by_sub = {}, {}
+        for s in subs:
+            if int(s.get("n_whales") or 0) > 0:
+                key = (s["account_id"], s["category"])
+                whales_by_sub[key] = subdivision.attached_whales(conn, s["account_id"], s["category"])
+                positions_by_sub[key] = subdivision.live_positions(conn, s["account_id"], s["category"])
+    return live_view.build_tiles_context(
+        subs=subs, arm_all=arm_all, liveness_by_sub=liveness_by_sub, liveness_present=liveness_present,
+        whales_by_sub=whales_by_sub, pnl_all=pnl_all, pnl24_all=pnl24_all, positions_by_sub=positions_by_sub,
+        marks=marks, now_ts=now_ts, thin_floor=floor)
 
 
 def _load_live_subdivision(account_id: str, category: str, now_ts: int) -> dict | None:
