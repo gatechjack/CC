@@ -164,10 +164,14 @@ FORMERLY-LIVE with dates, placed/booked/unbooked counts, drill-through to the dr
 **DEMOTE** button (confirmation states OPEN copies RUN TO SETTLEMENT — demote stops new copies, does not flatten).
 REJECTED by Jack: a paper-vs-live side-by-side per whale.
 
-**SEQUENCING RULE (Jack, hard gate):** the DEMOTE button is NOT buildable until the ENGINE can read the live roster
-from a per-sub-division `subdivision.yaml` applied WITHOUT a restart (today the engine loads the roster at BOOT).
-The UI button must not exist until that hot-reload is PROVEN by an observed engine cycle. Engine/reconciliation work
-precedes the UI pass — do not build the button first.
+**SEQUENCING RULE (Jack, hard gate) — ROSTER-SOURCE QUESTION, being reconciled:** the DEMOTE button was gated on the
+engine reading the live roster WITHOUT a restart ("today the engine loads the roster at BOOT"). ★ Phase-1 (item 6)
+found the code says otherwise: the roster IS the DATABASE, not a yaml — `driver_roster.py:14` ("THE ROSTER IS THE
+DATABASE, NOT CONFIG") and `live_driver.py:782` re-read the whale list from `pm_subdivision_attachment WHERE active=1`
+EVERY ~7s cycle; only the SPAWN of a NEW (account,category) task is boot-time. So a whale added/removed on an
+already-running sub is picked up live, no restart. IF Jack confirms DB-per-cycle with the engine chat, the DEMOTE
+hot-reload gate is effectively already met and the item is UNGATED (a detach flips `active=0` and the next cycle
+stops copying — `farm_actions.detach_from_live`, already used for the soccer mis-attach). Reconcile before building.
 
 --------------------------------------------------------------------------------
 ## 7. NOT YET OBSERVED IN PROD
@@ -188,3 +192,63 @@ precedes the UI pass — do not build the button first.
   right-truncation ellipsis have not been eyeballed on a live slot. Proven off-prod (render harness
   `cc/pm_betslot_render.py`, `test_bet_slot_whales.py`). Confirm the first time a prod position is stacked by 2+
   whales, or copied from a wallet-only (no display name) whale.
+
+--------------------------------------------------------------------------------
+## 8. LIVE SUB-DIVISIONS TILES (DEPLOY 6, 2026-09-07) — cold-start for the next tiles pass
+
+**Prod state.** The tile page (GET /live) is LIVE at branch `pm-tiles-2026-09-07` @ **`3db73c1`** (tag
+`pm-tiles-deploy6-2026-09-07`). Box app.py reference = **`eeac337d17a84fc7`** (is_admin=14, /pm/arm=0). PM schema
+head = **20**; migrations 018-020 are CLAIMED (018 opposed-marker, 019 multi_category_ok, 020 driver-liveness) — the
+**next migration is 021** (db.py migrations are contiguous by a tested invariant; a colliding number silently skips
+its DDL, so a deploy must drift-check the live head == 20 first). The tiles added NO migration (all reads are runtime
+SQL over existing tables + the box's already-deployed heartbeat tables).
+
+**★ UI BRANCHES ARE A STALE SUBSET OF THE BOX (deferred reconciliation).** The pm-ui-rewrite / pm-tiles branches
+predate several deployed non-UI-rewrite workstreams, so these pm_web files exist ON THE BOX but on NO UI branch:
+`heartbeat.py`, `web/templates/partials/pm_liveness.html` (driver-liveness), and the `farm.py / farm_actions.py /
+analyze.py / search.py / search_run.py / paper.py / positions.py / stats.py / category.py` modules + their templates
+(pm_farm_league / pm_farm_category / pm_whale* / pm_watchlist* / pm_macros + the analyze/paper/position/prospect/
+search partials). **Procedure Phase 2 used (repeat it):** for EVERY pm_web file you will edit or import from, first
+fetch the box's current copy (read-only) and record its CR-stripped sha16 as a "box capture" commit BEFORE editing,
+so diffs are against PROD truth, not the stale branch (`cc/pm_tiles_boxfetch_ro.*`). Files whose box sha == your
+branch base are wholesale-safe; app.py is ALWAYS a graft onto box-current (§1). Full drift map:
+`PM_TILES_PHASE1_INVENTORY_2026-09-07.md`.
+
+**★ DEPLOY DISCIPLINE — BACKUP IS A GATE (hard-won DEPLOY 6).** After backing up, VERIFY the backup dir exists and
+every file's sha matches the box BEFORE any copy; a deploy runner must FAIL CLOSED if the backup is missing. DEPLOY
+6's apply loop lacked a `mkdir -p "$BK"` before two root-level files, so `subdivision.py` + `arm.py` were overwritten
+before the backup dir existed (remediated by backfilling the verified originals). It was recoverable only because the
+pre-state == aad4dea; do not rely on that. Gate the backup like every other step.
+
+**Tiles architecture (what is live).** Keyed off DATABASE STATE, not the engine's boot roster:
+- Tiles = `subdivision.tiles_all` (ALL active subs, attached + unattached), segmented by account, sorted
+  armed -> attached-disarmed -> unattached. Attached = >=1 active attachment (rich tile); unattached = compact
+  "no whales attached".
+- ARM = `arm.read_display_all` (batched 4-state ARMED/DISARMED/NEVER ARMED/UNAVAILABLE from `agent_state`) with its
+  row-ts age. LIVENESS = `heartbeat.read_liveness` (RUNNING/IDLE/CATEGORY_STARVED/STALE/NEVER, banded by age) — shown
+  SEPARATELY from arm (arm = should it trade; liveness = is the engine evaluating it).
+- **ALARM STRIP (R1)** = page-top red banner listing subs that are effective-ARMED AND liveness STALE or NEVER (the
+  28h divergence); CATEGORY_STARVED stays amber non-alarm; empty when nothing qualifies.
+- REALIZED (R3) = `subdivision.subdivision_pnl_all` SUM(realized_pnl) over BOOKED terminal closes, labelled "net of
+  fees" (entry fees in cost basis, settlement fee=0); count = "N booked closes . W-L from settlements"; UNBOOKED
+  closes (opposed/exit, realized_pnl NULL) counted SEPARATELY; NEVER open value. LAST-24H = `realized_24h_all`
+  (settlements with settled_ts in the last 24h). OPEN (R4) = three distinct figures (count / at-cost / current value
+  + "N of M priced" via `live_view.value_positions`), no-mark honest. Assembler = pure `live_view.build_tiles_context`
+  (unit-tested); the ONLY app.py change is the `_load_live_list` body. Thin caveat = booked closes <
+  `search.DEFAULT_MIN_RESOLVED_FLOOR` (50).
+
+**Not yet observed on prod.** A REAL armed+STALE/NEVER ALARM STRIP — harness/test-proven only (no armed sub has gone
+STALE since deploy; the driver has been healthy). Predicate + render covered by
+`test_tiles_view.py::test_alarm_strip_is_armed_and_stale_only` + the render harness (`cc/pm_tiles_render.py` seeds an
+armed+STALE sub). Confirm the strip fires the first time an armed sub's heartbeat actually goes STALE/NEVER — that is
+a real engine-outage finding for Jack + the engine chat, NOT a UI defect.
+
+**Tiles backlog (Jack: "functional — a more elegant display later").**
+- **Mid-size tile for attached-but-never-traded subs**: the ~20 attached-disarmed / never-armed subs with zero
+  history render the full rich tile with an empty P&L block, competing visually with the 8 armed tiles. Give a
+  zero-history sub (no booked close yet) a MID-SIZE tile — arm, liveness, whales; NO P&L block until a booked close
+  exists — so the 8 armed tiles stand out among the 20 zero-history ones.
+- **Roster / DEMOTE panel** — see §6; the boot-vs-per-cycle roster-source question is being reconciled (if
+  DB-per-cycle is confirmed the DEMOTE gate is already met).
+- **Sport-specific ATP/UFC/WTA cards**, **Farm League redesign** — see §5 (design decisions, unchanged).
+- **/farm/cs 404** — pre-existing; owned by whoever created the `cs` category, not the tiles workstream.
