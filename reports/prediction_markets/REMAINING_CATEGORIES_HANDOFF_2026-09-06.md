@@ -122,7 +122,15 @@ order; bounces ALL divisions, warn co-tenants) -> then run cc/pm_rung1_postcheck
 = new cats invisible; 9 arm rows unchanged; liveness 8 RUNNING; boot-reconcile clean; volume-first order took
 != alphabetical) -> then pm_rung1_create.* (separate auth).
 
-## ★ RUNG 1 COMPLETE (A-G), CODE DEPLOYED, HELD FOR RESTART + CREATE. Engine order-path untouched by the graft.
+## ★ POST-DEPLOY POST-CHECK GREEN 2026-09-07 00:41Z (cc/pm_rung1_postcheck_ro.*, boot-aware, after Jack's restart):
+engine PID 219962->222109 (NRestarts=0, since 00:40:04). [1] roster only atp/mlb/ufc/wta both accounts, 0 new
+sub-divs -> NEW CATEGORIES INVISIBLE; [2] 9 arm rows all armed latched=0, timestamps UNCHANGED from persisted;
+[3] liveness all 8 RUNNING any_alarm=False; [4] boot-reconcile both reconciled=True latched=False; [5] ★
+VOLUME-FIRST ORDER TOOK: engine LOGGED cycle order = ['mlb','atp','wta','ufc'] BOTH accounts (recompute matches;
+changed=True vs alphabetical ['atp','mlb','ufc','wta']) -> mlb (highest 30d volume) first, ufc (quiet) last.
+The 5 registry entries + reordered claim loop changed NOTHING for the live four except the intended ordering.
+
+## ★ RUNG 1 COMPLETE (A-G), CODE DEPLOYED + POST-CHECK GREEN. Engine order-path healthy. NEXT: pm_rung1_create.* (Jack, separate auth) -> then attach+arm+caps (his) with the nba/nhl/wnba arm-gate above.
 Branch pm-remaining-categories-plan-2026-09-06 (commits ...0e81eea + handoff). 42 tests green on the box venv
 (mlb byte-identical) + 26 local. Disarmed dry-run gate PASSES (nfl + cfb: 0 wrong game, 0 wrong market-type).
 
