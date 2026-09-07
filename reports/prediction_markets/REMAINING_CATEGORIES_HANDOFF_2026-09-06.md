@@ -343,6 +343,41 @@ discovery sweep [LOW code, records need the sweep]; (4) farm UI tiles/promote pe
 today if the farm renders their tiles). ★ Maintenance is LOW (slug-prefix keyed, stable per league, not season-stale
 like golf); one-time cost = the 24k re-classify + the sweep. HELD for Jack's ruling on whether/when to do Steps 1-3.
 
+## ★★ PER-LEAGUE SOCCER CLASSIFICATION — BUILT + BOX-SCRATCHED GREEN + STAGED, HELD AT DEPLOY 2026-09-07 ~05:58Z
+**Jack RULED per-league (keep the 20 subs, DO NOT build the umbrella) + the CHEAP path (NO 24k re-classify, no
+bulk write).** Steps 1-3 built (classifier + allowlist + retire); farm UI (Step 4) NOT built (Jack's, post-sweep).
+Commit on branch; deploy shas category.py 0c8d2820599dade6 / search.py b01306742f2d2d06. Runners cc/pm_perleague_*.
+- **category.py:** SLUG_PREFIX_MAP += lal/fl1/uel/mls/sea/bun/bra/mex (each->itself; per-league via slug prefix).
+  TAG_SLUG_TO_CATEGORY -= 'soccer' (RETIRED). epl/ucl unchanged.
+- **search.py:** CATEGORY_ALLOWLIST += the 8, -= 'soccer' (16->23).
+- ★ **ANSWER to Jack's Q-A (the 24k coarse-'soccer' rows' fate, ESTABLISHED not assumed):** backfill_wallet
+  RE-DERIVES category from the slug + INSERT OR REPLACE (ingest.py:193/271), so the 24k rows RECLASSIFY LAZILY
+  per-wallet on the NEXT backfill (Jack's sweep) -> self-heal, deterministic, no bulk write by us. Wallets never
+  re-swept sit as dead 'soccer' history -- harmless: after retirement NOTHING live queries category='soccer'
+  (search drops it; adjudicate/rollup are category-agnostic).
+- ★ **ANSWER to Jack's Q-B (what 'retire' touches, VERIFIED):** exactly the 2 lines above. Nothing else keys off
+  the 'soccer' category string. The two OTHER 'soccer' refs are SEPARATE subsystems, UNTOUCHED: brokers/
+  polymarket.py `_SPORTS_SERIES` (the arbitrage broker's sport keyword set) + data/kalshi_matchable.py (a legacy
+  title-keyword taxonomy, MATCHABLE_CATEGORIES={'mlb'}). ★ epl/ucl CANNOT break: separate SLUG_PREFIX_MAP +
+  allowlist entries; nothing groups them under 'soccer' (grep-verified).
+- ★ **STEP 4 (farm UI) is essentially FREE + AUTO:** farm.py `league_categories()`/`is_league_category` derive
+  the tile/page set FROM `search.CATEGORY_ALLOWLIST`. So the 8 leagues' tiles+pages appear (EMPTY until the sweep)
+  and the 'soccer' tile disappears on the next PM_WEB RESTART -- there is NO separate tile code to build. So
+  "Step 4" = a pm_web restart, deferred until AFTER Jack's Search sweep (so a leaderboard sits behind each tile).
+- **BOX-SCRATCH GREEN** (cc/pm_perleague_scratch.* + _perleague_overlay.b64; box venv): per-league classify True,
+  soccer retired True, allowlist 23, farm tiles 10-present/soccer-absent, epl/ucl unchanged; test_category/farm/
+  search + new test_soccer_per_league_class all pass (only test_schema_head_pin 20==19 fails = PRE-EXISTING
+  driver-liveness migration-020 stale pin, db.py untouched here). ★ box-scratch harness note: the box has NO
+  tests/ dir, so the overlay must ship the gamma_events FIXTURES for the tier-2 category tests (added).
+- **STAGED + HELD** (deploy is a HALT). RO PRE-CHECK GREEN (cc/pm_perleague_precheck_ro.*): box==base
+  (category a294d229 / search 2e45f343; allowlist 16 w/ soccer). Runner cc/pm_perleague_deploy.* (2-file graft,
+  drift-check, SHA-VERIFY placed==committed 0c8d2820/b01306742f, NO restart). ★ ACTIVATION: the Search SWEEP (fresh
+  subprocess) classifies per-league IMMEDIATELY on the on-disk code; the running poller picks it up on its next
+  restart (not urgent, no soccer armed); farm tiles on the next pm_web restart (post-sweep).
+- **THE MAINTENANCE CONTRAST (Jack's argument for doing this):** keys on the STABLE Poly slug prefix already in the
+  data -> adding a league = one map line + one allowlist line, nothing goes stale each season, a new league is a
+  SAFE MISS until added. The OPPOSITE of golf's season lookup table (that honesty carries to the golf scope next).
+
 ## ★★ RUNG 4 (fed) — build detail (was: BUILT + BOX-SCRATCHED GREEN + STAGED) 2026-09-07 ~04:56Z
 **The ODD one: event+bucket, no teams/players/date. Commit 3c30720b-family (pushed).** Report =
 `FED_MATCH_2026-09-07.md`; runners cc/pm_fed_*.
