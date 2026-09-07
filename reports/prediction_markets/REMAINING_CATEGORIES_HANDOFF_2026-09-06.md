@@ -232,7 +232,30 @@ identical). Report detail = `CS2_MATCH_2026-09-07.md`; runners cc/pm_cs2_*.
   leagues by whale volume; any skipped league = a LISTED deferral). Then fed, then golf.** Not started (cs2
   is staged, awaiting the deploy authorization).
 
-## ★★ RUNG 3 (soccer) — BUILT + BOX-SCRATCHED GREEN + STAGED, HELD AT THE DEPLOY LINE 2026-09-07 ~04:05Z
+## ★★ RUNG 3 (soccer) — LANDED LIVE 2026-09-07 ~04:38Z (deployed + engine restarted + 20 disarmed subs created; all post-checks GREEN)
+- **DEPLOY 04:27Z** (cc/pm_soccer_deploy.*): drift-check box==rung-2 base, backup ~/pm_soccer_deploy_backup_20260907T042734Z,
+  SHA-VERIFY placed==COMMITTED (exec 0fff5e7a / live_driver 34fcc8fe / soccer_match 78cd53e2 / soccer_teams 86f6daf7),
+  additive (exec +22/-0, live_driver +38/-0), box import OK. NO restart in runner.
+- **RESTART** by Jack (engine 224045->225544). **POST-CHECK GREEN** (cc/pm_soccer_postcheck_ro.*): 10 soccer adapters+ctx
+  loaded, soccer_index default None (5 live matchers byte-identical); soccer INVISIBLE (0 subs, 0 in roster); arm 9/9/0;
+  boot-reconcile clean; ★ liveness now 10 RUNNING (nfl entered roster: jack+karen × atp/mlb/nfl/ufc/wta) any_alarm=False;
+  ★ volume order = ['mlb','atp','wta','nfl','ufc'] both accts (nfl 4th not last: zero-volume tiebreak is alphabetical,
+  nfl<ufc; nfl disarmed places nothing); MACE back (config_hash c382c9370f9b), 0 tracebacks.
+  ★ RECONCILED (Jack's arithmetic, I flagged): arm rows are 9 NOT 10 (attach != arm; nfl attached w/ no arm row).
+- **CREATE 04:38Z** (cc/pm_soccer_create.*): 20 subs (10 leagues × jack+karen) DISARMED, moneyline, NO arm/attach.
+  pm_subdivision 20->40. **POST-VERIFY GREEN** (cc/pm_soccer_createverify_ro.* + a 12-row supplementary check):
+  ORIGINAL-8 sha == baseline 198f61354e17187f (UNCHANGED); ★ the 12 created-since (10 rung1 ts=1788742063 + 2 cs2
+  ts=1788751501) all OLD created_ts, 12-row sha ae40fa801f929345; EXACTLY 20 rows carry this run's ts=1788755887 ->
+  the 20->40 write touched ONLY the 20 soccer rows, the 20 pre-existing byte-untouched. arm 9/9/0 (no soccer arm keys);
+  attachments 19->19 (the 19 = 17 + nfl×2); soccer NOT in roster (dormant); full 40-row sha 3834e44867d7929b.
+- ★ **ufc VOLUME-FIRST SELF-REINFORCING (Jack named it):** ufc is last because it has NEVER FIRED, and volume-first
+  keeps a zero-volume category last indefinitely UNLESS it trades -> self-reinforcing. Fine while nothing binds; if
+  ufc ever seems mysteriously quiet once account caps ($150/50-orders) start BINDING, this is why (starvation of the
+  tail is the accepted trade). Same applies to any never-fired category.
+- **REMAINING (Jack's):** attach whale + arm + set caps, per league in volume order. ARM-GATE: epl/ucl/lal/fl1/uel/mls/
+  sea/bun/bra dry-run-proven; ★ mex needs a real-market dry-run before arming (snapshot gap; like nba/nhl/wnba).
+
+## ★★ RUNG 3 (soccer) — build detail (was: BUILT + BOX-SCRATCHED GREEN + STAGED) 2026-09-07 ~04:05Z
 **Commit 001bff0 (pushed). 10 leagues by whale volume; the tail is a LISTED DEFERRAL.** Report =
 `SOCCER_MATCH_2026-09-07.md`; runners cc/pm_soccer_*.
 - **Matcher `trading_corp/data/soccer_poly_kalshi_match.py`** (NEW, committed sha 78cd53e24a70701b) +
