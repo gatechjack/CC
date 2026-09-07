@@ -101,7 +101,28 @@ Sub-rungs:
       co-tenants MACE/bitunix/PEAD/coinbase) -> (3) pm_rung1_create (10 disarmed subs). THEN later, his: attach
       whales (farm Promote) + arm (CLI) + raise caps. New categories stay DORMANT until attached+armed.
 
-## ★ RUNG 1 COMPLETE (A-G), HELD AT THE DEPLOY LINE. Nothing deployed; engine + order path untouched throughout.
+## ★★ ARM-GATE (Jack's ruling 2026-09-07): nba/nhl/wnba MUST get a real-market dry-run BEFORE arming.
+nfl and cfb EACH surfaced real bugs ONLY against live data (nfl: LA/WSH/LAS team-code gaps; cfb: confirmed the
+SDST collision-drop + aliasing). nba/nhl/wnba maps are proven by TEST but were out-of-season at build, so NOT yet
+proven against real bets. **This is a GATE on arming, not a nice-to-have:** before arming ANY of nba/nhl/wnba,
+run the disarmed dry-run (cc/build_dryrun.py: box read-only Poly bets for the category + off-box KXNBAGAME/
+KXNHLGAME/KXWNBAGAME fetch + local match) and confirm the GATE (wrong_game=0, wrong_market_type=0) + classify
+misses + FIX any team-code gaps it surfaces (as nfl's LA/WSH/LAS were fixed). nba/nhl open Oct, wnba ending.
+Whoever is here in October: do NOT skip this.
+
+## ★ RUNG-1 CODE DEPLOYED 2026-09-07 00:17Z (cc/pm_rung1_deploy.*): 5-file graft, drift-check PASS (box==base
+09647842/732fcaab/ba23801d), backup ~/pm_rung1_deploy_backup_20260907T001732Z, SHA-VERIFY all 5 == committed
+(8894c6d4/784c04d9/a2a08dab/7a6f08bf/5f3ebd25), additive (exec +23/-0, live_driver +89/-0, team_mapping +24/-1
+[the -1 = the modified NFL line the LA alias appended to]), box-venv import OK (5 adapters + 5 ctx builders,
+structural_index default None). NO restart (engine 219962 UNCHANGED by the graft). ★ FIRST RUN ABORTED
+fail-closed (sha-verify caught a STALE overlay: it predated the F2 LA/WSH/LAS aliases -> sports_team_mapping
+mismatch e5e0cf0a vs committed a2a08dab); box auto-restored; rebuilt overlay from current committed files;
+re-ran clean. The sha-verify discipline working. NEXT (Jack): restart_tc.ps1 (load new code + volume-first
+order; bounces ALL divisions, warn co-tenants) -> then run cc/pm_rung1_postcheck_ro.* (roster still 4/account
+= new cats invisible; 9 arm rows unchanged; liveness 8 RUNNING; boot-reconcile clean; volume-first order took
+!= alphabetical) -> then pm_rung1_create.* (separate auth).
+
+## ★ RUNG 1 COMPLETE (A-G), CODE DEPLOYED, HELD FOR RESTART + CREATE. Engine order-path untouched by the graft.
 Branch pm-remaining-categories-plan-2026-09-06 (commits ...0e81eea + handoff). 42 tests green on the box venv
 (mlb byte-identical) + 26 local. Disarmed dry-run gate PASSES (nfl + cfb: 0 wrong game, 0 wrong market-type).
 
