@@ -304,6 +304,45 @@ identical). Report detail = `CS2_MATCH_2026-09-07.md`; runners cc/pm_cs2_*.
 - **NEXT: fed, then golf** (the last two categories). fed = KXFEDDECISION event+bucket (cut/no-change 1:1, HIKE
   = wrong-bucket gate); golf = KXPGATOUR/KXLIVTOUR field/futures (messiest, do last).
 
+## ★★ RUNG 4 (fed) — BUILT + BOX-SCRATCHED GREEN + STAGED, HELD AT THE DEPLOY LINE 2026-09-07 ~04:56Z
+**The ODD one: event+bucket, no teams/players/date. Commit 3c30720b-family (pushed).** Report =
+`FED_MATCH_2026-09-07.md`; runners cc/pm_fed_*.
+- **Matcher `trading_corp/data/fed_poly_kalshi_match.py`** (NEW, committed sha 3c30720b80365986). Join =
+  FOMC MEETING + rate-change BUCKET. Kalshi KXFEDDECISION-{YYMON}-{H0|H25|H26|C25|C26} (5 buckets/meeting,
+  from yes_sub_title). Transform = SEMANTIC parse of the Poly title (direction + bps magnitude + '+'/'>'):
+  no-change/0bps->H0, hike/cut 25->H25/C25, hike/cut 50/50+/75+ (>25)->H26/C26. Yes/No -> yes/no leg.
+- ★ **COARSE GATE (a wrong bucket is a STOP):** "25+ bps" (spans =25 and >25), no-magnitude, count-markets
+  ("cut 3 times in 2026"), multi-meeting parlays -> NEVER placed. Key subtlety: because buckets are =25 and
+  >25, a 50/50+/75+ phrasing maps CLEANLY to >25; only "25+" (or no magnitude) is genuinely coarse.
+  Political/chair/nominate/dissent EXCLUDED. CPI deferred.
+- ★ **THE ALIAS LESSON WITH NO TEAMS (Jack):** the phrasing->bucket map is a transform, so (a) parse reads
+  the EXPLICIT bps+direction (no inference); (b) coarse gated aggressively; (c) build_bucket_index validates
+  each Kalshi bucket-CODE against its OWN yes_sub_title (independent evidence) -> a code/label mismatch is
+  SKIPPED, not trusted. [[gate-cannot-validate-its-own-transform]] applies.
+- **Wiring:** MATCHER_ADAPTERS["fed"] + CATEGORY_CTX_BUILDERS["fed"]=fetch_fed_market_context + new
+  MarketContext.fed_index DEFAULTED None -> all prior constructions BYTE-IDENTICAL.
+- **DRY-RUN GATE (367 real fed rows vs real KXFEDDECISION; cc/fed_dryrun.py):** ★ 0 wrong bucket, 0 wrong
+  leg, 0 wrong market-type on 35 matches; **100% in-window (35/35)**. ★ the INDEPENDENT-EVIDENCE bucket
+  check (re-derive direction+magnitude from BOTH the Poly title AND the Kalshi yes_sub, compare, bypassing
+  my code) = 0 mismatch. Classification: 181 bucket, political 92, coarse 61, non_fed 25, unparseable 8.
+  Misses: 118 out_of_window (historical meetings), 28 no_meeting (title lacks a year -> safe skip).
+- **BOX-SCRATCH GREEN** (cc/pm_fed_scratch.* + _fed_overlay.b64; box venv): import OK, fed adapter+ctx,
+  fed_index default None, all 20 prior categories intact, 21 adapters; **166 tests** incl mlb/ufc/tennis/
+  cs2/structural/soccer byte-identity; engine 225544 + pm_web 218797 UNTOUCHED.
+- **STAGED + HELD** (all HALT). ★ RO PRE-CHECK GREEN (cc/pm_fed_precheck_ro.*): box==rung-3 base (exec
+  0fff5e7a/live_driver 34fcc8fe), fed module absent, 0 fed subs -> no drift-abort. Runners:
+  - cc/pm_fed_deploy.* : 3-file graft, SHA-VERIFY placed==COMMITTED (exec b33a8d8c / live_driver ed9ddd1f /
+    fed_match 3c30720b), restore-on-mismatch, NO restart.
+  - cc/pm_fed_create.* : 2 disarmed subs (jack+karen × fed), NO arm/attach; proves original-8 sha
+    198f61354e17187f unchanged. LIVE DB WRITE (pm_subdivision 40->42).
+  - cc/pm_fed_postcheck_ro.* (after restart): fed loaded + invisible; arm 9; liveness 10 RUNNING (nfl
+    disarmed); MACE back. cc/pm_fed_createverify_ro.* (after create): 2 fed disarmed/unattached, pre-existing
+    untouched, arm 9, fed not in roster.
+  ★ SEQUENCE (HALT, Jack auth): pm_fed_deploy -> restart -> pm_fed_postcheck_ro -> pm_fed_create ->
+  pm_fed_createverify_ro. fed is dry-run-proven (100% in-window, 0 wrong bucket) -> arm-eligible.
+- **NEXT: golf (LAST, as ruled)** -- KXPGATOUR/KXLIVTOUR field/futures, season lookup table + diacritic name
+  normalization (Åberg/Muñoz/Højgaard). The messiest; the final category.
+
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
 - **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion
   was wrong (premise never probed). Heaviest team map in the batch (272 Poly codes / ~130 FBS, State/Miami/
