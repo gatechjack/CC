@@ -85,11 +85,15 @@ def test_cfb_prefix_games_not_futures():
 
 
 def test_cfb_is_the_only_slug_prefix_addition():
-    # ACCEPTANCE: the classifier change adds EXACTLY one key ('cfb'); every prior prefix is intact.
+    # ACCEPTANCE (pin): cfb (2026-09-06) + the 8 per-league soccer prefixes (2026-09-07, Jack ruled per-league:
+    # lal/fl1/uel/mls/sea/bun/bra/mex classify per-league; coarse 'soccer' RETIRED). Every prior prefix intact.
     assert cat.SLUG_PREFIX_MAP.get("cfb") == "cfb"
+    soccer8 = {"lal", "fl1", "uel", "mls", "sea", "bun", "bra", "mex"}
+    for lg in soccer8:
+        assert cat.SLUG_PREFIX_MAP.get(lg) == lg
     prior = {"mlb", "nba", "nfl", "nhl", "ufc", "cs2", "atp", "wta", "cbb", "fifwc",
              "epl", "ucl", "wnba", "nascar", "fed-decision", "fed-interest-rates", "fed-rate", "fed"}
-    assert set(cat.SLUG_PREFIX_MAP) == prior | {"cfb"}
+    assert set(cat.SLUG_PREFIX_MAP) == prior | {"cfb"} | soccer8
 
 
 def test_adding_cfb_does_not_move_existing_categories():
@@ -137,7 +141,9 @@ async def test_tier2_maps_live_categories_from_fixtures():
     assert res["ufc-kin-ter1-2026-07-11"] == ("ufc", cat.SOURCE_GAMMA)
     assert res["2026-nba-champion"] == ("nba", cat.SOURCE_GAMMA)   # futures still -> nba (category only)
     assert res["fed-interest-rates-may-2025"] == ("fed", cat.SOURCE_GAMMA)
-    assert res["soccer-lec-rsl-atlante-2026-08-08"] == ("soccer", cat.SOURCE_GAMMA)
+    # 'soccer' tag RETIRED (2026-09-07, Jack ruled per-league): a soccer event whose LEAGUE has no slug prefix
+    # (the deferred tail) no longer rides the coarse 'soccer' tag -> tier-2 finds no mapping -> 'unknown'.
+    assert res["soccer-lec-rsl-atlante-2026-08-08"] == (cat.CATEGORY_UNKNOWN, cat.SOURCE_UNKNOWN)
 
 
 async def test_tier2_no_matching_tag_is_unknown():

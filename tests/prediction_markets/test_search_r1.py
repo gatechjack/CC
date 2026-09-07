@@ -482,12 +482,14 @@ def test_multi_category_grouped_and_sorted():
 
 
 def test_allowlist_has_exactly_16_and_excludes_the_probed():
-    # cfb added 2026-09-06 (paper-lane observation of college football); count 15 -> 16.
-    assert len(search.CATEGORY_ALLOWLIST) == 16
-    for c in ("mlb", "nba", "nfl", "nhl", "wnba", "cfb", "epl", "ucl", "soccer",
+    # cfb added 2026-09-06 (15->16). 2026-09-07 (Jack ruled per-league): coarse 'soccer' RETIRED (-1) and the 8
+    # built leagues admitted per-league (+8) -> 16 - 1 + 8 = 23 (epl/ucl were already in).
+    assert len(search.CATEGORY_ALLOWLIST) == 23
+    for c in ("mlb", "nba", "nfl", "nhl", "wnba", "cfb",
+              "epl", "ucl", "lal", "fl1", "uel", "mls", "sea", "bun", "bra", "mex",
               "atp", "wta", "tennis", "cs2", "golf", "ufc", "fed"):
         assert c in search.CATEGORY_ALLOWLIST
-    for c in ("cbb", "fifwc", "nascar", "unknown"):
+    for c in ("cbb", "fifwc", "nascar", "unknown", "soccer"):   # 'soccer' now excluded (retired)
         assert c not in search.CATEGORY_ALLOWLIST
 
 
