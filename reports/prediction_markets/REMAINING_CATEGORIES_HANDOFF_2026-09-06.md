@@ -486,6 +486,27 @@ which he overrode). The value of the scoping was DISSOLVING the premise, not ans
   understand (~150 golfers/event, futures open for weeks -- a separate validation from the game dry-runs);
   (5) a LOUD unmapped-tournament guard (never a silent miss). Same shape at the end: box-scratch, stage, hold.
 
+## ★★ THIN-LEAGUE EVIDENCE QUALITY (2026-09-07, post-sweep+rollup) — a thin roster is NOT equivalent to epl's
+After the sweep + rollup, all 10 soccer leagues are PINNABLE (every league got watchlist candidates -- the
+thin-sample floor fires). BUT the evidence THINS sharply per league -- the honest cost of splitting one deep
+coarse-'soccer' bucket into 8 shallow per-league ones. The funnel (cands=pinnable / scored=ranked / grounded):
+  epl 33/32/2 ; ucl 31/21/2 ; lal 10/6/0 ; bun 10/3/0 ; fl1 10/3/0 ; mls 8/7/0 ; sea 8/2/0 ; mex 7/3/0 ;
+  bra 5/3/0 ; uel 2/1/0.
+- ★ SCORED << CANDS on the new leagues: the thin-sample FLOOR gets whales ONTO the list, but scoring's own
+  min_resolved=10 keeps most OFF the ranking (a thin league = ~10 names of which ~3 have enough history to score).
+- ★ GROUNDED = 0 for ALL 8 new leagues (only epl/ucl have 2 each): NO /activity loss-grounding pass has run for
+  the new per-league categories, so every new-league candidate's loss figure is an UNMEASURED loss-omission
+  UPPER BOUND (onesided is_upper_bound), not a measured-and-fine one.
+- ★★ THE COMBINATION TO NAME: the ~32 PINNABLE-BUT-UNSCORED candidates across the 8 new leagues are EACH BOTH
+  unscored (thin evidence) AND unknown-loss (unmeasured bias) -- pinning them is pinning on thin evidence with an
+  unmeasured loss-omission bias on top. The farm DOES carry the caveats (farm.py displays n_resolved per candidate
+  + reuses the scoreboard's caveat columns incl onesided_is_upper_bound -- "the farm page and the scoreboard can
+  never diverge on a caveat"; NO n_resolved gate), so a thin candidate is never RENDERED as equal to a deep one --
+  but the reader must heed them. epl/ucl are the deep, better-grounded exception; the other 8 are thin by nature.
+- FOLLOW-UPS to strengthen the new leagues (like rollup did for scoring): an /activity loss-grounding pass for the
+  new-league candidates (pm_analyze / the grounding step) would replace UNKNOWN with grounded figures; more sweep
+  rounds add candidates + deepen histories. Neither is required to pin -- they raise the evidence quality.
+
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
 - **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion
   was wrong (premise never probed). Heaviest team map in the batch (272 Poly codes / ~130 FBS, State/Miami/
