@@ -121,7 +121,13 @@ def usd_to_contracts(copy_usd: float, base_price: float) -> int:
 
 def client_order_id(division: str, whale_handle: str, ticker: str, outcome: str, signal_id: str) -> str:
     """Deterministic idempotency key — a UUID5 over the logical-copy identity.
-    Resubmitting the same logical copy returns the existing Kalshi order."""
+    ASSUMPTION (unverified, and NOT the primary guard): Kalshi is EXPECTED to treat a duplicate
+    client_order_id as idempotent (echo/return the existing order rather than place a second). This is a
+    SECONDARY backstop only. The PROVEN primary dedup is gate 4 against the durable journal (execution.py) plus
+    pending-first coid journaling (live_driver.py); Kalshi's own dedup matters ONLY if that pending INSERT itself
+    fails — i.e. the journal is already broken. It is deliberately UNVERIFIED (Ruling B, 2026-08-31): proving it
+    needs a real duplicate POST on a funded account, spending money to test a backstop for an already-failed
+    primary — not worth it. State it as an assumption; do not rely on it as a fact."""
     key = f"{division}|{whale_handle}|{ticker}|{outcome}|{signal_id}"
     return str(uuid.uuid5(_COID_NAMESPACE, key))
 
@@ -156,15 +162,18 @@ def v2_side_and_price(*, outcome: str, is_buy: bool, base_price: float, max_slip
 
 def build_v2_event_order(
     *, ticker: str, outcome: str, is_buy: bool, base_price: float, copy_usd: float,
-    max_slippage_cents: int, tif: str, client_order_id: str,
+    max_slippage_cents: int, tif: str, client_order_id: str, count: int | None = None,
 ) -> tuple[dict, int, float]:
     """Build the V2 `POST /portfolio/events/orders` request body (pure). Returns
     `(body, count, yes_price)`. `price` is a 4-decimal dollar string ('0.5600'),
-    `count` a whole-contract string ('1'); exits carry `reduce_only=True`."""
+    `count` a whole-contract string ('1'); exits carry `reduce_only=True`.
+    `count`: an EXPLICIT whole-contract count (flat-contracts sizing). When None (flat-dollars sizing /
+    the legacy caller) it is DERIVED from `copy_usd` via usd_to_contracts -- the prior behaviour, byte-identical.
+    Passing it avoids flooring a dollars stake back into a count (float-fragile)."""
     side, price = v2_side_and_price(
         outcome=outcome, is_buy=is_buy, base_price=base_price, max_slippage_cents=max_slippage_cents,
     )
-    count = usd_to_contracts(copy_usd, base_price)
+    count = int(count) if count is not None else usd_to_contracts(copy_usd, base_price)
     body = {
         "ticker": str(ticker).upper(),
         "client_order_id": client_order_id,
@@ -362,6 +371,12 @@ class KalshiLiveBroker(Broker):
             tif=_TIF[self._order_type], client_order_id=coid,
         )
 
+        # NOTE (PM Stage 3 R7.c, 2026-08-29): this POST try/except is DUPLICATED in
+        # prediction_markets/live_driver.py:make_place_fn -- the PM live driver POSTs the chokepoint's pre-built body
+        # DIRECTLY (Jack's option (b)), not through place_order, so the approved body+coid are placed verbatim. A fix
+        # to the benign-FOK-vs-loud split below has TWO homes; update both. (live_driver's copy ALSO maps a raw
+        # transport error -> OrderPlacementError -- a deliberate divergence: the PM path treats a lost POST as
+        # possibly-placed and journals it pending-first; this legacy path leaves that to its caller.)
         try:
             resp = await self._client().post(_V2_ORDERS_PATH, body)
         except KalshiError as e:

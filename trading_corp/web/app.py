@@ -9,6 +9,7 @@ task inside the same process as trading_corp — see main.py's idle loop.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from dataclasses import dataclass
@@ -27,6 +28,26 @@ log = logging.getLogger(__name__)
 _PKG_DIR = Path(__file__).parent
 _TEMPLATE_DIR = _PKG_DIR / "templates"
 _STATIC_DIR = _PKG_DIR / "static"
+
+# Cache-buster: content-hash of a static asset for `?v=` on <script>/<link>
+# includes, so a browser fetches the new bytes after a static-asset deploy
+# instead of a stale cached copy (this bit the MACE Phase-1 deploy twice).
+# Recomputed only when the file mtime changes; '0' if the file is absent.
+_ASSET_V_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _asset_v(rel_path: str) -> str:
+    try:
+        p = _STATIC_DIR / rel_path
+        mtime = p.stat().st_mtime
+        cached = _ASSET_V_CACHE.get(rel_path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        h = hashlib.sha256(p.read_bytes()).hexdigest()[:8]
+        _ASSET_V_CACHE[rel_path] = (mtime, h)
+        return h
+    except Exception:  # noqa: BLE001 — a missing asset must never 500 a page
+        return "0"
 
 
 @dataclass
@@ -155,6 +176,8 @@ def create_app(deps: WebDeps) -> FastAPI:
     # Stage-1 header badge resolver — called by base.html with `request`
     # so it can read app.state.deps + app.state.git_sha + app.state.live_since_utc.
     templates.env.globals["stage1_badge"] = _stage1_badge_data
+    # Static-asset cache-buster: {{ asset_v('js/foo.js') }} -> content sha8.
+    templates.env.globals["asset_v"] = _asset_v
     app.state.templates = templates
 
     # Static

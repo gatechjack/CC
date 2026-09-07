@@ -459,9 +459,11 @@ CREATE INDEX IF NOT EXISTS ix_mace_rung_exit ON mace_rung(exit_reason, exit_ts);
 
 CREATE TABLE IF NOT EXISTS mace_equity_snapshot (
     snap_date       TEXT PRIMARY KEY,            -- ET session date YYYY-MM-DD; E basis until next snapshot
-    equity          REAL NOT NULL,
-    cash            REAL,
+    equity          REAL NOT NULL,               -- settled-cash PER-RUNG sizing basis (size_contracts)
+    cash            REAL,                         -- gross buying power (AccountSnapshot.cash)
     market_value    REAL,
+    available_buying_power REAL,                  -- free/available BP; the reserve/deployment-cap sizing basis
+                                                  -- (2026-08-25); NULL on legacy rows -> gate falls back to equity
     ts              TEXT NOT NULL                -- ISO-8601 UTC of the snapshot
 );
 
@@ -491,6 +493,36 @@ CREATE TABLE IF NOT EXISTS mace_rung_live (
     mark         REAL,                        -- per-contract combo mid (executor.mark); NULL if unpriceable
     spot         REAL,                        -- underlying spot; NULL on quote miss
     ts           TEXT NOT NULL                -- ISO-8601 UTC of this write; the view's staleness source
+);
+
+-- mace_candle: dxFeed candle cache; dedup by (symbol,interval,bar_time) via
+-- INSERT OR REPLACE; populated by the candle feed; read broker-free by /mace;
+-- per-(symbol,interval) history pruned to a cap (default 500 bars).
+-- bar_time is epoch SECONDS UTC (converted from dxFeed epoch-millis / 1000).
+CREATE TABLE IF NOT EXISTS mace_candle (
+    symbol          TEXT NOT NULL,
+    interval        TEXT NOT NULL,               -- '5m' | '1d'
+    bar_time        INTEGER NOT NULL,            -- epoch SECONDS UTC (open of bar)
+    open            REAL,
+    high            REAL,
+    low             REAL,
+    close           REAL,
+    volume          REAL,
+    vwap            REAL,
+    ts              TEXT NOT NULL,               -- ISO-8601 UTC of write
+    PRIMARY KEY (symbol, interval, bar_time)
+);
+CREATE INDEX IF NOT EXISTS ix_mace_candle_symbol_interval_time
+    ON mace_candle(symbol, interval, bar_time DESC);
+
+-- mace_pnl_snapshot: forward-only daily division-PnL curve (Part C);
+-- computed-from-rungs; starts accruing at build time. One row per ET date.
+CREATE TABLE IF NOT EXISTS mace_pnl_snapshot (
+    snap_date           TEXT PRIMARY KEY,        -- ET date YYYY-MM-DD
+    realized_to_date    REAL,                    -- cumulative realized P&L as of snap_date
+    open_unrealized     REAL,                    -- sum of open-rung unrealized (mark-based)
+    open_rungs          INTEGER,                 -- count of open rungs at snapshot time
+    ts                  TEXT NOT NULL            -- ISO-8601 UTC of write
 );
 
 -- economic_event is DELIBERATELY unprefixed (T2 — the plan spec names it thus;
@@ -597,6 +629,10 @@ def init_db(db_url: str = "sqlite:///data/trading_corp.db") -> Path:
         # (never a silent NULL — see RungStore.promote_open); the T+0 payoff falls
         # back to the daily mace_iv_history value (labeled as-of) when this is NULL.
         _maybe_add_column(conn, "mace_rung", "entry_atm_iv", "REAL")
+        # available_buying_power: free/available BP captured at the 15:40 snapshot;
+        # MACE's reserve/deployment-cap sizing basis (2026-08-25). NULL on legacy
+        # rows -> the reserve gate falls back to the equity/settled-cash basis.
+        _maybe_add_column(conn, "mace_equity_snapshot", "available_buying_power", "REAL")
         # Indexes that reference columns added by the migration above must
         # be created here (not in SCHEMA) so they apply AFTER the column
         # exists on upgraded DBs.

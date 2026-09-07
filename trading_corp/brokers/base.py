@@ -56,6 +56,15 @@ class AccountSnapshot:
     # RobinhoodBroker populates it (from load_account_profile); consumed by the
     # PEAD derived, self-balancing sizer. Additive/optional by design.
     settled_cash: float | None = None
+    # AVAILABLE (free) buying power — gross margin buying power LESS what is already
+    # committed to open positions (option collateral); i.e. the free capacity that
+    # can actually margin a NEW defined-risk spread right now (the "margin available
+    # to invest" figure ~ RH's unleveraged_buying_power, distinct from gross
+    # `buying_power`). None => the broker does not expose it (paper/stub and every
+    # non-RH adapter keep None). Currently only RobinhoodBroker populates it (from
+    # load_account_profile); consumed by MACE's reserve/deployment-cap gate as the
+    # sizing basis. Additive/optional by design.
+    available_buying_power: float | None = None
 
 
 class ReadOnlyBroker(ABC):

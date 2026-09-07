@@ -133,6 +133,17 @@ def configure_logging() -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("yfinance").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.INFO)
+    # tastytrade 12.4.1 force-sets its OWN logger to DEBUG at import (tastytrade/__init__.py:13),
+    # and its dxlink streamer emits malformed debug records (~30 TypeErrors/min flooding the
+    # SHARED journal). Every tastytrade import in this app is lazy, so quieting the logger here
+    # would be undone when the SDK is first imported later; import it now so its one-time
+    # __init__ (the DEBUG setLevel) runs, THEN quiet it -- subsequent lazy imports are cached and
+    # cannot re-raise the level. Guarded so SDK-less test envs are unaffected.
+    try:
+        import tastytrade  # noqa: F401  (trigger the SDK's import-time setLevel(DEBUG) now)
+        logging.getLogger("tastytrade").setLevel(logging.WARNING)
+    except Exception:
+        pass
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1529,6 +1540,136 @@ async def run(argv: list[str] | None = None) -> int:
         except Exception as _pk_exc:  # noqa: BLE001 — never break engine boot
             log.exception("Poly->Kalshi MLB copy wiring FAILED (engine continues): %s", _pk_exc)
 
+        # ── Prediction Markets LIVE DRIVER (Stage 3 R7.e, 2026-08-29) — task WIRED; ARM STATE gates POSTs ──
+        # Mirrors the poly_kalshi block above: fail-safe wiring that NEVER breaks engine boot. enabled:true =
+        # the task RUNS (polls /positions, boot-reconciles, runs the chokepoint) but places NOTHING unless the
+        # arm state (default DISARMED) says so. R7.e wires it DISARMED; R7.f is the first arm (separate authz).
+        try:
+            import yaml as _pm_yaml
+            with open("config/strategies.yaml", "r", encoding="utf-8") as _pm_f:
+                _pm_cfg = (_pm_yaml.safe_load(_pm_f) or {}).get("pm_live_driver") or {}
+            if _pm_cfg.get("enabled"):
+                # ── N2 (per-account trading, 2026-09-02): ONE driver task PER active sub-division, read from the DB
+                # roster (driver_roster.active_driver_subdivisions), each with its OWN account's broker (keys via
+                # the fail-CLOSED whitelist shard_snapshot_task.resolve_kalshi_keys). Replaces the single hardcoded
+                # kalshi_jack task. INERT until a 2nd sub-division exists: with only jack/mlb attached the roster is
+                # exactly {(kalshi_jack, mlb)} -> one task, same broker keys + shared positions_client as before.
+                # Each scheduled_pm_live_loop is a SELF-CONTAINED per-(account,category) task: it boot-reconciles at
+                # the top and returns only ITSELF on a double-fault, so a latch/fault on one account cannot stop
+                # another. Mirrors the M3 shard-snapshot block below.
+                from trading_corp.brokers.kalshi_live import KalshiLiveBroker
+                from trading_corp.prediction_markets import (live_driver as _pm_live_driver, db as _pm_db,
+                                                             driver_roster as _pm_roster, shard_snapshot_task as _pm_sst)
+                from trading_corp.data.polymarket_data_api_client import PolymarketDataAPIClient
+                _pm_demo = os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")
+                _pm_slip = int(_pm_cfg.get("max_slippage_cents", 2))
+                # ONE shared whale /positions reader across ALL account tasks (whale books are account-independent;
+                # httpx.AsyncClient is concurrency-safe -- two accounts copying one whale double-poll it, which is
+                # load, not a correctness fault). Entered for the engine's life like the single-account wiring it
+                # replaces; httpx is cleaned up at process exit like the other long-lived engine clients.
+                _pm_positions_client = PolymarketDataAPIClient()
+                await _pm_positions_client.__aenter__()
+                with _pm_db.connect(_pm_db.pm_db_path()) as _pm_conn:
+                    _pm_roster_rows = _pm_roster.active_driver_subdivisions(_pm_conn)
+                # ONE broker per DISTINCT account (an account's sub-divisions share its broker), in first-seen order.
+                # Fail-CLOSED: an unmapped secret_ref resolves to no keys -> the account is SKIPPED, never traded on
+                # the shared keypair (N1). A build/connect failure ISOLATES to that account (the others still start).
+                _pm_brokers = {}
+                _pm_seen = set()
+                for _r in _pm_roster_rows:
+                    _aid = _r["account_id"]
+                    if _aid in _pm_seen:
+                        continue
+                    _pm_seen.add(_aid)
+                    _kid, _pem = _pm_sst.resolve_kalshi_keys(_r["secret_ref"], secrets)
+                    if not _kid or not _pem:
+                        log.warning("PM driver: account %s secret_ref=%r resolved NO keys -> SKIP (fail-closed; "
+                                    "never traded on the shared keypair)", _aid, _r["secret_ref"])
+                        continue
+                    try:
+                        _abroker = KalshiLiveBroker(api_key_id=_kid, private_key_pem=_pem, demo=_pm_demo,
+                                                    order_type="ioc", max_slippage_cents=_pm_slip)
+                        await _abroker.connect()
+                        _pm_brokers[_aid] = _abroker
+                    except Exception as _abx:  # noqa: BLE001 -- one account's broker failure must not stop the others
+                        log.exception("PM driver: broker build/connect FAILED for %s (skip this account): %s",
+                                      _aid, _abx)
+                # PLAN: fail-closed on no-keys, and REFUSE a 2nd sub-division on one account (the filed
+                # multi-category-per-account tripwire) LOUDLY rather than silently degrade three account-scoped safeties.
+                _pm_spawn, _pm_skips = _pm_roster.plan_driver_tasks(_pm_roster_rows, set(_pm_brokers))
+                for _sk in _pm_skips:
+                    if _sk["reason"] == "second_subdivision_on_account":
+                        log.error("PM driver: REFUSING 2nd sub-division %s/%s on an account that already has a task "
+                                  "-- multi-category-per-account is NOT yet safe (auth-latch scope + whole-account "
+                                  "boot-reconcile latch + open_usd within-cycle race). FILED; do NOT enable this way.",
+                                  _sk["account_id"], _sk["category"])
+                    else:
+                        log.warning("PM driver: SKIP %s/%s (%s)", _sk["account_id"], _sk["category"], _sk["reason"])
+                # ★ M1 / Option C (2026-09-02): ONE task PER ACCOUNT, iterating that account's categories, so the
+                # account-level open-exposure cap (gate 6, account-keyed) is enforced JOINTLY by ONE shared per-cycle
+                # Journal + ONE venue read -- no two-task within-cycle over-place race, and no reliance on pykalshi's
+                # (un-vendored, unprovable) concurrent-POST safety. Group the guard-approved spawn list by account,
+                # preserving roster order. TODAY plan_driver_tasks still emits at most ONE category per account (the
+                # 2nd-category guard, relaxed only by M4's per-account opt-in), so each account gets one category ->
+                # ONE task with categories=[cat] == byte-identical to the prior one-task-per-(account,category) wiring.
+                _pm_by_account = {}
+                for _t in _pm_spawn:
+                    _pm_by_account.setdefault(_t["account_id"], []).append(_t["category"])
+                _pm_tasks = []
+                for _aid, _acats in _pm_by_account.items():
+                    _pm_tasks.append(asyncio.create_task(
+                        _pm_live_driver.scheduled_pm_live_loop(
+                            _pm_db.pm_db_path(), _pm_brokers[_aid], _pm_positions_client,
+                            account_id=_aid, categories=_acats,
+                            poll_sec=float(_pm_cfg.get("poll_interval_sec", 7)),
+                            index_refresh_sec=float(_pm_cfg.get("index_refresh_sec", 900)),
+                            legacy_db_path=None,   # arm.resolve_legacy_db_path -> data/trading_corp.db
+                        )))
+                log.info("PM LIVE DRIVER WIRED -- %d account task(s): %s skipped=%s brokers=%s -- ARM STATE governs POSTs",
+                         len(_pm_tasks), {a: cs for a, cs in _pm_by_account.items()},
+                         [(s["account_id"], s["category"], s["reason"]) for s in _pm_skips], sorted(_pm_brokers))
+                if not _pm_tasks:
+                    log.info("PM live driver: enabled but NO active attached sub-divisions to trade -- idle (0 tasks)")
+            else:
+                log.info("PM live driver: pm_live_driver.enabled=false — not wired")
+        except Exception as _pm_exc:  # noqa: BLE001 — never break engine boot
+            log.exception("PM live driver wiring FAILED (engine continues): %s", _pm_exc)
+
+        # ── M3 (2026-09-01): per-account SHARD-BALANCE SNAPSHOTS (5-min timer) -> pm_web shows the split + AGE,
+        # credential-free. DELIBERATELY separate from the driver's per-cycle funding-gate balance read (that GATES
+        # orders; this INFORMS a display + a history). Reads EACH active pm_account with ITS OWN keys
+        # (secret_ref -> keypair), so Karen's balance is captured even though her keys are separate. Fail-safe
+        # wiring (never breaks boot); fail-soft per account inside the loop. Needs pm_shard_balance_snapshot
+        # (migration 016) -- the deploy applies 016 BEFORE this restart (migration leads); the writer also
+        # fail-softs if the table is somehow absent.
+        try:
+            from trading_corp.brokers.kalshi_live import KalshiLiveBroker as _KLB_snap
+            from trading_corp.prediction_markets import shard_snapshot_task as _sst, db as _snap_db
+            _snap_demo = os.getenv("KALSHI_USE_DEMO", "").strip() in ("1", "true", "True")
+            _snap_brokers = {}
+            with _snap_db.connect(_snap_db.pm_db_path()) as _sc:
+                _has_acct = _sc.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pm_account'").fetchone() is not None
+                _acct_rows = _sc.execute("SELECT account_id, secret_ref FROM pm_account WHERE active=1").fetchall() if _has_acct else []
+            for _ar in _acct_rows:
+                _aid, _ref = _ar[0], _ar[1]
+                _kid, _pem = _sst.resolve_kalshi_keys(_ref, secrets)
+                if not _kid or not _pem:
+                    log.warning("M3 shard-snapshot: no keys for account %s (secret_ref=%s) — skipping", _aid, _ref)
+                    continue
+                _sbr = _KLB_snap(api_key_id=_kid, private_key_pem=_pem, demo=_snap_demo, order_type="ioc")
+                await _sbr.connect()
+                _snap_brokers[_aid] = _sbr
+            if _snap_brokers:
+                shard_snapshot_task_handle = asyncio.create_task(
+                    _sst.scheduled_shard_snapshot_loop(_snap_db.pm_db_path(), _snap_brokers))
+                log.info("M3 shard-snapshot writer WIRED (%d account(s): %s; 5-min timer)",
+                         len(_snap_brokers), sorted(_snap_brokers))
+            else:
+                log.info("M3 shard-snapshot writer: no credentialed pm_account — not wired")
+        except Exception as _snap_exc:  # noqa: BLE001 — never break engine boot
+            log.exception("M3 shard-snapshot wiring FAILED (engine continues): %s", _snap_exc)
+
         # --- Phase 2a boot invariant: live ∩ paper rosters must be disjoint ---
         # Log-loud-and-continue (see assert_roster_invariant_boot): detection +
         # alerting only — the live loop + paper read-time subtract are what
@@ -2090,9 +2231,54 @@ async def run(argv: list[str] | None = None) -> int:
             mace_calendar_task = asyncio.create_task(
                 mace_loops.mace_calendar_loop(mace_division, logger_agent),
                 name="mace-calendar")
+
+            # ── Phase-2 aux loops (2026-09-04): dxFeed candle feed -> mace_candle
+            # cache (read broker-free by the /mace price charts) + forward-only
+            # daily PnL snapshotter. BOTH are read-only market-data / DB writers on
+            # a DEDICATED connection + a SEPARATE Tastytrade session (NOT the RH
+            # trading session -> zero contention), independent of arm/halt, and
+            # fully fail-safe (a failure here never touches trading). The candle
+            # feed multiplexes all 6 symbols on one streamer per interval.
+            try:
+                import sqlite3 as _sqlite3
+                from trading_corp.mace import candle_feed as _mace_candle_feed
+                from trading_corp.mace import pnl_snapshot as _mace_pnl_snapshot
+                from trading_corp.persistence import db as _db_mod
+
+                def _mace_aux_conn():
+                    _c = _sqlite3.connect(_db_mod.resolve_db_path(secrets.db_url), timeout=10)
+                    _c.row_factory = _sqlite3.Row
+                    try:
+                        _c.execute("PRAGMA journal_mode=WAL;")
+                        _c.execute("PRAGMA busy_timeout=5000;")
+                    except Exception:             # noqa: BLE001
+                        pass
+                    return _c
+
+                async def _mace_candle_session():
+                    from tastytrade import Session as _TTSession
+                    return await asyncio.to_thread(
+                        _TTSession,
+                        provider_secret=secrets.tastytrade_provider_secret,
+                        refresh_token=secrets.tastytrade_refresh_token)
+
+                mace_candle_task = asyncio.create_task(
+                    _mace_candle_feed.run_feed(
+                        _mace_aux_conn, _mace_candle_session, cycle_sec=40.0),
+                    name="mace-candle-feed")
+                mace_pnl_snap_task = asyncio.create_task(
+                    _mace_pnl_snapshot.pnl_snapshot_loop(_mace_aux_conn),
+                    name="mace-pnl-snapshot")
+                log.info("MACE Phase-2 aux loops online: candle-feed + pnl-snapshot")
+            except Exception as _aux_exc:         # noqa: BLE001 — aux must never break MACE
+                log.warning(
+                    "MACE Phase-2 aux loops failed to start (non-fatal, "
+                    "charts/pnl degrade to empty): %s", _aux_exc)
+
             log.info(
                 "Robinhood MACE wired (execution_mode=%s, config_hash=%s; "
-                "standby-gated, 4 loops online; go-live BLOCKED on cancel-path fix).",
+                "4 loops online; gating: divisions.yaml standby + /mace halt latch + "
+                "strategies.yaml auto_execute).",
                 mace_execution_mode, mace_cfg.config_hash[:12])
         except Exception as _mace_exc:         # noqa: BLE001 — MACE must fail safe
             log.exception(
