@@ -232,6 +232,55 @@ identical). Report detail = `CS2_MATCH_2026-09-07.md`; runners cc/pm_cs2_*.
   leagues by whale volume; any skipped league = a LISTED deferral). Then fed, then golf.** Not started (cs2
   is staged, awaiting the deploy authorization).
 
+## ★★ RUNG 3 (soccer) — BUILT + BOX-SCRATCHED GREEN + STAGED, HELD AT THE DEPLOY LINE 2026-09-07 ~04:05Z
+**Commit 001bff0 (pushed). 10 leagues by whale volume; the tail is a LISTED DEFERRAL.** Report =
+`SOCCER_MATCH_2026-09-07.md`; runners cc/pm_soccer_*.
+- **Matcher `trading_corp/data/soccer_poly_kalshi_match.py`** (NEW, committed sha 78cd53e24a70701b) +
+  `soccer_teams.py` (NEW, 86f6daf7b5e1bd65, 328 alias entries). 3-WAY: Poly per-team Yes/No (`Will {T} win?`
+  → Kalshi `{T} wins` yes/no leg; No=draw-or-lose=NO leg) + draw (`Will {A} vs {B} end in a draw?` → Kalshi
+  TIE yes/no leg). Kalshi KX{LG}GAME = 3 markets/game ({A}/{B}/Tie) sharing (date,blob). ★ 90-MIN both venues:
+  UCL/UEL knockouts use Kalshi `Reg Time: {Club}` (stripped + treated uniformly); each game listed once
+  (plain OR reg-time) so no dual-market to disambiguate → knockout divergence DISSOLVES. Club join = EXACT
+  base-normalize + per-league alias table, HARD collision-checked (no 2 different clubs → 1 target).
+- ★ **NAMED COLLISIONS kept distinct:** Ligue 1 PSG/Paris/Paris FC, MLS Los Angeles F(LAFC)/G(Galaxy), UCL
+  Inter Milan/IC Escaldes. ★★ THE PSG NEAR-MISS: the auto-generator prefix-mapped `Paris Saint-Germain FC`→
+  Kalshi `Paris` (WRONG); NEITHER the dry-run wrong-team check NOR the collision-check caught it (the
+  alias-caveat — a bad alias corrupts both sides consistently, [[gate-cannot-validate-its-own-transform]]).
+  Caught by DOMAIN verification (real opponent+date: PSG plays Rennes/Lille/Monaco; Paris FC plays Nice/Lyon)
+  → fixed to PSG. Lesson reinforced: audit alias transforms independently, not via the gate.
+- **Wiring:** MATCHER_ADAPTERS[cat] + CATEGORY_CTX_BUILDERS[cat]=fetch_soccer_market_context (per-league) +
+  new MarketContext.soccer_index DEFAULTED None → all prior constructions BYTE-IDENTICAL.
+- **DRY-RUN GATE (the gate) — ~9500 real moneyline bets vs real KX{LG}GAME (cc/soccer_dryrun.py):** ★ 0 wrong
+  team, 0 wrong leg, 0 wrong market-type on 3013 matches; **93.3% in-window (3013/3228)**. Per-league: lal/sea/
+  bun/bra 100%, mls 99.9%, epl 93.9%, fl1 79.4%, ucl 76.9%, uel 68.1% (UCL/UEL lower = obscure qualifier
+  minnows unaliased = safe misses). ★ mex = 0 in-window (Poly dates don't overlap the Kalshi snapshot) →
+  BUILT but NOT validated → **mex ARM-GATE: real-market dry-run before arming** (like nba/nhl/wnba).
+- **LISTED DEFERRALS (never a silent miss; all series EXIST on Kalshi — buildable later, same matcher):**
+  col/UECL ($1.3M, 299-club breadth), elc/EFL-Champ ($1.3M), efl/Carabao ($1.7M/106 bets), efa/FA-Cup ($1.7M,
+  ★ Kalshi 0 markets in window — can't validate now), nor/tur/arg/spl/sud/por/ere/lib/dfb/chi/es2/kor (each
+  <$2.2M, below the volume line, each needs its own alias table; sud/lib/arg have SA same-name clubs → careful
+  per-league scoping), uef/Nations-League ($0.75M, ★ NATIONAL TEAMS not clubs → country map, own sub-type).
+- **BOX-SCRATCH GREEN** (cc/pm_soccer_scratch.* + _soccer_overlay.b64; box venv): import OK, 10 adapters+ctx,
+  soccer_index default None, all prior categories intact, 328 aliases; **149 tests** incl mlb/ufc/tennis/cs2/
+  structural byte-identity; engine 224045 + pm_web 218797 UNTOUCHED.
+- **STAGED + HELD** (all HALT). ★ RO PRE-CHECK GREEN (cc/pm_soccer_precheck_ro.*): box==rung-2 base (exec
+  4ad71e1a/live_driver 91d218a3), soccer modules absent, 0 soccer subs → no drift-abort. Runners:
+  - cc/pm_soccer_deploy.* : 4-file graft, SHA-VERIFY placed==COMMITTED (exec 0fff5e7a / live_driver 34fcc8fe /
+    soccer_match 78cd53e2 / soccer_teams 86f6daf7), restore-on-mismatch, NO restart.
+  - cc/pm_soccer_create.* : 20 disarmed subs (10 leagues × jack+karen), NO arm/attach; proves original-8 sha
+    198f61354e17187f unchanged. LIVE DB WRITE.
+  - cc/pm_soccer_postcheck_ro.* (after restart): soccer loaded + invisible pre-create; arm 9; ★ liveness now
+    expects 10 RUNNING (nfl attached → enters roster) — 0 alarm is the gate; MACE back; volume order logged.
+  - cc/pm_soccer_createverify_ro.* (after create): 20 soccer disarmed/unattached; original-8 unchanged;
+    soccer NOT in roster (dormant); arm 9.
+  ★ SEQUENCE (all HALT, Jack auth): pm_soccer_deploy → engine restart (warn co-tenants) → pm_soccer_postcheck_ro
+  → pm_soccer_create → pm_soccer_createverify_ro. Then per-league attach+arm+caps in volume order.
+- ★ **nfl NOW ATTACHED** (Jack attached whale 0x226bf122…cad6 to jack-nfl + karen-nfl 2026-09-07): at the NEXT
+  restart nfl enters the roster (liveness 8→10, volume order includes nfl); nfl stays DISARMED (no placement)
+  until armed. nfl is dry-run-proven → arm-eligible. This is the new "expected" baseline for post-checks.
+- **NEXT: fed, then golf** (the last two categories). fed = KXFEDDECISION event+bucket (cut/no-change 1:1, HIKE
+  = wrong-bucket gate); golf = KXPGATOUR/KXLIVTOUR field/futures (messiest, do last).
+
 ## ★ POST-RULING RESOLUTIONS (2026-09-06) — see the plan doc's bottom section for full detail
 - **cfb = 11th, STRUCTURAL.** Kalshi carries it (KXNCAAFGAME/SPREAD/TOTAL); the 09-06 non-Kalshi conclusion
   was wrong (premise never probed). Heaviest team map in the batch (272 Poly codes / ~130 FBS, State/Miami/
