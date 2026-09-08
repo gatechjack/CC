@@ -12746,7 +12746,7 @@ PASS (ended ARMED). mace_rung UNDISTURBED: 2 W33 SPY rungs (8/12, 8/13) intact +
 
 **prod-live:** `e7af3bc` -> `653a649` (clean FF; config commit `17ad957` + deploy_log commit `653a649`).
 **main (this branch):** additive minimal-sync of the weekly=5 delta only (config + this deploy_log entry);
-the 5 poly-kalshi prod-live deploys (570d6fc..e7af3bc) remain UN-reconciled to main by design (own session).
+the 5 poly-kalshi prod-live deploys (570d6fc..e7af3bc) remain UN-reconciled to main by design (own session). **[CORRECTION 2026-09-07: RECONCILED -- the 7 legacy poly-kalshi commits (570d6fc, 01593b4, 5fba5ee, 18db30e, e7af3bc, fc78fc7, 7150404) were cherry-picked into main at 82ebe20, content-preserving (MACE untouched); this "un-reconciled by design" status no longer holds. See the reconcile-record commit at 82ebe20.]**
 
 ## 2026-08-19 ~05:13 UTC - MACE strike_band_pct 0.15->0.25 config-exposed (unblock high-IV GDX/XLE) + skip observability (RESTART; engine 775659 -> 782881)
 
@@ -12769,7 +12769,7 @@ test_weekly_budget_skip). MACE suite 302/302.
 
 **main (this branch):** minimal additive sync of the band-widen delta (7 mace files verbatim +
 main.py:1900 wire edit only + this deploy_log entry); the 5 poly-kalshi prod-live deploys
-(570d6fc..e7af3bc) remain UN-reconciled to main by design (own session).
+(570d6fc..e7af3bc) remain UN-reconciled to main by design (own session). **[CORRECTION 2026-09-07: RECONCILED -- the 7 legacy poly-kalshi commits were cherry-picked into main at 82ebe20, content-preserving (MACE untouched); this "un-reconciled by design" status no longer holds. See the reconcile-record commit at 82ebe20.]**
 
 ## 2026-08-22 ~02:17 UTC - MACE P1.5 (off-hours catch-up guard) + P1.4 (manage None-tolerance) + deploy-gate tooling (code-only FILE-OVERWRITE; RESTART; MainPID 809127 -> 850993 wrapper / 851007 python)
 
@@ -12818,4 +12818,4 @@ this deploy_log entry (APPEND-ONLY). BACKLOG.md UNTOUCHED (main is the superset 
 Polymarket P1/P2 closure records + the Tastytrade cred/KeyVault security item that prod-live lacks).
 The 7 poly-kalshi prod-live commits + prod-live's phase-1/poly-kalshi deploy_log entries (the ~230
 prod-live-only lines) remain UN-reconciled to main by design (own session). strategies.yaml /
-divisions.yaml / main.py / persistence/db.py UNTOUCHED.
+divisions.yaml / main.py / persistence/db.py UNTOUCHED. **[CORRECTION 2026-09-07: RECONCILED -- the 7 legacy poly-kalshi commits (570d6fc, 01593b4, 5fba5ee, 18db30e, e7af3bc, fc78fc7, 7150404) were cherry-picked into main at 82ebe20, content-preserving. Both this "un-reconciled by design" status AND the "UNTOUCHED" note above no longer hold: strategies.yaml, divisions.yaml, main.py and persistence/db.py now carry the additive poly-kalshi grafts (MACE untouched; main.py "mace" refs 102==102). prod-live's ~230 poly-kalshi deploy_log entries were NOT brought over -- main's deploy_log narrative was kept verbatim. See the reconcile-record commit at 82ebe20.]**
