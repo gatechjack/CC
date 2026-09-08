@@ -912,7 +912,7 @@ def _sparkline_path(prices: list[float], width: float = 100.0, height: float = 2
 # "not_wired" placeholders until the multi-account refactor (Phase 1.5b).
 
 # Perf guard (2026-09-08): build_command_center fans out a LIVE broker.snapshot()
-# for every division on every render, gathered in parallel — so the render blocks
+# for every division on every render, gathered in parallel -- so the render blocks
 # for the SLOWEST single broker's live latency. Measured 6-10s (28s at AM peak),
 # dominated here (gather@build_command_center yfinance+DB is <=2.3s). A per-snapshot
 # timeout bounds the render; a last-known-good cache keeps a briefly-slow broker's
@@ -947,7 +947,7 @@ async def _hydrate_division_metrics(divisions: list[Division], deps) -> None:
             return division, snap
         except Exception as e:
             # A slow/failed broker read must not hold the whole dashboard render
-            # hostage — asyncio.gather below waits for the SLOWEST snapshot. On
+            # hostage -- asyncio.gather below waits for the SLOWEST snapshot. On
             # timeout (or any error) serve the last-known-good snapshot so the
             # tile keeps its prior equity instead of flapping to not_wired/$0;
             # fall back to None (not_wired) only if we have never seen one.
