@@ -69,7 +69,25 @@ cross-venue-alias flag). cs2 (exact-normalized orgs + academy/fe/NXT/Ares/ex- fl
 - `pm_fill_watch_ro.{ps1,sh}` — fill-watch, wnba guard added this session.
 - `pm_global_disarm.{ps1,sh}` — emergency master kill (pre-authorized on a wrong fill).
 
-## PENDING
-- [ ] Jack restarts (`restart_tc.ps1`) — brings cs2 into cats + reloads mex/wnba sizing.
-- [ ] Re-run snapshot: confirm cs2 RUNNING/evaluating, wnba/mex healthy, report pre-arm signal counts.
-- [ ] Arm cs2 + wnba + mex (both accounts) — final write. (wnba/mex won't fill immediately; cs2 is the one with live markets + a whale holding live positions.)
+## 7. Engine restart (Jack) + post-restart verify — DONE
+Jack restarted (PID 232440 → 276575, boot 2026-09-08 20:24:38Z). Post-restart snapshot: **alarms=0**
+(cs2 starvation RESOLVED — jack/cs2 RUNNING n_signals=2, karen/cs2 IDLE n_signals=0=whale-empty). All 6
+targets SPAWNED + RUNNING/IDLE, all now contracts=5, arm rows ABSENT/no-latch, non-target sha unchanged.
+
+## 8. ARMED — DONE (final write)
+All 6 subs (cs2/wnba/mex × jack/karen) armed via `arm.arm(by=jack)`. POST: each effective_armed=True,
+latched=False; GLOBAL armed=True. Backup `~/pm_arm_backup_20260908T203633Z.json`. Armed order wnba+mex
+(won't fill) then cs2 (hot). **Expected fills:** cs2/jack is the only one likely to place soon (live markets
++ whale holds live cs2); wnba (0 open markets) + mex (whale empty) won't fill until their conditions return.
+
+## STANDING SAFETY POSTURE (post-arm)
+- **First fill from any new cat = read-back BEFORE anything:** `cc/pm_fill_watch_ro.ps1` (cs2 exact-org +
+  academy/fe/NXT/Ares/ex- flags; wnba GSV/POR added this session; mex leg/-TIE/both-clubs).
+- **Wrong org/team/club/leg on a fill = FIRE FIRST:** `cc/pm_global_disarm.ps1` (pre-authorized), report second.
+- **A guard that CANNOT READ the whale's bet is INCONCLUSIVE, not a mismatch** — do not disarm on an unreadable read.
+- Nothing polls; Jack runs the reads when he wants them.
+
+## GIT-TRUTH (final)
+No prod-live/main advance — zero box code changed; sizing + arm are DB writes (read-per-cycle, outside git-truth
++ the code freeze). `prod-live` a24b8bf / `main` 61de372 untouched. Record = this ledger on branch
+`pm-arm-cs2-wnba-mex-2026-09-08` only.
