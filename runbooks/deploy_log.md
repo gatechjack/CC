@@ -13035,3 +13035,55 @@ both-or-neither). No cutover/roster change.
 
 **prod-live:** `fc78fc7` -> this entry (clean FF; both deployed blobs + deploy_log). Build branch
 `poly-kalshi-item12-build-2026-08-18` (code `7c17edf`). Completes the Item 1 + Item 2 pair; both LIVE.
+
+## 2026-09-08 ~19:26 UTC - Command-center latency fix: bound broker.snapshot() (STAGED ONLY - NO RESTART; engine 232440 UNCHANGED)
+
+**★ STAGED, NOT RUNNING.** File is on disk but the engine was NOT restarted, so prod is STILL
+running the OLD code and the dashboard is STILL slow (post-deploy `/partials/stat-cards`=9.78s,
+by design). The fix is INERT until Jack restarts `trading-corp`. This was an explicit
+stage-now-restart-later deploy.
+
+**What.** Dashboard `build_command_center` render measured 6-10s (28s at AM peak). Root component
+(isolated by measurement, not assumption): `_hydrate_division_metrics` (web/data.py) fans out a
+LIVE `broker.snapshot()` for every division on every render via `asyncio.gather` with NO timeout,
+so the render blocks for the SLOWEST single broker snapshot. (gather@build_command_center
+yfinance+DB is <=2.3s -- NOT the cost. Prior "yfinance rate-limit" and "6-worker executor
+starvation" theories were REFUTED: fresh yf.download 0.1-0.37s; thread census R=0/S=13; trade-flow
+0.02s concurrent with 7s stat-cards; broker network RTT all <0.3s.) Fix: wrap each snapshot in
+`asyncio.wait_for(TC_DASH_SNAPSHOT_TIMEOUT_SEC, default 3.0s)` + a module-level last-known-good
+`_SNAPSHOT_CACHE` served on timeout/failure (keeps prior equity vs flapping to not_wired/$0).
+snapshot() is a read, so cancel-on-timeout has no order-path side effect. Contained to web/data.py
+(display layer; NOT a grafted-shared order file); no migration. Env knob TC_DASH_SNAPSHOT_TIMEOUT_SEC.
+
+**Deploy (GRAFT, 3 hunks via `patch --fuzz=0 -p1`, NOT wholesale-copy).** web/data.py LF-md5
+`960101a9` -> `2643bfc4` (git-blob `06642ac` -> `0b65a74`). Backups (2, in ~):
+`perf_ccfix_backup_20260908T192039Z/data.py` and `perf_ccfix_graft_backup_20260908T192553Z/data.py`
+(both LF-md5 960101a9 == a24b8bf). ONE file changed.
+
+**Verification (all VERIFIED, read-only):** pre-graft box == a24b8bf (LF-md5 960101a9, blob 06642ac,
+CR=0) -- no box drift. Post-graft box == 51112f4 (LF-md5 2643bfc4, blob 0b65a74). diff(pre-backup ->
+deployed) = exactly 3 hunks, +30/-1, only the intended change. mtime sweep of trading_corp/ (last
+20 min) = ONLY web/data.py; no .rej/.orig. Hot-reload: box engine cmdline has NO --reload, no
+watchfiles/reloader process -> staged file inert until restart (confirmed: page still 9.78s after
+deploy). PIDs BEFORE == AFTER (no restart): trading-corp 232440/NRestarts 0 (up 2026-09-07 15:56:01),
+prediction-markets-web 235587/0, sfp-card-watcher 656/0.
+
+**Inert / dormant on current traffic:** the ENTIRE change is inert until restart (see above). No
+behavior change on prod until `trading-corp` is restarted.
+
+**When Jack is ready to restart (JACK ONLY -- not done here):**
+`C:\Users\AA Incorporado\Desktop\restart_tc.ps1` (systemctl restart trading-corp). After restart,
+expect `/partials/stat-cards` <= ~3s. Tune with TC_DASH_SNAPSHOT_TIMEOUT_SEC if desired.
+
+**Rollback (pre-restart: just restore the file; post-restart: restore + restart):**
+```bash
+ssh azureuser@trading.jacksumner.com "
+cp /home/azureuser/perf_ccfix_graft_backup_20260908T192553Z/data.py \
+   /home/azureuser/trading_corp/trading_corp/web/data.py
+"
+```
+
+**prod-live:** code already FF-pushed `a24b8bf` -> `51112f4` (branch
+`perf-command-center-2026-09-08`; commits 6976eb4 diag / 49a4af5 fix / 741f293 ascii / 51112f4
+report). This deploy_log entry is a further commit on that branch; FF-push it to prod-live to carry
+the record (NOT auto-pushed): `git push origin perf-command-center-2026-09-08:prod-live`.
