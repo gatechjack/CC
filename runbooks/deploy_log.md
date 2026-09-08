@@ -1272,6 +1272,7 @@ git revert -m 1 920a33a  # clean revert commit
 git push origin main
 # Alternative (full reset; only if no further commits land on main):
 # git reset --hard 39e2361 && git push origin main --force-with-lease
+# [CORRECTION 2026-09-07: the --force-with-lease line above is now BLOCKED -- ruleset 22485002 (rules non_fast_forward + deletion, enforcement active, empty bypass, current_user_can_bypass=never) rejects any force-push to main/prod-live with GH013. Roll back with the "git revert -m 1 ... && git push origin main" FAST-FORWARD option above instead -- a forward revert commit, NOT a history rewrite.]
 ```
 
 **Session B complete report:** `reports/2026-06-01_n2_phase3_session_b_complete.md` on origin/main (canonical via merge). Full per-commit detail; activation ledger; premise corrections; deferred items.
@@ -1328,6 +1329,7 @@ git revert -m 1 36157bf  # produces a clean revert commit
 git push origin main
 # Alternative (full reset; only if no further commits land on main):
 # git reset --hard 1280007 && git push origin main --force-with-lease
+# [CORRECTION 2026-09-07: the --force-with-lease line above is now BLOCKED -- ruleset 22485002 (rules non_fast_forward + deletion, enforcement active, empty bypass, current_user_can_bypass=never) rejects any force-push to main/prod-live with GH013. Roll back with the "git revert -m 1 ... && git push origin main" FAST-FORWARD option above instead -- a forward revert commit, NOT a history rewrite.]
 ```
 
 **Session B handoff:** `reports/2026-06-01_n2_phase3_session_b_handoff.md` — paste-ready prompt covering Commits 5-10 (FillEvent fields, Decision 6.2 DB-lock retry, replay-loop wiring of helpers, `main.py` reconciler hookup, `_resume_live_positions` cases (a)+(b), 8 operational alerts on `BitunixLifecycleNotifier`).
@@ -1808,7 +1810,7 @@ Means: a deploy of merged-main today + a default `--paper` startup + unchanged Y
 
 **Rollback (if needed before deploy):**
 - `git revert -m 1 <merge-sha>` for any single merge; merge commits are first-parent-on-main so `-m 1` keeps the main-side history. Tests would need re-run after each revert.
-- If a wholesale rollback is desired: `git reset --hard 4985bbe` + force-push — destructive, only if no work has built on top.
+- If a wholesale rollback is desired: `git reset --hard 4985bbe` + force-push — destructive, only if no work has built on top. **[CORRECTION 2026-09-07: force-push to main and prod-live is now BLOCKED by ruleset 22485002 (rules non_fast_forward + deletion, enforcement active, empty bypass, current_user_can_bypass=never; proven firing as GH013). Roll back with the forward `git revert -m 1` option above, pushed fast-forward -- NOT `reset --hard` + force-push.]**
 
 ---
 
