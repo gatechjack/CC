@@ -71,6 +71,41 @@ Render-path code is old/unchanged. The AM ~28s vs PM ~7s is the **same** problem
 latencies; it is broker-server-latency-driven, not a code edit. (Prior "concurrency load" narrative is
 partially refuted: poller-idle renders are still 6–10s.)
 
+## Fix result — before/after (VERIFIED, local)
+`tests/test_hydrate_snapshot_timeout.py` (webtest venv, py3.12): with one 3.0s-slow broker,
+`_hydrate_division_metrics` went **3.00s (before, no timeout) -> 0.52s (after, timeout=0.5s), 5.8x**;
+a post-cache timeout serves last-known equity (777.0) in 0.50s; `data_exec=None` still marks not_wired.
+Existing dashboard/data-path tests pass (50/50: test_dashboard_price_fetch, test_division_live_badge,
+test_data_exec_stale_snapshot, test_approvals_routes). In the live render (default timeout 3.0s), a
+5-9s broker snapshot is cut to ~3s -> render bounded to ~3s worst case vs the observed 6-28s.
+
+## Deploy ledger (RESERVED FOR JACK — push + deploy + restart)
+Branch `perf-command-center-2026-09-08` off prod-live `a24b8bf` (verified tip); 3 commits, clean FF:
+- `6976eb4` docs (this report)
+- `49a4af5` fix (data.py: wait_for + last-known cache)
+- `741f293` style (ASCII-only comments -> pure-ASCII deploy graft)
+
+Only code file changed: `trading_corp/web/data.py` (+28/-2, pure ASCII). NOT a grafted-shared
+order-path file. No migration. Env knob: `TC_DASH_SNAPSHOT_TIMEOUT_SEC` (default 3.0).
+
+1. **Push (FF prod-live):**  `git push origin perf-command-center-2026-09-08:prod-live`
+   (linear FF from a24b8bf; the prod-live ruleset allows FF, blocks force/delete.)
+2. **Deploy (box graft):** box `web/data.py` should equal a24b8bf blob `06642ac` (prod-live==box per
+   2026-09-07 reconcile) -> the 3 hunks in this branch's data.py diff apply clean; verify the pre-graft
+   sha, apply, verify post-graft sha == branch blob. build_command_center runs INSIDE the main engine
+   process, so the change is inert until restart.
+3. **Restart:** `C:\Users\AA Incorporado\Desktop\restart_tc.ps1` (systemctl restart trading-corp) —
+   full engine restart (all divisions briefly down + boot reconcile); Jack's timing (off-hours ideal).
+4. **Post-check (read-only):** `curl :8000/partials/stat-cards` should be ~<=3s (was 6-28s); tiles
+   render; divisions previously online do not flap to not_wired.
+
+## Recommended follow-up (NOT built — needs broker ID)
+This fix bounds the SYMPTOM (render latency), robustly and broker-agnostically. The ROOT — one
+authenticated broker `snapshot()` taking 5-9s server-side (top candidates: Coinbase spot
+`ccxt.fetch_balance` account pagination; Kalshi balance+positions across 24 subs) — is not fixed at
+source. Pinning it needs live-process instrumentation (a 2-line per-broker timing log deploy) or a
+credentialed read-only harness; then that broker's snapshot can be sped up / cached at source.
+
 ## Read-only guarantee
 curl timings, `ss`/`/proc`/journalctl reads, `mode=ro` sqlite, ephemeral box-venv yfinance timing,
 read-only source inspection. No box file changed, no service cycled, no DB write, no py-spy.
