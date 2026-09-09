@@ -13087,3 +13087,53 @@ cp /home/azureuser/perf_ccfix_graft_backup_20260908T192553Z/data.py \
 `perf-command-center-2026-09-08`; commits 6976eb4 diag / 49a4af5 fix / 741f293 ascii / 51112f4
 report). This deploy_log entry is a further commit on that branch; FF-push it to prod-live to carry
 the record (NOT auto-pushed): `git push origin perf-command-center-2026-09-08:prod-live`.
+
+
+---
+
+## 2026-09-09 -- MACE Activity Pulse Phase 1 (UI-only) + scheduler-scope fix -- DEPLOYED + RESTARTED + GREEN
+
+**What:** Redesign the /mace Activity Pulse into a dated, day/eval-grouped, de-truncated
+decision/execution TRACE read from EXISTING data (audit_event + mace_rung). UI-only: 2 files
+(web/mace_view.py + web/templates/mace_live.html) + 1 new test. NO engine/gate/config change;
+config_hash stays c382c9370f9b (config/mace.yaml UNTOUCHED). Wing-walk trace = Phase 2 (deferred).
+
+**Changes:**
+- web/mace_view.py: new `_pulse_view(db_url, days=7, show_all)` + helpers; /mace ctx `audits` -> `pulse`.
+  Groups audit rows by ET-day (newest first); scheduler/mace_entry_round is the per-day EVAL header;
+  close backbone from mace_rung (per-trade P&L, back-fills closes with no exit_fill); housekeeping
+  collapsed+muted; noise (mace_mark_unavailable) filtered; last-7d default + ?pulse=all toggle.
+  ** `kind LIKE 'mace_%'` guard is REQUIRED ** -- 'scheduler' is the SHARED platform scheduler (it
+  also logs pmcc_/pead_/scheduled_ slots). The first cut lacked the guard and ingested 348 non-MACE
+  rows back to 2026-05-01 (real-data: 89 day-sections -> 27 / 0 non-MACE after the fix).
+- web/templates/mace_live.html: native <details> day sections (recent open, older collapsed);
+  et_short DATED rows (et_hms time-only REMOVED = the cross-day-collision bug that caused 3 false
+  alarms); de-truncated message lines (whitespace-pre-wrap, no ellipsis); per-trade P&L on close
+  rows; FULL-WIDTH pulse card with Breaker Board re-flowed to its own row below; max-h-720/min-h-420
+  scroll (~3 days).
+- tests/test_mace_pulse.py: NEW (10 tests: grouping, scheduler-mace-only, close backbone, ranges,
+  priority, dating, empty-honest, template guards). Box-scratch: 10/10 + render smoke 10/10 + py_compile OK.
+
+**Deploy (atomic same-dir tmp->mv overwrite, NOT graft -- display-layer files, not shared order files):**
+box web/mace_view.py a41644d0 -> 09ae0b8d (first cut) -> 398dc425 (scheduler fix);
+web/templates/mace_live.html acea4a74 -> d342e294 (unchanged by the fix). Backups in ~:
+mace_pulse_p1_deploy_backup_20260908T222315Z (original a41644d0/acea4a74 + rollback.sh) and
+mace_pulse_p1_fix_backup_20260909T005526Z (09ae0b8d + rollback.sh).
+
+**Restarts (2, canonical restart_tc.ps1 = `az vm run-command ... systemctl restart trading-corp`, board-authorized):**
+276575 -> 281632 (first cut; boot GREEN but pulse contaminated with non-MACE scheduler rows -> fix built+tested)
+-> 282839 (scheduler fix; boot GREEN).
+
+**Verification (read-only, post-fix restart):** PID changed 281632->282839 (start 2026-09-09 00:55:56 UTC);
+config_hash c382c9370f9b UNCHANGED; guards intact robinhood md5 e90af223 / strategy md5 964f5e3b;
+manager/execution/config/mace.yaml UNTOUCHED; MACE ARMED (entry_halt halted:false, latch untouched);
+13 open rungs; equity/avail-BP live ($1463.88 / $2927.76); 0 tracebacks / 0 mace errors since boot;
+candle feed writing. Pulse: all-history day-sections 88 -> 26 (0 non-MACE), 7d = 7 days, DATED rows
+only (time-only 0), full-width + max-h-720, EVAL headers, close pnl +40.00, ?pulse=all 200.
+
+**Rollback:** `~/mace_pulse_p1_deploy_backup_20260908T222315Z/rollback.sh` (full revert to the pre-Phase-1
+flat pulse) OR `~/mace_pulse_p1_fix_backup_20260909T005526Z/rollback.sh` (revert the fix to the first cut),
+then restart via restart_tc.ps1.
+
+**prod-live:** FF-push branch `pulse-phase1-2026-09-08` -> prod-live (base 44ee3a7; prod-live's
+a41644d0/acea4a74 match the build base exactly -> clean bump to 398dc425 / d342e294 + new test).

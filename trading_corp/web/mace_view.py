@@ -49,7 +49,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from trading_corp.persistence import db
-from trading_corp.utils.time import now_et, now_utc
+from trading_corp.utils.time import now_et, now_utc, to_et
 
 _NORM = NormalDist()
 
@@ -672,6 +672,209 @@ def _recent_audits(db_url: str, limit: int = 120) -> list[dict]:
     return out
 
 
+# ── Activity Pulse — grouped/dated decision+execution TRACE (Phase-1 redesign) ─
+# 2026-09-08: the flat, time-only, LIMIT-120 feed becomes a day+eval-grouped
+# trace read from the SAME data (audit_event + mace_rung). WIDENS the actor
+# filter to include 'scheduler' — its mace_entry_round / snapshot / manage-sweep
+# rows delimit each eval and were excluded before, which is why evals never
+# grouped. NO engine emit path is touched (the wing-walk trace is Phase 2); this
+# is a pure read-model change. READ-ONLY: no broker, no writes.
+_PULSE_ACTORS = ("robinhood_mace", "mace_operations", "scheduler")
+
+# The scheduler round event delimits a day's eval; it becomes the per-day EVAL
+# header (carries entered/placed/auto_execute), NOT a row.
+_PULSE_ROUND_KIND = "mace_entry_round"
+
+# Housekeeping: low-signal, high-frequency kinds. DEMOTED (muted) AND collapsed to
+# one row per (kind, ET-day) with a count, so a day's ~48 reconcile ticks or the
+# duplicate scheduler/engine daily-summary never flood the trace. Honest — the
+# count is shown; audit_event itself is never modified. mace_reconcile_open_orders_error
+# is a benign recurring housekeeping error (not an order/decision error) so it lands
+# here rather than dominating as an alert.
+_PULSE_HOUSEKEEPING_KINDS = (
+    "mace_daily_summary", "mace_equity_snapshot", "mace_snapshot",
+    "mace_calendar_refresh", "mace_reconcile_open_orders_error",
+)
+
+# Prominence tiers (item 7): high = take/fill/exit/close/arm; the alert markers
+# below promote any error/no-fill/halt kind; housekeeping = muted; else normal.
+_PULSE_HIGH_KINDS = ("mace_entry_fill", "mace_exit_fill", "mace_close", "mace_ui_arm")
+_PULSE_ALERT_MARKERS = ("error", "exception", "partial", "unconfirmed",
+                        "unpriceable", "reject", "standdown", "halt")
+
+
+def _pulse_priority(kind: str, payload: dict) -> str:
+    """Signal tier for visual prominence. PURE."""
+    if kind in _PULSE_HOUSEKEEPING_KINDS:
+        return "muted"
+    if kind in _PULSE_HIGH_KINDS:
+        return "high"
+    if kind == "mace_entry_eval" and payload.get("entered"):
+        return "high"
+    low = kind.lower()
+    if any(m in low for m in _PULSE_ALERT_MARKERS):
+        return "alert"
+    return "normal"
+
+
+def _pulse_text(kind: str, payload: dict) -> str:
+    """The human trace line for a row, from EXISTING payload fields only (no new
+    emit): prefer the engine's rich `line`, then `reason`, then `detail`; else a
+    readable kind label (covers the coded-but-sparse kinds gracefully)."""
+    for key in ("line", "reason", "detail"):
+        v = payload.get(key)
+        if v:
+            return str(v)
+    return kind.replace("mace_", "").replace("_", " ")
+
+
+def _pulse_etd(ts: str | None) -> str:
+    """ET calendar-date (YYYY-MM-DD) of an audit ts, for day grouping."""
+    et = to_et(ts)
+    return et.date().isoformat() if et else "unknown"
+
+
+def _pulse_view(db_url: str, days: int = 7, show_all: bool = False) -> dict:
+    """Grouped/dated Activity-Pulse trace (SELECT-only; audit_event + mace_rung).
+
+    Sections are ET days, newest first; within a day rows are CHRONOLOGICAL so a
+    decision/execution sequence reads top-to-bottom. The day's scheduler
+    `mace_entry_round` becomes the EVAL header (entered/placed/auto_execute).
+    Closes render from `mace_exit_fill` when present and are BACK-FILLED from
+    `mace_rung` (status=closed) so a close that never emitted an exit_fill
+    (expiry/assignment/manual/reconcile) STILL shows with its per-trade P&L.
+    Default range = last `days` ET days (keeps the page fast as history grows);
+    `show_all` removes the range. NO engine path, NO broker, NO write."""
+    now_e = now_et()
+    et_tz = now_e.tzinfo
+    cutoff_iso: str | None = None
+    if not show_all:
+        d = (now_e - timedelta(days=max(0, days - 1))).date()
+        midnight_et = datetime(d.year, d.month, d.day, tzinfo=et_tz)
+        cutoff_iso = midnight_et.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+    rows: list[dict] = []
+    housekeeping: dict[tuple, dict] = {}   # (kind, et_date) -> collapsed muted row
+    rounds: dict[str, dict] = {}           # et_date -> eval header
+    exit_fill_rungs: set[str] = set()
+
+    try:
+        with db.connect(db_url) as conn:
+            # 1) audit rows — widened actors, noise excluded, range-bounded.
+            # kind LIKE 'mace_%' is REQUIRED: 'scheduler' is the SHARED platform
+            # scheduler (it also logs pmcc_/pead_/scheduled_ slots), so without
+            # this the MACE pulse would ingest other divisions' events. Every MACE
+            # event is mace_*, and robinhood_mace/mace_operations only emit mace_*,
+            # so this is loss-free for them and scopes scheduler to MACE.
+            noise = ",".join("?" * len(_PULSE_NOISE_KINDS))
+            actors = ",".join("?" * len(_PULSE_ACTORS))
+            q = ("SELECT ts, actor, kind, payload_json FROM audit_event "
+                 f"WHERE actor IN ({actors}) AND kind LIKE 'mace_%' "
+                 f"AND kind NOT IN ({noise})")
+            args: list = [*_PULSE_ACTORS, *_PULSE_NOISE_KINDS]
+            if cutoff_iso is not None:
+                q += " AND ts >= ?"
+                args.append(cutoff_iso)
+            q += " ORDER BY ts ASC"
+            araw = conn.execute(q, args).fetchall()
+
+            # 2) closed rungs — the durable close backbone (range on exit_ts)
+            rq = ("SELECT rung_id, symbol, expiry, legs_json, contracts, exit_reason, "
+                  "exit_debit, realized_pnl, exit_ts FROM mace_rung "
+                  "WHERE status='closed' AND exit_ts IS NOT NULL")
+            rargs: list = []
+            if cutoff_iso is not None:
+                rq += " AND exit_ts >= ?"
+                rargs.append(cutoff_iso)
+            rraw = conn.execute(rq + " ORDER BY exit_ts ASC", rargs).fetchall()
+    except Exception:  # noqa: BLE001 — fresh/legacy DB -> honest empty
+        return {"range_days": days, "show_all": show_all, "total_rows": 0, "days": []}
+
+    for r in araw:
+        try:
+            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        except Exception:  # noqa: BLE001
+            payload = {}
+        kind, actor, ts = r["kind"], r["actor"], r["ts"]
+        etd = _pulse_etd(ts)
+        if kind == _PULSE_ROUND_KIND:
+            cur = rounds.get(etd)
+            n = (cur or {}).get("n_rounds", 0) + 1
+            rounds[etd] = {"ts": ts, "entered": payload.get("entered"),
+                           "placed": payload.get("placed"),
+                           "auto_execute": payload.get("auto_execute"),
+                           "n_rounds": n}
+            continue
+        if kind in _PULSE_HOUSEKEEPING_KINDS:
+            key = (kind, etd)
+            hk = housekeeping.get(key)
+            if hk is None:
+                housekeeping[key] = {"ts": ts, "kind": kind, "actor": actor,
+                                     "symbol": payload.get("symbol"),
+                                     "text": _pulse_text(kind, payload), "pnl": None,
+                                     "attempt": None, "priority": "muted",
+                                     "count": 1, "etd": etd}
+            else:
+                hk["count"] += 1
+                if ts > hk["ts"]:
+                    hk["ts"] = ts    # keep latest ts for intra-day ordering
+            continue
+        rows.append({"ts": ts, "kind": kind, "actor": actor,
+                     "symbol": payload.get("symbol"),
+                     "text": _pulse_text(kind, payload),
+                     "pnl": payload.get("realized"),
+                     "attempt": payload.get("attempt") or payload.get("attempts"),
+                     "priority": _pulse_priority(kind, payload),
+                     "count": 1, "etd": etd})
+        if kind == "mace_exit_fill" and payload.get("rung_id"):
+            exit_fill_rungs.add(payload["rung_id"])
+
+    rows.extend(housekeeping.values())
+
+    # 3) mace_rung close backbone: synthesize a close row for any closed rung with
+    #    NO exit_fill audit in-window (the non-managed close path), so every close
+    #    shows with its per-TRADE realized P&L. Managed closes already show via
+    #    their exit_fill row (which carries the rich line + realized) — no double.
+    for r in rraw:
+        rid = r["rung_id"]
+        if rid in exit_fill_rungs:
+            continue
+        strikes = _strikes_from_legs(r["legs_json"])
+        reason = r["exit_reason"] or "closed"
+        pnl = r["realized_pnl"]
+        pnl_s = f" pnl {pnl:+.2f}" if pnl is not None else ""
+        txt = f"{strikes} exp {r['expiry']} {reason} (booked){pnl_s}"
+        rows.append({"ts": r["exit_ts"], "kind": "mace_close", "actor": "mace_rung",
+                     "symbol": r["symbol"], "text": txt, "pnl": pnl, "attempt": None,
+                     "priority": "high", "count": 1, "etd": _pulse_etd(r["exit_ts"])})
+
+    # 4) group by ET day (newest-first); rows chronological within a day
+    by_day: dict[str, list] = {}
+    for row in rows:
+        by_day.setdefault(row["etd"], []).append(row)
+
+    days_out: list[dict] = []
+    for i, etd in enumerate(sorted(by_day, reverse=True)):
+        drows = sorted(by_day[etd], key=lambda x: x["ts"])
+        counts = {
+            "fills": sum(1 for x in drows if x["kind"] == "mace_entry_fill"),
+            "closes": sum(1 for x in drows if x["kind"] in ("mace_exit_fill", "mace_close")),
+            "skips": sum(1 for x in drows
+                         if x["kind"] == "mace_entry_eval" and x["priority"] != "high"),
+            "alerts": sum(1 for x in drows if x["priority"] == "alert"),
+        }
+        try:
+            wd = date.fromisoformat(etd).strftime("%a")
+        except Exception:  # noqa: BLE001
+            wd = ""
+        days_out.append({"date": etd, "weekday": wd, "is_recent": (i == 0),
+                         "round": rounds.get(etd), "counts": counts, "rows": drows})
+
+    total = sum(len(d["rows"]) for d in days_out)
+    return {"range_days": days, "show_all": show_all, "total_rows": total,
+            "days": days_out}
+
+
 def _breakers_ctx(deps: Any, db_url: str, equity: Optional[dict]) -> dict:
     """Breaker status panel — ONLY breaker-facts derivable from the ledger +
     audit_event (broker-free). Feed-staleness (quote heartbeat) has NO broker-free
@@ -1037,6 +1240,9 @@ def register(app: FastAPI) -> None:
     async def mace_cockpit(request: Request):
         cfg = _cfg(deps)
         equity = await _q(_equity_ctx, db_url, cfg)
+        # Activity Pulse range toggle: ?pulse=all shows full MACE history
+        # (only ~hundreds of rows, no pruning); default is the last 7 ET days.
+        pulse_all = request.query_params.get("pulse") == "all"
         ctx = {
             "badge": mace_badge(deps),
             "config": _config_ctx(cfg),
@@ -1046,7 +1252,7 @@ def register(app: FastAPI) -> None:
             "symbols": await _q(_symbol_states, deps, db_url),
             "events": await _q(_upcoming_events, db_url, 7),
             "closed": await _q(_recent_closed, db_url, 10),
-            "audits": await _q(_recent_audits, db_url, 40),
+            "pulse": await _q(_pulse_view, db_url, 7, pulse_all),
             "breakers": await _q(_breakers_ctx, deps, db_url, equity),
             "mode": getattr(deps, "mode", "PAPER"),
             "pnl": await _q(_pnl_ctx, db_url),

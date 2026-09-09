@@ -314,10 +314,11 @@
   {% include "partials/mace_live_sections.html" %}
 </div>
 
-{# ── LOWER ROW: activity feed + breaker board ────────────────────────────── #}
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+{# ── LOWER REGION: full-width Activity Pulse (primary decision-trace surface),
+     Breaker Board re-flowed to its OWN row below it (single-column stack). ──── #}
+<div class="grid grid-cols-1 gap-4 mb-4">
 
-  {# ── Activity / audit feed ─────────────────────────────────────────────── #}
+  {# ── Activity / audit feed — now FULL WIDTH ─────────────────────────────── #}
   <div class="bg-pane border border-edge rounded-lg overflow-hidden">
     <div class="flex items-center gap-3 px-4 py-3 border-b border-edge">
       {# spinning radar icon #}
@@ -334,36 +335,67 @@
         </span>
       {% endif %}
     </div>
-    <div class="max-h-[340px] overflow-y-auto">
-      {% if audits %}
-        {% for a in audits %}
-          {# kind chip color — mirrors the spec mapping #}
-          {% if 'halt' in a.kind %}{% set ac = 'loss' %}
-          {% elif a.kind in ('mace_entry_exception','mace_manage_error','mace_chain_error',
-                             'mace_ivr_outage','mace_live_state_error','mace_iv_snapshot_error',
-                             'mace_entry_partial','mace_entry_unconfirmed') %}{% set ac = 'warn' %}
-          {% elif a.kind in ('entry_fill','manage_exit','mace_ui_arm') %}{% set ac = 'gain' %}
-          {% else %}{% set ac = 'muted' %}{% endif %}
-          <div class="grid items-baseline gap-2 px-4 py-2 border-b border-edge/40 last:border-b-0"
-               style="grid-template-columns:76px 120px 1fr">
-            <span class="font-mono text-[9.5px] text-muted/70">{{ a.ts | et_hms }}</span>
-            <span class="font-mono text-[8.5px] uppercase tracking-wide px-1 py-0.5 rounded text-center
-                         text-{{ ac }} border border-{{ ac }}/28 bg-{{ ac }}/6">
-              {{ a.kind | replace('_', ' ') | truncate(16, True, '') }}
-            </span>
-            <span class="font-mono text-[10.5px] text-mono/80 truncate">
-              {% if a.payload.get('symbol') %}[{{ a.payload.symbol }}] {% endif %}
-              {# rich exit-disposition line (FIX 2) takes precedence; entries have no 'line' #}
-              {% if a.payload.get('line') %}{{ a.payload.line }}
-              {% elif a.payload.get('reason') %}{{ a.payload.reason }}
-              {% elif a.payload.get('detail') %}{{ a.payload.detail }}
-              {% else %}{{ a.kind | replace('_', ' ') }}{% endif %}
-            </span>
-          </div>
+    {# ── range toggle: last-7d (default) vs full history — the LIMIT-120 window
+         is gone; MACE keeps its whole (small, un-pruned) history ──────────── #}
+    <div class="flex items-center gap-2 px-4 py-1.5 border-b border-edge/60 text-[9px] font-mono">
+      <span class="text-muted uppercase tracking-wider">Trace</span>
+      <a href="/mace#pulse"
+         class="px-1.5 py-0.5 rounded border {% if not pulse.show_all %}text-accent border-accent/40 bg-accent/6{% else %}text-muted border-edge hover:text-mono{% endif %}">last {{ pulse.range_days }}d</a>
+      <a href="/mace?pulse=all#pulse"
+         class="px-1.5 py-0.5 rounded border {% if pulse.show_all %}text-accent border-accent/40 bg-accent/6{% else %}text-muted border-edge hover:text-mono{% endif %}">all history</a>
+      <span class="ml-auto text-muted">{{ pulse.total_rows }} row{{ '' if pulse.total_rows == 1 else 's' }}</span>
+    </div>
+    {# taller scroll region: comfortably holds ~3 days of grouped activity
+       (recent day expanded, older days collapsed) before it feels cramped #}
+    <div id="pulse" class="max-h-[720px] min-h-[420px] overflow-y-auto">
+      {% if pulse.days %}
+        {% for day in pulse.days %}
+          {# most-recent day expanded; older days collapsed (native <details>, no JS) #}
+          <details {% if day.is_recent %}open{% endif %} class="border-b border-edge/60 last:border-b-0">
+            <summary class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 cursor-pointer select-none
+                            bg-pane-2/40 hover:bg-pane-2/70">
+              <span class="font-mono text-[10.5px] text-mono font-semibold">{{ day.weekday }} {{ day.date }}</span>
+              {% if day.round %}
+                {# per-day EVAL header from scheduler/mace_entry_round #}
+                <span class="font-mono text-[8.5px] text-muted">
+                  EVAL {{ day.round.ts | et_short }} ·
+                  {{ day.round.entered if day.round.entered is not none else '—' }} entered /
+                  {{ day.round.placed if day.round.placed is not none else '—' }} placed ·
+                  auto {{ 'on' if day.round.auto_execute else 'off' }}{% if day.round.n_rounds and day.round.n_rounds > 1 %} · {{ day.round.n_rounds }} rounds{% endif %}
+                </span>
+              {% endif %}
+              <span class="ml-auto flex gap-2 font-mono text-[8.5px]">
+                {% if day.counts.fills %}<span class="text-gain">{{ day.counts.fills }} fill</span>{% endif %}
+                {% if day.counts.closes %}<span class="text-accent">{{ day.counts.closes }} close</span>{% endif %}
+                {% if day.counts.skips %}<span class="text-muted">{{ day.counts.skips }} skip</span>{% endif %}
+                {% if day.counts.alerts %}<span class="text-loss">{{ day.counts.alerts }} alert</span>{% endif %}
+              </span>
+            </summary>
+            {# rows: chronological within the day so the eval reads top-to-bottom #}
+            {% for a in day.rows %}
+              {# prominence → chip color (item 7) #}
+              {% if a.priority == 'high' %}{% set ac = 'gain' %}
+              {% elif a.priority == 'alert' %}{% set ac = 'loss' if 'halt' in a.kind else 'warn' %}
+              {% else %}{% set ac = 'muted' %}{% endif %}
+              <div class="grid items-baseline gap-2 px-4 py-1.5 border-t border-edge/25 {% if a.priority == 'muted' %}opacity-60{% endif %}"
+                   style="grid-template-columns:112px 132px 1fr">
+                {# et_short = 'MM-DD HH:MM ET' — EVERY row is dated (no more time-only collision) #}
+                <span class="font-mono text-[9px] text-muted/70">{{ a.ts | et_short }}</span>
+                <span class="font-mono text-[8.5px] uppercase tracking-wide px-1 py-0.5 rounded text-center
+                             text-{{ ac }} border border-{{ ac }}/28 bg-{{ ac }}/6">
+                  {{ a.kind | replace('mace_', '') | replace('_', ' ') }}{% if a.attempt and a.attempt > 1 %} #{{ a.attempt }}{% endif %}
+                </span>
+                {# de-truncated: wrap the full line/reason/detail, no ellipsis #}
+                <span class="font-mono text-[10.5px] text-mono/80 whitespace-pre-wrap break-words">
+                  {% if a.symbol %}<span class="text-mono font-semibold">[{{ a.symbol }}]</span> {% endif %}{{ a.text }}{% if a.count and a.count > 1 %} <span class="text-muted">&times;{{ a.count }}</span>{% endif %}{% if a.pnl is not none %} <span class="font-semibold {{ 'text-gain' if a.pnl >= 0 else 'text-loss' }}">{{ '%+.2f' | format(a.pnl) }}</span>{% endif %}
+                </span>
+              </div>
+            {% endfor %}
+          </details>
         {% endfor %}
       {% else %}
         <div class="px-4 py-8 text-center text-sm text-muted font-mono">
-          — no audit events yet
+          — no audit events in range —
         </div>
       {% endif %}
     </div>
