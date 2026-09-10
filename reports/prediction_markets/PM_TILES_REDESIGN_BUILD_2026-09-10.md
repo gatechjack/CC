@@ -230,3 +230,88 @@ DEPLOY SHAPE (Jack's to run; pm_web-only, ONE pm_web restart, engine NEVER touch
   fold it.
 - Everything is pm_web-only: no engine import, no order path, no migration, no restart, no push, no deploy. The build
   is committed locally on branch pm-tiles-redesign-2026-09-10; deploy/push/restart are reserved for Jack.
+
+
+================================================================================================
+DEPLOY 7 -- 2026-09-10 (DEPLOYED LIVE; pm_web-only + ONE pm_web restart; engine NEVER touched)
+================================================================================================
+Board-authorized. Shipped the redesign to prod: 8 pm_web files wholesale + 21 logos + app.py GRAFTED onto box
+eeac337d, ONE prediction-markets-web restart via az. Engine trading-corp (PID 292771, ARMED, 30 armed subs across
+two accounts) was NOT restarted, reloaded, or touched at any step. All gates passed; no rollback. Deploy target =
+branch pm-tiles-redesign-2026-09-10 @ 5c047f4 (the step-0 logo-swap commit). MEASUREMENT RULE (CR-strip both sides)
+applied throughout. Runners cc/pm_deploy7_{precheck_ro,apply,verify_ro,restart_az,postcheck_ro,fetchlive_ro}.* +
+gen_deploy7.py + pm_deploy7_app.patch.
+
+STEP 0 -- LOGO SWAP (commit 5c047f4): BUN.jpg (428x350) + MEX.png (500x500) -> static/logos/BUN.png (128x105) /
+MEX.png (128x128), square marks replacing the banner strips. Logo ?v= is runtime CR-stripped sha8 (auto-versions).
+Cache-bust test pins the 21-logo roster. Deploy target sha recorded = 5c047f4.
+
+PRE-CHECK (pm_deploy7_precheck_ro, 2026-09-10T10:36Z) -- ALL GATES PASS, NO DRIFT:
+  engine 292771 NRestarts 0 active; pm_web 235587 active; schema head 20. 31 arm rows (global + 30 subs) all
+  armed=True. Counts total=43 attached=30 unattached=13 armed=30. Heartbeat 30 rows, 0 STALE/NEVER (alarm strip
+  will be empty). Journal orders jack=269 karen=159; events baseline max_order_id=428. DRIFT GATE: box CR-stripped
+  sha16 == box-capture BEFORE for all 6 (subdivision 752e244a, live_view e514a47a, pm_live_list 78212415, pm_desk
+  8121e8e0, pm_shell d8076b29, search_run a15acc3a) + app.py eeac337d/14/0. NEW files (2 partials, pm_live_subs.js,
+  logos/) confirmed ABSENT. Served pm_desk.css 8121e8e0, /live 200.
+
+BACKUP (a GATE) = /home/azureuser/pm_deploy7_backup_20260910T103627Z. Dirs mkdir'd FIRST; the 6 existing files
+  (5 text + app.py) copied + VERIFIED (each backup CR-stripped sha == box) before any write. The 3 new text files +
+  21 logos have no box copy (rollback for them = remove). Backup complete + verified before [C].
+
+APPLY (gen_deploy7 -> pm_deploy7_apply.sh; base64 -> tmp -> sha16 gate -> mv; app graft via patch --fuzz=0):
+  Drift RE-GATE at apply time: all 6 + app.py re-confirmed == BEFORE. 8 text files written (each CR-stripped sha16
+  == target: subdivision f11d755e, live_view c0f44414, pm_live_list 97f0f12b, pm_subs_event 6fcb55b8,
+  pm_subs_eventline 164d422b, pm_desk 80c88cc2, pm_live_subs.js 85748440, pm_shell 8a10c80d). 21 logos written
+  (RAW sha16-gated; binary never CR-stripped). app.py GRAFTED (patch dry-run OK then applied): eeac337d ->
+  16caedfe6a193737, /pm/arm=0.
+  ** ONE FALSE-STOP (not a defect): the apply's [E] gate asserted is_admin==14 (a stale Deploy-6 assumption) and
+     exited 6, because the redesign's SCOPING code legitimately raises is_admin references 14 -> 28. The grafted
+     app.py sha16 == 16caedfe6a193737 (byte-identical to the verified local file) and /pm/arm=0 (no M5 leak), so the
+     graft is correct. Per the command-paste-rule corollary (verify a gate failure is REAL before aborting), this
+     was confirmed a false negative and the skipped post-graft checks were run read-only (pm_deploy7_verify_ro):
+     py_compile OK; import OK with engine_imports=[]; routes /live + /live/events + detail all present; loaders +
+     21 logos present; all 8 text re-sha == target; 21 logos on box. No rollback.
+  No package/venv/unit change.
+
+RESTART (pm_deploy7_restart_az) -- pm_web ONLY: az vm run-command 'systemctl restart prediction-markets-web'.
+  pm_web 235587 -> 298063 active/running. Engine trading-corp 292771 -> 292771 UNCHANGED, NRestarts 0 before+after.
+
+POST-CHECK (pm_deploy7_postcheck_ro, after one poll cycle, 2026-09-10T10:41Z) -- checks 9-18 ALL PASS:
+  9.  /live 200; 15 tiles (Jack active tab, data-sub); both tabs; sections Live/Upcoming/Settled/Inactive/Unattached;
+      22 corner state-tabs; alarm-strip=0 (correct -- 0 STALE/NEVER); GLOBAL ARMED.
+  10. Scoping (R6 + add#5): karen -> only kalshi_karen tab + SINGLE-ACCOUNT note + 0 jack tiles; karen ->
+      /live/kalshi_jack/mlb = 403; /live/kalshi_karen/mlb = 200; /live/kalshi_nope/mlb = 404; NO identity -> tabs=[]
+      (fail-closed).
+  11. R2: raw KX...- ticker hits on /live = 0. All 21 logos HTTP 200; BUN 7390 / MEX 9009 bytes (the swapped squares).
+  12. Money TIE-OUT: my windows.all_time == subdivision_pnl_all.realized for ALL 12 traded subs (ALL TIE-OUT True).
+  13. Activity classified from real data (post-check + served render): a LIVE CS2 sub with the event block (esports
+      match underway, ticker-HHMM classifier live); LAL/MLB open -> UPCOMING; history-only -> SETTLED; attached
+      no-history -> INACTIVE ("no history"); 13 unattached compact incl. the SOCCER orphan.
+  14. /live/events?since=0 -> JSON {max_id:428, placed:[...named "Chicago Cubs vs Cincinnati Reds -- ..."]}; sound
+      toggle present + off by default ("Sound off", aria-pressed=false).
+  15. Every real page 200 + styled: /, /farm, both account pages, all 43 /live/{acct}/{cat}, all real /farm/{cat}.
+      (The lone NON-200 was GET /farm/search=404 -- /farm/search is a POST-only route, category 'search' does not
+      exist, honest 404, PRE-EXISTING and untouched by this deploy; a false hit from the post-check's greedy grep of
+      the search form action. Not a regression, not a rollback condition.)
+  16. Cache-bust: served pm_desk.css sha = 80c88cc2 (== target), shell ?v=80c88cc2, pm_live_subs.js?v=85748440;
+      pm.css/pm_desk/subs.js/htmx all 200 (no 404).
+  17. Engine 292771 NRestarts 0 UNCHANGED; 0 journalctl -p err since the restart; order counts to compare next
+      cycle (jack 269 / karen 159 at pre-check; any change = attributable fills, pm_web places nothing).
+  18. Zero double-escaped entities on /live. Served page fetched read-only + rendered at 1280 + 374 (phone) and
+      VIEWED (cc/renders/served_1280.png, served_phone.png): faithful, real data, square BUN/MEX logos, LIVE CS2
+      2x2 with event block, phone one-column.
+
+FILE LIST -- before(box)/after CR-stripped sha16 (8 text) + 21 logos + app.py graft:
+  subdivision.py 752e244a->f11d755e ; web/live_view.py e514a47a->c0f44414 ; pm_live_list.html 78212415->97f0f12b ;
+  partials/pm_subs_event.html (new) 6fcb55b8 ; partials/pm_subs_eventline.html (new) 164d422b ;
+  static/pm_desk.css 8121e8e0->80c88cc2 ; static/pm_live_subs.js (new) 85748440 ; pm_shell.html d8076b29->8a10c80d ;
+  static/logos/*.png x21 (new, RAW-sha gated). web/app.py eeac337d->16caedfe (GRAFT; is_admin 14->28, /pm/arm=0).
+  ** NEW BOX app.py REFERENCE = 16caedfe6a193737 (is_admin=28, /pm/arm=0) -- supersedes eeac337d for the next deploy.**
+NOT shipped: main.py (untouched); heartbeat.py + partials/pm_liveness.html (already on box); search_run.py
+  (already on box; box-captured for local test parity only). No migration; schema head 20.
+
+PIDs: pm_web 235587 -> 298063. Engine 292771 UNCHANGED, NRestarts 0 throughout. Backup:
+  /home/azureuser/pm_deploy7_backup_20260910T103627Z (6 files; rollback = restore + pm_web-only restart, new files
+  removed). Skipped/notes: the apply [E] is_admin==14 gate false-stop (verified correct read-only, see above); no
+  app.py wholesale (grafted); no main.py; no migration; no package/venv change. The engine + both trading accounts
+  + the order path were never touched.

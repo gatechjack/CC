@@ -1,8 +1,9 @@
 # PM UI — HANDOFF for the next UI code agent
 
-**STATUS: CURRENT — last updated 2026-09-07 (folds in DEPLOY 6: the Live Sub-divisions TILE page). Prior: DEPLOY 5
-(settled-slot whale + bet-slot pass). This is the current handoff; the filename keeps its original date so existing
-references resolve. ★ The pm-ui-rewrite branch is now a STALE SUBSET of the box — the box has advanced via the
+**STATUS: CURRENT — last updated 2026-09-10 (folds in DEPLOY 7: the Live Sub-divisions REDESIGN — Claude Design port
+of GET /live). Prior: DEPLOY 6 (the tile page), DEPLOY 5 (settled-slot whale + bet-slot pass). This is the current
+handoff; the filename keeps its original date so existing references resolve. ★ The pm-ui-rewrite branch is now a
+STALE SUBSET of the box — the box has advanced via the
 driver-liveness (heartbeat + account-page liveness panel), farm-search, remaining-categories, and DEPLOY-6 tile
 deploys; repo reconciliation is DEFERRED, so graft every deploy onto BOX-CURRENT (drift map:
 PM_TILES_PHASE1_INVENTORY_2026-09-07.md).**
@@ -27,7 +28,10 @@ touched.
 
 Deploy history (all pm_web-only, engine never restarted):
   DEPLOY 1 `9c2eeb3` -> 2 `cafb132` -> 3 `431ec76` -> 4 `86744ac` (multi-category fix) -> 5 `8978a2c` (bet-slot +
-  settled-slot whale) -> **6 (2026-09-07) the Live Sub-divisions TILE page** (branch pm-tiles-2026-09-07 @ df38514).
+  settled-slot whale) -> **6 (2026-09-07) the Live Sub-divisions TILE page** (branch pm-tiles-2026-09-07 @ df38514)
+  -> **7 (2026-09-10) the Live Sub-divisions REDESIGN** (branch pm-tiles-redesign-2026-09-10 @ 5c047f4, tag
+  pm-tiles-deploy7-2026-09-10; 8 pm_web files + 21 logos + app.py graft, ONE pm_web restart 235587->298063, engine
+  292771 untouched; report PM_TILES_REDESIGN_BUILD_2026-09-10.md).
 ★ NOTE: between DEPLOY 5 and 6 the box ALSO took non-UI-rewrite-branch deploys (driver-liveness incl. the heartbeat
 tables + the account-page liveness panel; farm-search; remaining-categories), so the box pm_web is AHEAD of the
 pm-ui-rewrite branch. Always graft onto BOX-CURRENT; do not wholesale-copy from a branch.
@@ -45,12 +49,14 @@ pm.css 204d9051, pm_live.js b4c557fc, htmx.min.js 491955cd, pm_trade_drawer.html
 deploy the same way: `git show <sha>:file | tr -d '\r' | sha256sum` vs `tr -d '\r' < boxfile | sha256sum`.
 
 **Two standing deploy rules (unchanged):**
-  * **app.py is GRAFTED, never wholesale-copied.** ★ **Current box app.py CR-stripped sha16 = `eeac337d17a84fc7`**
-    (DEPLOY 6), `grep -c is_admin` = **14**, `grep -c /pm/arm` = **0**. Lineage: M4 `8b7d35ca` -> DEPLOY-4
-    `c2e4ddef` (is_admin=10) -> farm-search graft (is_admin 10->14, 2026-09-05) + driver-liveness panel loaders
-    (2026-09-06) = `069d7a25` -> DEPLOY-6 `_load_live_list` tile hunk = **`eeac337d`**. The M5 `/pm/arm` admin
-    arm-control surface is STILL NOT on the box (/pm/arm=0); NEVER ship a branch app.py wholesale (it carries M5).
-    Graft your app.py hunks onto the box's current file; verify is_admin=14 / /pm/arm=0 + an `eeac337d` base.
+  * **app.py is GRAFTED, never wholesale-copied.** ★ **Current box app.py CR-stripped sha16 = `16caedfe6a193737`**
+    (DEPLOY 7, 2026-09-10), `grep -c is_admin` = **28** (the redesign's /live scoping raised it from 14),
+    `grep -c /pm/arm` = **0** (M5 still never on prod). Lineage: M4 `8b7d35ca` -> DEPLOY-4 `c2e4ddef` (is_admin=10)
+    -> farm-search + liveness = `069d7a25` -> DEPLOY-6 tile hunk = `eeac337d` (is_admin=14) -> DEPLOY-7 grafted the
+    `_load_live_list` rebuild + `_load_live_subdivision` scoping + `/live/events` = **`16caedfe`**. NEVER ship a
+    branch app.py wholesale (it carries M5). Graft your app.py hunks onto the box's current file; verify /pm/arm=0
+    + a `16caedfe` base. (NOTE: `is_admin` is no longer a fixed count — DEPLOY-7's scoping legitimately raised it
+    14->28; gate a future deploy on /pm/arm=0 + the base sha, NOT on a hardcoded is_admin count.)
   * **main.py NEVER ships from this branch** (it carries the engine's per-account driver wiring). UI deploys are
     pm_web-only. `git diff --name-only <deployed> <target> -- .../main.py` must be empty before any deploy.
 
@@ -252,3 +258,42 @@ a real engine-outage finding for Jack + the engine chat, NOT a UI defect.
   DB-per-cycle is confirmed the DEMOTE gate is already met).
 - **Sport-specific ATP/UFC/WTA cards**, **Farm League redesign** — see §5 (design decisions, unchanged).
 - **/farm/cs 404** — pre-existing; owned by whoever created the `cs` category, not the tiles workstream.
+
+--------------------------------------------------------------------------------
+## 9. LIVE SUB-DIVISIONS REDESIGN (DEPLOY 7, 2026-09-10) — cold-start for the next pass
+
+**Prod state.** GET /live is the Claude-Design redesign, LIVE at branch `pm-tiles-redesign-2026-09-10` @ `5c047f4`
+(tag `pm-tiles-deploy7-2026-09-10`). Box app.py = `16caedfe6a193737` (is_admin=28, /pm/arm=0). Schema head 20 (no
+migration). Full build+deploy narrative + field map + before/after shas: `PM_TILES_REDESIGN_BUILD_2026-09-10.md`.
+
+**Architecture (what is live).** Server-rendered, pm_web-only, keyed off DB state; JS is enhancement-only.
+- **Per-account TABS** via `?account=` in the URL (JS-off works). SCOPED (R6/M4): admin sees all tabs, a non-admin
+  only accounts whose `owner_identity` == their identity; no identity -> nothing. The scoping (`authz.visible_account_ids`)
+  is now applied to `_load_live_list` AND `live_subdivision_page` (403) AND `/live/events` — the whole /live surface,
+  not just the account pages (this closed the add#5 unscoped-detail-route finding).
+- **READERS** (`subdivision.py`): `realized_windows_all` (ET-calendar today/week/month + all-time; all-time == the
+  account page, ties out), `last_events_all`, `events_since` (the pulse). **ASSEMBLER** (`live_view.build_subdivisions_context`,
+  PURE): activity classifier LIVE/UPCOMING/SETTLED/INACTIVE/UNATTACHED via an explicit per-category feed hook
+  `_event_underway` (MLB game feed + `parse_ticker_start` HHMM for cs2/nfl/nba/nhl/wnba/cfb; everything else
+  unknown->UPCOMING); `name_market` R2 (feed -> Mark.title -> describe_market -> "<CAT> market", never a ticker);
+  `SPORTS`/`LIVE_CAPABLE`/`RETIRED_CATEGORIES` consts. **EVENTS**: `GET /live/events?since=<id>` JSON + `pm_live_subs.js`
+  (60s poll + placed/closed pulse + two close tones, sound off by default). **LOGOS** `static/logos/<CODE>.png` (21),
+  runtime-versioned; monogram fallback (SOCCER).
+- **The LIVE event block + the UPCOMING NEXT line are PARTIALS** (`partials/pm_subs_event.html`,
+  `pm_subs_eventline.html`) — Jack may strip either with one `{% include %}` (his standing note: "may strip the LIVE
+  event block / NEXT line later"). CSS is scoped under `.subs` in `pm_desk.css` (no collision; reuses the palette +
+  shell header). Cache-bust: `pm_desk.css?v=80c88cc2`; logos + `pm_live_subs.js` runtime CR-stripped sha8.
+
+**Backlog (redesign follow-ups).**
+- **Per-sport feeds for tennis / UFC / soccer / Fed** — today only MLB has a game feed and only MLB + the
+  ticker-HHMM sports can read LIVE; the rest stay UPCOMING even once underway. Adding a feed is ONE function
+  (`_event_underway`'s else branch) + a scoreboard partial. ★ Candidate source noted: the **Kalshi public
+  milestones/market endpoint** (already polled for prices) exposes `status` + `occurrence_datetime` — could drive a
+  coarse underway/settled signal per market without a per-sport sports API (see the 2026-09-09 inventory item 12:
+  occurrence_datetime is the RESOLUTION time, not the start — treat accordingly).
+- **Retire the SOCCER category engine-side** — the `kalshi_jack/soccer` orphan (att=0, no matcher) renders as the
+  dashed orphan because pm_web can't do a data-driven "no matcher" check (the matcher registry is engine-side;
+  importing it would break the standalone invariant). Retiring `soccer` engine-side (remove the sub-division / mark
+  it retired) would drop the dead row cleanly.
+- **LIVE event block / NEXT line** — Jack may strip either (each is one include). Non-MLB LIVE tiles show a market
+  label + positions, no scoreboard (only MLB has a feed).
