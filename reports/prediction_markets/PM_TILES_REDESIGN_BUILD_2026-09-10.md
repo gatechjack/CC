@@ -384,3 +384,66 @@ DEPLOY 7.2 SHAPE (Jack's to call; pm_web-only, ONE pm_web restart, engine untouc
 app.py change, NO logo change, NO migration;
 served pm_desk.css must read 246a3fa9 + shell ?v=246a3fa9 after; verify /live event block groups by game + marks
 the held team on Jack/MLB. (app.py stays 16caedfe; pm_live_subs.js stays fe29f6e5.)
+
+
+================================================================================================
+DEPLOY 7.2 -- 2026-09-11 (DEPLOYED LIVE; pm_web-only + ONE pm_web restart; engine NEVER touched)
+================================================================================================
+Board-authorized. Shipped the event-block fix: 4 pm_web files wholesale (NO app.py graft, NO logos, NO migration),
+ONE prediction-markets-web restart via az. Engine trading-corp (PID 302180, ARMED) NOT restarted/reloaded/touched.
+All gates passed; no rollback. Deploy target = branch pm-tiles-redesign-2026-09-10 @ 97f9304 (the 4 shipped files
+are byte-identical to the EVENT BLOCK FIX commit f055b7b; later commits touched only the report). Tag
+pm-tiles-deploy7.2-2026-09-11. MEASUREMENT RULE (CR-strip both sides) throughout. Runners
+cc/pm_deploy72_{precheck_ro,apply,postcheck_ro,fetch_ro}.* + gen (inline) + reused pm_deploy7_restart_az.ps1.
+
+PRE-CHECK (pm_deploy72_precheck_ro, 2026-09-10T17:51Z) -- ALL GATES PASS, NO DRIFT:
+  engine 302180 NRestarts 0 active; pm_web 302553 active; schema 20. COUNTS 43/30/13/30. heartbeat 30 rows,
+  0 STALE/NEVER. orders jack=276 karen=164. DRIFT GATE: live_view c0f44414, pm_subs_event 6fcb55b8, pm_desk
+  80c88cc2, pm_shell 8a10c80d -- all == report BEFORE. app.py 16caedfe6a193737 /pm/arm=0 (UNCHANGED, not shipped).
+  served pm_desk.css 80c88cc2. Both subs held the defect set: kalshi_jack/mlb + kalshi_karen/mlb =
+  KXMLBGAME-26SEP101215TBATL-ATL + KXMLBGAME-26SEP101305HOUPHI-PHI (two games, both underway at check time).
+  CONFIRMED app.py + main.py NOT shipped (the apply writes exactly the 4 named files; app.py drift-gated unchanged).
+
+BACKUP (a GATE) = /home/azureuser/pm_deploy72_backup_20260910T175147Z. The 4 files copied + VERIFIED (each backup
+  CR-stripped sha == box) before any write.
+
+APPLY (pm_deploy72_apply.sh; base64 -> tmp -> sha16 gate -> mv; NO graft): drift re-gate == BEFORE + app.py
+  unchanged; 4 files written (live_view a4f233fb18f0cc3c, pm_subs_event 3dd74d8ee56d3ea5, pm_desk 246a3fa9dd20376c,
+  pm_shell 6141979a864e4c04); py_compile live_view OK; import OK engine_imports=[]; _live_event + _held_team_code
+  present. No package/venv/unit change.
+
+RESTART (pm_deploy7_restart_az) -- pm_web ONLY: pm_web 302553 -> 309331 active/running. Engine trading-corp
+  302180 -> 302180 UNCHANGED, NRestarts 0 before + after.
+
+POST-CHECK (pm_deploy72_postcheck_ro, after one poll cycle, 2026-09-10T17:54Z) -- checks 7-12 ALL PASS:
+  7.  /live 200 both tabs; alarm strip = 0 (all armed subs RUNNING/IDLE, correct).
+  8.  EVENT BLOCK (a game WAS underway -> OBSERVED on the served page, not just the harness): the served
+      /live?account=kalshi_jack LIVE MLB tile has 2 evrows --
+        HOU 1 / *PHI 0 (TOP 4 . 1 out . 1-0) -> positions [ML PHI]  (held PHI marked .mine)
+        TB 0 / *ATL 0  (MID 8)                -> positions [ML ATL]  (held ATL marked .mine)
+      PHI ABSENT from the TB@ATL row; ATL ABSENT from the HOU@PHI row (the exact defect, fixed). raw KX...- tickers
+      on the page = 0 (R2). The deployed-code grouping proof (post-check python, real held tickers, both games
+      stubbed underway) independently returned rows=2 per sub, each game its own position. Render:
+      cc/renders/deploy72_live_prod.png.
+  9.  Card page /live/kalshi_jack/mlb 200 (leg-aware ML now labels the held team on the card too -- expected, not a
+      regression; both held positions are YES-leg today so no visible flip observed).
+  10. OPEN line on the LIVE tile = 2 pos; block rows list 2 positions (one per game) <= open count. Consistent.
+  11. Cache-bust: served pm_desk.css = 246a3fa9 (== target), shell ?v=246a3fa9; pm.css/pm_desk/subs.js/htmx all 200;
+      / + /farm + every real /farm/{category} 200 (no 404; /farm/search excluded -- POST-only, pre-existing).
+  12. Engine 302180 NRestarts 0 UNCHANGED across all steps; 0 journalctl -p err since the restart; 0 double-escaped
+      entities on /live; order counts to reconcile next cycle (jack 276 / karen 164 at pre-check; pm_web places
+      nothing).
+
+FILE LIST -- before(box, Deploy 7/7.1)/after CR-stripped sha16 (4 files):
+  web/live_view.py                          c0f44414031194c4 -> a4f233fb18f0cc3c
+  web/templates/partials/pm_subs_event.html 6fcb55b8db032b70 -> 3dd74d8ee56d3ea5
+  web/static/pm_desk.css                    80c88cc28abbc1b7 -> 246a3fa9dd20376c
+  web/templates/pm_shell.html               8a10c80d04f4a126 -> 6141979a864e4c04
+  web/app.py                                16caedfe6a193737 (UNCHANGED -- NOT shipped, drift-gated)
+  web/static/pm_live_subs.js                fe29f6e59d972a16 (UNCHANGED -- NOT shipped)
+main.py: NOT shipped/touched. No migration; schema head 20. NEW BOX app.py reference is UNCHANGED = 16caedfe6a193737.
+
+PIDs: pm_web 302553 -> 309331. Engine 302180 UNCHANGED, NRestarts 0 throughout. Backup
+  /home/azureuser/pm_deploy72_backup_20260910T175147Z (4 files; rollback = restore + pm_web-only restart). Skipped/
+  notes: no app.py graft (unchanged), no logos, no migration, no package/venv change. Engine + both trading
+  accounts + the order path never touched.

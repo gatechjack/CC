@@ -1,7 +1,8 @@
 # PM UI — HANDOFF for the next UI code agent
 
-**STATUS: CURRENT — last updated 2026-09-10 (folds in DEPLOY 7: the Live Sub-divisions REDESIGN — Claude Design port
-of GET /live). Prior: DEPLOY 6 (the tile page), DEPLOY 5 (settled-slot whale + bet-slot pass). This is the current
+**STATUS: CURRENT — last updated 2026-09-11 (folds in DEPLOY 7.2: the LIVE event-block group-by-game + held-side
+fix; and 7.1: sound-toggle persistence). Base: DEPLOY 7, the Live Sub-divisions REDESIGN — Claude Design port of
+GET /live. Prior: DEPLOY 6 (the tile page), DEPLOY 5 (settled-slot whale + bet-slot pass). This is the current
 handoff; the filename keeps its original date so existing references resolve. ★ The pm-ui-rewrite branch is now a
 STALE SUBSET of the box — the box has advanced via the
 driver-liveness (heartbeat + account-page liveness panel), farm-search, remaining-categories, and DEPLOY-6 tile
@@ -31,7 +32,11 @@ Deploy history (all pm_web-only, engine never restarted):
   settled-slot whale) -> **6 (2026-09-07) the Live Sub-divisions TILE page** (branch pm-tiles-2026-09-07 @ df38514)
   -> **7 (2026-09-10) the Live Sub-divisions REDESIGN** (branch pm-tiles-redesign-2026-09-10 @ 5c047f4, tag
   pm-tiles-deploy7-2026-09-10; 8 pm_web files + 21 logos + app.py graft, ONE pm_web restart 235587->298063, engine
-  292771 untouched; report PM_TILES_REDESIGN_BUILD_2026-09-10.md).
+  292771 untouched; report PM_TILES_REDESIGN_BUILD_2026-09-10.md)
+  -> **7.1 (2026-09-10) sound-toggle persistence** (pm_live_subs.js fe29f6e5, restart 298063->302553, tag
+  pm-tiles-deploy7.1-2026-09-10)
+  -> **7.2 (2026-09-11) LIVE event-block group-by-game + held-side** (4 files @ 97f9304, NO app.py change, restart
+  302553->309331, engine 302180 untouched, tag pm-tiles-deploy7.2-2026-09-11).
 ★ NOTE: between DEPLOY 5 and 6 the box ALSO took non-UI-rewrite-branch deploys (driver-liveness incl. the heartbeat
 tables + the account-page liveness panel; farm-search; remaining-categories), so the box pm_web is AHEAD of the
 pm-ui-rewrite branch. Always graft onto BOX-CURRENT; do not wholesale-copy from a branch.
@@ -260,7 +265,25 @@ a real engine-outage finding for Jack + the engine chat, NOT a UI defect.
 - **/farm/cs 404** — pre-existing; owned by whoever created the `cs` category, not the tiles workstream.
 
 --------------------------------------------------------------------------------
-## 9. LIVE SUB-DIVISIONS REDESIGN (DEPLOY 7, 2026-09-10) — cold-start for the next pass
+## 9. LIVE SUB-DIVISIONS REDESIGN (DEPLOY 7 / 7.1 / 7.2) — cold-start for the next pass
+
+★ **DEPLOY 7.2 (2026-09-11) — LIVE event-block fix.** The LIVE tile's event block now shows ONE compact row PER
+UNDERWAY game, each listing ONLY that game's held positions (it previously attached EVERY open position to a single
+underway game — Jack's Jack/MLB screenshot showed a PHI position under the TB@ATL block). GROUPING RULE:
+`live_view._live_event` buckets open positions by the card-page join (`game_key_from_ticker` for MLB, the match
+stem for live-capable non-MLB), emits underway games most-recently-started-first capped at 3 (+N more live), and
+OMITS a ticker that joins no game (never guesses it onto one). LEG-AWARE ML SHORTHAND: `_short_label`'s moneyline
+branch now returns the team WE HOLD (YES club for a YES/absent leg, the OTHER club for a NO leg, via
+`_held_team_code`) — this is the SAME shorthand the CARD PAGE renders, so a NO-leg ML on `/live/{acct}/{cat}` now
+also shows the held team in its compact label (expected, matches its own describe_market desc). The held ML team is
+marked in the score line (a `.mine` dot). Deployed 4 files (live_view a4f233fb, pm_subs_event 3dd74d8e, pm_desk
+246a3fa9, pm_shell ?v=246a3fa9), NO app.py change, ONE pm_web restart 302553->309331, engine 302180 untouched.
+Tag pm-tiles-deploy7.2-2026-09-11. Observed live on prod: HOU@PHI -> [ML PHI], TB@ATL -> [ML ATL], each held team
+marked, PHI never under TB@ATL. Report: PM_TILES_REDESIGN_BUILD_2026-09-10.md (DEPLOY 7.2 section).
+★ **DEPLOY 7.1 (2026-09-10) — sound-toggle persistence.** `pm_live_subs.js` persists the Sound on/off preference in
+`localStorage` ('pmSubsSound') and restores it on load; it was resetting on every tab/tile navigation (the tabs are
+real ?account= reloads). One JS file (fe29f6e5), one pm_web restart. Tag pm-tiles-deploy7.1-2026-09-10.
+
 
 **Prod state.** GET /live is the Claude-Design redesign, LIVE at branch `pm-tiles-redesign-2026-09-10` @ `5c047f4`
 (tag `pm-tiles-deploy7-2026-09-10`). Box app.py = `16caedfe6a193737` (is_admin=28, /pm/arm=0). Schema head 20 (no
@@ -287,10 +310,12 @@ migration). Full build+deploy narrative + field map + before/after shas: `PM_TIL
 **Backlog (redesign follow-ups).**
 - **Per-sport feeds for tennis / UFC / soccer / Fed** — today only MLB has a game feed and only MLB + the
   ticker-HHMM sports can read LIVE; the rest stay UPCOMING even once underway. Adding a feed is ONE function
-  (`_event_underway`'s else branch) + a scoreboard partial. ★ Candidate source noted: the **Kalshi public
-  milestones/market endpoint** (already polled for prices) exposes `status` + `occurrence_datetime` — could drive a
-  coarse underway/settled signal per market without a per-sport sports API (see the 2026-09-09 inventory item 12:
-  occurrence_datetime is the RESOLUTION time, not the start — treat accordingly).
+  (`_event_underway`'s else branch, which now also drives the per-game grouping) + a scoreboard partial.
+  ★ CANDIDATE SOURCE (corrected 2026-09-11): Kalshi's **milestones / live_data endpoints** — these carry the event
+  START TIME and live SCORES, which is what a real "underway + scoreboard" needs. Do NOT use the market object's
+  `occurrence_datetime` for this — it is the RESOLUTION (expected-expiration) time, not the start (2026-09-09
+  inventory item 12). The score line + true underway flag come from milestones/live_data, not the market's time
+  fields.
 - **Retire the SOCCER category engine-side** — the `kalshi_jack/soccer` orphan (att=0, no matcher) renders as the
   dashed orphan because pm_web can't do a data-driven "no matcher" check (the matcher registry is engine-side;
   importing it would break the standalone invariant). Retiring `soccer` engine-side (remove the sub-division / mark
