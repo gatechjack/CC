@@ -27,7 +27,7 @@ def test_classify_five_states_distinct():
     assert LA.classify_leg_audit("ok") == LA.STATE_CLEAN
     assert LA.classify_leg_audit("na") == LA.STATE_CLEAN
     assert LA.classify_leg_audit(None) == LA.STATE_LEGACY
-    assert LA.classify_leg_audit("") == LA.STATE_LEGACY
+    assert LA.classify_leg_audit("") == LA.STATE_UNEVALUATED   # non-null blank == unreadable -> surfaced, not dropped
 
 
 def test_unknown_verdict_fails_safe_to_unevaluated_not_clean():
@@ -121,3 +121,30 @@ def test_reader_honest_empty_on_pre_migration_schema(tmp_path):
     conn.commit()
     s = LA.read_leg_audit_reviews(conn)
     assert s["schema_ok"] is False and s["total_surfaced"] == 0
+
+
+def test_reader_empty_account_scope_surfaces_nothing(tmp_path):
+    """A viewer scoped to ZERO accounts ([]) must see NOTHING -- [] must NEVER fall through to all-accounts (a leak).
+    None (the operator/CLI runner) stays unscoped and sees everything. This pins the cross-account-leak fix."""
+    p = str(tmp_path / "pm.db"); db.init_db(p); conn = _conn(p)
+    _seed(conn, [("kalshi_jack", "mls", "KXMLSGAME-A-LAFC", "yes", "No", "REVIEW:soccer_leg!=outcome:yes/No", 0)])
+    unscoped = LA.read_leg_audit_reviews(conn)                    # None -> operator, sees it
+    scoped_none = LA.read_leg_audit_reviews(conn, account_ids=[]) # [] -> viewer owns no account, sees nothing
+    assert unscoped["total_surfaced"] == 1
+    assert scoped_none["schema_ok"] is True
+    assert scoped_none["total_surfaced"] == 0 and scoped_none["rows"] == []
+
+
+def test_reader_inversion_never_truncated_below_cap(tmp_path):
+    """An OLDER inversion must survive the row cap ahead of a wall of newer soft/unevaluated rows (severity-first),
+    and the honest count still reflects everything even when rows are capped."""
+    p = str(tmp_path / "pm.db"); db.init_db(p); conn = _conn(p)
+    rows = [("kalshi_jack", "mls", "KXMLSGAME-OLD-LAFC", "yes", "No", "REVIEW:soccer_leg!=outcome:yes/No", 0)]  # oldest ts
+    for i in range(60):
+        rows.append(("kalshi_jack", "cs2", "KXCS2-%d" % i, "yes", "x", "unchecked", 0))   # 60 NEWER unevaluated
+    _seed(conn, rows)   # _seed stamps response_ts = 1000+i in order -> inversion is the OLDEST
+    s = LA.read_leg_audit_reviews(conn, limit=50)
+    assert s["counts"][LA.STATE_INVERSION] == 1
+    assert s["total_surfaced"] == 61 and s["shown"] == 50    # count honest; rows capped
+    assert s["rows"][0]["state"] == LA.STATE_INVERSION       # inversion leads, never truncated
+    assert any(r["state"] == LA.STATE_INVERSION for r in s["rows"])

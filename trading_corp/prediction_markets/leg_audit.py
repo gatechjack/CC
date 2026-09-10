@@ -46,7 +46,7 @@ def classify_leg_audit(leg_audit):
         return STATE_LEGACY
     v = str(leg_audit).strip()
     if v == "":
-        return STATE_LEGACY
+        return STATE_UNEVALUATED   # non-null but blank == unreadable, NOT pre-audit -> could-not-decide (never dropped)
     if v.startswith("REVIEW"):
         return STATE_INVERSION
     if v.startswith("code_review"):
@@ -71,34 +71,41 @@ def read_leg_audit_reviews(conn, account_ids=None, limit=50):
     empty summary with schema_ok=False rather than raising (mirrors the tile readers' honest-empty contract)."""
     cols = [r[1] for r in conn.execute("PRAGMA table_info(pm_subdivision_order)")]
     if "leg_audit" not in cols:
-        return {"schema_ok": False, "counts": {}, "total_surfaced": 0, "by_account": {}, "rows": []}
+        return {"schema_ok": False, "counts": {}, "total_surfaced": 0, "by_account": {}, "rows": [], "shown": 0}
     where = "dry_run=0 AND leg_audit IS NOT NULL"
     params = []
-    if account_ids:
+    if account_ids is not None:          # None = unscoped (operator / CLI runner). A list = scope to exactly these.
+        if not account_ids:              # [] = the viewer can see NO account -> surface nothing. NEVER fall through
+            return {"schema_ok": True, "counts": {s: 0 for s in SURFACED_STATES},   # to all-accounts (that is a leak).
+                    "total_surfaced": 0, "by_account": {}, "rows": [], "shown": 0}
         where += " AND account_id IN (%s)" % ",".join("?" * len(account_ids))
         params.extend(account_ids)
     q = ("SELECT id, account_id, category, ticker, outcome_leg, signal_outcome, signal_slug, leg_audit, "
          "outcome_status, response_ts FROM pm_subdivision_order WHERE %s ORDER BY response_ts DESC, id DESC" % where)
     counts = {s: 0 for s in SURFACED_STATES}
     by_account = {}
-    rows = []
+    _sev = {s: i for i, s in enumerate(SURFACED_STATES)}   # inversion(0) < soft(1) < unevaluated(2)
+    surfaced = []
     for r in conn.execute(q, params):
         st = classify_leg_audit(r["leg_audit"])
         if st not in SURFACED_STATES:
             continue
-        counts[st] += 1
+        counts[st] += 1                  # counts are over ALL matches -> the headline stays honest even when capped
         by_account.setdefault(r["account_id"], {s: 0 for s in SURFACED_STATES})[st] += 1
-        if len(rows) < limit:
-            rows.append({
-                "id": r["id"], "account": r["account_id"], "category": r["category"], "ticker": r["ticker"],
-                "outcome_leg": r["outcome_leg"], "signal_outcome": r["signal_outcome"], "signal_slug": r["signal_slug"],
-                "leg_audit": r["leg_audit"], "state": st, "state_label": state_label(st),
-                "outcome_status": r["outcome_status"], "response_ts": r["response_ts"],
-            })
+        surfaced.append((_sev[st], -(r["response_ts"] or 0), -(r["id"] or 0), {
+            "id": r["id"], "account": r["account_id"], "category": r["category"], "ticker": r["ticker"],
+            "outcome_leg": r["outcome_leg"], "signal_outcome": r["signal_outcome"], "signal_slug": r["signal_slug"],
+            "leg_audit": r["leg_audit"], "state": st, "state_label": state_label(st),
+            "outcome_status": r["outcome_status"], "response_ts": r["response_ts"],
+        }))
+    # severity-first, then newest, then id -- so an INVERSION is NEVER truncated below the cap by a wall of soft/uneval.
+    surfaced.sort(key=lambda t: (t[0], t[1], t[2]))
+    rows = [t[3] for t in surfaced[:limit]]
     return {
         "schema_ok": True,
         "counts": counts,
         "total_surfaced": sum(counts.values()),
         "by_account": by_account,
         "rows": rows,
+        "shown": len(rows),              # < total_surfaced when capped -> the UI/runner say "showing N of M"
     }
