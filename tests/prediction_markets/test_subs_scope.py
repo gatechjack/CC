@@ -99,4 +99,9 @@ def test_cache_bust_pm_desk_matches_shell(monkeypatch, tmp_path):
     assert m, "pm_desk.css cache-bust tag missing from the shell"
     disk = hashlib.sha256(open(os.path.join(appmod._STATIC_DIR, "pm_desk.css"), "rb").read().replace(b"\r", b"")).hexdigest()[:8]
     assert m.group(1) == disk, "pm_desk.css changed but the shell ?v= was not bumped"
-    assert len(appmod._LOGO_VERSIONS) == 21 and appmod._SUBS_JS_V                 # logos + JS are versioned
+    # logos + JS are versioned (runtime CR-stripped sha8 -> the ?v= can never go stale). Pin the 21-logo roster
+    # (incl. the swapped-square BUN/MEX) so a dropped/renamed asset is caught.
+    assert set(appmod._LOGO_VERSIONS) == {
+        "ATP", "BRA", "BUN", "CFB", "CS2", "EPL", "FED", "FL1", "LAL", "MEX", "MLB", "MLS",
+        "NBA", "NFL", "NHL", "SEA", "UCL", "UEL", "UFC", "WNBA", "WTA"}
+    assert appmod._SUBS_JS_V and all(v for v in appmod._LOGO_VERSIONS.values())
