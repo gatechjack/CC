@@ -587,16 +587,66 @@ def category_volume_order(conn, account_id: str, cats: list, *, now_ts: int, win
         return sorted(cats)
 
 
+# ── RUNG 3: the no-leg-lens NET -- an INDEPENDENT post-fill leg/side re-derivation ────────────────────
+# The audit's structural finding: Decision.leg is "NEVER re-derived" and NOTHING downstream compares the
+# whale's outcome to the (ticker, leg) we chose. This closes that -- it re-derives the expected side from
+# the RAW whale outcome + the ticker's OWN -CODE, sharing no transform with the matcher, and PERSISTS both
+# the verdict and the signal-time intent. A REVIEW is an audit flag (logged + stored), never a block: the
+# matcher guards already fail-closed at match time; this is defence-in-depth + the record that makes a
+# post-hoc "did we copy the whale's actual side?" audit possible (the 188-unverifiable bucket).
+_AUDIT_SOCCER_CATS = frozenset({"epl", "lal", "fl1", "sea", "bun", "mls", "bra", "mex", "ucl", "uel"})
+_AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc"})
+
+
+def _audit_leg_independent(category, signal_outcome, ticker, leg):
+    """Return 'ok' | 'na' | 'unchecked' | 'REVIEW:<why>'. Independent of the matcher's leg choice."""
+    import re
+    oc = (signal_outcome or "").strip()
+    tk = ticker or ""
+    if not oc:
+        return "unchecked"
+    if category in _AUDIT_NAME_CATS:
+        if tk.startswith("KXUFCDISTANCE-"):                       # go-the-distance is a Yes/No binary, not a name
+            low = oc.lower(); exp = "yes" if low == "yes" else "no" if low == "no" else None
+            return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:distance_leg!=outcome:%s/%s" % (leg, oc))
+        code = tk.rsplit("-", 1)[-1] if "-" in tk else ""         # the ticker's OWN side code (independent evidence)
+        c = re.sub(r"[^a-z0-9]", "", code.lower()); n = re.sub(r"[^a-z0-9]", "", oc.lower())
+        i = 0
+        for ch in n:
+            if i < len(c) and ch == c[i]:
+                i += 1
+        # 'code_review' (soft, persisted, NOT WARN-logged): a legit non-subsequence code exists (Team
+        # Liquid->TL, McNally->MCC), so this is an audit trail, not an alarm. The matcher already
+        # code-anchors name-family at match time; only unambiguous leg inversions (below) raise REVIEW.
+        return "ok" if (c and i == len(c)) else "code_review:code_not_in_outcome:%s!<%s" % (code, oc[:24])
+    if category in _AUDIT_SOCCER_CATS:                            # Yes->yes / No->no (a disagreeing leg = inversion)
+        exp = "yes" if oc == "Yes" else "no" if oc == "No" else None
+        return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:soccer_leg!=outcome:%s/%s" % (leg, oc))
+    if "TOTAL-" in tk:                                            # structural total: Over->yes / Under->no
+        low = oc.lower(); exp = "yes" if low == "over" else "no" if low == "under" else None
+        return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:total_leg!=outcome:%s/%s" % (leg, oc))
+    return "na"                                                   # structural moneyline/spread: matcher is code-anchored
+
+
 # ── the durable live-order journal (dry_run=0): PENDING insert (pre-POST) + finalize (post-POST) ───────
 def _record_order(conn, sub, signal, decision, *, outcome_status, fill=None, error_detail=None, now_ts):
     """INSERT the live-order row (dry_run=0). Called PRE-POST with outcome_status='submitting' (no fill) so the coid
     is journaled BEFORE the POST -- gate-4 dedup then prevents a re-drive on any failure. `fill_price` is the
-    OUTCOME-LEG per-contract price (FillEvent.price is leg-corrected: 1-yes for a NO leg)."""
+    OUTCOME-LEG per-contract price (FillEvent.price is leg-corrected: 1-yes for a NO leg). Rung 3: also persists the
+    whale's SIGNAL-TIME outcome/slug (copy intent) + an INDEPENDENT leg-audit verdict (schema 021 columns)."""
+    sig_out = getattr(signal, "outcome", None)
+    sig_slug = getattr(signal, "slug", None)
+    leg_audit = _audit_leg_independent(sub.category, sig_out, decision.kalshi_ticker, decision.leg)
+    if isinstance(leg_audit, str) and leg_audit.startswith("REVIEW"):
+        _LOG.warning("leg_audit REVIEW %s/%s coid=%s ticker=%s leg=%s outcome=%r :: %s",
+                     sub.account_id, sub.category, decision.client_order_id, decision.kalshi_ticker,
+                     decision.leg, sig_out, leg_audit)
     conn.execute(
         "INSERT INTO pm_subdivision_order (account_id, category, wallet, condition_id, outcome_index, signal_id, "
         " client_order_id, ticker, order_side, outcome_leg, is_exit, submitted_count, submitted_price, "
         " time_in_force, outcome_status, broker_order_id, fill_count, fill_price, fee, error_detail, close_source, "
-        " dry_run, submitted_ts, response_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
+        " signal_outcome, signal_slug, leg_audit, dry_run, submitted_ts, response_ts)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
         (sub.account_id, sub.category, signal.wallet, signal.condition_id, signal.outcome_index, signal.signal_id,
          decision.client_order_id, decision.kalshi_ticker, decision.body.get("side"), decision.leg,
          1 if signal.is_exit else 0, decision.count, decision.price, decision.body.get("time_in_force"),
@@ -604,6 +654,7 @@ def _record_order(conn, sub, signal, decision, *, outcome_status, fill=None, err
          (float(getattr(fill, "qty", 0.0)) if fill else None), (float(getattr(fill, "price", 0.0)) if fill else None),
          (float(getattr(fill, "fee", 0.0)) if fill else None), error_detail,
          getattr(signal, "close_source", None),   # 'opposed' for a cancellation-by-disagreement; None for entry/whale-exit
+         sig_out, sig_slug, leg_audit,             # Rung 3: copy intent + independent leg-audit verdict (schema 021)
          int(now_ts), int(now_ts)))
     if hasattr(conn, "commit"):
         conn.commit()

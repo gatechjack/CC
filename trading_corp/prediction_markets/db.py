@@ -905,6 +905,24 @@ MIGRATION_020: list[str] = [
     ")",
 ]
 
+# migration 021 (2026-09-10, LEG-INDEPENDENCE observability -- Rung 3). Persist the whale's SIGNAL-TIME side on
+# every order + the independent post-fill leg-audit verdict. The audit found 188 of 234 entries UNVERIFIABLE
+# because we recorded signal_id but NOT the whale's outcome/slug at copy time, so a wrong-side fill could never be
+# distinguished post-hoc from a whale flip. These three additive columns close that: signal_outcome + signal_slug
+# capture the copy INTENT verbatim (so a later settlement reconcile can compare intent vs the whale's actual side),
+# and leg_audit stores an INDEPENDENT re-derivation of the chosen (ticker, leg) that shares no transform with the
+# matcher (the no-leg-lens net). All three are ADDITIVE + nullable -> pre-migration rows read honest-NULL and the
+# recorder guards on nothing (a box that has not applied 021 simply never sets them). ★ NUMBER 021 IS THE NEXT
+# CONTIGUOUS after 020 (test_schema_head_tracks_migrations: [v...] == range(1, HEAD+1)); the DEPLOY GATE must
+# drift-check the LIVE box schema head == 20 immediately before applying and RENUMBER to the box-head+1 if
+# pm-ui-rewrite (or any workstream) shipped a 021 first -- a MAX(version) counter SILENTLY SKIPS a colliding number
+# (the 28h-clobber hazard). Additive; one table; the recorder degrades to NULL on a pre-migration schema.
+MIGRATION_021: list[str] = [
+    "ALTER TABLE pm_subdivision_order ADD COLUMN signal_outcome TEXT",   # whale's outcome string at COPY time (the intent)
+    "ALTER TABLE pm_subdivision_order ADD COLUMN signal_slug    TEXT",   # whale's slug at COPY time (for the reconcile)
+    "ALTER TABLE pm_subdivision_order ADD COLUMN leg_audit      TEXT",   # independent post-fill verdict: ok|na|unchecked|REVIEW:*
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -928,6 +946,8 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (20, MIGRATION_020),   # DRIVER LIVENESS: pm_driver_task_heartbeat + pm_driver_heartbeat (3-grain liveness).
                            # ★ CONTESTED with pm-ui-rewrite's reserved 020 -- resolved at DEPLOY by the box-head
                            # drift-check + renumber-to-021 (see the MIGRATION_020 banner). Contiguous by design.
+    (21, MIGRATION_021),   # LEG-INDEPENDENCE obs: pm_subdivision_order.signal_outcome/signal_slug/leg_audit (Rung 3).
+                           # ★ DEPLOY GATE: drift-check box head == 20 before applying; renumber to box-head+1 on collision.
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"
