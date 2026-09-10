@@ -315,3 +315,71 @@ PIDs: pm_web 235587 -> 298063. Engine 292771 UNCHANGED, NRestarts 0 throughout. 
   removed). Skipped/notes: the apply [E] is_admin==14 gate false-stop (verified correct read-only, see above); no
   app.py wholesale (grafted); no main.py; no migration; no package/venv change. The engine + both trading accounts
   + the order path were never touched.
+
+
+================================================================================================
+EVENT BLOCK FIX -- 2026-09-11 (Deploy 7.2; BUILT + TESTED + COMMITTED, NOT DEPLOYED)
+================================================================================================
+Board-authorized fix of the LIVE tile event block. Branch pm-tiles-redesign-2026-09-10 @ f055b7b (worktree
+cc-pm-tiles-redesign-wt). pm_web-only; app.py NOT touched; no migration; NOT pushed/deployed/restarted (Jack calls
+Deploy 7.2 separately).
+
+ROOT CAUSE (where the grouping went wrong). live_view._live_event picked ONE underway game for the scoreboard
+(the first held ticker whose feed game is_live), then built the position rows with `_event_rows(positions, marks)`
+over ALL of the sub-division's open positions -- so every open MLB position was attached to that one game. On
+Jack's live Jack/MLB tile that rendered "TB 0 ATL 0 ... ML ATL / ML PHI", but PHI is from HOU@PHI, a different
+game. Two defects: (a) no grouping by game; (b) ML showed the market's YES club, not the side we hold.
+
+EVIDENCE (real box-held positions, read-only box-scratch cc/pm_eventfix_boxscratch_ro.*, 2026-09-11): both
+kalshi_jack/mlb and kalshi_karen/mlb held exactly the two-game set that triggered it --
+  KXMLBGAME-26SEP101215TBATL-ATL (TB@ATL, held ATL) + KXMLBGAME-26SEP101305HOUPHI-PHI (HOU@PHI, held PHI).
+The old code put BOTH ATL and PHI under the one underway game. Running the NEW _live_event on those exact tickers
+(both games stubbed underway) yields TWO rows: TB@ATL -> [ML ATL] (PHI ABSENT), HOU@PHI -> [ML PHI] (ATL ABSENT),
+each with the held team marked home. Defect resolved.
+
+THE FIX (live_view.py):
+  FIX 1 -- GROUP BY GAME. _live_event now buckets the sub's OPEN positions by the SAME ticker->game join the card
+    page uses: game_key_from_ticker for MLB, the match stem (ticker minus the leg suffix) for live-capable non-MLB.
+    It emits ONE compact row PER UNDERWAY game, each listing ONLY that game's positions, ordered most-recently-
+    started first, capped at 3 with `more` = overflow (the tile links '+N more live' to the detail page). Positions
+    on games that are NOT underway are not in the block -- they remain summarised on the OPEN line.
+  FIX 2 -- OUR SIDE, EXPLICIT, SAME SHORTHAND. _short_label's ML branch is now leg-aware via a new _held_team_code
+    (YES club for a YES/absent leg, the OTHER club for a NO leg) -- ML now carries direction like TOT (+/-) and SPR
+    (sign + team) already do, and it is the SAME _short_label the card page renders (not a second labeler; the card
+    page's ML compact label becomes leg-aware too, matching its own describe_market desc). The held ML team is also
+    marked in the score line (away_ours/home_ours -> a small filled .mine dot beside that team), so the score line
+    itself says who we're cheering for. Codes only; kind . label . value; no extra columns, no spelled-out names.
+    Settled-during-game rows keep the card-page ✓/✕ rendering (not reachable from the tile's open-positions-only
+    feed today, but the partial + CSS carry it).
+  FIX 3 -- DEFENSIVE. A position whose ticker joins no game (parser miss / bad ticker) is OMITTED from the block,
+    never attached to a game by default; it stays counted on the OPEN line.
+
+FILES (pm_web-only) -- CR-stripped sha16, BEFORE(box, Deploy 7/7.1) -> AFTER(branch):
+  web/live_view.py                          c0f44414031194c4 -> a4f233fb18f0cc3c   (_live_event group-by-game,
+                                                                                    _held_team_code, _short_label ML)
+  web/templates/partials/pm_subs_event.html 6fcb55b8db032b70 -> 3dd74d8ee56d3ea5   (row-per-game stack + .mine + more)
+  web/static/pm_desk.css                    80c88cc28abbc1b7 -> 246a3fa9dd20376c   (.mine marker, .evrow-n, .evmore,
+                                                                                    .pr.won/.lost)
+  web/templates/pm_shell.html               8a10c80d04f4a126 -> 6141979a864e4c04   (pm_desk.css ?v= 80c88cc2->246a3fa9)
+  web/app.py                                16caedfe6a193737 (UNCHANGED -- NOT shipped)
+  web/static/pm_live_subs.js                fe29f6e59d972a16 (UNCHANGED -- NOT shipped)
+No migration; main.py untouched; standalone invariant intact.
+
+VERIFICATION:
+  - Full tests/prediction_markets/ (.venv-webtest, -p no:pytest_ethereum): 16 failed / 870 passed / 1 skipped ==
+    the env-gap baseline (16), +7 new event tests. New tests (test_subs_event.py): grouping (game A never lists
+    game B's position), ML/TOT/SPR labels from the held leg, held-team score-line marker (home + away), unjoinable
+    ticker omitted, multi-live-game stack capped at 3 + more==1, non-MLB no-scoreboard row, _short_label ML leg-aware
+    (yes->yes club, no->other club). test_subs_view event assertion updated to the row shape. Cache-bust test green
+    (shell pm_desk ?v= bumped to 246a3fa9).
+  - Rendered + VIEWED: cc/renders/event_fix_live_tile.png (close-up: TB@ATL row with ML ATL / TOT +7.5 / SPR -1.5 ATL
+    + the .mine dot on ATL; a separator; SD@CIN row with ML SD + the .mine dot on SD; open shows 9 pos while the
+    block shows only the 2 underway games -- FIX 3); subs_jack.png (1600) and subs_phone.png (374, stacked rows).
+  - Box-scratch (read-only, real data): see EVIDENCE above -- the fix groups the real held TBATL/HOUPHI positions
+    into their own games and marks the held team.
+
+DEPLOY 7.2 SHAPE (Jack's to call; pm_web-only, ONE pm_web restart, engine untouched, backup-is-a-gate): graft the
+4 files above wholesale (drift-gate box == the BEFORE column: live_view c0f44414, pm_subs_event 6fcb55b8, pm_desk
+8121e8e0... NO -- 80c88cc2 [Deploy-7 value], pm_shell 8a10c80d), NO app.py change, NO logo change, NO migration;
+served pm_desk.css must read 246a3fa9 + shell ?v=246a3fa9 after; verify /live event block groups by game + marks
+the held team on Jack/MLB. (app.py stays 16caedfe; pm_live_subs.js stays fe29f6e5.)
