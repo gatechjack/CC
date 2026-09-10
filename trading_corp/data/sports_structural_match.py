@@ -78,8 +78,8 @@ class KalshiGame:
 
 @dataclass(frozen=True)
 class MatchResult:
-    status: str                 # matched | doubleheader_ambiguous | no_kalshi_contract | out_of_window |
-                                # skip_non_moneyline | skip_non_game | skip_market_type_excluded | fail
+    status: str                 # matched | doubleheader_ambiguous | date_window_ambiguous | no_kalshi_contract |
+                                # out_of_window | skip_non_moneyline | skip_non_game | skip_market_type_excluded | fail
     confidence: float
     kalshi_ticker: str | None = None
     kalshi_candidates: tuple = ()
@@ -197,6 +197,45 @@ def _side_ticker(game: KalshiGame, parsed: ParsedBet):
     return None
 
 
+def _prev_iso(date_iso):
+    """`YYYY-MM-DD` minus one day, or None if unparseable. Used ONLY for the night-game date fallback below."""
+    try:
+        import datetime as _dt
+        y, m, d = (int(x) for x in str(date_iso).split("-"))
+        return (_dt.date(y, m, d) - _dt.timedelta(days=1)).isoformat()
+    except Exception:
+        return None
+
+
+def _resolve_structural_game(game_index: dict, date_iso, a_name, b_name, allow_prev_day: bool):
+    """Resolve the Kalshi game(s) for (date, {a,b}). EXACT (date, teams) FIRST -- unchanged. Then, for a
+    one-game-per-window league (`allow_prev_day` True), a `(date-1, teams)` FALLBACK: Polymarket dates a game slug
+    by the UTC kickoff date while Kalshi dates the ticker by the US-LOCAL date, so a NIGHT game (kickoff past
+    midnight UTC) is listed on Kalshi one day earlier -> Kalshi_date = Poly_date - 1 (confirmed live 2026-09-10:
+    NE@SEA Poly 09-10 / Kalshi 26SEP09; DAL@NYG Poly 09-14 / Kalshi 26SEP13; DEN@KC Poly 09-15 / Kalshi 26SEP14).
+    The fallback is ASYMMETRIC (only -1; UTC is never BEHIND US-local, so a +1 case cannot occur) and fires ONLY
+    when the exact date misses.
+
+    ★ UNIQUENESS GUARD (the whole basis for widening): if the SAME team pair has games on BOTH `date` AND `date-1`,
+    return them together with ambiguous=True so the caller REFUSES -- a widened window must never PICK the wrong
+    game, only recover an unambiguous one. This requires the pair to play on two consecutive days, which does not
+    happen in nfl/nba/nhl/wnba/cfb (one meeting per several days -- proven per-category by the dry-run). MLB
+    (doubleheaders) passes allow_prev_day=False -> EXACT ONLY -> unchanged + never widened (a +-1 day on top of
+    MLB's unsolved same-day DH ambiguity would be the wrong direction). Returns (games, resolved_date, ambiguous)."""
+    g0 = game_index.get(_game_key(date_iso, a_name, b_name), [])
+    if not allow_prev_day:
+        return g0, date_iso, False                        # doubleheader league (mlb-config): EXACT ONLY, unchanged
+    d1 = _prev_iso(date_iso)
+    g1 = game_index.get(_game_key(d1, a_name, b_name), []) if d1 else []
+    if g0 and g1:
+        return (list(g0) + list(g1)), None, True          # both days -> AMBIGUOUS -> caller refuses (never picks)
+    if g0:
+        return g0, date_iso, False                         # exact hit -> byte-identical to pre-fix behaviour
+    if g1:
+        return g1, d1, False                               # night-game recovery (Kalshi lists it one day earlier)
+    return [], None, False
+
+
 def match_bet(parsed: ParsedBet, game_index: dict, kalshi_dates, cfg: StructuralLeague,
               allowed_market_types=COPYABLE_MARKET_TYPES) -> MatchResult:
     """Moneyline-only structural match (mirrors mlb.match_poly_to_kalshi's moneyline path + the market-type
@@ -214,22 +253,40 @@ def match_bet(parsed: ParsedBet, game_index: dict, kalshi_dates, cfg: Structural
         return MatchResult("fail", 0.0, reason=parsed.fail_reason or "unrecognized_team", market_type=mt)
     if parsed.date_iso is None:
         return MatchResult("fail", 0.0, reason="no_date", market_type=mt)
-    games = game_index.get(_game_key(parsed.date_iso, parsed.away_name, parsed.home_name), [])
+    # ★ DATE-JOIN: exact (date, teams), then a -1-day fallback for the Poly-UTC vs Kalshi-US-local NIGHT-game offset
+    # (one-game-per-window leagues only; mlb-config has_doubleheader=True -> exact only, unchanged). See _resolve_structural_game.
+    allow_prev = not cfg.has_doubleheader
+    games, rdate, date_ambiguous = _resolve_structural_game(
+        game_index, parsed.date_iso, parsed.away_name, parsed.home_name, allow_prev)
+    if date_ambiguous:
+        # the pair has games on BOTH date and date-1 -> REFUSE (never pick the wrong day). Structurally impossible
+        # for these sports; the guard exists so the widened window can only recover, never mispick.
+        cands = tuple(sorted(t for g in games for t in g.ticker_by_side_code.values()))
+        return MatchResult("date_window_ambiguous", 0.50, kalshi_candidates=cands,
+                           reason="teams_have_games_on_both_date_and_prior_day", market_type=mt)
     if not games:
-        if parsed.date_iso not in kalshi_dates:
+        _d1 = _prev_iso(parsed.date_iso)
+        # out_of_window only if NEITHER the exact date NOR (for a widened league) the -1 day is in the fetched window
+        if parsed.date_iso not in kalshi_dates and (not allow_prev or _d1 not in kalshi_dates):
             return MatchResult("out_of_window", 0.0, reason="game_date_outside_kalshi_fetch_window", market_type=mt)
-        return MatchResult("no_kalshi_contract", 0.0, reason="no_game_for_teams_on_date", market_type=mt)
+        return MatchResult("no_kalshi_contract", 0.0,
+                           reason="no_game_for_teams_on_date_or_prior_day" if allow_prev else "no_game_for_teams_on_date",
+                           market_type=mt)
     if len(games) > 1:
         cands = tuple(sorted(t for g in games for t in g.ticker_by_side_code.values()))
         return MatchResult("doubleheader_ambiguous", 0.50, kalshi_candidates=cands,
                            reason="%d_games_same_teams_same_date" % len(games), market_type=mt)
     game = games[0]
+    # ★ AUDIT MARKER: a game resolved via the -1-day night-game fallback (rdate != the bet's date) carries a
+    # distinct reason so the pulse/fill-watch can SEE recoveries (the whole point -- nfl night games were silently
+    # refused). mlb-config never recovers (allow_prev False -> rdate == date_iso) so its reason is UNCHANGED.
+    _rec = "_via_prevday" if (rdate is not None and rdate != parsed.date_iso) else ""
     ticker = _side_ticker(game, parsed)
     if ticker is None:
         return MatchResult("matched", 0.80, kalshi_candidates=tuple(sorted(game.ticker_by_side_code.values())),
-                           reason="side_unresolved", market_type=mt, leg=None)
+                           reason="side_unresolved" + _rec, market_type=mt, leg=None)
     conf = 1.0 if _norm(parsed.raw.get("outcome", "")) in (_norm(parsed.away_name), _norm(parsed.home_name)) else 0.97
-    return MatchResult("matched", conf, kalshi_ticker=ticker, reason="unique_game_side_resolved",
+    return MatchResult("matched", conf, kalshi_ticker=ticker, reason="unique_game_side_resolved" + _rec,
                        leg="yes", market_type=mt)
 
 
