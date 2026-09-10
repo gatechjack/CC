@@ -526,6 +526,98 @@ def realized_24h_all(conn, now_ts: int, *, window_sec: int = 86400) -> dict:
     return out
 
 
+def realized_windows_all(conn, cutoffs: dict) -> dict:
+    """BATCHED realized P&L per (account, category) over ET-CALENDAR windows (redesign R4: today / week / month /
+    all-time, NOT rolling). `cutoffs` = {'today': ts, 'week': ts, 'month': ts} -- the UNIX start of each ET calendar
+    period, computed by the caller (web.live_view.et_window_cutoffs) so this stays timezone-free and testable with
+    explicit boundaries. Realized = SUM(realized_pnl) over BOOKED terminal closes (is_exit=1, dry_run=0, filled,
+    realized_pnl NOT NULL -- settlements + booked whale-exits), NET of fees. Anchored on COALESCE(settled_ts,
+    response_ts) so a booked whale-exit (no settled_ts) still falls in its close window. `all_time` has NO lower
+    bound and therefore EQUALS subdivision_pnl_all.realized -- the tile's all-time ties out to the account page.
+    Returns {(account_id, category): {today, week, month, all_time}}. Read-only."""
+    out: dict = {}
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return out
+    ct, cw, cm = int(cutoffs["today"]), int(cutoffs["week"]), int(cutoffs["month"])
+    for r in conn.execute(
+            "SELECT account_id, category, "
+            "  COALESCE(SUM(realized_pnl), 0) all_time, "
+            "  COALESCE(SUM(CASE WHEN anchor >= ? THEN realized_pnl ELSE 0 END), 0) today, "
+            "  COALESCE(SUM(CASE WHEN anchor >= ? THEN realized_pnl ELSE 0 END), 0) week, "
+            "  COALESCE(SUM(CASE WHEN anchor >= ? THEN realized_pnl ELSE 0 END), 0) month "
+            "FROM (SELECT account_id, category, realized_pnl, "
+            "             COALESCE(settled_ts, response_ts) anchor "
+            "      FROM pm_subdivision_order "
+            "      WHERE dry_run = 0 AND is_exit = 1 AND outcome_status = 'filled' AND realized_pnl IS NOT NULL) "
+            "GROUP BY account_id, category", (ct, cw, cm)).fetchall():
+        d = dict(r)
+        out[(d["account_id"], d["category"])] = {
+            "today": float(d["today"] or 0.0), "week": float(d["week"] or 0.0),
+            "month": float(d["month"] or 0.0), "all_time": float(d["all_time"] or 0.0)}
+    return out
+
+
+def last_events_all(conn) -> dict:
+    """BATCHED per (account, category): the newest order placed (`last_trade`) and the newest BOOKED close
+    (`last_close`) -- for the tile's NEXT/LAST line and the events pulse. `last_trade` = the highest-id real order
+    (id is a monotonic PK), carrying its ticker + submitted_ts. `last_close` = the booked is_exit close with the
+    latest COALESCE(settled_ts, response_ts), carrying won / realized_pnl / close_source / ts. Read-only; both
+    tolerate the table being absent. Returns {(account_id, category): {last_trade|None, last_close|None}}."""
+    out: dict = {}
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return out
+    for r in conn.execute(
+            "SELECT o.account_id, o.category, o.ticker, o.submitted_ts "
+            "FROM pm_subdivision_order o JOIN "
+            "  (SELECT account_id, category, MAX(id) mid FROM pm_subdivision_order WHERE dry_run = 0 "
+            "   GROUP BY account_id, category) mx "
+            "  ON mx.account_id = o.account_id AND mx.category = o.category AND o.id = mx.mid").fetchall():
+        d = dict(r)
+        out.setdefault((d["account_id"], d["category"]), {"last_trade": None, "last_close": None})
+        out[(d["account_id"], d["category"])]["last_trade"] = {"ts": d["submitted_ts"], "ticker": d["ticker"]}
+    for r in conn.execute(
+            "SELECT o.account_id, o.category, o.won, o.realized_pnl, o.close_source, o.ticker, "
+            "       COALESCE(o.settled_ts, o.response_ts) anchor, o.id "
+            "FROM pm_subdivision_order o JOIN "
+            "  (SELECT account_id, category, MAX(COALESCE(settled_ts, response_ts)) m FROM pm_subdivision_order "
+            "   WHERE dry_run = 0 AND is_exit = 1 AND outcome_status = 'filled' AND realized_pnl IS NOT NULL "
+            "   GROUP BY account_id, category) mx "
+            "  ON mx.account_id = o.account_id AND mx.category = o.category "
+            "     AND COALESCE(o.settled_ts, o.response_ts) = mx.m "
+            "WHERE o.dry_run = 0 AND o.is_exit = 1 AND o.outcome_status = 'filled' AND o.realized_pnl IS NOT NULL "
+            "ORDER BY o.id").fetchall():
+        d = dict(r)
+        key = (d["account_id"], d["category"])
+        out.setdefault(key, {"last_trade": None, "last_close": None})
+        # ties on anchor -> the highest id wins (ORDER BY id means the last assignment is the newest)
+        out[key]["last_close"] = {"ts": d["anchor"], "won": d["won"], "realized": d["realized_pnl"],
+                                  "close_source": d["close_source"], "ticker": d["ticker"]}
+    return out
+
+
+def events_since(conn, since_id: int) -> dict:
+    """The events-pulse reader (redesign step 4): every REAL order with id > since_id, split into PLACED (entries,
+    is_exit=0) and CLOSED (booked is_exit=1 closes carrying won/realized). `id` is a monotonic PK, so the caller
+    passes the max id it last saw and gets exactly the new rows. Returns {max_id, placed:[...], closed:[...]}.
+    Read-only; NEVER reaches the order path (it only reads the journal the engine wrote)."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return {"max_id": int(since_id or 0), "placed": [], "closed": []}
+    mx = conn.execute("SELECT COALESCE(MAX(id), 0) m FROM pm_subdivision_order WHERE dry_run = 0").fetchone()["m"]
+    placed, closed = [], []
+    for r in conn.execute(
+            "SELECT id, account_id, category, ticker, outcome_leg, is_exit, won, realized_pnl, close_source "
+            "FROM pm_subdivision_order WHERE dry_run = 0 AND id > ? ORDER BY id", (int(since_id or 0),)).fetchall():
+        d = dict(r)
+        if d["is_exit"] and d["realized_pnl"] is not None:
+            closed.append({"id": d["id"], "account_id": d["account_id"], "category": d["category"],
+                           "ticker": d["ticker"], "won": d["won"], "realized": d["realized_pnl"],
+                           "close_source": d["close_source"]})
+        elif not d["is_exit"]:
+            placed.append({"id": d["id"], "account_id": d["account_id"], "category": d["category"],
+                           "ticker": d["ticker"], "leg": d["outcome_leg"]})
+    return {"max_id": int(mx or 0), "placed": placed, "closed": closed}
+
+
 def held_tickers(conn) -> list[str]:
     """Every DISTINCT ticker CURRENTLY HELD across ALL active sub-divisions (both accounts, every category) --
     journal-derived (live_positions), so a position that is open in ANY sub-division is represented exactly once.

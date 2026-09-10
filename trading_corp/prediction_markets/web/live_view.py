@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from ..market_describe import describe_market
 from ...data.mlb_poly_kalshi_match import kalshi_to_iso_date
@@ -787,3 +788,331 @@ def build_tiles_context(*, subs, arm_all, liveness_by_sub, liveness_present, wha
             "global_arm": {"state": g.get("state"), "ts_age": _ts_age(g.get("ts"), now_ts)},
             "counts": {"total": len(subs), "attached": n_attached, "unattached": n_unattached, "armed": n_armed},
             "now_ts": now_ts}
+
+
+# ── LIVE SUB-DIVISIONS REDESIGN (Claude Design port, 2026-09-10) ───────────────────────────────────────────────
+# A per-account tile page: activity state (LIVE/UPCOMING/SETTLED/INACTIVE/UNATTACHED), ET-calendar money windows,
+# a LIVE event block, per-account tabs (scoped by viewer). PURE assembler -- the loader fetches journal/arm/
+# heartbeat/mark/feed data and hands it here. Honesty rules preserved: realized is NEVER open value; cost and
+# current value are distinct keys; an unpriced position is "no mark", never $0; arm and liveness are separate; an
+# armed sub whose driver reads STALE/NEVER rides the page-top alarm strip; a name is NEVER a raw ticker (R2).
+
+_ET = ZoneInfo("America/New_York")
+
+# Category -> sport family (the design's MOCK.sports display metadata). A code absent here renders a monogram.
+# Extend to a new league = one entry + static/logos/<CODE>.png. LIVE_CAPABLE = categories that can honestly know
+# an event has STARTED: MLB (game feed) + the ones whose ticker carries an HHMM start (inventory item 10).
+SPORTS = {
+    "mlb": "Baseball", "atp": "Tennis", "wta": "Tennis", "ufc": "MMA", "nfl": "Football",
+    "cfb": "College football", "nba": "Basketball", "wnba": "Basketball", "nhl": "Hockey",
+    "cs2": "Esports", "epl": "Soccer", "ucl": "Soccer", "uel": "Soccer", "lal": "Soccer",
+    "fl1": "Soccer", "sea": "Soccer", "bun": "Soccer", "mls": "Soccer", "bra": "Soccer",
+    "mex": "Soccer", "fed": "Rate decisions",
+}
+LIVE_CAPABLE = frozenset({"mlb", "cs2", "nfl", "nba", "nhl", "wnba", "cfb"})
+# Coarse categories retired for finer ones (R7): a sub on one can never trade -> the dashed orphan tile.
+RETIRED_CATEGORIES = frozenset({"soccer"})
+_ARM_DISPLAY = {"armed": "ARMED", "disarmed": "DISARMED", "absent": "NEVER ARMED", "unavailable": "STATE UNAVAILABLE"}
+_ACTIVITY_ORDER = {"LIVE": 0, "UPCOMING": 1, "SETTLED": 2, "INACTIVE": 3, "UNATTACHED": 4}
+_MIDDOT = "·"
+
+
+def sport_family(category) -> str:
+    return SPORTS.get(str(category or "").lower(), "-")
+
+
+def et_window_cutoffs(now_ts: int) -> dict:
+    """UNIX start of the current ET CALENDAR today / week / month (R4: calendar periods, NOT rolling). Week starts
+    MONDAY 00:00 ET (ISO); flipping to Sunday is a one-line change. DST-correct: boundaries are built in
+    America/New_York then converted to UNIX, so a 23h/25h DST day still starts at ET midnight."""
+    et = datetime.fromtimestamp(int(now_ts), tz=timezone.utc).astimezone(_ET)
+    today = et.replace(hour=0, minute=0, second=0, microsecond=0)
+    week = today - timedelta(days=today.weekday())
+    month = today.replace(day=1)
+    return {"today": int(today.timestamp()), "week": int(week.timestamp()), "month": int(month.timestamp())}
+
+
+_START_RE = re.compile(r"^KX[A-Z0-9]+-(\d{2}[A-Z]{3}\d{2})(\d{4})")
+
+
+def parse_ticker_start(category, ticker) -> int | None:
+    """Unix ts of the event start ENCODED IN THE TICKER (YYMONDD + HHMM, ET) or None (inventory item 10). Only
+    LIVE_CAPABLE categories carry an HHMM: MLB and the structural sports put it right after the date, CS2 the same.
+    Date-only sports (tennis/ufc/soccer/fed) have no HHMM group -> None (they never read LIVE). A structural ticker
+    that OMITS the HHMM (some NBA) -> None for that ticker, which is honest (no start known)."""
+    if str(category or "").lower() not in LIVE_CAPABLE:
+        return None
+    m = _START_RE.match(str(ticker or "").upper())
+    if not m:
+        return None
+    iso, hhmm = kalshi_to_iso_date(m.group(1)), m.group(2)
+    if not iso or not hhmm:
+        return None
+    try:
+        y, mo, d = (int(x) for x in iso.split("-"))
+        h, mi = int(hhmm[:2]), int(hhmm[2:])
+        if h > 23 or mi > 59:
+            return None
+        return int(datetime(y, mo, d, h, mi, tzinfo=_ET).timestamp())
+    except (ValueError, TypeError):
+        return None
+
+
+def name_market(ticker, leg, mark, feed_game, category) -> tuple:
+    """A MEANINGFUL market name (R2), NEVER a raw ticker. Priority: MLB feed matchup ("NYY @ BAL") -> cached Kalshi
+    market title (Mark.title) -> market_describe (MLB) -> "<CATEGORY> <market type>". Returns (name, named_ok);
+    named_ok is False ONLY on the last fallback, so the caller can log the R2 exception."""
+    if feed_game is not None and getattr(feed_game, "away", None) and getattr(feed_game, "home", None):
+        a, h = feed_game.away.abbr, feed_game.home.abbr
+        if a and h:
+            return ("%s @ %s" % (a, h), True)
+    title = getattr(mark, "title", None) if mark is not None else None
+    if title:
+        return (str(title), True)
+    md = describe_market(ticker, leg)
+    if md and md != "-" and str(ticker or "") not in md:      # describe_market's fallback embeds the ticker -> skip
+        return (md, True)
+    kind = _kind(ticker)
+    mtype = kind if kind in KINDS else "market"
+    return ("%s %s" % (str(category or "").upper(), mtype), False)
+
+
+def _event_underway(category, tickers, feed_games, marks, now_ts) -> bool:
+    """Is an event this sub holds a position on CURRENTLY underway? MLB: the feed says in_progress for a held game.
+    LIVE_CAPABLE non-MLB: a held ticker's HHMM start has passed AND the market is not finalized. Everything else
+    (date-only, no feed): False -> stays UPCOMING (honest per inventory item 12 -- the endpoint gives no start)."""
+    cat = str(category or "").lower()
+    if cat == "mlb" and feed_games:
+        for t in tickers:
+            gk = game_key_from_ticker(t)
+            if gk is not None:
+                gs = feed_mlb.match_in_slate(feed_games, gk[0], gk[3], gk[1], gk[2])
+                if gs is not None and gs.is_live:
+                    return True
+        return False
+    if cat in LIVE_CAPABLE:
+        for t in tickers:
+            st = parse_ticker_start(cat, t)
+            if st is not None and st <= int(now_ts) and getattr((marks or {}).get(t), "status", None) != "finalized":
+                return True
+    return False
+
+
+def _score_detail(gs) -> str | None:
+    """'<HALF> <inning> DOT <outs> out DOT <balls>-<strikes>' for a live MLB game, guarding the None fields at an
+    inning break (MID/END have no outs/count)."""
+    if gs is None or gs.inning is None:
+        return None
+    bits = []
+    if gs.half:
+        bits.append("%s %d" % (gs.half, gs.inning))
+    if gs.outs is not None:
+        bits.append("%d out" % gs.outs)
+    if gs.balls is not None and gs.strikes is not None:
+        bits.append("%d-%d" % (gs.balls, gs.strikes))
+    return (" %s " % _MIDDOT).join(bits) if bits else None
+
+
+def _event_rows(positions, marks):
+    """The held positions as named bet rows (kind label + terse market + current value at bid), for the LIVE
+    event block. Open positions are 'live' (valued at bid); cost is never shown as value."""
+    rows = []
+    for p in (positions or []):
+        tk, leg = p.get("ticker"), p.get("held_leg")
+        mk = (marks or {}).get(tk)
+        kind = _kind(tk)
+        bid = marks_mod.bid_for_leg(mk, leg)
+        contracts = p.get("contracts")
+        value = (contracts * bid) if (bid is not None and contracts is not None) else None
+        rows.append({"kind": KIND_LABEL.get(kind, (kind or "").upper()[:3] or "-"),
+                     "market": _short_label(tk, kind, leg),
+                     "value": value, "value_known": value is not None, "state": "live"})
+    return rows
+
+
+def _live_event(category, positions, feed_games, marks):
+    """The LIVE tile's event block. MLB: a scoreboard from the feed (teams + score + inning detail) + the held
+    positions. Non-MLB live-capable: the market label + positions, NO scoreboard (degrades honestly). None if
+    there is nothing open to show."""
+    if not positions:
+        return None
+    cat = str(category or "").lower()
+    gs = None
+    if cat == "mlb" and feed_games:
+        for p in positions:
+            gk = game_key_from_ticker(p.get("ticker"))
+            if gk is not None:
+                g = feed_mlb.match_in_slate(feed_games, gk[0], gk[3], gk[1], gk[2])
+                if g is not None and g.is_live:
+                    gs = g
+                    break
+    ev = {"label": None, "away": None, "home": None, "home_lead": False, "detail": None,
+          "age_sec": None, "positions": _event_rows(positions, marks), "has_scoreboard": gs is not None}
+    if gs is not None:
+        asc = "" if gs.away.score is None else str(gs.away.score)
+        hsc = "" if gs.home.score is None else str(gs.home.score)
+        ev["away"] = ("%s %s" % (gs.away.abbr or "-", asc)).strip()
+        ev["home"] = ("%s %s" % (gs.home.abbr or "-", hsc)).strip()
+        ev["label"] = "%s @ %s" % (gs.away.abbr or "-", gs.home.abbr or "-")
+        ev["home_lead"] = (gs.home.score or 0) > (gs.away.score or 0)
+        ev["detail"] = _score_detail(gs)
+        ev["age_sec"] = getattr(gs, "age_sec", None)
+    else:
+        p0 = positions[0]
+        ev["label"], _ = name_market(p0.get("ticker"), p0.get("held_leg"),
+                                     (marks or {}).get(p0.get("ticker")), None, cat)
+    return ev
+
+
+def _next_event(category, positions, marks, now_ts):
+    """The UPCOMING tile's NEXT line: the SOONEST held event's label (R2 name) + starts_in (only where a start is
+    sourceable -- LIVE_CAPABLE ticker HHMM; date-only sports carry None -> the template says 'start time
+    unavailable')."""
+    if not positions:
+        return None
+    best = None
+    for p in positions:
+        st = parse_ticker_start(category, p.get("ticker"))
+        if st is not None and (best is None or st < best[0]):
+            best = (st, p)
+    p = best[1] if best else positions[0]
+    label, _ = name_market(p.get("ticker"), p.get("held_leg"), (marks or {}).get(p.get("ticker")), None, category)
+    starts_in = (int(best[0]) - int(now_ts)) if best else None
+    return {"label": label, "starts_in_seconds": starts_in if (starts_in is not None and starts_in > 0) else None}
+
+
+def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub, liveness_present, pnl_all,
+                               realized_windows, positions_by_sub, last_events, marks, feed_games, now_ts,
+                               thin_floor, mark_age_sec, active_account, viewer_role, viewer_account, logo_codes,
+                               poll_interval, global_arm, max_order_id, name_exceptions=None):
+    """Assemble the redesigned Live Sub-divisions context. `subs` = tiles_all rows already SCOPED to the visible
+    accounts. Segments the ACTIVE account's tiles by activity (alarm pulled out first, R5), sorts each bucket by
+    |today| desc then code, and rolls up the summary bar + tab counts for every visible account. Pure -- no DB, no
+    network. `name_exceptions` (a mutable list, optional) collects any (account, category, ticker) whose name fell
+    back to the category label so the caller can log the R2 exception."""
+    arm_subs = (arm_all or {}).get("subs", {})
+    tiles_by_acct: dict = {}
+    for s in subs:
+        aid, cat = s["account_id"], s["category"]
+        key = (aid, cat)
+        code = cat.upper()
+        attached = int(s.get("n_whales") or 0) > 0
+        a = arm_subs.get(key) or {"sub_state": "absent", "sub_ts": None, "effective_state": "disarmed"}
+        eff_armed = a.get("effective_state") == "armed"
+        lv = liveness_by_sub.get(key) if (attached and liveness_present) else None
+        is_alarm = bool(eff_armed and lv is not None and getattr(lv, "state", None) in _LV_ALARM_STATES)
+        pos = positions_by_sub.get(key) or []
+        vp = value_positions(pos, marks)
+        p = pnl_all.get(key) or {}
+        rw = realized_windows.get(key) or {}
+        booked = int(p.get("booked_closes", 0))
+        n_live_trades = int(s.get("n_live_trades") or 0)
+        has_history = booked > 0 or n_live_trades > 0
+        tickers = [x.get("ticker") for x in pos]
+        underway = _event_underway(cat, tickers, feed_games, marks, now_ts) if pos else False
+        activity = ("UNATTACHED" if not attached
+                    else ("LIVE" if (pos and underway) else "UPCOMING") if pos
+                    else ("SETTLED" if has_history else "INACTIVE"))
+        lc = (last_events.get(key) or {}).get("last_close")
+        last_close = None
+        if lc:
+            won = lc.get("won")
+            last_close = {"age_sec": (int(now_ts) - int(lc["ts"])) if lc.get("ts") else None,
+                          "result": ("won" if won == 1 else "lost" if won == 0 else None),
+                          "realized": lc.get("realized")}
+        realized = None
+        if attached and (has_history or pos):
+            realized = {"today": float(rw.get("today", 0.0)), "week": float(rw.get("week", 0.0)),
+                        "month": float(rw.get("month", 0.0)), "all_time": float(rw.get("all_time", 0.0)),
+                        "booked_closes": booked, "wins": int(p.get("wins", 0)), "losses": int(p.get("losses", 0)),
+                        "unbooked": int(p.get("unbooked_closes", 0)), "thin": 0 < booked < int(thin_floor)}
+        openb = None
+        if attached and pos:
+            openb = {"count": len(pos), "cost": sum(float(x.get("cost_basis_usd") or 0.0) for x in pos),
+                     "value": vp["value"], "value_known": vp["known"], "priced": vp["n_priced"],
+                     "of": vp["n_total"], "complete": vp["complete"], "mark_age": mark_age_sec}
+        event = _live_event(cat, pos, feed_games, marks) if activity == "LIVE" else None
+        next_event = _next_event(cat, pos, marks, now_ts) if activity == "UPCOMING" else None
+        if name_exceptions is not None:
+            for x in pos:
+                _, ok = name_market(x.get("ticker"), x.get("held_leg"), (marks or {}).get(x.get("ticker")), None, cat)
+                if not ok:
+                    name_exceptions.append({"account": aid, "category": cat, "ticker": x.get("ticker")})
+        tile = {
+            "code": code, "category": cat, "account": aid, "activity": activity,
+            "orphan": cat in RETIRED_CATEGORIES, "attached": attached,
+            "family": sport_family(cat), "has_logo": code in (logo_codes or set()),
+            "logo": ("/static/logos/%s.png" % code) if code in (logo_codes or set()) else None,
+            "monogram": code[:4],
+            "arm_state": _ARM_DISPLAY.get(a.get("sub_state"), (a.get("sub_state") or "").upper()),
+            "arm_age": _ts_age(a.get("sub_ts"), now_ts), "effective_armed": eff_armed,
+            "liveness": ({"state": lv.state, "label": ("STARVED" if lv.state == "CATEGORY_STARVED" else lv.state),
+                          "age_sec": getattr(lv, "age_sec", None), "signals": getattr(lv, "n_signals", None),
+                          "orders": getattr(lv, "placed", None), "errors": getattr(lv, "errors", None)} if lv else None),
+            "whales": int(s.get("n_whales") or 0), "is_alarm": is_alarm,
+            "realized": realized, "open": openb, "event": event, "next_event": next_event,
+            "last_close": last_close,
+            "href": "/live/%s/%s" % (aid, cat), "sort_today": abs(float(rw.get("today", 0.0))),
+        }
+        tiles_by_acct.setdefault(aid, []).append(tile)
+
+    def _rollup(aid):
+        ts = tiles_by_acct.get(aid, [])
+        r = {"today": 0.0, "week": 0.0, "month": 0.0, "all_time": 0.0, "booked": 0, "unbooked": 0,
+             "open": 0, "cost": 0.0, "value": 0.0, "priced": 0, "of": 0, "value_known": False, "mark_age": None,
+             "n_open_subs": 0, "armed": 0, "alarm": 0,
+             "LIVE": 0, "UPCOMING": 0, "SETTLED": 0, "INACTIVE": 0, "UNATTACHED": 0}
+        for t in ts:
+            if t["realized"]:
+                for k in ("today", "week", "month", "all_time"):
+                    r[k] += t["realized"][k]
+                r["booked"] += t["realized"]["booked_closes"]
+                r["unbooked"] += t["realized"]["unbooked"]
+            if t["open"]:
+                r["open"] += t["open"]["count"]; r["cost"] += t["open"]["cost"]; r["of"] += t["open"]["of"]
+                r["priced"] += t["open"]["priced"]; r["n_open_subs"] += 1
+                if t["open"]["value"] is not None:
+                    r["value"] += t["open"]["value"]; r["value_known"] = True
+                if t["open"]["mark_age"] is not None:
+                    r["mark_age"] = t["open"]["mark_age"] if r["mark_age"] is None else min(r["mark_age"], t["open"]["mark_age"])
+            if t["effective_armed"]:
+                r["armed"] += 1
+            if t["is_alarm"]:
+                r["alarm"] += 1
+            r[t["activity"]] += 1
+        return r
+
+    def _sortkey(t):
+        return (-t["sort_today"], t["code"])
+
+    visible = [m["account_id"] for m in accounts_meta]
+    active = active_account if active_account in visible else (visible[0] if visible else None)
+    tabs = []
+    for m in accounts_meta:
+        rr = _rollup(m["account_id"])
+        tabs.append({"id": m["account_id"], "name": m.get("account_label") or m["account_id"],
+                     "venue": m.get("venue"), "slug": m["account_id"], "n_subs": len(tiles_by_acct.get(m["account_id"], [])),
+                     "armed": rr["armed"], "alarm": rr["alarm"], "active": m["account_id"] == active})
+    active_tiles = tiles_by_acct.get(active, [])
+    alarm_tiles = sorted([t for t in active_tiles if t["is_alarm"]], key=_sortkey)
+    sections = {}
+    for act in ("LIVE", "UPCOMING", "SETTLED", "INACTIVE", "UNATTACHED"):
+        sections[act] = sorted([t for t in active_tiles if not t["is_alarm"] and t["activity"] == act], key=_sortkey)
+    alarm_strip = [{"code": t["code"], "state": t["liveness"]["state"] if t["liveness"] else "NEVER",
+                    "age_sec": t["liveness"]["age_sec"] if t["liveness"] else None, "href": t["href"]}
+                   for t in alarm_tiles]
+    return {
+        "meta": {"global_arm": (global_arm or {}).get("state"), "global_arm_age": (global_arm or {}).get("ts_age"),
+                 "poll_interval_seconds": poll_interval, "generated_age_seconds": 0,
+                 "viewer_role": viewer_role, "viewer_account": viewer_account,
+                 "thin_threshold": int(thin_floor),
+                 "tz_note": "US Eastern calendar day / week / month -- the day ends 23:59:59 ET; the week starts Monday.",
+                 "week_note": "Week/month/all-time sit close together while the history is young; that is honest."},
+        "accounts": [{"id": m["account_id"], "name": m.get("account_label") or m["account_id"],
+                      "venue": m.get("venue"), "slug": m["account_id"]} for m in accounts_meta],
+        "tabs": tabs, "active_account": active,
+        "live_capable": sorted(x.upper() for x in LIVE_CAPABLE),
+        "alarm": alarm_tiles, "alarm_strip": alarm_strip, "sections": sections,
+        "summary": _rollup(active) if active else None,
+        "liveness_present": liveness_present, "max_order_id": int(max_order_id or 0), "now_ts": now_ts,
+    }

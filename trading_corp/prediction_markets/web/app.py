@@ -923,46 +923,86 @@ async def promote_to_live_action(request: Request, account_id: str, category: st
 # is R4+; pm_web imports no broker). DEFENSIVE: subdivision.* tolerate pm_account/pm_subdivision being absent
 # (pre-migration-010) -> honest-empty, so /live deploys on a pm_web restart independent of the migration-010 deploy.
 
-def _load_live_list() -> dict:
-    """LIVE sub-division TILES (Phase 2, 2026-09-07): EVERY active sub-division (attached AND unattached, R2),
-    segmented by account, each with arm state (agent_state), driver LIVENESS (heartbeat), attached whales, lifetime
-    + last-24h realized P&L, and open count / at-cost / current-value+coverage. R1: an ARMED sub whose driver reads
-    STALE/NEVER rides a page-top alarm strip -- the DB says trade, the engine isn't (the 28h divergence). All
-    read-only: journal + persisted arm state + the poller's mark cache; NO venue, NO order path. OFF the loop."""
-    from .. import heartbeat        # box top-imports it; a LOCAL import keeps this hunk purely additive (graft-clean)
+_LOGO_DIR = os.path.join(os.path.dirname(__file__), "static", "logos")
+
+
+def _logo_codes() -> set:
+    """Category CODES (upper) that have a local logo file, so a tile draws the plate image vs a monogram. Cheap
+    dir listing; empty set if the dir is absent (every tile then draws a monogram -- honest, never a broken image)."""
+    try:
+        return {f.rsplit(".", 1)[0].upper() for f in os.listdir(_LOGO_DIR) if f.lower().endswith(".png")}
+    except OSError:
+        return set()
+
+
+def _load_live_list(active_account: str | None = None, identity: str | None = None,
+                    is_admin_flag: bool = False) -> dict:
+    """The REDESIGNED Live Sub-divisions tile page (2026-09-10): per-account tabs SCOPED to the viewer (R6 --
+    admin sees all, a non-admin only their own account(s)), activity state (LIVE/UPCOMING/SETTLED/INACTIVE/
+    UNATTACHED), ET-calendar money windows (today/week/month/all-time), a LIVE event block, and the armed-but-
+    STALE alarm strip. All read-only: journal + persisted arm state + heartbeat + the poller's mark cache + the
+    cached sports feed; NO venue, NO order path. OFF the loop."""
+    from .. import heartbeat        # a LOCAL import keeps this hunk purely additive on the box-current app.py (graft-clean)
     now_ts = int(time.time())
-    marks, _ = _cache_marks()
+    marks, marks_as_of = _cache_marks()
+    mark_age_sec = (now_ts - int(marks_as_of)) if marks_as_of else None
+    snap = ui_cache.cache().snapshot()
+    feed_games: dict = {}
+    for sl in snap.slates.values():
+        feed_games.update(sl.games)                       # merged so a night game across two ET dates still joins
     floor = search.DEFAULT_MIN_RESOLVED_FLOOR
+    name_exceptions: list = []
     with connect() as conn:
-        subs = subdivision.tiles_all(conn)
-        pairs = [(s["account_id"], s["category"]) for s in subs]
-        arm_all = arm.read_display_all(pairs)
+        accts = {a["account_id"]: a for a in subdivision.active_accounts(conn)}       # carries owner_identity (M4)
+        visible = authz.visible_account_ids(identity, is_admin_flag, accts.values())
+        accounts_meta = [{"account_id": aid, "account_label": a.get("account_label") or aid, "venue": a.get("venue")}
+                         for aid, a in accts.items() if aid in visible]
+        subs = [s for s in subdivision.tiles_all(conn) if s["account_id"] in visible]  # SCOPE the tile set first (R6)
+        arm_all = arm.read_display_all([(s["account_id"], s["category"]) for s in subs])
         liveness_present = heartbeat.table_present(conn)
         liveness_by_sub = {(r.account_id, r.category): r
                            for r in heartbeat.read_liveness(conn, now_ts=now_ts)} if liveness_present else {}
         pnl_all = subdivision.subdivision_pnl_all(conn)
-        pnl24_all = subdivision.realized_24h_all(conn, now_ts)
-        # attachments + open positions ONLY for the attached subs (unattached render compact -- R2, "no whales attached")
-        whales_by_sub, positions_by_sub = {}, {}
-        for s in subs:
+        realized_windows = subdivision.realized_windows_all(conn, live_view.et_window_cutoffs(now_ts))
+        last_events = subdivision.last_events_all(conn)
+        max_order_id = subdivision.events_since(conn, 0)["max_id"]
+        positions_by_sub = {}
+        for s in subs:                                     # open positions ONLY for attached subs
             if int(s.get("n_whales") or 0) > 0:
                 key = (s["account_id"], s["category"])
-                whales_by_sub[key] = subdivision.attached_whales(conn, s["account_id"], s["category"])
                 positions_by_sub[key] = subdivision.live_positions(conn, s["account_id"], s["category"])
-    return live_view.build_tiles_context(
-        subs=subs, arm_all=arm_all, liveness_by_sub=liveness_by_sub, liveness_present=liveness_present,
-        whales_by_sub=whales_by_sub, pnl_all=pnl_all, pnl24_all=pnl24_all, positions_by_sub=positions_by_sub,
-        marks=marks, now_ts=now_ts, thin_floor=floor)
+    g = (arm_all or {}).get("global", {"state": "absent", "ts": None})
+    global_arm = {"state": g.get("state"), "ts_age": live_view._ts_age(g.get("ts"), now_ts)}
+    viewer_role = "admin" if is_admin_flag else "account"
+    viewer_account = list(visible)[0] if (not is_admin_flag and len(visible) == 1) else None
+    ctx = live_view.build_subdivisions_context(
+        subs=subs, accounts_meta=accounts_meta, arm_all=arm_all, liveness_by_sub=liveness_by_sub,
+        liveness_present=liveness_present, pnl_all=pnl_all, realized_windows=realized_windows,
+        positions_by_sub=positions_by_sub, last_events=last_events, marks=marks, feed_games=feed_games,
+        now_ts=now_ts, thin_floor=floor, mark_age_sec=mark_age_sec, active_account=active_account,
+        viewer_role=viewer_role, viewer_account=viewer_account, logo_codes=_logo_codes(),
+        poll_interval=live_view.POLL_INTERVAL_SECONDS, global_arm=global_arm, max_order_id=max_order_id,
+        name_exceptions=name_exceptions)
+    if name_exceptions:
+        log.warning("pm_web /live: %d held position(s) named by CATEGORY fallback (no feed/mark/describe) -- %s",
+                    len(name_exceptions), name_exceptions[:8])
+    ctx["warming"] = not snap.ready
+    return ctx
 
 
-def _load_live_subdivision(account_id: str, category: str, now_ts: int) -> dict | None:
+def _load_live_subdivision(account_id: str, category: str, now_ts: int,
+                           identity: str | None = None, is_admin_flag: bool = False):
     """Per-sub-division read for the GAME-CARD view (UI rewrite): its config + copied whales + the journal, joined
-    to the cached sports feed + Kalshi marks into game cards. None -> 404. Read-only -- no form, no order path, no
-    arm control (arming is CLI/engine-console; /live only DISPLAYS the arm state). The DB reads run here (off the
-    loop); the feed/marks come from ui_cache (written by the background poller), so the render never blocks on the
-    network. The cards degrade honestly: feed-unavailable renders nothing feed-derived, a position with no mark
-    renders 'no mark', and cost basis is always distinct from current value."""
+    to the cached sports feed + Kalshi marks into game cards. None -> 404; `_FORBIDDEN` -> 403 (the account exists
+    but is not this identity's -- R6 fail-closed scoping; scoping the tile page while leaving this route open would
+    be security theatre, inventory add#5). Read-only -- no form, no order path, no arm control. The DB reads run
+    here (off the loop); the feed/marks come from ui_cache, so the render never blocks on the network. The cards
+    degrade honestly: feed-unavailable renders nothing feed-derived, a position with no mark renders 'no mark',
+    and cost basis is always distinct from current value."""
     with connect() as conn:
+        accts = subdivision.active_accounts(conn)                                    # carries owner_identity (M4)
+        if account_id not in authz.visible_account_ids(identity, is_admin_flag, accts):
+            return _FORBIDDEN if account_id in {a["account_id"] for a in accts} else None
         sub = subdivision.get_subdivision(conn, account_id, category)
         if sub is None:
             return None
@@ -988,11 +1028,45 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int) -> dict 
             "sizing_summary": subdivision.sizing_summary(sub), **ctx}
 
 
+def _load_live_events(since_id: int, identity: str | None = None, is_admin_flag: bool = False) -> dict:
+    """Events-pulse loader (redesign step 4): the REAL orders/closes with id > since_id, SCOPED to the viewer's
+    visible accounts, each named meaningfully (R2). Read-only; never the order path."""
+    now_ts = int(time.time())
+    marks, _ = _cache_marks()
+    with connect() as conn:
+        accts = subdivision.active_accounts(conn)
+        visible = authz.visible_account_ids(identity, is_admin_flag, accts)
+        ev = subdivision.events_since(conn, int(since_id or 0))
+
+    def _nm(r):
+        return live_view.name_market(r["ticker"], r.get("leg"), (marks or {}).get(r["ticker"]), None, r["category"])[0]
+    placed = [{"account": r["account_id"], "code": r["category"].upper(), "name": _nm(r)}
+              for r in ev["placed"] if r["account_id"] in visible]
+    closed = [{"account": r["account_id"], "code": r["category"].upper(),
+               "result": ("won" if r["won"] == 1 else "lost" if r["won"] == 0 else None),
+               "realized": r["realized"], "name": _nm(r)}
+              for r in ev["closed"] if r["account_id"] in visible]
+    return {"max_id": ev["max_id"], "placed": placed, "closed": closed, "now_ts": now_ts}
+
+
+@app.get("/live/events")
+async def live_events(request: Request, since: int = 0, account: str | None = None):
+    """The events pulse (redesign step 4): REAL orders/closes with id > `since`, SCOPED to the viewer. The 60s
+    poll calls this to animate just-placed / just-closed tiles + play the close tone. READ-ONLY JSON -- it only
+    reads the journal the engine wrote, never the order path. `since` is the max id the client last saw."""
+    identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
+    data = await asyncio.to_thread(_load_live_events, int(since or 0), identity, is_admin_flag)
+    return JSONResponse(data)
+
+
 @app.get("/live", response_class=HTMLResponse)
-async def live_list_page(request: Request):
-    """The LIVE sub-division tiles (top of the hierarchy). Honest-empty until a sub-division is created AND
-    migration 010 is live. READ-ONLY -- no order path."""
-    data = await asyncio.to_thread(_load_live_list)
+async def live_list_page(request: Request, account: str | None = None):
+    """The LIVE sub-division tiles (redesign). Per-account tabs SCOPED to the viewer (M4/R6): admin sees all tabs,
+    a non-admin only their own account(s); the ACTIVE tab is in ?account= so it works JS-off. Honest-empty until a
+    sub-division exists. READ-ONLY -- no order path."""
+    identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
+    active = (account or "").strip() or None
+    data = await asyncio.to_thread(_load_live_list, active, identity, is_admin_flag)
     return templates.TemplateResponse(request, "pm_live_list.html", {"request": request, **data})
 
 
@@ -1000,15 +1074,19 @@ async def live_list_page(request: Request):
 async def live_subdivision_page(request: Request, account_id: str, category: str, tab: str | None = None):
     """One Account-Category sub-division as the GAME-CARD page: a card per game we hold, with the box score
     (cached sports feed), three fixed bet slots valued at contracts x BID (cached Kalshi marks), and a trade
-    drawer. `?tab=complete` shows settled cards (server-rendered so it works JS-off). A sub-division that doesn't
-    exist -> 404. READ-ONLY (no order path). SAME template/code path for EVERY account -- nothing hardcodes jack."""
+    drawer. `?tab=complete` shows settled cards (server-rendered so it works JS-off). Absent -> 404; exists but
+    not this identity's -> 403 (R6 scoping -- inventory add#5). READ-ONLY (no order path)."""
     account_id = (account_id or "").strip()
     category = (category or "").strip().lower()
-    data = await asyncio.to_thread(_load_live_subdivision, account_id, category, int(time.time()))
+    identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
+    data = await asyncio.to_thread(_load_live_subdivision, account_id, category, int(time.time()),
+                                   identity, is_admin_flag)
     if data is None:
         return templates.TemplateResponse(
             request, "pm_live_404.html",
             {"request": request, "account_id": account_id, "category": category}, status_code=404)
+    if data is _FORBIDDEN:
+        return PlainTextResponse("forbidden: not your account", status_code=403)
     data["tab"] = "complete" if (tab or "").strip().lower() == "complete" else "active"
     return templates.TemplateResponse(request, "pm_live_subdivision.html", {"request": request, **data})
 
