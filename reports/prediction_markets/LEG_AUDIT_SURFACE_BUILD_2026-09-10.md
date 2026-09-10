@@ -174,3 +174,27 @@ not built here.**
 **Artifacts:** patches `cc/legaudit_ui_patches/*.patch`; runners `cc/pm_legaudit_{scratch,runnertest,uitest,
 regress,tieprobe,status_ro,boxfetch_ro}` + `cc/pm_fill_watch_ro`; render test `cc/pm_legaudit_render.py`;
 box-current base snapshots `cc-legaudit-boxsrc/`; fix snapshots `cc-legaudit-fix/`.
+
+---
+
+## 7. Deploy outcome (2026-09-10, board-authorized) — LIVE
+
+Grafted via ONE sanctioned single-STDIN-stream runner (`cc/pm_legaudit_deploy_stream`, files embedded as
+base64 — no scp) + Jack's pm_web restart. **GREEN.**
+
+- Graft: drift-check (box==base) → dry-run `--fuzz=0` → backup `~/legaudit_deploy_backup_20260910T223415Z` →
+  apply → **post-sha verify all 4 == target** (`93e2dbd7`/`23ec41a6`/`583aac90`/`07cc74b4`) → py_compile.
+- Restart: pm_web **309331 → 319921**; engine `trading-corp` **313359 / NRestarts 0 UNCHANGED**.
+- Post-check (`cc/pm_legaudit_postcheck_ro`): deployed-code render **ABSENT on live (0 REVIEW rows) AND FIRES
+  on a seeded REVIEW row** (`*** INVERSION` + `data-legaudit-count="1"`); served `/live` 200, content intact,
+  strip absent, `/pm/arm` 404.
+- **prod-live NOT advanced** — the box carries the deploy; folding the pm_web graft to prod-live waits on the
+  standing pm_web reconcile (box is Deploy-7, prod-live is Deploy-6), Jack's timing.
+
+**Three deploy-night lessons (all recovered clean):** (1) I committed the UI patches BEFORE the final
+adversarial-review edits, so the first graft produced pre-review shas — the **post-sha guard caught it and
+stopped**; pm_web was never restarted so the graft was inert; rolled back clean via the box's own backup.
+Fix: regenerate patches after the last edit + a LOCAL pre-flight (apply-to-base == target) before any box
+deploy. (2) `scp` hung ~40 min — the sanctioned channel is a single STDIN stream, not scp. (3) The first
+post-check caught the pm_web pid **unchanged** (restart hadn't recycled) — always confirm a NEW served pid
+before trusting served-page evidence.
