@@ -600,7 +600,9 @@ _AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc"})
 
 def _audit_leg_independent(category, signal_outcome, ticker, leg):
     """Return 'ok' | 'na' | 'unchecked' | 'REVIEW:<why>'. Independent of the matcher's leg choice."""
-    import re
+    import re, unicodedata
+    def _fold(s):                                                 # accent-fold + lower (parity with the matcher guard)
+        return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii").lower()
     oc = (signal_outcome or "").strip()
     tk = ticker or ""
     if not oc:
@@ -610,7 +612,7 @@ def _audit_leg_independent(category, signal_outcome, ticker, leg):
             low = oc.lower(); exp = "yes" if low == "yes" else "no" if low == "no" else None
             return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:distance_leg!=outcome:%s/%s" % (leg, oc))
         code = tk.rsplit("-", 1)[-1] if "-" in tk else ""         # the ticker's OWN side code (independent evidence)
-        c = re.sub(r"[^a-z0-9]", "", code.lower()); n = re.sub(r"[^a-z0-9]", "", oc.lower())
+        c = re.sub(r"[^a-z0-9]", "", _fold(code)); n = re.sub(r"[^a-z0-9]", "", _fold(oc))
         i = 0
         for ch in n:
             if i < len(c) and ch == c[i]:

@@ -35,7 +35,7 @@ import re
 from dataclasses import dataclass, field
 
 # reuse UFC's accent-fold normaliser + date converter verbatim (pure, already live)
-from .ufc_poly_kalshi_match import _norm, kalshi_to_iso_date, code_anchor_conflict  # noqa: F401
+from .ufc_poly_kalshi_match import _norm, kalshi_to_iso_date, _code_of, labels_code_swapped  # noqa: F401
 
 WINDOW_DAYS = 1  # +/- date tolerance (UTC-midnight straddle for AP matches; tennis-proven construct)
 
@@ -197,18 +197,16 @@ def _resolve_side(outcome: str, km: KalshiCs2Match):
     side.  Academy/fe/ex- differences make the wrong side unequal -> a safe miss, never a mis-route.
     ★ CODE-ANCHORED (2026-09-10): after the label pick, refuse if the ticker's -CODE says the org
     belongs to the OTHER side (the confirmed magic->FaZe mislabel) -> safe miss."""
+    if labels_code_swapped(_code_of(km.ticker_a), km.org_a, _code_of(km.ticker_b), km.org_b):
+        return None                                          # (code,label) swapped onto wrong tickers -> safe miss
     co = _canon(outcome)
     a = (co == _canon(km.org_a))
     b = (co == _canon(km.org_b))
     if a and not b:
-        chosen, other = km.ticker_a, km.ticker_b
-    elif b and not a:
-        chosen, other = km.ticker_b, km.ticker_a
-    else:
-        return None
-    if code_anchor_conflict(outcome, chosen, other):
-        return None
-    return chosen
+        return km.ticker_a
+    if b and not a:
+        return km.ticker_b
+    return None
 
 
 def match_bet(parsed: ParsedCs2Bet, match_index: dict, kalshi_dates,

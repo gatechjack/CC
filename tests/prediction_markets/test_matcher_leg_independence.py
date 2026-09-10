@@ -87,6 +87,60 @@ def test_cs2_team_liquid_kept_code_not_a_subsequence():
     assert r.status == "matched" and r.kalshi_ticker == t_tl and r.leg == "yes", r
 
 
+# -- adversarial-review regressions (short-code hole + accent false-positive) --
+CS2_VIT = "KXCS2GAME-26SEP101300VITTL-VIT"
+CS2_TL2 = "KXCS2GAME-26SEP101300VITTL-TL"
+
+
+def test_cs2_short_code_swap_vitality_must_NOT_buy_TL():
+    """Adversarial review's BLOCKER: -VIT mislabeled 'Team Liquid', -TL mislabeled 'Vitality'; whale bets
+    'Vitality'. The earlier ASYMMETRIC subseq guard MISSED this (TL is a subseq of 'vitality', so it never
+    fired) -> bought Team Liquid for a Vitality bet. The bipartite assignment check catches it (the cross
+    assignment scores strictly higher). RED on the box (no guard) + on the asymmetric guard; GREEN now."""
+    markets = [{"ticker": CS2_VIT, "yes_sub_title": "Team Liquid"},   # MISLABELED
+               {"ticker": CS2_TL2, "yes_sub_title": "Vitality"}]      # MISLABELED
+    idx = CS2.build_kalshi_match_index(markets)
+    parsed = CS2.parse_poly_cs2_bet("cs2-vit-tl-2026-09-10", "Vitality",
+                                    "Counter-Strike: Vitality vs Team Liquid (BO3) - X")
+    r = CS2.match_bet(parsed, idx, _dates(idx))
+    assert not (r.status == "matched" and r.kalshi_ticker == CS2_TL2), \
+        "bought Team Liquid's ticker (-TL) for a Vitality bet -- the short-code hole: %r" % (r,)
+
+
+def test_cs2_vitality_correct_kept():
+    markets = [{"ticker": CS2_VIT, "yes_sub_title": "Vitality"},
+               {"ticker": CS2_TL2, "yes_sub_title": "Team Liquid"}]
+    idx = CS2.build_kalshi_match_index(markets)
+    parsed = CS2.parse_poly_cs2_bet("cs2-vit-tl-2026-09-10", "Vitality",
+                                    "Counter-Strike: Vitality vs Team Liquid (BO3) - X")
+    r = CS2.match_bet(parsed, idx, _dates(idx))
+    assert r.status == "matched" and r.kalshi_ticker == CS2_VIT, r
+
+
+def test_cs2_team_liquid_correct_kept_short_code():
+    markets = [{"ticker": CS2_VIT, "yes_sub_title": "Vitality"},
+               {"ticker": CS2_TL2, "yes_sub_title": "Team Liquid"}]
+    idx = CS2.build_kalshi_match_index(markets)
+    parsed = CS2.parse_poly_cs2_bet("cs2-vit-tl-2026-09-10", "Team Liquid",
+                                    "Counter-Strike: Vitality vs Team Liquid (BO3) - X")
+    r = CS2.match_bet(parsed, idx, _dates(idx))
+    assert r.status == "matched" and r.kalshi_ticker == CS2_TL2, r
+
+
+def test_tennis_accented_name_correct_kept():
+    """Adversarial review's HIGH false-positive: Borna Coric (code COR) with an accent must still bind --
+    the guard accent-folds, so 'Ćorić' -> 'coric' and COR is a word-prefix (kept, not dropped)."""
+    t_cor = "KXATPMATCH-26SEP09CORZVE-COR"
+    t_zve = "KXATPMATCH-26SEP09CORZVE-ZVE"
+    markets = [{"ticker": t_cor, "title": "Borna Ćorić wins"},
+               {"ticker": t_zve, "title": "Alexander Zverev wins"}]
+    idx = TEN.build_kalshi_match_index(markets)
+    parsed = TEN.parse_poly_tennis_bet("atp-cor-zve-2026-09-09", "Borna Ćorić",
+                                       "ATP: Borna Ćorić vs Alexander Zverev")
+    r = TEN.match_bet(parsed, idx, _dates(idx))
+    assert r.status == "matched" and r.kalshi_ticker == t_cor, r
+
+
 # ══════════════════════════════════════════════════════════════════════════════════════════
 # tennis -- same title-anchored class (cs2 was cloned from tennis)
 # ══════════════════════════════════════════════════════════════════════════════════════════

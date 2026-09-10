@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 
 # reuse the UFC name helpers verbatim (accent-fold, first-name-prefix match, date conversion)
-from .ufc_poly_kalshi_match import _norm, kalshi_to_iso_date, match_fighter_name, code_anchor_conflict  # noqa: F401
+from .ufc_poly_kalshi_match import _norm, kalshi_to_iso_date, match_fighter_name, _code_of, labels_code_swapped  # noqa: F401
 
 WINDOW_DAYS = 1   # +/- date tolerance (all observed venue divergences were exactly +/-1 day)
 
@@ -131,26 +131,23 @@ def _resolve_side(outcome: str, km: KalshiMatch, pair_pinned: bool):
     surname just picks between two KNOWN players; a same-surname pair returns None = safe miss).
     ★ CODE-ANCHORED (2026-09-10): after the label pick, refuse if the ticker's -CODE says the player
     belongs to the OTHER side (a Kalshi title/code mislabel) -> safe miss."""
+    if labels_code_swapped(_code_of(km.ticker_a), km.p_a_name, _code_of(km.ticker_b), km.p_b_name):
+        return None                                          # (code,name) swapped onto wrong tickers -> safe miss
     a = match_fighter_name(outcome, km.p_a_name)
     b = match_fighter_name(outcome, km.p_b_name)
-    chosen = other = None
     if a and not b:
-        chosen, other = km.ticker_a, km.ticker_b
-    elif b and not a:
-        chosen, other = km.ticker_b, km.ticker_a
-    elif a and b:
+        return km.ticker_a
+    if b and not a:
+        return km.ticker_b
+    if a and b:
         return None
-    elif pair_pinned:
+    if pair_pinned:
         os_ = _surname(outcome); sa = _surname(km.p_a_name); sb = _surname(km.p_b_name)
         if os_ and os_ == sa and os_ != sb:
-            chosen, other = km.ticker_a, km.ticker_b
-        elif os_ and os_ == sb and os_ != sa:
-            chosen, other = km.ticker_b, km.ticker_a
-    if chosen is None:
-        return None
-    if code_anchor_conflict(outcome, chosen, other):
-        return None
-    return chosen
+            return km.ticker_a
+        if os_ and os_ == sb and os_ != sa:
+            return km.ticker_b
+    return None
 
 
 def match_bet(parsed: ParsedTennisBet, match_index: dict, kalshi_dates, allowed_market_types=COPYABLE_MARKET_TYPES) -> MatchResult:

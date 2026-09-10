@@ -238,15 +238,17 @@ def match_fighter_name(candidate: str, known_name: str) -> bool:
 
 
 # ── CODE-ANCHORED cross-check (the FED lesson, back-ported to every title-anchored matcher) ──
-# cs2/tennis/ufc all bind a side by a FREE-TEXT label (yes_sub_title / "X wins" title) and DISCARD
-# the ticker's own -CODE suffix. A Kalshi mislabel (the confirmed magic->FaZe wrong-org fill) then
-# binds the whale's org to the OPPONENT's ticker. The independent evidence is the ticker's CODE.
-# We cannot invert a code to a full name (org/player codes are open-ended), but we CAN reject a bind
-# whose code contradicts the org: refuse when the OTHER side's code is a subsequence of the whale org
-# while the CHOSEN side's code is NOT -- i.e. the org's code points to the other ticker. Verified on
-# live data (2026-09-10): ZERO legit cs2/atp/wta/ufc events tripped this, while it catches the swap.
-# A legit code that is simply not a subsequence of its OWN label (Team Liquid->TL, McNally->MCC) is
-# kept, because the guard only fires on POSITIVE evidence the org belongs to the OTHER side.
+# cs2/tennis/ufc all bind a side by a FREE-TEXT label (yes_sub_title / "X wins" title) and DISCARD the
+# ticker's own -CODE suffix. A Kalshi mislabel (the confirmed magic->FaZe wrong-org fill) then binds the
+# whale's org to the OPPONENT's ticker. The independent evidence is the ticker's CODE. We cannot invert a
+# code to a full name (org/player codes are open-ended), so we validate the whole market's (code,label)
+# ASSIGNMENT: score how well each side's CODE abbreviates each side's LABEL, and refuse the market if the
+# CROSS (swapped) assignment scores strictly higher than the DIRECT one -- i.e. the two labels are on the
+# wrong codes. Symmetric + bipartite (not the earlier asymmetric subseq test, which an adversarial review
+# defeated: a short/common WRONG code -- TL, OG, VIT -- can itself subsequence the org, so "other subseq
+# AND chosen not" silently missed Vitality<->Team-Liquid-class swaps). Accent-folded via _afold (so a code
+# whose letter lands on an accented char -- Coric/COR -- is not spuriously dropped). Fail-closed: a real
+# swap -> refuse (safe miss). Verified on live data (2026-09-10): 0 legit cs2/atp/wta/ufc events flagged.
 
 def _code_of(ticker: str) -> str:
     """The YES-side CODE = the ticker suffix after the final '-' (Kalshi's own side identifier)."""
@@ -254,26 +256,41 @@ def _code_of(ticker: str) -> str:
     return t.rsplit("-", 1)[-1] if "-" in t else ""
 
 
-def _is_subseq(code: str, name: str) -> bool:
-    """True if the normalised CODE chars occur IN ORDER within the normalised NAME (Kalshi derives a
-    side code from the name's letters in order: FaZe->FAZE, magic->MGC, Medvedev->MED, Parnasse->PAR)."""
-    c = re.sub(r"[^a-z0-9]", "", (code or "").lower())
-    n = re.sub(r"[^a-z0-9]", "", (name or "").lower())
-    if not c:
-        return False
-    i = 0
-    for ch in n:
+def _code_match_score(code: str, name: str) -> int:
+    """0..3: how strongly CODE abbreviates NAME (accent-folded). 0 = not even an in-order subsequence;
+    1 = subsequence; 2 = contiguous substring; 3 = prefix of a word OR the leading word-acronym. Kalshi
+    codes are name-derived (FaZe->FAZE prefix, Team Liquid->TL acronym, magic->MGC subseq, Medvedev->MED
+    prefix), so the CORRECT (code,label) pairing scores >= the swapped one."""
+    c = re.sub(r"[^a-z0-9]", "", _afold(code or "").lower())
+    ws = [re.sub(r"[^a-z0-9]", "", _afold(w).lower()) for w in (name or "").split()]
+    ws = [w for w in ws if w]
+    full = "".join(ws)
+    if not c or not full:
+        return 0
+    i = 0                                                    # in-order subsequence gate
+    for ch in full:
         if i < len(c) and ch == c[i]:
             i += 1
-    return i == len(c)
+    if i < len(c):
+        return 0
+    s = 1
+    if c in full:
+        s = 2
+    if any(w.startswith(c) for w in ws):
+        s = 3
+    acr = "".join(w[0] for w in ws)
+    if c == acr or (len(c) >= 2 and acr.startswith(c)):
+        s = 3
+    return s
 
 
-def code_anchor_conflict(org: str, chosen_ticker: str, other_ticker: str) -> bool:
-    """REFUSE (return True => safe miss) when the whale ORG's code points to the OTHER ticker, not the
-    chosen one: the OTHER side's code is a subsequence of the org AND the CHOSEN side's code is not.
-    Fail-closed, code-anchored, verified zero false-skips on live cs2/atp/wta/ufc (2026-09-10)."""
-    chosen, other = _code_of(chosen_ticker), _code_of(other_ticker)
-    return _is_subseq(other, org) and not _is_subseq(chosen, org)
+def labels_code_swapped(code_a: str, name_a: str, code_b: str, name_b: str) -> bool:
+    """True (=> REFUSE the market, safe miss) when the CROSS (code_a<->name_b, code_b<->name_a) assignment
+    scores strictly higher than the DIRECT one -- the two labels are bound to the wrong ticker codes (the
+    magic<->FaZe / Vitality<->Team-Liquid class). Symmetric, so a short WRONG code cannot slip through."""
+    direct = _code_match_score(code_a, name_a) + _code_match_score(code_b, name_b)
+    cross = _code_match_score(code_a, name_b) + _code_match_score(code_b, name_a)
+    return cross > direct
 
 
 # ── Poly slug parsing ────────────────────────────────────────────────────────
@@ -543,17 +560,15 @@ class MatchResult:
 
 def _resolve_winner_side(outcome: str, fight: KalshiFight):
     """Return (fighter_code, ticker, name) for the bet fighter, or (None, None, None). CODE-ANCHORED:
-    after a name match, refuse if the ticker's -CODE says the org belongs to the OTHER fighter (a
-    Kalshi title/code mislabel) -- a safe miss, never a wrong-fighter order."""
+    refuse if the fight's (kcode,name) labels are SWAPPED onto the wrong tickers (a Kalshi title/code
+    mislabel) -- a safe miss, never a wrong-fighter order."""
+    if labels_code_swapped(fight.fighter_a_kcode, fight.fighter_a_name, fight.fighter_b_kcode, fight.fighter_b_name):
+        return None, None, None
     if match_fighter_name(outcome, fight.fighter_a_name):
-        code, ticker, other, name = fight.fighter_a_kcode, fight.ticker_a, fight.ticker_b, fight.fighter_a_name
-    elif match_fighter_name(outcome, fight.fighter_b_name):
-        code, ticker, other, name = fight.fighter_b_kcode, fight.ticker_b, fight.ticker_a, fight.fighter_b_name
-    else:
-        return None, None, None
-    if code_anchor_conflict(outcome, ticker, other):
-        return None, None, None
-    return code, ticker, name
+        return fight.fighter_a_kcode, fight.ticker_a, fight.fighter_a_name
+    if match_fighter_name(outcome, fight.fighter_b_name):
+        return fight.fighter_b_kcode, fight.ticker_b, fight.fighter_b_name
+    return None, None, None
 
 
 def match_bet(
