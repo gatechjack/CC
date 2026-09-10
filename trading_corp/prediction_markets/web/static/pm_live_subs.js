@@ -125,8 +125,15 @@
   var refresh = document.getElementById("refresh");
   if (refresh) refresh.addEventListener("click", function (e) { e.preventDefault(); cycle(); });
   var sfx = document.getElementById("sfx");
+  // The sound preference must survive page navigations -- the account tabs and tile links are real (?account=)
+  // reloads (so the page works JS-off), each of which re-runs this script; an in-memory-only toggle would reset to
+  // "Sound off" on every tab switch. Persist it in localStorage and restore it on load. Default off (first visit,
+  // or storage blocked). Restoring sets the button state but plays NO tone -- a tone fires only on an explicit click.
+  try { if (localStorage.getItem("pmSubsSound") === "on") sfxOn = true; } catch (e) { /* storage blocked -> default off */ }
+  if (sfx && sfxOn) { sfx.setAttribute("aria-pressed", "true"); sfx.textContent = "Sound on"; }
   if (sfx) sfx.addEventListener("click", function (e) {
     sfxOn = !sfxOn;
+    try { localStorage.setItem("pmSubsSound", sfxOn ? "on" : "off"); } catch (e2) { /* storage blocked -> in-memory only */ }
     e.currentTarget.setAttribute("aria-pressed", sfxOn ? "true" : "false");
     e.currentTarget.textContent = sfxOn ? "Sound on" : "Sound off";
     if (sfxOn) tone("won");     // a confirmation blip on enable
