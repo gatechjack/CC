@@ -54,6 +54,10 @@ class ShardBalances:
     by_shard: dict                  # {exchange_index:int -> dollars:float}; EMPTY when has_breakdown is False
     has_breakdown: bool             # False = split UNKNOWN (subaccount-restricted key / absent) -> caller fail-safes
     updated_ts: int | None = None
+    read_failed: bool = False       # True = the /portfolio/balance READ itself FAILED (auth/network transient, e.g. a
+                                    # 401 header_timestamp_expired) -- NOT a legit no-breakdown and NOT underfunding.
+                                    # can_fund still returns None (fail-safe skip UNCHANGED); the flag only lets the
+                                    # caller LABEL the skip as shard_read_failed instead of the wrong shard_underfunded.
 
     def shard(self, exchange_index: int):
         """Dollars on ONE shard, or None if the split is UNKNOWN (has_breakdown False). A shard absent from a KNOWN

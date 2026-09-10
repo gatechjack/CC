@@ -487,8 +487,13 @@ def _structural_adapter(cfg):
         return SS.parse_poly_bet(slug, outcome, cfg)
 
     def _match(parsed, ctx, allowed_market_types):
+        # total/spread indices ride the ctx's total_index/spread_index slots (populated by
+        # fetch_structural_market_context); {} when the league has no total/spread series or the fetch was
+        # empty -> a total/spread bet then resolves to no_kalshi_strike (a SAFE miss). The market_types gate
+        # (in SS.match_bet) still decides whether total/spread are copied at all for this sub-division.
         return SS.match_bet(parsed, ctx.structural_index or {}, ctx.kalshi_dates, cfg,
-                            allowed_market_types=allowed_market_types)
+                            allowed_market_types=allowed_market_types,
+                            total_index=ctx.total_index, spread_index=ctx.spread_index)
     return _parse, _match
 
 
@@ -682,6 +687,15 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
         if shard_balances is not None:
             fundable = shard_balances.can_fund(order_shard, notional) if order_shard is not None else None
             if fundable is not True:
+                # ★ HONEST LABEL: a shard-balance READ failure (auth/network transient -- the 401
+                # header_timestamp_expired, proven NOT clock skew) is NOT underfunding. Same fail-closed skip
+                # (never place blind), but a distinct reason mirroring skip:exposure_unknown -- so the operator is
+                # NOT told to MOVE FUNDS to a shard that is actually fine.
+                if getattr(shard_balances, "read_failed", False):
+                    return Decision("skip:shard_read_failed", sid, market_type=match.market_type, kalshi_ticker=ticker,
+                                    leg=leg, count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
+                                    reason="shard-balance read FAILED (auth/network transient) for notional_%.4f; "
+                                           "fail-closed skip, NOT a funding gap -- do NOT move funds" % notional)
                 return Decision("skip:shard_underfunded", sid, market_type=match.market_type, kalshi_ticker=ticker,
                                 leg=leg, count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
                                 reason="shard_%s underfunded for notional_%.4f (fundable=%r; per-market, fail-closed)"

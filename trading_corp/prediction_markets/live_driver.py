@@ -248,29 +248,43 @@ async def fetch_wta_market_context(client, now_ts: int) -> execution.MarketConte
 
 
 async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution.MarketContext:
-    """rung 1 (2026-09-06): fetch OPEN + recent-SETTLED KX{X}GAME markets for a structural category (nfl/nba/nhl/
-    wnba/cfb) and build the (date, team-pair) game index. MIRRORS fetch_tennis_market_context -- SAME
-    `client.get_markets`, SAME `_market_quote_dict` quote fields, SAME raw `exchange_index` merge. MONEYLINE ONLY
-    (Jack ruled): fetches ONLY the game series (no total/spread this pass). No title read -- the structural join is
-    on the ticker's team CODES + date (via the team map), not a title. Returns a MarketContext with structural_index
-    set (ml/tot/spr/fight/match left empty)."""
+    """rung 1 (2026-09-06) + total/spread (2026-09-10): fetch OPEN + recent-SETTLED KX{X}GAME markets for a
+    structural category (nfl/nba/nhl/wnba/cfb) and build the (date, team-pair) game index; ALSO fetch the total
+    (KX{X}TOTAL) and spread (KX{X}SPREAD) series when the cfg carries them, and build the EXACT-STRIKE total/
+    spread indices (joined to the game via the shared ticker stem). MIRRORS fetch_market_context (the mlb 3-dim
+    builder). No title read -- the structural join is on the ticker's team CODES + date (via the team map), not a
+    title. ★ Whether total/spread are actually COPIED is gated by the sub-division's `market_types` (a moneyline-
+    only sub -> total/spread -> skip_market_type_excluded in the matcher); an off-season series (nba/nhl now)
+    fetches empty -> a SAFE empty index, no code change when it comes in season. exchange_index + top-of-book size
+    are raw-merged for ALL fetched series so gates 3/6b read the total/spread book (not just the game book).
+    Returns a MarketContext with structural_index (game) + total_index/spread_index set."""
     from pykalshi import MarketStatus
     markets: dict = {}
-    tickers: list = []
+    game_t: list = []
+    total_t: list = []
+    spread_t: list = []
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
-    for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
-        ms = await client.get_markets(series_ticker=cfg.game_series, status=status, limit=1000,
-                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
-        for m in (ms or []):
-            tk = getattr(m, "ticker", "") or ""
-            if not tk:
-                continue
-            markets[tk.upper()] = _market_quote_dict(m)
-            tickers.append(tk)
-    await _merge_raw_market_fields(client, markets, series_list=(cfg.game_series,))   # exchange_index (SDK-dropped) from raw
-    game_idx = SS.build_game_index(tickers, cfg)
-    dates = frozenset(k[0] for k in game_idx)          # ISO dates FROM THE INDEX (never occurrence_datetime)
-    return execution.MarketContext({}, {}, {}, dates, markets, structural_index=game_idx)
+    series_map = [(cfg.game_series, game_t)]
+    if getattr(cfg, "total_series", None):
+        series_map.append((cfg.total_series, total_t))
+    if getattr(cfg, "spread_series", None):
+        series_map.append((cfg.spread_series, spread_t))
+    for series, bucket in series_map:
+        for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+            ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
+                                          fetch_all=(status == MarketStatus.SETTLED), **extra)
+            for m in (ms or []):
+                tk = getattr(m, "ticker", "") or ""
+                if not tk:
+                    continue
+                markets[tk.upper()] = _market_quote_dict(m)
+                bucket.append(tk)
+    await _merge_raw_market_fields(client, markets, series_list=tuple(s for s, _ in series_map))   # exchange_index + size (SDK-dropped)
+    game_idx = SS.build_game_index(game_t, cfg)
+    total_idx = SS.build_total_index(total_t, cfg)      # {} when cfg has no total_series or the fetch was empty (safe)
+    spread_idx = SS.build_spread_index(spread_t, cfg)
+    dates = frozenset(k[0] for k in game_idx)          # ISO dates FROM THE GAME INDEX (never occurrence_datetime)
+    return execution.MarketContext({}, total_idx, spread_idx, dates, markets, structural_index=game_idx)
 
 
 def _structural_ctx_builder(cfg):
@@ -634,6 +648,12 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
                     n_shard_underfunded += 1
                     log.warning("pm_live_driver: skip:shard_underfunded (%s x%s) -- funding gap on the market's shard, "
                                 "NOT a fault: %s", d.kalshi_ticker, d.count, d.reason)
+                elif d.status == "skip:shard_read_failed":                        # ★ read failure (auth/network) -- NOT underfunding
+                    # deliberately does NOT increment n_shard_underfunded -> the sustained-underfunding alarm is
+                    # NOT inflated by a transient balance-read failure, and the operator is not sent to move funds.
+                    log.warning("pm_live_driver: skip:shard_read_failed (%s x%s) -- shard-balance read failed "
+                                "(auth/network transient, e.g. 401 header_timestamp_expired), NOT underfunding; "
+                                "fail-closed skip, do NOT move funds: %s", d.kalshi_ticker, d.count, d.reason)
                 elif d.status == "skip:exposure_unknown":                        # R7: venue exposure unreadable -> fail-closed
                     log.warning("pm_live_driver: skip:exposure_unknown -- venue open-exposure read failed; "
                                 "sizing against an unknown book is refused (fail-closed): %s", d.reason)
@@ -909,9 +929,17 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
             try:
                 shard_bal = await shard_balance.fetch_shard_balances(client)
             except Exception as e:  # noqa: BLE001 -- fail-CLOSED: cannot read the split -> UNKNOWN -> all entries skip
-                log.warning("pm_live_driver: shard-balance read FAILED for %s -> UNKNOWN split (entries skip:"
-                            "shard_underfunded this cycle -- never place blind): %s", account_id, e)
-                shard_bal = shard_balance.ShardBalances(total_dollars=0.0, by_shard={}, has_breakdown=False)
+                # ★ read_failed=True DISTINGUISHES a READ failure (auth/network transient -- e.g. a 401
+                # header_timestamp_expired, proven 2026-09-10 NOT clock skew: box 15us off NTP) from a genuine
+                # shard-underfunding. Behaviour is UNCHANGED (has_breakdown False -> can_fund None -> every entry
+                # skips, never places blind); the flag only lets gate 6b LABEL the skip shard_read_failed, so the
+                # operator is NOT told to MOVE FUNDS to a shard that does not need it.
+                auth = _is_auth_failure(e)
+                log.warning("pm_live_driver: shard-balance read FAILED for %s -> UNKNOWN split (entries "
+                            "skip:shard_read_failed this cycle -- %s, NOT underfunding; never place blind): %s",
+                            account_id, ("auth/timestamp" if auth else "network/transient"), e)
+                shard_bal = shard_balance.ShardBalances(total_dollars=0.0, by_shard={}, has_breakdown=False,
+                                                        read_failed=True)
             # ★ M1 gate-6 input: the ACCOUNT'S TRUE open exposure, read ONCE and SHARED across categories (a co-tenant
             # OR a sibling category can add exposure between cycles). Fail-CLOSED to UNKNOWN (has_data False -> every
             # entry skip:exposure_unknown, never size against an unknown book).
