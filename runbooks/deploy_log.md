@@ -13137,3 +13137,25 @@ then restart via restart_tc.ps1.
 
 **prod-live:** FF-push branch `pulse-phase1-2026-09-08` -> prod-live (base 44ee3a7; prod-live's
 a41644d0/acea4a74 match the build base exactly -> clean bump to 398dc425 / d342e294 + new test).
+
+---
+
+## MACE SIZING: BP-base + $400 floor + deploy-cap 0.95 (2026-09-09/10; config_hash c382c937 -> 49476b0e)
+
+**What:** new per-rung sizing on JOINT RH acct 116637293063. base = SIZING_BASE_BP_PCT(0.95) * available_buying_power (was equity/settled cash); budget = min(max(rung_risk_pct*base, $400 floor), base); contracts = min(max_contracts, floor(budget/per_contract_risk)). rung_risk_pct 0.14 -> 0.15; deployment_target_pct 0.90 -> 0.95 (deploy cap now matches the 0.95 sizing base -> deploy-95% end-to-end). max_contracts 2 unchanged. Rationale: SPY sized to 1 on low-IV days at ~$1.46k settled cash; BP-base + $400 floor funds >=1 contract (incl $5-wide GDX ~$380) so the capital tail deploys instead of stranding; SPY -> 2 at current BP.
+
+**Files (2):**
+- trading_corp/mace/strategy.py : sha256 373260c6.. -> 7bdc7203.. . size_contracts BP-base + rung_budget helper + SIZING_BASE_BP_PCT=0.95 / MIN_RUNG_BUDGET_USD=400.0; call site ctx.equity -> deployment_base(cfg,ctx); 2 stale comments fixed. 4 hunks. py_compile OK (box venv, py3.12).
+- config/mace.yaml : sha256 c382c937.. -> 49476b0e.. . rung_risk_pct 0.14->0.15, deployment_target_pct 0.90->0.95. **config_hash c382c9370f9b -> 49476b0ec024 (config edited -> hash MOVED = correct).**
+
+**Guards UNTOUCHED (byte-identical before==after graft):** robinhood.py md5 e90af223 / sha256 ecf5457e ; persistence/db.py sha256 177d834a ; prediction_markets/db.py sha256 39b5ac8e ; mace/manager.py sha256 deb073d3. No prediction_markets / shared / main.py / robinhood / db touches -- only the 2 MACE files changed.
+
+**Backup + rollback:** ~/mace_size_deploy_backup_20260909T235140Z/ (strategy.py.bak md5 964f5e3b, mace.yaml.bak md5 957c8b5f) + rollback.sh (restores both + re-md5s), then restart via restart_tc.ps1.
+
+**Restart (1, canonical restart_tc.ps1 = az vm run-command ... systemctl restart trading-corp, board-authorized):** MainPID 282839 -> 292771 (start 2026-09-10 01:19:34 UTC; boot GREEN, 0 tb).
+
+**Boot-verify (read-only, FULLY GREEN):** PID changed 282839->292771; config_hash CHANGED c382c9370f9b -> 49476b0ec024 (journal: "Robinhood MACE wired execution_mode=live config_hash=49476b0ec024; 4 loops online"); guards intact (robinhood ecf5457e / strategy on-box 7bdc7203 == build / manager deb073d3); /mace 200; effective rung_risk_pct 0.15 + deployment_target_pct 0.95 + max_contracts 2; sizing base 0.95*BP == deploy cap 0.95*BP (both $2391.87 at live BP $2517.76; multipliers match -> deploy-95% end-to-end); 14 open rungs + position_state_reconciled x16; avail-BP live $2517.76; candle feed writing (mace_candle 2026-09-10T01:23:33Z); 0 MACE tracebacks since boot. MACE remained HALTED (entry_halt latch) through the deploy = SAFE; un-halt/arm is a separate operator action.
+
+**Three-way prove (box == build == prod-live):** strategy.py 7bdc7203 + mace.yaml 49476b0e on all three. box = live graft (on-box==build 0-diff at graft); build = branch mace-sizing-bp-floor-2026-09-09 @ bbb63ab; prod-live = this commit.
+
+**prod-live:** FF-push branch `mace-sizing-deploy-prodlive-2026-09-09` -> prod-live (base 4a99a3a = current origin/prod-live tip; prod-live's strategy 373260c6 / mace.yaml c382c937 matched the build base exactly -> clean FF bump to 7bdc7203 / 49476b0e). Clean fast-forward. 3rd prod-live push (after command-center-perf chain + pulse-phase1).

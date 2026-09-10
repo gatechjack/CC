@@ -70,15 +70,17 @@ entry:
                                         # same-expiry short (diversify; throttles fills).
 
 sizing:
-  rung_risk_pct: 0.14                   # 2026-08-20 Jack: 0.10 -> 0.14 so a $5-wide GDX/XLE
-                                        # condor (per-contract risk ~$400-450) sizes to 1
-                                        # contract at ~$3.2k equity (floor(0.14*3218/450)=1);
-                                        # max_contracts:1 caps it at ONE. PER-RUNG sizing stays
-                                        # on the equity/settled-cash basis (deployment_basis
-                                        # below only moves the total-book RESERVE cap).
-  deployment_target_pct: 0.90           # 2026-08-25 Jack: 0.95 -> 0.90 alongside the BP basis
-                                        # change below (put idle capital to work without
-                                        # over-deploying). Reserve cap = deployment_basis * 0.90.
+  rung_risk_pct: 0.15                   # 2026-09-09 Jack: 0.14 -> 0.15. PER-RUNG sizing now
+                                        # bases on BUYING POWER (not equity/settled cash):
+                                        # base = 0.95 * available_buying_power (SIZING_BASE_BP_PCT
+                                        # in strategy.py); budget = min(max(rung_risk_pct*base,
+                                        # $400 floor), base); contracts = floor(budget/per_contract).
+                                        # The $400 floor funds >=1 contract (incl $5-wide GDX
+                                        # ~$380) so the capital tail deploys; max_contracts caps top.
+  deployment_target_pct: 0.95           # 2026-09-09 Jack: 0.90 -> 0.95 to MATCH the 0.95*BP
+                                        # per-rung sizing base (deploy 95% end-to-end; no
+                                        # sizing-vs-cap mismatch). Was 0.95->0.90 on 2026-08-25,
+                                        # reversed here. Reserve cap = deployment_basis * 0.95.
                                         # ★ Option A (Jack ruling): with available_buying_power
                                         # the base is ALREADY net of collateral for pre-existing
                                         # open positions, so the gate does NOT re-subtract open

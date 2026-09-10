@@ -84,7 +84,8 @@ class EntryContext:
     # Free/available buying power (the "margin available to invest" figure) — the
     # reserve/deployment-cap sizing basis when cfg.sizing.deployment_basis ==
     # 'available_buying_power'. None => not captured (gate falls back to equity).
-    # Per-rung contract sizing (size_contracts) never uses this — always equity.
+    # Per-rung contract sizing (size_contracts) ALSO sizes on this now (2026-09-09:
+    # base = SIZING_BASE_BP_PCT * this, via deployment_base) -- was ctx.equity.
     available_buying_power: float | None = None
     # Open max_risk at THIS eval's start (Option A, 2026-08-25). The available-BP
     # base is already net of collateral for positions open at the 15:40 snapshot AND
@@ -212,8 +213,9 @@ def deployment_base(cfg: "MaceConfig", ctx: "EntryContext") -> float:
           the cap never authorizes a rung the account can't actually margin.
       else                              -> ctx.equity — the settled-cash basis
           (legacy 'equity' basis, or a safe fall-back when available BP is absent).
-    Per-rung contract sizing (size_contracts) always stays on ctx.equity — this only
-    moves the reserve cap denominator."""
+    Per-rung contract sizing (size_contracts) now sizes on this SAME base too
+    (2026-09-09: base = SIZING_BASE_BP_PCT * this), so sizing and the reserve cap
+    share one denominator (falling back to ctx.equity together when BP is absent)."""
     if _uses_available_bp(cfg, ctx):
         return float(ctx.available_buying_power)
     return float(ctx.equity or 0.0)
@@ -585,12 +587,35 @@ def build_condor(symbol: str, symbol_cfg: SymbolConfig, chain: ChainView,
 
 # ── sizing + reserve ─────────────────────────────────────────────────────
 
-def size_contracts(equity: float, width: float, credit_mid: float,
+# Per-rung sizing policy (2026-09-09, replaces the equity/settled-cash budget).
+# base = SIZING_BASE_BP_PCT * gross available buying power (the SAME figure the
+# reserve/deploy-cap gate sizes on, see deployment_base) so per-rung sizing and
+# the deploy cap share one denominator. The $400 floor guarantees each rung can
+# fund at least one contract (incl. a $5-wide GDX at ~$380 max-loss) so the tail
+# of capital actually deploys instead of stranding when rung_risk_pct*base alone
+# would fall short; the min(..., base) guard means the floor can NEVER exceed the
+# base (a small account spends at most its whole base -> unfundable -> SKIP_BUDGET).
+SIZING_BASE_BP_PCT = 0.95
+MIN_RUNG_BUDGET_USD = 400.0
+
+
+def rung_budget(buying_power: float, rung_risk_pct: float) -> float:
+    """Per-rung sizing budget:
+        base   = SIZING_BASE_BP_PCT * buying_power
+        budget = min( max(rung_risk_pct * base, MIN_RUNG_BUDGET_USD), base )
+    Precedence: rung_risk_pct*base > $400 -> the PERCENTAGE governs (higher BP);
+    rung_risk_pct*base < $400 <= base -> the $400 FLOOR governs; base < $400 ->
+    the BASE caps it (can't deploy what isn't there)."""
+    base = SIZING_BASE_BP_PCT * float(buying_power)
+    return min(max(rung_risk_pct * base, MIN_RUNG_BUDGET_USD), base)
+
+
+def size_contracts(buying_power: float, width: float, credit_mid: float,
                    rung_risk_pct: float, max_contracts: int) -> int:
     per_contract_risk = (width - credit_mid) * 100.0
     if per_contract_risk <= 0:
         return 0
-    raw = math.floor(rung_risk_pct * equity / per_contract_risk)
+    raw = math.floor(rung_budget(buying_power, rung_risk_pct) / per_contract_risk)
     return max(0, min(raw, max_contracts))
 
 
@@ -673,7 +698,10 @@ def evaluate_entry(symbol: str, cfg: MaceConfig, ctx: EntryContext,
     #    returned spec has already cleared the floor at b.width (2026-08-14 fix).
 
     # 8. size
-    contracts = size_contracts(ctx.equity, b.width, b.credit_mid,
+    # Sizing base = the gross available buying power (deployment_base = the SAME
+    # denominator the reserve/deploy-cap gate uses below), scaled inside
+    # size_contracts by SIZING_BASE_BP_PCT. (Was ctx.equity / settled cash.)
+    contracts = size_contracts(deployment_base(cfg, ctx), b.width, b.credit_mid,
                                cfg.sizing.rung_risk_pct, cfg.max_contracts)
     if contracts <= 0:
         return _skip(symbol, SKIP_BUDGET, ivr_status=ivr_status,
