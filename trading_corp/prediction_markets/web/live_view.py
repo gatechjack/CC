@@ -99,6 +99,24 @@ def _spread_other(ticker: str, team_code: str) -> str | None:
     return None
 
 
+def _held_team_code(ticker: str, held_leg: str | None) -> str:
+    """The MLB moneyline team WE HOLD, leg-aware (codes only, upper): the YES club for a YES/absent leg, the OTHER
+    club for a NO leg. Falls back to the yes suffix if the pair does not resolve. Used by _short_label's ML branch
+    (so the compact label names the side we hold, not just the market's YES side) and by the event-block score-line
+    marker, so 'who we're cheering for' is unmistakable."""
+    parts = str(ticker or "").split("-")
+    yes = (parts[2] if len(parts) > 2 else "").upper()
+    if str(held_leg).lower() != "no":
+        return yes
+    a, h = _ordered_teams(ticker)
+    a, h = (a or "").upper(), (h or "").upper()
+    if yes == a and h:
+        return h
+    if yes == h and a:
+        return a
+    return yes
+
+
 def _short_label(ticker: str, kind: str, held_leg: str | None) -> str:
     """A compact bet label for the card slot, DERIVED FROM THE TICKER + HELD LEG and carrying DIRECTION (Jack's
     ruling): TOTAL shows over/under as a sign on the strike -- '+8.5' (Over, the YES leg) / '-8.5' (Under, the NO
@@ -132,8 +150,9 @@ def _short_label(ticker: str, kind: str, held_leg: str | None) -> str:
                 return "+%s %s" % (strike, other)         # the OTHER team gets +strike (the underdog side)
             return "-%s %s" % (strike, team_code)         # yes/None -> the anchor team lays -strike (favourite)
     if kind == "moneyline":
-        # the suffix is the YES club; if we hold the NO leg the bet is the OTHER club -- describe_market resolves it.
-        return (suffix or "").upper()
+        # the team WE HOLD, leg-aware: YES club for a YES/absent leg, the OTHER club for a NO leg. This makes the
+        # compact label carry DIRECTION for ML too (like TOT/SPR) -- who we hold, not just the market's YES side.
+        return _held_team_code(ticker, held_leg)
     return suffix or "—"
 
 
@@ -852,38 +871,73 @@ def _event_rows(positions, marks):
     return rows
 
 
-def _live_event(category, positions, feed_games, marks):
-    """The LIVE tile's event block. MLB: a scoreboard from the feed (teams + score + inning detail) + the held
-    positions. Non-MLB live-capable: the market label + positions, NO scoreboard (degrades honestly). None if
-    there is nothing open to show."""
+def _live_event(category, positions, feed_games, marks, now_ts):
+    """The LIVE tile's event block -- ONE compact row PER UNDERWAY GAME the sub holds a position on. FIX
+    (2026-09-11): each row carries that game's scoreboard (MLB) or market label (non-MLB) and ONLY that game's held
+    positions -- the prior version attached EVERY open position to a single underway game (jack/mlb showed a PHI
+    position on the TB@ATL block). Positions are GROUPED by the same ticker->game join the card page uses
+    (game_key_from_ticker); a position whose ticker joins no game is OMITTED, never guessed onto one (FIX 3) -- it
+    stays counted on the OPEN line. Positions on games that are NOT underway are also not in the block. Rows are
+    ordered most-recently-started first, capped at 3, with `more` = the overflow ('+N more live' -> detail page).
+    The held ML team is marked in the score line (away_ours/home_ours) so who we're cheering for is unmistakable.
+    Returns None if no underway game."""
     if not positions:
         return None
     cat = str(category or "").lower()
-    gs = None
-    if cat == "mlb" and feed_games:
-        for p in positions:
-            gk = game_key_from_ticker(p.get("ticker"))
-            if gk is not None:
-                g = feed_mlb.match_in_slate(feed_games, gk[0], gk[3], gk[1], gk[2])
-                if g is not None and g.is_live:
-                    gs = g
-                    break
-    ev = {"label": None, "away": None, "home": None, "home_lead": False, "detail": None,
-          "age_sec": None, "positions": _event_rows(positions, marks), "has_scoreboard": gs is not None}
-    if gs is not None:
-        asc = "" if gs.away.score is None else str(gs.away.score)
-        hsc = "" if gs.home.score is None else str(gs.home.score)
-        ev["away"] = ("%s %s" % (gs.away.abbr or "-", asc)).strip()
-        ev["home"] = ("%s %s" % (gs.home.abbr or "-", hsc)).strip()
-        ev["label"] = "%s @ %s" % (gs.away.abbr or "-", gs.home.abbr or "-")
-        ev["home_lead"] = (gs.home.score or 0) > (gs.away.score or 0)
-        ev["detail"] = _score_detail(gs)
-        ev["age_sec"] = getattr(gs, "age_sec", None)
-    else:
-        p0 = positions[0]
-        ev["label"], _ = name_market(p0.get("ticker"), p0.get("held_leg"),
-                                     (marks or {}).get(p0.get("ticker")), None, cat)
-    return ev
+    groups: dict = {}                                  # group key -> {start, gs, positions, ticker}
+    for p in positions:
+        tk, leg = p.get("ticker"), p.get("held_leg")
+        if cat == "mlb":
+            gk = game_key_from_ticker(tk)
+            if gk is None:
+                continue                               # FIX 3: unjoinable ticker -> omit, never attach to a game
+            gs = feed_mlb.match_in_slate(feed_games, gk[0], gk[3], gk[1], gk[2]) if feed_games else None
+            if gs is None or not gs.is_live:
+                continue                               # only UNDERWAY games ride the block
+            g = groups.get(gk)
+            if g is None:
+                g = groups[gk] = {"start": parse_ticker_start(cat, tk) or 0, "gs": gs, "positions": [], "ticker": tk}
+            g["positions"].append(p)
+        elif cat in LIVE_CAPABLE:
+            st = parse_ticker_start(cat, tk)
+            if st is None or st > int(now_ts) or getattr((marks or {}).get(tk), "status", None) == "finalized":
+                continue                               # not underway (no start, future, or already settled)
+            key = tk.rsplit("-", 1)[0]                  # the match stem (strip the leg/side suffix)
+            g = groups.get(key)
+            if g is None:
+                g = groups[key] = {"start": st, "gs": None, "positions": [], "ticker": tk}
+            g["positions"].append(p)
+    if not groups:
+        return None
+    ordered = sorted(groups.values(), key=lambda gg: -(gg["start"] or 0))   # most recently started first
+    rows = []
+    for g in ordered[:3]:
+        gs = g["gs"]
+        our = None                                     # who we HOLD (ML) -> mark in the score line
+        for p in g["positions"]:
+            if _kind(p.get("ticker")) == "moneyline":
+                our = _held_team_code(p.get("ticker"), p.get("held_leg"))
+                break
+        row = {"has_scoreboard": gs is not None, "label": None, "away": None, "home": None, "home_lead": False,
+               "away_ours": False, "home_ours": False, "detail": None, "age_sec": None,
+               "positions": _event_rows(g["positions"], marks)}
+        if gs is not None:
+            asc = "" if gs.away.score is None else str(gs.away.score)
+            hsc = "" if gs.home.score is None else str(gs.home.score)
+            row["away"] = ("%s %s" % (gs.away.abbr or "-", asc)).strip()
+            row["home"] = ("%s %s" % (gs.home.abbr or "-", hsc)).strip()
+            row["label"] = "%s @ %s" % (gs.away.abbr or "-", gs.home.abbr or "-")
+            row["home_lead"] = (gs.home.score or 0) > (gs.away.score or 0)
+            row["detail"] = _score_detail(gs)
+            row["age_sec"] = getattr(gs, "age_sec", None)
+            a_code, h_code = _ordered_teams(g["ticker"])   # ticker-space away/home -> marker is position-based (feed-abbr safe)
+            row["away_ours"] = bool(our and our == (a_code or "").upper())
+            row["home_ours"] = bool(our and our == (h_code or "").upper())
+        else:
+            p0 = g["positions"][0]
+            row["label"], _ = name_market(p0.get("ticker"), p0.get("held_leg"), (marks or {}).get(p0.get("ticker")), None, cat)
+        rows.append(row)
+    return {"rows": rows, "more": max(0, len(ordered) - 3)}
 
 
 def _next_event(category, positions, marks, now_ts):
@@ -953,7 +1007,7 @@ def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub,
             openb = {"count": len(pos), "cost": sum(float(x.get("cost_basis_usd") or 0.0) for x in pos),
                      "value": vp["value"], "value_known": vp["known"], "priced": vp["n_priced"],
                      "of": vp["n_total"], "complete": vp["complete"], "mark_age": mark_age_sec}
-        event = _live_event(cat, pos, feed_games, marks) if activity == "LIVE" else None
+        event = _live_event(cat, pos, feed_games, marks, now_ts) if activity == "LIVE" else None
         next_event = _next_event(cat, pos, marks, now_ts) if activity == "UPCOMING" else None
         if name_exceptions is not None:
             for x in pos:

@@ -71,8 +71,8 @@ def test_classifier_per_category():
     assert t["UCL"]["activity"] == "SETTLED"
     assert t["BRA"]["activity"] == "INACTIVE" and t["BRA"]["realized"] is None       # INACTIVE = no history block
     assert t["FED"]["activity"] == "UNATTACHED"
-    # LIVE event block: positions valued at bid, cyan, never cost-as-value
-    assert t["CS2"]["event"] is not None and t["CS2"]["event"]["positions"][0]["value_known"] is True
+    # LIVE event block: one row per underway game/match, positions valued at bid, cyan, never cost-as-value
+    assert t["CS2"]["event"] is not None and t["CS2"]["event"]["rows"][0]["positions"][0]["value_known"] is True
 
 
 def test_upcoming_not_live_for_date_only_even_if_recent():
