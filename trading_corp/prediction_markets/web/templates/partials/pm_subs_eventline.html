@@ -1,0 +1,14 @@
+{# The tile's NEXT (UPCOMING) / LAST (settled etc.) line (R1: a partial; drop with one include). `t` inherited
+   from the caller. NEXT shows a countdown ONLY where a start time is sourceable (live-capable ticker HHMM);
+   date-only sports say "start time unavailable" and stay UPCOMING. LAST names the last close's result + realized;
+   close latency is seconds-to-minutes, so it reads "closed Nm ago", never "just now"/instant. #}
+{% if t.activity == 'UPCOMING' and t.next_event %}
+  {%- set s = t.next_event.starts_in_seconds -%}
+  <div class="orow" style="margin-top:7px"><span class="k">NEXT</span><span class="sub">{{ t.next_event.label }} &middot;
+    {%- if s is not none %} in {% if s >= 3600 %}{{ s // 3600 }}h {{ (s % 3600) // 60 }}m{% else %}{{ (s // 60) if s >= 60 else 1 }}m{% endif %}
+    {%- else %} <span class="nomark">start time unavailable</span> &mdash; no start feed for this sport yet, so it stays UPCOMING even once underway{% endif %}</span></div>
+{% elif t.last_close %}
+  <div class="orow" style="margin-top:7px"><span class="k">LAST</span><span class="sub">closed {{ t.last_close.age_sec|agefmt }} &middot;
+    <span class="{{ 'pos' if t.last_close.result == 'won' else ('neg' if t.last_close.result == 'lost' else 'dim') }}">
+    {%- if t.last_close.result %}{{ t.last_close.result|upper }} {{ t.last_close.realized|signed }}{% else %}closed &mdash; not booked{% endif %}</span></span></div>
+{% endif %}

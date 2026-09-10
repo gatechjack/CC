@@ -1,93 +1,203 @@
 {% extends "pm_shell.html" %}
-{% import "partials/pm_arm_badge.html" as ab %}
-{% import "partials/pm_liveness.html" as lv %}
 {% block title %}Live sub-divisions &middot; Prediction Markets{% endblock %}
+
+{# ============================================================================================================
+   Live sub-divisions (Claude Design port, 2026-09-10). SERVER-RENDERED: the active account tab is in ?account=
+   so it works JS-off; pm_live_subs.js only ticks ages, polls (fetch+swap), and fires the placed/closed pulse +
+   close tone. Honesty rules: realized is NEVER open value; cost and current value are distinct; an unpriced
+   position reads "no mark", never $0; arm and liveness are shown separately; armed + STALE/NEVER rides the
+   alarm strip; a name is never a raw ticker (R2). Colour means gain/loss/unrealized-value/stale + alarm only.
+   ============================================================================================================ #}
+
+{% macro agechip(sec, stale) -%}
+  {%- if sec is none -%}<span class="chip stale">unavailable</span>
+  {%- else -%}<span class="chip{{ ' stale' if (stale and sec > stale) else '' }}" data-age0="{{ sec }}"{% if stale %} data-stale="{{ stale }}"{% endif %}>{{ sec|agefmt }}{{ ' &middot; stale'|safe if (stale and sec > stale) else '' }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro age(sec) -%}<span class="ag" data-age0="{{ sec if sec is not none else '' }}">{{ sec|agefmt if sec is not none else '&mdash;'|safe }}</span>{%- endmacro %}
+
+{% macro health(t) -%}
+  <span class="hlth">
+    <span class="hl"><span class="lamp {{ 'on' if t.arm_state == 'ARMED' else '' }}"></span>{{ t.arm_state }} {{ age(t.arm_age) }}</span>
+    {%- set lv = t.liveness -%}
+    {%- if lv -%}
+      {%- set lampcls = 'bad' if t.is_alarm else ('warn' if lv.state == 'CATEGORY_STARVED' else ('on' if lv.state in ('RUNNING','IDLE') else '')) -%}
+      <span class="hl {{ 'err' if t.is_alarm else '' }}"><span class="lamp rt {{ lampcls }}"></span><span title="{{ lv.state }}">{{ lv.label }}</span> {{ age(lv.age_sec) }}</span>
+      <span class="cyc">{{ lv.signals if lv.signals is not none else 0 }} signal{{ '' if lv.signals == 1 else 's' }} &middot; {{ lv.orders or 0 }} placed{% if lv.errors %} &middot; {{ lv.errors }} err{% endif %}</span>
+    {%- elif t.liveness is none and t.attached -%}
+      <span class="hl"><span class="lamp rt"></span>NO HEARTBEAT <span class="ag">&mdash;</span></span>
+    {%- endif -%}
+    {%- if t.whales %}<span class="cyc">{{ t.whales }} whale{{ '' if t.whales == 1 else 's' }}</span>{% endif -%}
+  </span>
+{%- endmacro %}
+
+{% macro money(t) -%}
+  {%- if not t.realized -%}
+    <div class="mny"><div class="k">REALIZED TODAY &middot; ET</div><div class="today zero">no history</div>
+      <div class="rec">attached, never traded &mdash; 0 booked closes</div></div>
+  {%- else -%}
+    {%- set r = t.realized -%}
+    <div class="mny"><div class="k">REALIZED TODAY &middot; ET &middot; NET OF FEES</div>
+      <div class="today {{ r.today|pnlcls }}">{{ r.today|signed }}</div>
+      <div class="rec">
+        {% if r.booked_closes %}<span>{{ r.booked_closes }} booked &middot; {{ r.wins }}&ndash;{{ r.losses }}</span>{% else %}<span>0 booked closes</span>{% endif %}
+        {% if r.thin %}<span class="thin">THIN &lt;{{ meta.thin_threshold }}</span>{% endif %}
+        {% if r.unbooked %}<span class="unbk">{{ r.unbooked }} unbooked</span>{% endif %}
+      </div></div>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro openb(t) -%}
+  {%- if not t.open -%}
+    <div class="open"><div class="noopen">no open positions</div></div>
+  {%- else -%}{%- set o = t.open -%}
+    <div class="open">
+      <div class="orow"><span class="k">OPEN</span><span class="v">{{ o.count }} pos</span></div>
+      <div class="orow"><span class="k">COST</span><span class="v">{{ o.cost|money }}</span><span class="sub">what we paid</span></div>
+      <div class="orow"><span class="k">VALUE</span>
+        {%- if o.priced == 0 -%}<span class="nomark">no mark</span> <span class="sub">0 of {{ o.of }} priced &mdash; the exchange has no price; it is not $0.00</span>
+        {%- else -%}<span class="v cy">{{ o.value|money }}</span> <span class="sub">{{ o.priced }} of {{ o.of }} priced &middot; {% if o.mark_age is not none %}{{ o.mark_age|agefmt }}{% else %}age unavailable{% endif %}</span>{%- endif -%}
+      </div></div>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro hist(t) -%}
+  {%- if t.realized -%}{%- set r = t.realized -%}
+    <div class="ft">
+      <div><span class="k">WEEK</span><span class="v {{ r.week|pnlcls }}">{{ r.week|signed }}</span></div>
+      <div><span class="k">MONTH</span><span class="v {{ r.month|pnlcls }}">{{ r.month|signed }}</span></div>
+      <div><span class="k">ALL TIME</span><span class="v {{ r.all_time|pnlcls }}">{{ r.all_time|signed }}</span></div>
+    </div>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro plate(t) -%}
+  {%- if t.has_logo -%}<span class="plate"><img src="{{ t.logo }}?v={{ logo_v.get(t.code, '') }}" alt="{{ t.code }}" loading="lazy"></span>
+  {%- else -%}<span class="plate mono0"><span>{{ t.monogram }}</span></span>{%- endif -%}
+{%- endmacro %}
+
+{% macro tile(t) -%}
+  {%- if t.activity == 'UNATTACHED' -%}
+    <a class="t unattached" href="{{ t.href }}">
+      <div class="hd">{{ plate(t) }}<span class="idw"><span class="code">{{ t.code }}</span><span class="sport">{{ t.family }}</span></span></div>
+      <div class="noopen" style="margin:8px 0 4px">{{ 'retired code &middot; never trades'|safe if t.orphan else 'no whales attached' }}</div>
+      <span class="state">UNATTACHED</span></a>
+  {%- else -%}
+    <a class="t {{ t.activity|lower }}{{ ' alarm' if t.is_alarm else '' }}" href="{{ t.href }}" data-sub="{{ t.account }}/{{ t.category }}">
+      <div class="hd">{{ plate(t) }}<span class="idw"><span class="code">{{ t.code }}</span><span class="sport">{{ t.family }}</span></span>{{ health(t) }}</div>
+      {%- if t.is_alarm -%}
+        <div class="ev" style="border-color:#7a2a24;background:#1c0c0b;margin-top:10px">
+          <div class="t1" style="color:var(--alarm)">ALARM &middot; ARMED BUT NOT BEING EVALUATED</div>
+          <div class="t2">last heartbeat {% if t.liveness and t.liveness.age_sec is not none %}{{ t.liveness.age_sec|agefmt }}{% else %}never{% endif %}</div>
+          <div class="t3">The engine is not running cycles for this sub-division. It is armed, so it is expected to trade and is not. Positions below may be unmanaged.</div>
+        </div>
+      {%- endif -%}
+      {%- if t.activity == 'LIVE' and t.event %}{% include 'partials/pm_subs_event.html' %}{% endif -%}
+      {{ money(t) }}
+      {{ openb(t) }}
+      {% include 'partials/pm_subs_eventline.html' %}
+      {{ hist(t) }}
+      <span class="state">{{ 'ALARM' if t.is_alarm else t.activity }}</span>
+    </a>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro section(title, list, note, compact) -%}
+  {%- if list -%}
+    <h2>{{ title }} <span class="n">{{ list|length }}</span>{% if note %}<span class="h2note">{{ note }}</span>{% endif %}</h2>
+    <div class="grid{{ ' compact' if compact else '' }}">{% for t in list %}{{ tile(t) }}{% endfor %}</div>
+  {%- endif -%}
+{%- endmacro %}
+
+{% block header_extras %}
+  <span class="badge {{ 'armed' if meta.global_arm == 'armed' else ('unavailable' if meta.global_arm == 'unavailable' else 'never') }}"><span class="dot"></span>GLOBAL {{ (meta.global_arm or 'unknown')|upper }}</span>
+  <span class="poll" id="pollage" data-age0="{{ meta.generated_age_seconds }}" data-interval="{{ meta.poll_interval_seconds }}" data-since="{{ max_order_id }}" data-account="{{ active_account or '' }}">updated 0s ago</span>
+  <button class="mini" id="refresh">Poll now</button>
+  <button class="mini" id="sfx" aria-pressed="false" title="Short tone on a close: rising for a win, falling for a loss">Sound off</button>
+{% endblock %}
+
 {% block content %}
-{{ lv.liveness_assets() }}{# pm-lv-* liveness chip styles (self-contained), reused on each tile #}
-<section class="desk tiles">
-  <nav class="pm-crumb"><a href="/">Dashboard</a> &rsaquo; Live sub-divisions</nav>
-  <div class="tl-head">
-    <h1 class="pm-h1">Live sub-divisions</h1>
-    {{ ab.arm_badge(global_arm.state, global_arm.ts_age, prefix='GLOBAL ') }}
+<section class="desk subs">
+  <div class="crumb"><a href="/">Dashboard</a> &rsaquo; Live sub-divisions</div>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <h1>Live sub-divisions</h1>
+    <span class="badge {{ 'armed' if meta.global_arm == 'armed' else ('unavailable' if meta.global_arm == 'unavailable' else 'never') }}"><span class="dot"></span>GLOBAL {{ (meta.global_arm or 'unknown')|upper }}</span>
+    {{ agechip(meta.global_arm_age, none) }}
   </div>
-  <p class="pm-sub">All {{ counts.total }} sub-divisions, both accounts &mdash; {{ counts.attached }} attached ({{ counts.armed }} armed), {{ counts.unattached }} with no whales. Read-only. <b>Arm</b> = should it trade (persisted state); <b>liveness</b> = is the engine actually evaluating it (heartbeat). The two are shown separately on purpose.</p>
+  <p class="caveat" style="max-width:96ch;margin:7px 0 0"><b>Arm</b> is whether a sub-division should trade &mdash; a persisted setting; its age is the age of that setting, not a feed. <b>Liveness</b> is whether the engine is actually evaluating it &mdash; a heartbeat, and its age is what can go stale. Armed with a stale or missing heartbeat is an alarm; IDLE means evaluated with no signals and is normal. Read-only.</p>
 
-  {# R1: page-top ALARM STRIP -- the divergence that cost 28h: ARMED in the DB but the driver reads STALE/NEVER.
-     Rendered as the most prominent thing on the page (not just a tile colour), listing each offending sub. #}
-  {% if alarm_subs %}
-  <div class="tl-alarm" role="alert" data-alarm-count="{{ alarm_subs|length }}">
-    <div class="tl-alarm-hd">&#9888; DRIVER NOT RUNNING &mdash; {{ alarm_subs|length }} ARMED sub-division{{ '' if alarm_subs|length == 1 else 's' }} not cycling</div>
-    <div class="tl-alarm-body">The DB says these should be trading, but the engine is not evaluating them. PM may not be trading &mdash; check the engine.</div>
-    <ul class="tl-alarm-list">
-      {% for s in alarm_subs %}<li>{{ s.account_label }} &middot; <b>{{ s.category|upper }}</b> &mdash; <span class="tl-alarm-state">{{ s.state }}</span> <span class="tl-age">{{ lv.liveness_age(s.age_sec) }}</span></li>{% endfor %}
-    </ul>
+  {# account tabs -- links carry ?account= so JS-off works; non-admin sees only their own #}
+  <div class="tabs" role="tablist">
+    {% for tab in tabs %}<a class="tab" role="tab" href="?account={{ tab.id }}" aria-selected="{{ 'true' if tab.active else 'false' }}"><b>{{ tab.name }} {{ tab.venue }}</b><em>{{ tab.n_subs }} sub-divisions &middot; {{ tab.armed }} armed{% if tab.alarm %} &middot; <span style="color:var(--alarm)">{{ tab.alarm }} alarm</span>{% endif %}</em></a>{% endfor %}
+    {% if meta.viewer_role != 'admin' %}<span class="onetab">SINGLE-ACCOUNT VIEW &mdash; you see only your own account</span>{% endif %}
   </div>
-  {% endif %}
 
-  {% if not liveness_present %}
-  <div class="tl-note">Driver-liveness monitor not deployed here (heartbeat table absent, migration 020 pending) &mdash; liveness reads &lsquo;n/a&rsquo;, never a false alarm.</div>
-  {% endif %}
-
-  {% for acct in accounts %}
-  <div class="tl-acct">
-    <h2 class="tl-acct-hd">{{ acct.account_label }} <span class="tl-acct-n">{{ acct.tiles|length }} sub-divisions</span></h2>
-    <div class="tl-grid">
-      {% for t in acct.tiles %}
-      {% if t.attached %}
-      {# -- RICH tile (attached: can trade) -- #}
-      <a class="tl-tile{% if t.is_alarm %} tl-tile-alarm{% endif %}" href="/live/{{ t.account_id }}/{{ t.category }}">
-        <div class="tl-top">
-          <span class="tl-cat">{{ t.category|upper }}</span>
-          {{ ab.arm_badge(t.arm_state, t.arm_ts_age) }}
-        </div>
-        <div class="tl-live">
-          {% if t.liveness %}<span class="pm-lv-badge pm-lv-st-{{ t.liveness.state }}" title="{{ t.liveness.detail }}"><span class="pm-lv-state">{{ t.liveness.state|replace('_',' ') }}</span> <span class="pm-lv-age">{{ lv.liveness_age(t.liveness.age_sec) }}</span></span>
-          {% elif liveness_present %}<span class="pm-lv-badge pm-lv-st-NEVER" title="attached + expected but no heartbeat row"><span class="pm-lv-state">NO HEARTBEAT</span></span>
-          {% else %}<span class="tl-dim">liveness n/a</span>{% endif %}
-        </div>
-        <div class="tl-whales">
-          {% if t.whale_tag %}<span class="tl-k">copies</span> <span class="wtag"><span class="wn">{{ t.whale_tag.first }}</span>{% if t.whale_tag.extra %}<span class="wx">+{{ t.whale_tag.extra }}</span>{% endif %}</span><span class="tl-dim"> of {{ t.n_whales }}</span>
-          {% else %}<span class="tl-dim">{{ t.n_whales }} whale{{ '' if t.n_whales == 1 else 's' }} attached</span>{% endif %}
-        </div>
-        <div class="tl-metrics">
-          <div class="tl-m">
-            <div class="tl-k">realized <span class="tl-dim">net of fees</span></div>
-            <div class="tl-v {{ t.realized|pnlcls }}">{{ t.realized|money }}</div>
-            <div class="tl-sub">{{ t.booked_closes }} booked close{{ '' if t.booked_closes == 1 else 's' }} &middot; {{ t.wins }}&ndash;{{ t.losses }} settled{% if t.realized_thin %} <span class="tl-thin" title="fewer than {{ thin_sample_floor }} settled closes -- the W-L rate is not yet reliable">THIN &lt;{{ thin_sample_floor }}</span>{% endif %}{% if t.unbooked_closes %} &middot; <span class="tl-dim">{{ t.unbooked_closes }} unbooked</span>{% endif %}</div>
-          </div>
-          <div class="tl-m">
-            <div class="tl-k">last 24h <span class="tl-dim">settled</span></div>
-            <div class="tl-v {{ t.realized_24h|pnlcls }}">{{ t.realized_24h|money }}</div>
-            <div class="tl-sub">{{ t.n_24h }} settlement{{ '' if t.n_24h == 1 else 's' }} in the last 24h</div>
-          </div>
-        </div>
-        <div class="tl-open">
-          <span class="tl-k">open</span>
-          {% if t.open_count %}
-            <span class="tl-of">{{ t.open_count }} pos</span>
-            <span class="tl-of">{{ t.open_at_cost|money }} <span class="tl-dim">cost</span></span>
-            <span class="tl-of">{% if t.open_known %}{{ t.open_value|money }}{% else %}<span class="tl-dim">no mark</span>{% endif %} <span class="tl-dim">value</span></span>
-            <span class="tl-cov{% if t.open_total and not t.open_complete %} tl-cov-partial{% endif %}">{{ t.open_priced }} of {{ t.open_total }} priced</span>
-          {% else %}<span class="tl-dim">none open</span>{% endif %}
-        </div>
-      </a>
-      {% else %}
-      {# -- COMPACT tile (unattached: cannot trade) -- #}
-      <a class="tl-tile tl-compact" href="/live/{{ t.account_id }}/{{ t.category }}">
-        <div class="tl-top">
-          <span class="tl-cat">{{ t.category|upper }}</span>
-          {{ ab.arm_badge(t.arm_state, t.arm_ts_age) }}
-        </div>
-        <div class="tl-noattach">no whales attached &mdash; cannot trade</div>
-      </a>
-      {% endif %}
-      {% endfor %}
+  {% if summary %}{% set r = summary %}
+  <div class="sum">
+    <div class="sc">
+      <div class="u">Realized today &middot; ET &middot; net of fees</div>
+      <div class="big {{ r.today|pnlcls }}">{{ r.today|signed }}</div>
+      <div class="caveat" style="margin-top:5px">{{ r.booked }} booked closes all-time{% if r.booked < meta.thin_threshold %} &mdash; <span class="thin">THIN &lt;{{ meta.thin_threshold }}</span>{% endif %}{% if r.unbooked %} &middot; {{ r.unbooked }} closes unbooked (no P&amp;L computable){% endif %}</div>
+      <div class="hist">
+        <div><div class="k">WEEK</div><div class="v {{ r.week|pnlcls }}">{{ r.week|signed }}</div></div>
+        <div><div class="k">MONTH</div><div class="v {{ r.month|pnlcls }}">{{ r.month|signed }}</div></div>
+        <div><div class="k">ALL TIME</div><div class="v {{ r.all_time|pnlcls }}">{{ r.all_time|signed }}</div></div>
+      </div>
+    </div>
+    <div class="sc">
+      <div class="u">Open positions &mdash; at cost</div>
+      <div class="big s">{{ r.cost|money }}</div>
+      <div class="caveat" style="margin-top:5px">{{ r.open }} position{{ '' if r.open == 1 else 's' }} across {{ r.n_open_subs }} sub-divisions. Cost basis &mdash; what we paid, never added to realized.</div>
+    </div>
+    <div class="sc">
+      <div class="u">Open positions &mdash; current value</div>
+      <div class="big s" style="color:var(--live)">{% if r.value_known %}{{ r.value|money }}{% else %}<span class="dim">no mark</span>{% endif %}</div>
+      <div class="caveat" style="margin-top:5px">{{ r.priced }} of {{ r.of }} priced{% if r.priced < r.of %} &mdash; {{ r.of - r.priced }} unpriced position{{ '' if (r.of - r.priced) == 1 else 's' }} read &ldquo;no mark&rdquo;, not $0.00, and are excluded{% endif %}. Kalshi mark, {% if r.mark_age is not none %}{{ r.mark_age|agefmt }}{% else %}age unavailable{% endif %}. Unrealized.</div>
+    </div>
+    <div class="sc">
+      <div class="u">Sub-divisions</div>
+      <div class="cnt" style="margin-top:7px">
+        <div><span class="v">{{ r.armed }}</span><span class="k">ARMED</span></div>
+        <div><span class="v {{ 'alarmv' if r.alarm else '' }}">{{ r.alarm }}</span><span class="k">ALARM</span></div>
+        <div><span class="v">{{ r.LIVE }}</span><span class="k">LIVE</span></div>
+        <div><span class="v">{{ r.UPCOMING }}</span><span class="k">UPCOMING</span></div>
+        <div><span class="v">{{ r.SETTLED }}</span><span class="k">SETTLED</span></div>
+        <div><span class="v">{{ r.INACTIVE }}</span><span class="k">INACTIVE</span></div>
+        <div><span class="v">{{ r.UNATTACHED }}</span><span class="k">UNATTACHED</span></div>
+      </div>
+      <div class="caveat" style="margin-top:8px">INACTIVE = whales attached, no trade yet. UNATTACHED = no whales, cannot trade. {{ meta.tz_note }}</div>
     </div>
   </div>
-  {% endfor %}
-
-  {% if not accounts %}
-  <div class="pm-empty">No sub-divisions yet. One appears here the moment it is created.</div>
   {% endif %}
+
+  {% if not liveness_present %}<div class="tl-note" style="margin-top:12px">Driver-liveness monitor not deployed here (heartbeat table absent) &mdash; liveness reads &lsquo;n/a&rsquo;, never a false alarm.</div>{% endif %}
+
+  {% if alarm_strip %}
+  <div class="alarmstrip" role="alert" data-alarm-count="{{ alarm_strip|length }}">
+    <div class="t"><span class="d"></span>{{ alarm_strip|length }} ALARM</div>
+    <div class="b">{% for s in alarm_strip %}<b>{{ s.code }}</b> is ARMED but the engine has not evaluated it {% if s.age_sec is not none %}for {{ s.age_sec|agefmt }}{% else %}ever{% endif %} &mdash; heartbeat {{ s.state }}. It is expected to trade and is not. <a href="{{ s.href }}">open {{ s.code }}</a>{{ ' &middot; '|safe if not loop.last else '' }}{% endfor %}</div>
+  </div>
+  {% endif %}
+
+  {{ section('Alarm', alarm, 'Armed, not being evaluated. Everything else on the page waits.', false) }}
+  {{ section('Live', sections.LIVE, 'Holding positions on an event that has started. Honest only where a start time exists &mdash; baseball has a game feed; esports, NFL, NBA, NHL, WNBA and college football carry one in the ticker.'|safe, false) }}
+  {{ section('Upcoming', sections.UPCOMING, 'Positions held on events not yet started. Tennis, UFC, soccer and Fed have no start-time source yet, so they stay here even once underway &mdash; the feed is planned.'|safe, false) }}
+  {{ section('Settled', sections.SETTLED, 'Nothing open. Realized figures are final and net of fees.', false) }}
+  {{ section('Inactive', sections.INACTIVE, 'Whales attached, no trade placed yet. Shown full-size on purpose: an armed sub-division with no history is a thing to watch, not to hide.', false) }}
+  {{ section('Unattached', sections.UNATTACHED, 'No whales attached, so these cannot trade. Compact because there is nothing to read but the name.', true) }}
+
+  {% if not tabs %}<div class="pm-empty" style="margin-top:20px">No sub-divisions visible for this login.</div>{% endif %}
+
+  <div class="legend">
+    <span><i class="sq" style="background:var(--text)"></i>health lamp &mdash; lit means armed / heartbeat present</span>
+    <span><i style="background:var(--won)"></i>realized gain</span>
+    <span><i style="background:var(--lost)"></i>realized loss</span>
+    <span><i style="background:var(--live)"></i>current value &mdash; unrealized, never added to realized</span>
+    <span><i style="background:var(--stale)"></i>stale age &middot; no mark &middot; thin sample</span>
+    <span><i style="background:var(--alarm)"></i>alarm</span>
+    <span class="dim">health is achromatic so colour can mean money only</span>
+  </div>
 </section>
 {% endblock %}
+
+{% block scripts %}<script src="/static/pm_live_subs.js?v={{ subs_js_v }}" defer></script>{% endblock %}

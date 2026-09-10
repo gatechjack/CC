@@ -1,0 +1,20 @@
+{# LIVE tile event block (R1: a partial so Jack can drop it with one include). `t` is the tile in the caller's
+   context (the include inherits it). MLB renders a feed scoreboard; a non-MLB live-capable sub renders the market
+   label + positions with no score (degrades honestly). Position values are contracts x held-leg BID -- current
+   value, cyan, never cost-as-value; an unpriced leg reads "no mark". #}
+{% set e = t.event %}
+<div class="evt">
+  <div class="ttl">EVENT UNDERWAY {% if e.age_sec is not none %}<span class="chip" data-age0="{{ e.age_sec }}" data-stale="120">{{ e.age_sec|agefmt }}</span>{% endif %}</div>
+  {% if e.has_scoreboard %}
+  <div class="scr">
+    <span class="tm {{ '' if e.home_lead else 'lead' }}">{{ e.away }}</span>
+    <span class="tm {{ 'lead' if e.home_lead else '' }}">{{ e.home }}</span>
+    {% if e.detail %}<span class="inn">{{ e.detail }}</span>{% endif %}
+  </div>
+  {% else %}
+  <div class="scr"><span class="tm lead">{{ e.label }}</span><span class="inn">underway</span></div>
+  {% endif %}
+  <div class="plist">{% for p in e.positions %}<div class="pr">
+    <span class="kk">{{ p.kind }}</span><span class="mk">{{ p.market }}</span>
+    <span class="vv">{% if p.value_known %}{{ p.value|money }}{% else %}<span class="nomark">no mark</span>{% endif %}</span></div>{% endfor %}</div>
+</div>

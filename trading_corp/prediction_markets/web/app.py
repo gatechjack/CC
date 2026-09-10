@@ -21,6 +21,7 @@ Spec: reports/prediction_markets/PM_REBUILD_PLAN_2026-08-26.md (Stage 2, the pha
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import subprocess
@@ -923,16 +924,35 @@ async def promote_to_live_action(request: Request, account_id: str, category: st
 # is R4+; pm_web imports no broker). DEFENSIVE: subdivision.* tolerate pm_account/pm_subdivision being absent
 # (pre-migration-010) -> honest-empty, so /live deploys on a pm_web restart independent of the migration-010 deploy.
 
-_LOGO_DIR = os.path.join(os.path.dirname(__file__), "static", "logos")
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_LOGO_DIR = os.path.join(_STATIC_DIR, "logos")
 
 
-def _logo_codes() -> set:
-    """Category CODES (upper) that have a local logo file, so a tile draws the plate image vs a monogram. Cheap
-    dir listing; empty set if the dir is absent (every tile then draws a monogram -- honest, never a broken image)."""
+def _sha8(path: str) -> str:
+    """CR-stripped sha8 of a static asset -- the cache-bust ?v= (same scheme as pm_shell.html). '' if absent."""
     try:
-        return {f.rsplit(".", 1)[0].upper() for f in os.listdir(_LOGO_DIR) if f.lower().endswith(".png")}
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read().replace(b"\r", b"")).hexdigest()[:8]
     except OSError:
-        return set()
+        return ""
+
+
+def _logo_versions() -> dict:
+    """{CODE(upper): sha8} for every static/logos/<CODE>.png -- the tile knows both WHICH codes have a logo (draw
+    the plate image vs a monogram) and its cache-bust version. Computed once at import; empty if the dir is absent
+    (every tile then draws a monogram -- honest, never a broken image)."""
+    out: dict = {}
+    try:
+        for f in os.listdir(_LOGO_DIR):
+            if f.lower().endswith(".png"):
+                out[f.rsplit(".", 1)[0].upper()] = _sha8(os.path.join(_LOGO_DIR, f))
+    except OSError:
+        pass
+    return out
+
+
+_LOGO_VERSIONS = _logo_versions()
+_SUBS_JS_V = _sha8(os.path.join(_STATIC_DIR, "pm_live_subs.js"))
 
 
 def _load_live_list(active_account: str | None = None, identity: str | None = None,
@@ -980,13 +1000,15 @@ def _load_live_list(active_account: str | None = None, identity: str | None = No
         liveness_present=liveness_present, pnl_all=pnl_all, realized_windows=realized_windows,
         positions_by_sub=positions_by_sub, last_events=last_events, marks=marks, feed_games=feed_games,
         now_ts=now_ts, thin_floor=floor, mark_age_sec=mark_age_sec, active_account=active_account,
-        viewer_role=viewer_role, viewer_account=viewer_account, logo_codes=_logo_codes(),
+        viewer_role=viewer_role, viewer_account=viewer_account, logo_codes=set(_LOGO_VERSIONS),
         poll_interval=live_view.POLL_INTERVAL_SECONDS, global_arm=global_arm, max_order_id=max_order_id,
         name_exceptions=name_exceptions)
     if name_exceptions:
         log.warning("pm_web /live: %d held position(s) named by CATEGORY fallback (no feed/mark/describe) -- %s",
                     len(name_exceptions), name_exceptions[:8])
     ctx["warming"] = not snap.ready
+    ctx["logo_v"] = _LOGO_VERSIONS
+    ctx["subs_js_v"] = _SUBS_JS_V
     return ctx
 
 
