@@ -380,6 +380,7 @@ VERIFICATION:
 
 DEPLOY 7.2 SHAPE (Jack's to call; pm_web-only, ONE pm_web restart, engine untouched, backup-is-a-gate): graft the
 4 files above wholesale (drift-gate box == the BEFORE column: live_view c0f44414, pm_subs_event 6fcb55b8, pm_desk
-8121e8e0... NO -- 80c88cc2 [Deploy-7 value], pm_shell 8a10c80d), NO app.py change, NO logo change, NO migration;
+80c88cc2, pm_shell 8a10c80d -- Deploy 7.1 changed only pm_live_subs.js, so these are the Deploy-7 values), NO
+app.py change, NO logo change, NO migration;
 served pm_desk.css must read 246a3fa9 + shell ?v=246a3fa9 after; verify /live event block groups by game + marks
 the held team on Jack/MLB. (app.py stays 16caedfe; pm_live_subs.js stays fe29f6e5.)
