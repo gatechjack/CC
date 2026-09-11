@@ -1,0 +1,25 @@
+{# LIVE tile event block (R1 partial -- drop with one include). FIX 2026-09-11: ONE compact row PER underway game,
+   each listing ONLY that game's held positions (was attaching every open position to one game). The held ML team
+   is marked in the score line (.mine dot) so who we're cheering for is unmistakable; ML/TOT/SPR labels carry the
+   held side via live_view._short_label (same shorthand as the card page). `t` is the tile in the caller context. #}
+{% set e = t.event %}
+<div class="evt">
+  {% for r in e.rows %}
+  <div class="evrow{% if not loop.first %} evrow-n{% endif %}">
+    {% if loop.first %}<div class="ttl">EVENT UNDERWAY{% if e.rows|length > 1 %} <span class="dim">&middot; {{ e.rows|length }} live</span>{% endif %}{% if r.age_sec is not none %} <span class="chip" data-age0="{{ r.age_sec }}" data-stale="120">{{ r.age_sec|agefmt }}</span>{% endif %}</div>{% endif %}
+    {% if r.has_scoreboard %}
+    <div class="scr">
+      <span class="tm {{ 'lead' if not r.home_lead else '' }}{{ ' mine' if r.away_ours else '' }}">{{ r.away }}</span>
+      <span class="tm {{ 'lead' if r.home_lead else '' }}{{ ' mine' if r.home_ours else '' }}">{{ r.home }}</span>
+      {% if r.detail %}<span class="inn">{{ r.detail }}</span>{% endif %}
+    </div>
+    {% else %}
+    <div class="scr"><span class="tm lead">{{ r.label }}</span><span class="inn">underway</span></div>
+    {% endif %}
+    <div class="plist">{% for p in r.positions %}<div class="pr{{ ' won' if p.state == 'won' else (' lost' if p.state == 'lost' else '') }}">
+      <span class="kk">{{ p.kind }}</span><span class="mk">{{ p.market }}</span>
+      <span class="vv">{% if p.value_known %}{{ p.value|money }}{% else %}<span class="nomark">no mark</span>{% endif %}{% if p.state == 'won' %} &#10003;{% elif p.state == 'lost' %} &#10007;{% endif %}</span></div>{% endfor %}</div>
+  </div>
+  {% endfor %}
+  {% if e.more %}<a class="evmore" href="{{ t.href }}">+{{ e.more }} more live &rsaquo;</a>{% endif %}
+</div>
