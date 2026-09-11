@@ -1135,6 +1135,13 @@ async def run(argv: list[str] | None = None) -> int:
             _rt_broker.safety_notifier = channel
 
     await channel.start()
+    # Broker-connect fail-safe (Option B, 2026-09-11): start the background reconnect
+    # loop for any LIVE division whose broker failed connect at boot -- connect_all now
+    # HOLDS the live object (no paper swap) and marks it degraded; this loop re-auths on
+    # a backoff and resumes with no restart. Started here (after safety_notifier +
+    # channel.start()) so the loud RH-DISCONNECTED / RECONNECTED pushes work. No-op when
+    # nothing is degraded (the healthy boot path).
+    data_exec.start_broker_retry_loop()
 
     # Observability: wire the REUSED Board bot as the execution-alert transport
     # (one channel per process). emit_exec_alert() (place_combo terminal states,

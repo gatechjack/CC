@@ -135,6 +135,17 @@ class DataExecAgent:
         # `True` = HTTP 2xx + ok:true (confirmed delivery); `False` =
         # send failed. Push never raises (per `comms.telegram_bot.push`).
         self.safety_notifier = safety_notifier
+        # Broker-connect fail-safe (Option B, 2026-09-11). A LIVE division
+        # (broker.paper is False) must NEVER be silently swapped to paper on a
+        # connect failure (the 2026-09-10 invariant violation). Instead the live
+        # object stays in the slot -- re-resolvers (pmcc/pead) and captured refs
+        # (mace) auto-heal when the session recovers -- and a background loop retries
+        # connect(). Paper-intended divisions (fidelity/ira/tasty/...) keep the
+        # historical paper fallback.
+        self._degraded_live: dict[str, Broker] = {}   # division -> live Broker held while down
+        self._degraded_alerted: set[str] = set()       # dedup the loud "disconnected" push
+        self._missed_exit_alerted: set[str] = set()    # dedup the per-episode missed-exit alert
+        self._retry_task: "asyncio.Task | None" = None
 
     def register_broker(self, division: str, broker: Broker) -> None:
         self.brokers[division] = broker
@@ -142,17 +153,36 @@ class DataExecAgent:
                  broker.name, division, broker.paper)
 
     async def connect_all(self) -> None:
-        for div, b in self.brokers.items():
+        for div, b in list(self.brokers.items()):
             try:
                 await b.connect()
             except Exception as e:
+                # LIVE-ONLY GUARD (Option B, 2026-09-11): a live division
+                # (broker.paper is False) must NEVER be silently swapped to a
+                # PaperBroker -- that was the 2026-09-10 invariant violation (all RH
+                # divisions ran paper for ~1h when the shared login failed). KEEP the
+                # live object in the slot so re-resolvers (pmcc/pead) and captured
+                # refs (mace) auto-heal when the session recovers; mark degraded; the
+                # background retry loop (start_broker_retry_loop) re-authenticates.
+                if not getattr(b, "paper", True):
+                    log.error(
+                        "LIVE broker connect FAILED for division=%s broker=%s: %s "
+                        "-- holding live broker, marking degraded, NO paper fallback",
+                        div, b.name, e)
+                    self._degraded_live[div] = b
+                    self.logger.log_event(
+                        actor="data_exec",
+                        kind="broker_live_connect_degraded",
+                        payload={"division": div, "broker": b.name, "error": str(e)},
+                    )
+                    continue
                 log.error("Broker connect failed for division=%s broker=%s: %s",
                           div, b.name, e)
-                # Replace with paper fallback so the system stays runnable.
-                # CRITICAL: starting_equity=0 — a paper-fallback broker means
-                # the real broker FAILED. Showing $100k would mask the failure
-                # and look like the account has $100k of equity. Better to
-                # show $0 so the dashboard signals "this division is down".
+                # PAPER-intended division (fidelity/ira/tasty/coinbase-paper): keep the
+                # historical paper fallback so it stays runnable. starting_equity=0 so
+                # the dashboard signals "down" (not a phantom $100k). QUIET (no loud
+                # push) so the rare LIVE degrade is not buried by fidelity's every-boot
+                # fallback (req 7 de-noise: the loud alert is live-only).
                 fallback = PaperBroker(account=f"paper_{div}", starting_equity=0.0)
                 await fallback.connect()
                 self.brokers[div] = fallback
@@ -161,6 +191,119 @@ class DataExecAgent:
                     kind="broker_fallback_to_paper",
                     payload={"division": div, "error": str(e)},
                 )
+
+    def is_degraded(self, division: str) -> bool:
+        """True while a LIVE division's broker session is down (Option B). Read-model
+        for dashboards ("RH DISCONNECTED - retrying") and the per-division missed-exit
+        hooks. False for healthy or paper-intended divisions."""
+        return division in self._degraded_live
+
+    async def alert_missed_exit(self, division: str, reason: str, detail: str = "") -> None:
+        """Higher-stakes than a general disconnect: an EXIT was due for a live division
+        but could not execute because its broker session was down. Distinct kind + loud
+        push so it is never buried. Fully guarded -- must never break a manage loop."""
+        payload = {"division": division, "reason": reason, "detail": detail}
+        try:
+            self.logger.log_event(actor="data_exec", kind="broker_missed_exit", payload=payload)
+        except Exception:  # noqa: BLE001 -- alerting must never break a manage loop
+            log.exception("alert_missed_exit audit failed for %s", division)
+        await self._push_safety(
+            f"MISSED {division} EXIT ({reason}) -- manual close needed. {detail}".strip(),
+            "broker_missed_exit", payload)
+
+    async def note_missed_exit_once(self, division: str, reason: str, detail: str = "") -> None:
+        """Fire alert_missed_exit at most ONCE per degraded episode for a division
+        (cleared when it reconnects). Used by divisions that CANNOT confirm a specific
+        exit is due while the broker is down (pmcc/pead can't read positions) -- a
+        coarse once-per-episode "exit risk, verify + manual close" alert rather than
+        per-tick spam. (MACE confirms exits from persisted rungs, so it alerts precisely
+        via its own close-exhausted path, not this.)"""
+        if division in self._missed_exit_alerted:
+            return
+        self._missed_exit_alerted.add(division)
+        await self.alert_missed_exit(division, reason, detail)
+
+    def start_broker_retry_loop(self, *, interval_sec: float = 60.0) -> None:
+        """Start the background reconnect loop for degraded LIVE brokers. Call from
+        main.py AFTER the comms channel is wired onto self.safety_notifier (connect_all
+        runs before that, so the loud alert lives here, not in connect_all). Idempotent."""
+        if self._retry_task is not None and not self._retry_task.done():
+            return
+        self._retry_task = asyncio.create_task(
+            self._broker_retry_loop(interval_sec), name="broker-connect-retry")
+        log.info("broker-connect-retry loop started (%d degraded live division(s) at boot: %s)",
+                 len(self._degraded_live), sorted(self._degraded_live) or "none")
+
+    async def _broker_retry_loop(self, interval_sec: float) -> None:
+        """Background loop: reconnect degraded LIVE brokers on a backoff (the interval is
+        the /login 429 guard). Delegates one pass to _retry_degraded_once so the pass is
+        unit-testable without the loop/sleep."""
+        interval = max(15.0, float(interval_sec))
+        while not self._stop.is_set():
+            try:
+                await self._retry_degraded_once()
+            except Exception:  # noqa: BLE001 -- the retry loop must never die
+                log.exception("broker retry pass failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _retry_degraded_once(self) -> None:
+        """ONE reconnect pass over the degraded LIVE set, holding the SAME object
+        (auto-heal for captured refs + re-resolvers). Loud "disconnected" alert on first
+        degrade; RH shares one login so reset the latch once, then connect()
+        re-authenticates the family; "reconnected" alert + resume on success."""
+        # (1) loud "disconnected" alert, once per episode per division.
+        for div in list(self._degraded_live):
+            if div not in self._degraded_alerted:
+                self._degraded_alerted.add(div)
+                await self._push_safety(
+                    f"{div}: RH DISCONNECTED -- retrying on a backoff "
+                    f"(live broker held, NO paper fallback).",
+                    "broker_live_connect_degraded", {"division": div})
+        if not self._degraded_live:
+            return
+        # (2) RH shares one login latch; clear it once so we RE-AUTH rather than
+        # piggyback the dead session. Non-RH live brokers ignore this.
+        for b in list(self._degraded_live.values()):
+            reset = getattr(b, "reset_shared_login", None)
+            if callable(reset):
+                try:
+                    reset()
+                except Exception:  # noqa: BLE001
+                    pass
+        # (3) attempt reconnect; recovered brokers resume with no restart. The SAME live
+        # object stays in the slot -- re-resolvers pick it up next tick; captured refs
+        # (mace) heal in place.
+        for div, b in list(self._degraded_live.items()):
+            try:
+                await b.connect()
+            except Exception as e:  # noqa: BLE001 -- stay degraded, retry next pass
+                self.logger.log_event(
+                    actor="data_exec", kind="broker_connect_retry_failed",
+                    payload={"division": div, "broker": b.name, "error": str(e)})
+                continue
+            self._degraded_live.pop(div, None)
+            self._degraded_alerted.discard(div)
+            self._missed_exit_alerted.discard(div)
+            self.logger.log_event(
+                actor="data_exec", kind="broker_live_connect_recovered",
+                payload={"division": div, "broker": b.name})
+            await self._push_safety(
+                f"{div}: RH RECONNECTED -- live broker resumed (no restart needed).",
+                "broker_live_connect_recovered", {"division": div})
+
+    async def _push_safety(self, text: str, audit_path: str, ctx: dict) -> None:
+        """Loud Telegram push via safety_notifier (wired post-connect_all). Fully
+        guarded -- a push failure must never break the retry loop or a manage loop."""
+        n = self.safety_notifier
+        if n is None:
+            return
+        try:
+            await n.push(text, audit_path=audit_path, audit_context=ctx)
+        except Exception:  # noqa: BLE001
+            log.exception("safety push failed (%s)", audit_path)
 
     async def disconnect_all(self) -> None:
         self._stop.set()

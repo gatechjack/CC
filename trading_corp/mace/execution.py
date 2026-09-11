@@ -870,6 +870,15 @@ class MaceExecutor:
         self.notifier.close_exhausted(symbol=spec.symbol, expiry=spec.expiry.isoformat(),
                                       contracts=self._contracts_of(rung_id), attempts=attempts)
         self._audit("mace_exit_exhausted", rung_id=rung_id, reason=reason, attempts=attempts)
+        # Broker-connect fail-safe (Option B, 2026-09-11): a MACE close that exhausts its
+        # ladder is a MISSED EXIT needing manual action -- most acutely when the RH
+        # session is down (place raises -> exhaust). Distinct audit kind so it is
+        # queryable/alertable alongside the platform-wide broker_missed_exit signal (the
+        # operator alert itself is notifier.close_exhausted above). MACE confirms the exit
+        # was due (it fired a stop/time/pt/exdiv/gap decision), so this is a CONFIRMED
+        # missed exit, not the coarse "risk" alert pmcc/pead raise.
+        self._audit("mace_missed_exit", rung_id=rung_id, reason=reason, symbol=spec.symbol,
+                    attempts=attempts, detail="exit could not complete -- manual close needed")
         return ExitOutcome(rung_id, False, reason=reason, attempts=attempts, exhausted=True)
 
     def _exit_partial(self, spec: CondorSpec, rung_id: str, reason: str, k: int,
