@@ -49,6 +49,7 @@ from __future__ import annotations
 import inspect
 import logging
 import time as _time
+import urllib.parse   # (2026-09-11) URL-encode opaque Kalshi cursors in the paginated raw-merge loop
 
 from . import arm, boot_reconcile, db, execution, heartbeat, paper, settlement, shard_balance, venue_exposure
 from ..data import mlb_poly_kalshi_match as M
@@ -132,24 +133,49 @@ async def _merge_raw_market_fields(client, markets: dict, series_list=None) -> N
     3/6b fail-close (safe). `series_list` (B2) parameterises the series to merge; None -> the MLB SERIES (unchanged)."""
     for series in (series_list or SERIES):
         try:
-            raw = client.get("/markets?series_ticker=%s&status=open&limit=1000" % series)
-            if inspect.isawaitable(raw):
-                raw = await raw
-            for rm in ((raw.get("markets") or []) if isinstance(raw, dict) else []):
-                tk = str(rm.get("ticker") or "").upper()
-                if tk not in markets:
-                    continue
-                ei = rm.get("exchange_index")
-                if ei is not None:
-                    try:
-                        markets[tk]["exchange_index"] = int(ei)
-                    except (TypeError, ValueError):
-                        pass
-                for sk in ("yes_bid_size_fp", "yes_ask_size_fp"):   # top-of-book SIZE (contracts) for the gate-3 depth
-                    if rm.get(sk) is not None:
-                        markets[tk][sk] = rm.get(sk)
+            # ★ PAGINATE OPEN (2026-09-11 fix): this raw merge is the SECOND OPEN-truncation point. It was a single
+            # limit=1000 GET, so for a >1000 series (CFB total/spread) a market that DID reach the index (via the
+            # now-paginated get_markets) but sat past the first 1000 RAW rows got NO exchange_index/size merged ->
+            # gate 6b (shard) + gate 3 (depth) FAIL CLOSED on it (skip) -- i.e. fixing only the index would trade
+            # no_kalshi_strike for skip:illiquid/shard. Cursor-loop parallels the get_markets fetch_all path. The
+            # 25-page cap is a defensive backstop (25k >> any real sports series) that LOUD-logs if EVER hit -- never
+            # a silent truncation (the precise failure this fix removes). No-op for a <=1000 series (one page).
+            cursor = ""
+            _page = 0
+            for _page in range(25):
+                path = "/markets?series_ticker=%s&status=open&limit=1000" % series
+                if cursor:
+                    # Kalshi cursors are OPAQUE tokens that can carry +, /, = -> URL-encode (no-op on a URL-safe token,
+                    # but prevents a corrupted page/silent under-merge on a future catalog). safe="" quotes everything.
+                    path += "&cursor=%s" % urllib.parse.quote(cursor, safe="")
+                raw = client.get(path)
+                if inspect.isawaitable(raw):
+                    raw = await raw
+                raw = raw if isinstance(raw, dict) else {}
+                for rm in (raw.get("markets") or []):
+                    tk = str(rm.get("ticker") or "").upper()
+                    if tk not in markets:
+                        continue
+                    ei = rm.get("exchange_index")
+                    if ei is not None:
+                        try:
+                            markets[tk]["exchange_index"] = int(ei)
+                        except (TypeError, ValueError):
+                            pass
+                    for sk in ("yes_bid_size_fp", "yes_ask_size_fp"):   # top-of-book SIZE (contracts) for the gate-3 depth
+                        if rm.get(sk) is not None:
+                            markets[tk][sk] = rm.get(sk)
+                cursor = raw.get("cursor") or ""
+                if not cursor:
+                    break
+            else:
+                _LOG.warning("pm_live_driver: raw market-field merge for %s hit the 25-page cap (>25k open markets?) -- "
+                             "some markets' shard/size may be unmerged (gates 3/6b fail-close there); investigate.", series)
         except Exception as e:  # noqa: BLE001 -- raw-get failure -> fields absent -> gates 3/6b fail-close (safe)
-            _LOG.warning("pm_live_driver: raw market-field merge failed for %s (gates 3/6b fail-close there): %s", series, e)
+            # include the page reached: a failure on page >0 = a PARTIAL merge (pages 0..N-1 merged, rest unmerged ->
+            # those tickers fail gates 3/6b closed) vs page 0 = total failure. Distinguishes a silent partial-truncation.
+            _LOG.warning("pm_live_driver: raw market-field merge failed for %s at page %d (gates 3/6b fail-close for "
+                         "the unmerged remainder): %s", series, _page, e)
 
 
 async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
@@ -161,10 +187,16 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     dates: set = set()
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     per_series = {"KXMLBGAME": game_t, "KXMLBTOTAL": total_t, "KXMLBSPREAD": spread_t}
+    # ★ OPEN pagination is UNIVERSAL (2026-09-11): every ctx builder here now fetches OPEN with fetch_all=True (was
+    # single-page for all but the structural builder). Measured 2026-09-11 (pm_ctx_allscan_ro): ONLY cfb total(2008)/
+    # spread(2541) exceed the 1000 cap today; MLB game/total/spread are 90/258/151, all others <=379 -> for every series
+    # but cfb this is a proven NO-OP (single page, cursor empty -> break, byte-identical), so it only closes the same
+    # latent truncation class before any series grows past 1000. (The MLB poly LOOP at main.py:5406 is the one remaining
+    # same-class site left untouched: main.py is a shared-trio file + KXMLB* is 258 open -> filed for coordinated follow-up.)
     for series in SERIES:
         for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
             ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
-                                          fetch_all=(status == MarketStatus.SETTLED), **extra)
+                                          fetch_all=True, **extra)   # (2026-09-11) paginate OPEN too -- see fetch_structural_market_context
             for m in (ms or []):
                 tk = getattr(m, "ticker", "") or ""
                 if not tk:
@@ -198,7 +230,7 @@ async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketConte
     for series in UFC_SERIES:
         for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
             ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
-                                          fetch_all=(status == MarketStatus.SETTLED), **extra)
+                                          fetch_all=True, **extra)   # (2026-09-11) paginate OPEN too -- see fetch_structural_market_context
             for m in (ms or []):
                 tk = getattr(m, "ticker", "") or ""
                 if not tk:
@@ -226,7 +258,7 @@ async def fetch_tennis_market_context(client, now_ts: int, series: str) -> execu
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
         ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
-                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+                                      fetch_all=True, **extra)   # (2026-09-11) paginate OPEN too -- see fetch_structural_market_context
         for m in (ms or []):
             tk = getattr(m, "ticker", "") or ""
             if not tk:
@@ -271,8 +303,14 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
         series_map.append((cfg.spread_series, spread_t))
     for series, bucket in series_map:
         for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+            # ★ PAGINATE OPEN too (2026-09-11 fix): OPEN was fetch_all=False -> a single limit=1000 page, so a
+            # high-cardinality series (CFB total 2008 / spread 2541 open) was TRUNCATED -> markets past the first
+            # 1000 were ABSENT from the index -> the matcher returned no_kalshi_strike upstream of every gate
+            # (measured + moneyline-controlled 2026-09-11). SETTLED already paginated; OPEN now does too. No-op for a
+            # <=1000 series (single page, byte-identical -> other structural cats unchanged); +2-4 GETs/refresh for
+            # CFB only, at the 900s refresh cadence (index_refresh_sec) -> negligible on the shared rate limit.
             ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
-                                          fetch_all=(status == MarketStatus.SETTLED), **extra)
+                                          fetch_all=True, **extra)
             for m in (ms or []):
                 tk = getattr(m, "ticker", "") or ""
                 if not tk:
@@ -307,7 +345,7 @@ async def fetch_soccer_market_context(client, now_ts: int, cfg) -> execution.Mar
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
         ms = await client.get_markets(series_ticker=cfg.game_series, status=status, limit=1000,
-                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+                                      fetch_all=True, **extra)   # (2026-09-11) paginate OPEN too -- see fetch_structural_market_context
         for m in (ms or []):
             tk = getattr(m, "ticker", "") or ""
             if not tk:
@@ -339,7 +377,7 @@ async def fetch_fed_market_context(client, now_ts: int) -> execution.MarketConte
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
         ms = await client.get_markets(series_ticker=FED_SERIES, status=status, limit=1000,
-                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+                                      fetch_all=True, **extra)   # (2026-09-11) paginate OPEN too -- see fetch_structural_market_context
         for m in (ms or []):
             tk = getattr(m, "ticker", "") or ""
             if not tk:
@@ -364,7 +402,7 @@ async def fetch_cs2_market_context(client, now_ts: int) -> execution.MarketConte
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
         ms = await client.get_markets(series_ticker=CS2_SERIES, status=status, limit=1000,
-                                      fetch_all=(status == MarketStatus.SETTLED), **extra)
+                                      fetch_all=True, **extra)   # (2026-09-11) paginate OPEN too -- see fetch_structural_market_context
         for m in (ms or []):
             tk = getattr(m, "ticker", "") or ""
             if not tk:
