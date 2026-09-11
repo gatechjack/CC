@@ -179,6 +179,38 @@
   </div>
   {% endif %}
 
+  {# leg-audit safety strip (Rung-3): the engine's INDEPENDENT post-fill leg check, read back. Self-contained
+     inline styles (no new CSS class -> no cache-bust). Red when any INVERSION (a wrong-SIDE fill), amber otherwise.
+     Three distinct states -- inversion / code review / could-not-check; the last is NOT a pass. #}
+  {% if leg_audit_strip and leg_audit_strip.total %}
+  {% set la = leg_audit_strip %}
+  {% set _lc = 'var(--alarm)' if la.n_inversion else 'var(--stale)' %}
+  <div role="alert" data-legaudit-count="{{ la.total }}" style="margin:12px 0 0;border:1px solid {{ '#7a2a24' if la.n_inversion else '#6b551f' }};border-left:3px solid {{ _lc }};background:{{ '#1a0c0b' if la.n_inversion else '#14100a' }};border-radius:3px;padding:13px 16px">
+    <div style="font-family:var(--dmono);font-size:12px;letter-spacing:.14em;color:{{ _lc }}">
+      {{ la.total }} LEG AUDIT{{ '' if la.total == 1 else 'S' }} TO REVIEW
+      {%- if la.n_inversion %} &middot; {{ la.n_inversion }} INVERSION{% endif %}
+      {%- if la.n_soft %} &middot; {{ la.n_soft }} code review{% endif %}
+      {%- if la.n_uneval %} &middot; {{ la.n_uneval }} could-not-check{% endif %}
+      {%- if la.total > la.shown %} <span style="color:var(--dim)">&middot; showing {{ la.shown }} of {{ la.total }}</span>{% endif %}
+    </div>
+    <div style="font-size:12.5px;color:#e7dcc9;max-width:88ch;margin-top:6px;text-wrap:pretty">
+      The engine's independent post-fill leg check flagged these. An <b style="color:var(--alarm)">INVERSION</b> is a wrong-SIDE selection the audit caught &mdash; where it <b>filled</b> we hold the opposite of the whale (check each row's status), so verify the whale's actual side; a confirmed <b>filled</b> wrong leg is a fire-first disarm. <b style="color:var(--stale)">code review</b> is a soft name-vs-ticker flag; <b style="color:var(--stale)">could-not-check</b> means the audit ran but could not decide &mdash; not a pass.
+    </div>
+    <div style="margin-top:9px;display:flex;flex-direction:column;gap:5px">
+    {% for s in la.rows %}
+      <div style="font-size:12.5px">
+        <span style="font-family:var(--dmono);color:{{ 'var(--alarm)' if s.state == 'inversion' else 'var(--stale)' }}">{{ '*** INVERSION' if s.state == 'inversion' else ('~ code review' if s.state == 'soft' else '? could-not-check') }}</span>
+        <b>{{ s.code }}</b> <span style="color:var(--dim)">{{ s.account }}</span>
+        <span style="font-family:var(--dmono)">{{ s.ticker }}</span> <span style="color:var(--dim)">leg {{ s.leg }} &middot; whale outcome {{ s.signal_outcome if s.signal_outcome is not none else 'unknown' }}</span>
+        <span style="font-family:var(--dmono);color:{{ 'var(--lost)' if (s.state == 'inversion' and s.filled) else 'var(--dim)' }}">&middot; {{ (s.status or 'unknown')|upper }}{{ ' &mdash; HELD'|safe if (s.state == 'inversion' and s.filled) else '' }}</span>
+        &mdash; <span style="color:var(--dim)">{{ s.verdict }}</span>
+        <a href="{{ s.href }}" style="color:#ffb3ad;text-decoration:underline">open {{ s.code }}</a>
+      </div>
+    {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {{ section('Alarm', alarm, 'Armed, not being evaluated. Everything else on the page waits.', false) }}
   {{ section('Live', sections.LIVE, 'Holding positions on an event that has started. Honest only where a start time exists &mdash; baseball has a game feed; esports, NFL, NBA, NHL, WNBA and college football carry one in the ticker.'|safe, false) }}
   {{ section('Upcoming', sections.UPCOMING, 'Positions held on events not yet started. Tennis, UFC, soccer and Fed have no start-time source yet, so they stay here even once underway &mdash; the feed is planned.'|safe, false) }}

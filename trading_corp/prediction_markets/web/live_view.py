@@ -30,6 +30,7 @@ from ..market_describe import describe_market
 from ...data.mlb_poly_kalshi_match import kalshi_to_iso_date
 from ...data.sports_team_mapping import MLB_TEAMS
 from . import feed_mlb, marks as marks_mod
+from .. import leg_audit        # canonical leg-audit state constants (shared with the fill-watch runner -> no drift)
 
 KINDS = ("moneyline", "total", "spread")
 KIND_LABEL = {"moneyline": "ML", "total": "TOT", "spread": "SPR"}
@@ -960,7 +961,7 @@ def _next_event(category, positions, marks, now_ts):
 def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub, liveness_present, pnl_all,
                                realized_windows, positions_by_sub, last_events, marks, feed_games, now_ts,
                                thin_floor, mark_age_sec, active_account, viewer_role, viewer_account, logo_codes,
-                               poll_interval, global_arm, max_order_id, name_exceptions=None):
+                               poll_interval, global_arm, max_order_id, leg_audit_reviews=None, name_exceptions=None):
     """Assemble the redesigned Live Sub-divisions context. `subs` = tiles_all rows already SCOPED to the visible
     accounts. Segments the ACTIVE account's tiles by activity (alarm pulled out first, R5), sorts each bucket by
     |today| desc then code, and rolls up the summary bar + tab counts for every visible account. Pure -- no DB, no
@@ -1077,6 +1078,28 @@ def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub,
     alarm_strip = [{"code": t["code"], "state": t["liveness"]["state"] if t["liveness"] else "NEVER",
                     "age_sec": t["liveness"]["age_sec"] if t["liveness"] else None, "href": t["href"]}
                    for t in alarm_tiles]
+    # leg-audit safety strip (Rung-3): the engine's independent post-fill leg check, read back for ALL visible
+    # accounts (a wrong-side fill is money-critical -> shown regardless of the active tab). The reader already
+    # scoped to the viewer + excluded clean/legacy/dry-run; here we only shape it for the template. Three DISTINCT
+    # surfaced states -- inversion (loud) / soft / unevaluated -- an unreadable audit is NEVER treated as a pass.
+    _la = leg_audit_reviews or {}
+    _la_counts = _la.get("counts") or {}
+    _la_rows = _la.get("rows", []) if _la.get("schema_ok") else []   # reader already scoped, severity-first, capped
+    leg_audit_strip = {
+        "schema_ok": bool(_la.get("schema_ok")),
+        "total": int(_la.get("total_surfaced", 0) or 0),
+        "shown": int(_la.get("shown", len(_la_rows)) or 0),   # < total when capped -> template says "showing N of M"
+        "n_inversion": int(_la_counts.get(leg_audit.STATE_INVERSION, 0)),
+        "n_soft": int(_la_counts.get(leg_audit.STATE_SOFT, 0)),
+        "n_uneval": int(_la_counts.get(leg_audit.STATE_UNEVALUATED, 0)),
+        "rows": [{"code": (r.get("category") or "").upper(), "account": r.get("account"),
+                  "state": r.get("state"), "state_label": r.get("state_label"),
+                  "ticker": r.get("ticker"), "leg": r.get("outcome_leg"),
+                  "signal_outcome": r.get("signal_outcome"), "verdict": r.get("leg_audit"),
+                  "status": r.get("outcome_status"), "filled": (r.get("outcome_status") == "filled"),
+                  "href": "/live/%s/%s" % (r.get("account"), r.get("category"))}
+                 for r in _la_rows],
+    }
     return {
         "meta": {"global_arm": (global_arm or {}).get("state"), "global_arm_age": (global_arm or {}).get("ts_age"),
                  "poll_interval_seconds": poll_interval, "generated_age_seconds": 0,
@@ -1088,7 +1111,7 @@ def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub,
                       "venue": m.get("venue"), "slug": m["account_id"]} for m in accounts_meta],
         "tabs": tabs, "active_account": active,
         "live_capable": sorted(x.upper() for x in LIVE_CAPABLE),
-        "alarm": alarm_tiles, "alarm_strip": alarm_strip, "sections": sections,
+        "alarm": alarm_tiles, "alarm_strip": alarm_strip, "leg_audit_strip": leg_audit_strip, "sections": sections,
         "summary": _rollup(active) if active else None,
         "liveness_present": liveness_present, "max_order_id": int(max_order_id or 0), "now_ts": now_ts,
     }

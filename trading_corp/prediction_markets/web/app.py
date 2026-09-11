@@ -963,6 +963,7 @@ def _load_live_list(active_account: str | None = None, identity: str | None = No
     STALE alarm strip. All read-only: journal + persisted arm state + heartbeat + the poller's mark cache + the
     cached sports feed; NO venue, NO order path. OFF the loop."""
     from .. import heartbeat        # a LOCAL import keeps this hunk purely additive on the box-current app.py (graft-clean)
+    from .. import leg_audit        # read-side leg-audit surfacing (Rung-3 observability, 2026-09-10); stdlib-only, pm_web-safe
     now_ts = int(time.time())
     marks, marks_as_of = _cache_marks()
     mark_age_sec = (now_ts - int(marks_as_of)) if marks_as_of else None
@@ -986,6 +987,9 @@ def _load_live_list(active_account: str | None = None, identity: str | None = No
         realized_windows = subdivision.realized_windows_all(conn, live_view.et_window_cutoffs(now_ts))
         last_events = subdivision.last_events_all(conn)
         max_order_id = subdivision.events_since(conn, 0)["max_id"]
+        # page-top leg-audit safety strip: the engine's independent post-fill leg check, read BACK. Scoped to the
+        # viewer's visible accounts (a wrong-side fill is money-critical -> surfaced regardless of the active tab).
+        leg_audit_reviews = leg_audit.read_leg_audit_reviews(conn, account_ids=list(visible))
         positions_by_sub = {}
         for s in subs:                                     # open positions ONLY for attached subs
             if int(s.get("n_whales") or 0) > 0:
@@ -1002,7 +1006,7 @@ def _load_live_list(active_account: str | None = None, identity: str | None = No
         now_ts=now_ts, thin_floor=floor, mark_age_sec=mark_age_sec, active_account=active_account,
         viewer_role=viewer_role, viewer_account=viewer_account, logo_codes=set(_LOGO_VERSIONS),
         poll_interval=live_view.POLL_INTERVAL_SECONDS, global_arm=global_arm, max_order_id=max_order_id,
-        name_exceptions=name_exceptions)
+        leg_audit_reviews=leg_audit_reviews, name_exceptions=name_exceptions)
     if name_exceptions:
         log.warning("pm_web /live: %d held position(s) named by CATEGORY fallback (no feed/mark/describe) -- %s",
                     len(name_exceptions), name_exceptions[:8])
