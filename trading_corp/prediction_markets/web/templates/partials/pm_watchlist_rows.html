@@ -52,12 +52,22 @@
         {# PROMOTE-TO-LIVE (R6): copy this pinned whale on a live ACCOUNT's {category} sub-division. The target is an
            ACCOUNT -- promote-to-live AUTO-CREATES the (account, category) sub-division on demand (joined ON category)
            -- chosen 1/some/all. Inert + honest when no account is provisioned yet. #}
+        {# LIVE-WHALE STATE (2026-09-11): for each account, if this whale is ALREADY attached live (active=1) show a
+           non-clickable "<account> Live Whale" status badge (lit lamp + attachment age) INSTEAD of Promote; Promote
+           stays only for the account(s) it is NOT live on. `live_attach` = {wallet: {account_id: age_seconds}}. #}
+        {% set la = (live_attach|default({})).get(r.wallet, {}) %}
         {% if live_accounts %}
           {% for acct in live_accounts %}
+          {% set att_age = la.get(acct.account_id) %}
+          {% if att_age is not none %}
+          <span class="fl-live" title="{{ acct.account_label }} is copying this whale LIVE in {{ r.category|upper }} &mdash; attached {{ att_age|agefmt }}. Detach via the CLI (Demote refuses while live).">
+            <span class="fl-lamp"></span>{{ acct.account_label.split()[0] }} Live Whale <span class="fl-age">{{ att_age|agefmt }}</span></span>
+          {% else %}
           <form method="post" action="/live/{{ acct.account_id }}/{{ r.category }}/attach/{{ r.wallet }}" class="pm-inline-form">
             <button class="pm-btn pm-btn-sm" type="submit"
                title="Promote to LIVE: copy this whale on {{ acct.account_label }}'s {{ r.category|upper }} sub-division (auto-created if new; creates a copy attachment -- does NOT place an order).">Promote &rsaquo; {{ acct.account_label }}</button>
           </form>
+          {% endif %}
           {% endfor %}
         {% else %}
           <span class="pm-muted pm-btn-sm" title="No live account provisioned yet -- add a credentialed account before promoting to live.">Promote &middot; no live account</span>

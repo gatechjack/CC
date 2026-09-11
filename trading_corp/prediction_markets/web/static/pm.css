@@ -223,7 +223,20 @@ th.pm-primary{color:var(--mono)}
 
 /* ── CP3b-2: on-demand ANALYZE (button on both lists -> result panel) ─────────────────────────── */
 .pm-btn-sm{padding:.22rem .6rem; font-size:.76rem; border-radius:.35rem}
-.pm-actioncell{white-space:nowrap}
+/* Action cell = ONE compact row that wraps only when narrow (2026-09-11). The Demote/Promote controls are
+   <form class="pm-inline-form"> (block by default -> used to stack); as flex items they sit inline, gap handles
+   all spacing (the per-.pm-btn margin below is zeroed so gap is the single source of spacing). */
+.pm-actioncell{display:flex; flex-wrap:wrap; align-items:center; gap:.32rem .45rem}
+.pm-actioncell .pm-inline-form{display:inline-flex; align-items:center; margin:0}
+/* LIVE-WHALE badge -- shown IN PLACE OF Promote for an account this whale is ALREADY copied live on
+   (pm_subdivision_attachment active=1). Echoes the /live tile "armed" lamp (a glowing green dot) so the Farm
+   page and the live tiles read the same; self-contained hex -> independent of either stylesheet's palette. */
+.fl-live{display:inline-flex; align-items:center; gap:.35rem; font-size:.74rem; font-weight:600;
+  letter-spacing:.01em; color:#7fe3b4; border:1px solid #1d5a41; background:#0f2118; border-radius:.35rem;
+  padding:.2rem .55rem; white-space:nowrap; line-height:1.2}
+.fl-live .fl-lamp{width:7px; height:7px; border-radius:50%; background:#3ddc91; box-shadow:0 0 6px #3ddc9199;
+  flex:0 0 7px}
+.fl-live .fl-age{color:#5d8a76; font-size:.64rem; font-weight:400; letter-spacing:0}
 .pm-analyze-btn[disabled]{opacity:.5; cursor:progress}
 .pm-analyze-btn.htmx-request{opacity:.5; cursor:progress}
 
@@ -318,8 +331,7 @@ th.pm-primary{color:var(--mono)}
 /* Stage-3 actions are rendered but DISABLED (visibly, honestly) -- muted, never the accent (which reads as live) */
 .pm-btn[disabled]{opacity:.5; cursor:not-allowed; background:var(--pane2); color:var(--muted)}
 .pm-btn[disabled]:hover{background:var(--pane2); color:var(--muted)}
-.pm-actioncell .pm-btn{margin-right:.3rem}
-.pm-actioncell .pm-btn:last-child{margin-right:0}
+.pm-actioncell .pm-btn{margin-right:0}   /* spacing now comes from the action cell's flex gap (2026-09-11) */
 
 /* paper-trade lifecycle badges (open / pending_adjudication / closed / stale / void) */
 .pm-pstatus{text-transform:none; font-weight:600}

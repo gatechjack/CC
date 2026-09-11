@@ -480,8 +480,22 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
         # category) sub-division on demand, so a Watchlist row offers "promote to <account>", not a pre-existing
         # sub-division. Empty until an account is provisioned (credentialed) -> the honest inert note.
         live_accounts = subdivision.active_accounts(conn)
+        # ★ LIVE-WHALE STATE (2026-09-11): which accounts ALREADY copy each pinned whale in THIS category, from the
+        # SAME pm_subdivision_attachment the /live "Copies these whales" panel + the tile whale-count read (active=1
+        # only -- a detached row, active=0, is NOT live). The Watchlist row shows a "<account> Live Whale" status
+        # badge (not a Promote button) for each account it is already attached to, with the attachment age; Promote
+        # remains only for the account(s) it is NOT live on. {wallet: {account_id: age_seconds}}. Read-only;
+        # honest-empty (-> every row keeps its Promote buttons, i.e. today's behaviour) if the table is absent.
+        live_attach: dict = {}
+        try:
+            for a in conn.execute("SELECT wallet, account_id, added_ts FROM pm_subdivision_attachment "
+                                  "WHERE category = ? AND active = 1", (category,)):
+                live_attach.setdefault(a["wallet"], {})[a["account_id"]] = (
+                    (now_ts - int(a["added_ts"])) if a["added_ts"] is not None else None)
+        except Exception:   # noqa: BLE001 -- absent table (pre-migration-010) -> honest-empty, never a 500
+            live_attach = {}
     return {"category": category, "watchlist": watchlist, "prospects": prospects, "refresh": refresh,
-            "live_accounts": live_accounts}
+            "live_accounts": live_accounts, "live_attach": live_attach}
 
 
 # ── Multi-account (M2, 2026-09-01): the accounts overview (the new top of the hierarchy, R1) + per-account page. ──
@@ -734,7 +748,16 @@ async def demote_action(request: Request, category: str, wallet: str):
     if forbidden is not None:
         return forbidden
     category = (category or "").strip().lower()
-    await asyncio.to_thread(_demote_prospect, (wallet or "").lower(), category, int(time.time()))
+    result = await asyncio.to_thread(_demote_prospect, (wallet or "").lower(), category, int(time.time()))
+    # R6: demote REFUSES while a live attachment exists (a funnel action must never tear down a real-money
+    # attachment). Say WHY instead of failing silently: 409 naming the live attachments; the operator detaches from
+    # live first (CLI), then demotes.
+    if isinstance(result, dict) and result.get("reason") == "attached_live_detach_first":
+        accts = ", ".join("%s/%s" % (a.get("account_id"), a.get("category"))
+                          for a in (result.get("attachments") or []))
+        return PlainTextResponse(
+            "cannot demote %s in %s: still LIVE-attached (%s). Detach from live first (CLI), then demote."
+            % ((wallet or "").lower(), category, accts or "live"), status_code=409)
     return RedirectResponse("/farm/%s" % category, status_code=303)
 
 
@@ -915,7 +938,15 @@ async def promote_to_live_action(request: Request, account_id: str, category: st
     # account_id simply misses -> honest no_such_subdivision no-op (never a wrong write).
     account_id = (account_id or "").strip()
     category = (category or "").strip().lower()
-    await asyncio.to_thread(_promote_live, account_id, category, (wallet or "").lower(), int(time.time()))
+    result = await asyncio.to_thread(_promote_live, account_id, category, (wallet or "").lower(), int(time.time()))
+    # GUARD (2026-09-11): promote_to_live is idempotent (PK (account,category,wallet) + UPSERT -> never a second
+    # row), but a repeat attach used to redirect silently as if it did something. Refuse it LOUD: 409 with a plain
+    # message. The UI already hides Promote for an attached account (the "Live Whale" badge), so this backstops a
+    # stale page / direct POST -- and it still never inserts a duplicate.
+    if isinstance(result, dict) and result.get("reason") == "already_attached":
+        return PlainTextResponse(
+            "already attached: %s is already a LIVE whale on %s / %s -- no second attachment (idempotent)."
+            % ((wallet or "").lower(), account_id, category), status_code=409)
     return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)
 
 
