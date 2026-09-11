@@ -23,9 +23,10 @@ from trading_corp.mace import execution as ex
 from trading_corp.mace.broker_port import OptionsBrokerPort, OpenOrder, OrderResult
 from trading_corp.mace.config import load_mace_config
 from trading_corp.mace.domain import (
-    CondorSpec, OptionQuote, EXIT_PT, EXIT_STOP,
+    CondorSpec, OptionQuote, EXIT_PT, EXIT_STOP, EXIT_TIME, EXIT_EXDIV,
     RUNG_ABANDONED, RUNG_CLOSED, RUNG_CLOSING, RUNG_OPEN, RUNG_SUBMITTING,
 )
+from trading_corp.mace.manager import MaceManager
 from trading_corp.mace.notify import MaceNotifier
 from trading_corp.persistence import db as dbmod
 from trading_corp.utils.time import ET, UTC
@@ -751,3 +752,121 @@ async def test_t9_close_rung_pt_reason_no_resting_to_cancel():
     assert port.cancel_calls == []                        # no resting PT to cancel
     r = store.get(RUNG_ID)
     assert r.status == RUNG_CLOSED and r.exit_reason == EXIT_PT
+
+
+# ── GDX P1: winner (TIME/PT) mid-band cap + defer; STOP unchanged (2026-09-11) ──────
+
+def _gdx_wide_quotes(port: FakePort):
+    """Wide-spread (illiquid GDX-style) condor on SPEC's strikes: credit_mid = 1.05,
+    natural = 1.54 (spread 0.49 >> the 0.10 winner band). A winner close caps at
+    mid+band = 1.15 and can NOT reach natural -> it defers (never gives back the spread)."""
+    port.quotes = {
+        ("put", 585.0): OptionQuote("SPY", EXPIRY, 585.0, "put", 1.10, 1.70, -0.55),   # mid 1.40
+        ("put", 582.0): OptionQuote("SPY", EXPIRY, 582.0, "put", 0.30, 0.50, -0.30),   # mid 0.40
+        ("call", 615.0): OptionQuote("SPY", EXPIRY, 615.0, "call", 0.05, 0.15, 0.10),  # mid 0.10
+        ("call", 618.0): OptionQuote("SPY", EXPIRY, 618.0, "call", 0.01, 0.09, 0.05),  # mid 0.05
+    }  # mid=(1.40+0.10)-(0.40+0.05)=1.05 ; natural=(1.70+0.15)-(0.30+0.01)=1.54
+
+
+@pytest.mark.asyncio
+async def test_time_winner_starts_at_mid_caps_at_band_and_defers():
+    """TIME winner: starts at MID (1.05), walks only to mid+band (1.15), NEVER crosses to
+    natural (1.54); unfillable within the band -> DEFER, rung stays OPEN (the GDX P1)."""
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _gdx_wide_quotes(port)
+    rung = _open_rung(store, credit=1.58, pt=None)         # T9 synthetic: pt_order_id NULL
+    port.place_script = [_res(bp.STATE_QUEUED, f"X{k}") for k in range(1, 6)]
+    for k in range(1, 6):
+        port.status_script[f"X{k}"] = _res(bp.STATE_CANCELLED, f"X{k}")
+    out = await _executor(port, store, chan, resting_pt=False).close_rung(
+        rung, EXIT_TIME, pricing="winner", defer_on_unfilled=True)
+    assert out.deferred and not out.closed and not out.exhausted
+    limits = [c.net_limit for c in port.place_calls]
+    assert limits[0] == pytest.approx(1.05)               # STARTS at mid, not natural 1.54
+    assert max(limits) <= 1.15 + 1e-9                     # capped at mid+band (0.10)
+    assert all(l < 1.54 for l in limits)                  # never crosses to natural
+    assert store.get(RUNG_ID).status == RUNG_OPEN         # DEFER keeps the rung OPEN
+
+
+@pytest.mark.asyncio
+async def test_time_winner_fills_within_band_preserves_profit_gdx_replay():
+    """Replay GDX #1 (credit 1.58, mid 1.05): a fill at the mid+band CAP (1.15) books
+    +$43 -- vs the actual +$6 today when it crossed to natural 1.52/1.67."""
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _gdx_wide_quotes(port)
+    rung = _open_rung(store, credit=1.58, pt=None)
+    port.place_script = ([_res(bp.STATE_QUEUED, f"X{k}") for k in range(1, 5)]
+                         + [_res(bp.STATE_FILLED, "X5")])   # fills on the attempt at the cap
+    for k in range(1, 5):
+        port.status_script[f"X{k}"] = _res(bp.STATE_CANCELLED, f"X{k}")
+    out = await _executor(port, store, chan, resting_pt=False).close_rung(
+        rung, EXIT_TIME, pricing="winner", defer_on_unfilled=True)
+    assert out.closed and out.reason == EXIT_TIME
+    assert out.exit_debit == pytest.approx(1.15)          # filled AT the cap, not natural 1.54
+    assert out.realized_pnl == pytest.approx((1.58 - 1.15) * 100)   # = +43.00 (vs actual +6)
+    assert store.get(RUNG_ID).status == RUNG_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_stop_unchanged_starts_at_natural_band_not_applied():
+    """STOP: pricing defaults marketable -> starts at NATURAL (1.54), band NOT applied
+    (a loser must fill). Contrast: a winner would have capped at 1.15."""
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _gdx_wide_quotes(port)
+    rung = _open_rung(store, credit=1.58, pt=None)
+    port.place_script = [_res(bp.STATE_FILLED, "X1")]
+    out = await _executor(port, store, chan, resting_pt=False).close_rung(rung, EXIT_STOP)
+    assert out.closed and out.reason == EXIT_STOP
+    assert out.exit_debit == pytest.approx(1.54)          # NATURAL (cross-spread), not mid 1.05
+    assert store.get(RUNG_ID).status == RUNG_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_pt_winner_defers_if_unfilled_no_floor():
+    """PT winner: same mid-band cap; unfillable -> DEFER, rung stays OPEN (a winner is fine
+    to keep; PT has no DTE floor and retries next tick)."""
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _gdx_wide_quotes(port)
+    rung = _open_rung(store, credit=1.58, pt=None)
+    port.place_script = [_res(bp.STATE_QUEUED, f"X{k}") for k in range(1, 6)]
+    for k in range(1, 6):
+        port.status_script[f"X{k}"] = _res(bp.STATE_CANCELLED, f"X{k}")
+    out = await _executor(port, store, chan, resting_pt=False).close_rung(
+        rung, EXIT_PT, pricing="winner", defer_on_unfilled=True)
+    assert out.deferred and store.get(RUNG_ID).status == RUNG_OPEN
+    assert max(c.net_limit for c in port.place_calls) <= 1.15 + 1e-9
+
+
+@pytest.mark.asyncio
+async def test_spy_winner_unaffected_natural_within_band():
+    """SPY (tight): natural 2.04 is INSIDE mid+band (mid 1.95, cap 2.05) -> the winner ladder
+    reaches ~natural and FILLS (does not defer). SPY behaves as before."""
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _exit_quotes(port)                                    # SPY mid 1.95, natural 2.04
+    rung = _open_rung(store, credit=2.20, pt=None)
+    port.place_script = ([_res(bp.STATE_QUEUED, f"X{k}") for k in range(1, 5)]
+                         + [_res(bp.STATE_FILLED, "X5")])
+    for k in range(1, 5):
+        port.status_script[f"X{k}"] = _res(bp.STATE_CANCELLED, f"X{k}")
+    out = await _executor(port, store, chan, resting_pt=False).close_rung(
+        rung, EXIT_TIME, pricing="winner", defer_on_unfilled=True)
+    assert out.closed and not out.deferred               # FILLS (natural within band), no defer
+    assert out.exit_debit <= 2.05 + 1e-9                  # within mid+band ~= natural
+
+
+def test_close_pricing_routing_time_floor_pt_stop():
+    """Manager routing: TIME>floor -> winner+defer; TIME<=floor -> FORCE marketable;
+    PT -> winner+defer (no floor); STOP/exdiv -> marketable (unchanged)."""
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    ex_ = _executor(port, store, chan, resting_pt=False)
+    mgr = MaceManager(CFG, port, store, ex_, MaceNotifier(channel=chan, enabled=True))
+    rung = _open_rung(store, pt=None)                     # expiry 2026-09-18
+    hi = datetime(2026, 8, 28, 15, 30, tzinfo=ET)         # dte 21 (> 14 floor)
+    at = datetime(2026, 9, 4, 15, 30, tzinfo=ET)          # dte 14 (== floor)
+    lo = datetime(2026, 9, 10, 15, 30, tzinfo=ET)         # dte 8  (< floor)
+    assert mgr._close_pricing(EXIT_TIME, rung, hi) == ("winner", True)
+    assert mgr._close_pricing(EXIT_TIME, rung, at) == ("marketable", False)   # floor forces
+    assert mgr._close_pricing(EXIT_TIME, rung, lo) == ("marketable", False)
+    assert mgr._close_pricing(EXIT_PT, rung, lo) == ("winner", True)          # PT: no floor
+    assert mgr._close_pricing(EXIT_STOP, rung, hi) == ("marketable", False)
+    assert mgr._close_pricing(EXIT_EXDIV, rung, hi) == ("marketable", False)

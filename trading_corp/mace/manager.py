@@ -32,7 +32,7 @@ from trading_corp.mace import ivr_provider as ivr
 from trading_corp.mace import strategy as st
 from trading_corp.mace.config import MaceConfig
 from trading_corp.mace.disposition import disposition_line, exit_disposition_line
-from trading_corp.mace.domain import EvalResult, RungState
+from trading_corp.mace.domain import EXIT_PT, EXIT_TIME, EvalResult, RungState
 from trading_corp.mace.execution import EntryOutcome, ExitOutcome, MaceExecutor, RungStore
 from trading_corp.mace.notify import MaceNotifier
 from trading_corp.utils.time import now_et, now_utc
@@ -446,7 +446,28 @@ class MaceManager:
                     symbol=rung.symbol,
                     line=exit_disposition_line(rung.spec, decision.exit_reason,
                                                phase="decision"))
-        return await self.executor.close_rung(rung, decision.exit_reason)
+        pricing, defer = self._close_pricing(decision.exit_reason, rung, now)
+        return await self.executor.close_rung(
+            rung, decision.exit_reason, pricing=pricing, defer_on_unfilled=defer)
+
+    def _close_pricing(self, reason: str, rung: RungState,
+                       now: datetime) -> "tuple[str, bool]":
+        """Per-reason close pricing (GDX P1 fix 2026-09-11). Returns (pricing,
+        defer_on_unfilled). WINNERS (TIME/PT) close at MID capped at mid+exit_winner_band --
+        never cross the whole spread on a profitable close. STOP/exdiv/gap cross the spread (a
+        loser/risk MUST fill). TIME defers if unfilled within the band until
+        time_exit_defer_floor_dte, then forces natural (some close beats carrying a
+        defined-risk condor to expiry); PT defers with NO floor (a winner is fine to keep --
+        retries next tick)."""
+        m = self.cfg.management
+        if reason == EXIT_PT:
+            return "winner", True
+        if reason == EXIT_TIME:
+            dte = (rung.expiry - now.date()).days
+            if dte > m.time_exit_defer_floor_dte:
+                return "winner", True
+            return "marketable", False   # DTE floor: FORCE the close (natural / cross-spread)
+        return "marketable", False       # stop / exdiv / gap / manual: unchanged
 
     async def _spot(self, symbol: str) -> Optional[float]:
         try:
