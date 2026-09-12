@@ -157,3 +157,36 @@ After post-check GREEN, fold + three-way prove + ledger commit + FF-push in THIS
   4. (LOW) `start_instant` tidy (return from the UTC instant; check microsecond on the placeholder).
   - NOT-a-defect (verified against the proven runner): `minimum_start_date` is sent on cursor pages — the working
     `cc/pm_milestone_heldtickers_ro.ps1` does exactly that and paginated correctly.
+
+--------------------------------------------------------------------------------
+## 9. PRE-DEPLOY RO GATES — RUN 2026-09-12, ALL GREEN (evidence)
+
+All three are READ-ONLY (no box writes, no restart), run on my own authority under the autonomy addendum. Outputs
+saved under `cc/_orient_s4/`.
+
+- **Box-scratch** (`cc/pm_milestone_boxscratch_ro.*`): live milestone JSON shape CONFIRMED (`milestones`+`cursor`
+  keys, `start_date` a real UTC instant, `details.status` seen lying `not_started` on a finished 9/11 game -> we
+  ignore it). One full bounded sweep = **14 GETs** (Sports 12 + Esports 2, NEITHER capped), **9583** event tickers
+  indexed, 36 placeholders skipped -- matches the "~8-15 GETs/day" cost model. Join vs REAL held tickers: **11 of 12**
+  milestone-fed held tickers (lal/mex/mls/ufc) resolved to a real start; the 1 miss is a UFC fight a week out
+  (beyond the 3-day horizon) -> honest UPCOMING. 0 started-now (so nothing flips LIVE this instant; the joins carry
+  correct start data for when the games begin). Box python 3.12.13.
+- **Precheck** (`cc/pm_milestone_precheck_ro.*`): **box == prod-live for ALL 5 files** (milestones.py ABSENT-ok; the 4
+  edits match their BEFORE shas) -> NO drift, NO reconcile finding. `/pm/arm` routes = 0. Engine `trading-corp`
+  MainPID 351422 / NRestarts 0; pm_web 332976 / NRestarts 0. (`schema_head` line = a cosmetic wrong-table-name in the
+  RO probe; informational only -- this deploy adds no migration.)
+- **Graft verify** (`cc/pm_milestone_graft.* -Mode verify`): local CR-sha16 chain-of-custody all match; 5 files staged;
+  drift-gate clean; staged files py_compile on the box venv. NO write.
+
+### Staged runners (ordering)
+1. `pm_milestone_boxscratch_ro.ps1` — RO, DONE/green.
+2. `pm_milestone_precheck_ro.ps1` — RO, DONE/green.
+3. `pm_milestone_graft.ps1 -Mode verify` — RO, DONE/green.
+4. **`pm_milestone_graft.ps1 -Mode graft`** — DEPLOY (writes 5 files; backup-gated, drift-gated, sha+compile+import
+   verified, rolls back ALL on any failure). RESERVED.
+5. **`pm_milestone_restart_az.ps1`** — RESTART pm_web only via az (engine untouched). RESERVED.
+6. `pm_milestone_postcheck_ro.ps1` — RO, run after the restart.
+
+### After post-check green (same session): prod-live advance
+`git push origin pm-live-milestone-starts-2026-09-12:prod-live` (FF-only; non-FF -> STOP) + tag
+`pm-milestone-starts-deploy-2026-09-12`; re-verify box == prod-live for the 5 files. `main` untouched.
