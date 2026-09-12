@@ -431,3 +431,31 @@ cfb/nfl/mlb tickers matched Kalshi's own event sub-title order; 5/5 with a Poly 
   `test_accounts_m2` x3 + `test_stage2_*` x4 + `test_ctx_pagination_fix` x1 — cross-tree/env pre-existing failures,
   the standing differential baseline, not introduced by any of these deploys).
 - **Retire the SOCCER orphan** engine-side (as above).
+
+--------------------------------------------------------------------------------
+## DEPLOY 11 (2026-09-12): CONTRACT SIZING FROM THE UI + MIGRATION 022
+
+**`origin/prod-live 78d90e54 -> ce52ef3c`, tag `pm-sizing-deploy11-2026-09-12`. pm_web + `sizing.py`(new pm-side) +
+`db.py`(additive) + ONE pure-CREATE migration (022) + ONE pm_web restart. Engine `trading-corp` 351422 NOT touched.**
+Full record: PM_SIZING_UI_2026-09-12.md §8. Cache-bust `pm_desk.css?v=422c45ec`.
+
+- **What it does** — change a sub-division's contracts-per-copy from its `/live/{account}/{category}` header (e.g.
+  5 -> 1), NO restart: the engine reads `pm_subdivision.contracts` PER CYCLE (`execution.py:544` via
+  `live_driver.py:1080`, ~7s). A server-rendered confirm (GET, JS-off safe) then a POST writes the value + an audit
+  row in one transaction. The header shows "N contracts / copy · set by `<who>` · `<age>`"; the drawer footer lists
+  the last 5 changes.
+- **`prediction_markets/sizing.py`** (NEW, pm-side, imported only by web/app.py — NOT engine-shared) — the reader,
+  the writer `set_contracts`, and the **1-50 bounds** (`CONTRACTS_MIN/MAX`, a UI ruling defined once here, NOT engine
+  config; the engine's per-order/daily USD caps are unrelated).
+- **owner-lowers / admin-raises** is the **SECOND use of `authz.can_act_on_account`** (Detach/Deploy 9 was the first)
+  — owner-or-admin may LOWER; only admin may RAISE; server-gated on both the GET confirm and the POST.
+- **MIGRATION 022** = `pm_subdivision_sizing_audit` (pm_web-owned; the engine never reads/writes it). **THE NEXT
+  MIGRATION IS 023** (this corrects the earlier note that reserved 022 for the attach/detach event-log — 022 is now
+  the sizing audit; the attach/detach event-log, if built, takes 023). **Migration-apply mechanism (for any future
+  pm_web-owned migration):** `db.init_db()` (db.py, version-gated) invoked by **`pm_cli`** (the box crons) OR a deploy
+  runner calling the same `db.init_db` — NOT hand-run DDL. pm_web startup does NOT migrate (only starts the poller);
+  the engine `main.py` connects the PM db but never runs `prediction_markets.db.init_db` (its init_db is the legacy
+  `persistence.db`), so the engine accepts a head ahead of its code trivially (`init_db` only applies version>current).
+  The DEPLOY GATE drift-checks box head == N-1 before applying and renumbers to box-head+1 on collision.
+- **Backlog update** — Contract-sizing-from-the-UI is now DONE (was a follow-up). The attach/detach event-log
+  (migration 023) remains a backlog item. The 22 stale UI tests remain the standing differential baseline.

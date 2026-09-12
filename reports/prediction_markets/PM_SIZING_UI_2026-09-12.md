@@ -112,3 +112,71 @@ the code/template/static files + `sizing.py` + `db.py`; (3) **apply migration 02
 table; (4) ONE `systemctl restart prediction-markets-web` (via `az vm run-command`); (5) post-check (served CSS
 `?v=422c45ec`, the header control renders, a tmp-DB POST is NOT run on prod), then advance prod-live (FF) + tag. The
 engine is NEVER restarted; it picks up the new (behaviour-neutral) `db.py` on its own next restart. Backup is a gate.
+
+--------------------------------------------------------------------------------
+## 8. DEPLOY 11 — LIVE (2026-09-12) — sizing + migration 022 shipped to prod-live
+
+**RESULT: DEPLOYED + MIGRATED (head 21 -> 22) + VERIFIED + prod-live FF. `origin/prod-live 78d90e54 -> ce52ef3c`
+(code, tag `pm-sizing-deploy11-2026-09-12`). pm_web-only + `db.py`(additive) + `sizing.py`(new) +
+ONE pure-CREATE migration + ONE pm_web restart. The ARMED engine `trading-corp` PID 351422 / NRestarts 0 was NEVER
+touched or restarted (identical before + after every step).**
+
+### M1-M3 (migration discovery, before any write)
+- **M1 mechanism:** PM migrations run through `db.init_db()` (db.py:997-1004, version-gated: `if version<=current:
+  continue`), invoked ONLY by `pm_cli` — the box crons `pm_cli paper-poll`(*/30)/`refresh`/`paper-adjudicate`/
+  `paper-rollup`, each calling `db.init_db(args.db)`. pm_web startup only starts the poller (app.py:175-181, no
+  migrate); the engine `main.py` CONNECTS the PM db (main.py:1568/1579/1628) but calls NO `_pm_db.init_db()` (its
+  only init_db, main.py:304, is the legacy `persistence.db`). Box schema_version rows = **[1..21] contiguous**; a
+  benign transient traceback in pm_poll.log (a paper-poll run once failed at `db.py:77` connect() — a DB-lock blip,
+  NOT a migration failure) confirms the entrypoint. Applied 022 via a runner calling the SAME `db.init_db` framework
+  (not hand-run DDL).
+- **M2:** the engine never runs PM `init_db`, so it has no PM migration check to refuse head 22; and `init_db` only
+  applies `version>current` (db.py:998), so a DB at 22 with either db.py applies nothing, never refuses. Confirmed
+  live: after the migration the engine (old db.py, head-21 code) read the head-22 DB with ZERO errors.
+- **M3:** MIGRATION_022 is a pure `CREATE TABLE ... IF NOT EXISTS pm_subdivision_sizing_audit` + `CREATE INDEX ...
+  IF NOT EXISTS` (db.py) — no ALTER of any engine table, no INSERT/backfill.
+
+### Steps 1-15 (all via read-only/validated `.ps1` runners `cc/pm_deploy11_*`)
+- **[1]** engine `trading-corp` **351422/0** (start 01:33:35Z); pm_web `prediction-markets-web` 365841/0.
+- **[2]** box PM schema head **== 21** (drift-check pass); healthz 200 schema 21.
+- **[3]** box == prod-live 78d90e54: **63/63** tracked web files (7 inert Sept-1 `.bak/.orig` extras).
+- **[4] BACKUP GATE:** 6 existing files -> `/home/azureuser/pm_deploy11_backup_20260912T181850Z/`, each backup ==
+  box == prod-live base; 3 new files noted (rollback = delete). **DB SNAPSHOT** (consistent online `.backup`):
+  `.../prediction_markets.db.snapshot` size **392,851,456**.
+- **[5]** all **44** active sub-divisions `contracts=5` (none differ; the `fixed`-mode ones store 5 unread); served
+  pm_desk.css `92a1ef2e`; before `/live/kalshi_jack/mlb` 200, `?v=92a1ef2e`, `Sizing` ABSENT (correct pre-deploy).
+- **[6] Deploy:** 9 files (db.py+sizing.py at pkg root, 7 under web/) landed LF, in-place raw-sha == target; py_compile
+  OK; app+sizing import clean, ZERO engine/broker/execution modules, arm-write path NOT loaded; grafted `db.SCHEMA_HEAD=22`.
+- **[7] MIGRATION** (via `db.init_db`): head **21 -> 22**; `pm_subdivision_sizing_audit` exists + **EMPTY**;
+  `pm_subdivision.contracts` UNCHANGED for every row (all == 5); config table counts unchanged (pm_subdivision 44 /
+  pm_account 2 / attachment 60 / watchlist 786, all delta 0); every table delta 0 in the window. CLEAN.
+- **[8] RESTART:** `az ... systemctl restart prediction-markets-web` — pm_web **365841 -> 367649** (start 18:24:25Z);
+  **engine 351422 UNCHANGED**; journalctl -p err since migration = **No entries** for BOTH services. Engine still
+  cycling: heartbeats showed a ~189s quiet phase (the **KXMLBGAME index refresh, 899 games @ 18:30:05**, a normal
+  ~15-min heavy fetch) then **reset to 0s** (fresh writes) — the driver is alive; the pause is its own cadence, not
+  the deploy (the engine process + code are untouched). The shard-balance 401 / positions-429 lines are known
+  pre-existing transient WARNINGs (fail-safe skip; not errors, not deploy-related).
+- **[9-12]** Sizing control renders "5 contract / copy" + change form, no audit line, on jack/mlb + karen/mlb +
+  non-MLB cfb (`?v=422c45ec`). **Authz GET matrix (never POSTed on prod, R5): karen lower-own 200 / raise-own 403 /
+  on-jack 403; admin 200 both; no-identity 403; bounds 0->400, 51->400, 1->200, 50->200.** R3 confirm wording +
+  estimate present (jack/atp "~$0.35/contract"; jack/bra "No fills yet to estimate from"). Drawer last-5 block absent
+  (honest empty — no changes yet).
+- **[13]** Regression intact: served CSS `422c45ec`==target, all 7 static 200, `/`+both account pages+both `/live`
+  tabs 200, all 23 `/farm/{category}` 200; Deploy-9 roster + detach gating (karen own 200 / karen-jack 403);
+  Deploy-10 cfb game-grouping (5 headers). **0 double-escaped entities.**
+- **[14]** engine **351422/0 unchanged**, cycling (heartbeat reset to 0s), zero journal errors; pm_subdivision_order
+  total 598, **0 entry fills since the migration** (the first sizing change is Jack's to make); 0 double-escape.
+- **[15] Wrap:** pushed `pm-sizing-2026-09-12`; **FF `origin/prod-live 78d90e54 -> ce52ef3c`**; tag
+  `pm-sizing-deploy11-2026-09-12` -> ce52ef3c. Re-ran **box == prod-live ce52ef3c: 67/67** (65 web + db.py + sizing.py),
+  0 mismatch/missing.
+
+### First sizing change NOT yet exercised (Jack does it)
+No POST was run on prod (R5). When Jack lowers a sub (e.g. jack/mlb 5 -> 1 from the header control), the expected
+observation is: the driver's NEXT ~7s cycle sizes new copies at the new count (execution.py:544 reads
+`pm_subdivision.contracts` fresh), and the audit row appears in `pm_subdivision_sizing_audit` (and the drawer
+last-5 + the "set by jack · <age>" header line) with HIS identity. Open positions are unchanged.
+
+### Rollback (unused)
+Not triggered. If it had been: restore `/home/azureuser/pm_deploy11_backup_20260912T181850Z/` files + restart pm_web;
+migration has no down-path, so DROP `pm_subdivision_sizing_audit` + reset head to 21 via the same init_db mechanism,
+or (only if the engine wrote nothing since) restore the DB snapshot — else leave head 22 + the empty table (harmless).
