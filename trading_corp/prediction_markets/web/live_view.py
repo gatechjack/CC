@@ -972,35 +972,59 @@ def _live_event(category, positions, feed_games, marks, now_ts, starts=None):
             g["positions"].append(p)
     if not groups:
         return None
-    ordered = sorted(groups.values(), key=lambda gg: -(gg["start"] or 0))   # most recently started first
-    rows = []
-    for g in ordered[:3]:
+    # FEATURED game = the one CLOSEST TO SETTLING (Item 1.2, DETERMINISTIC): baseball latest inning, then most outs;
+    # tie -> most held positions; tie -> away code A->Z. A non-MLB game has no inning/outs (0,0) and falls to the
+    # held-count then code tiebreak. The rest are OTHER underway games, each a single compact chip (Item 1.3).
+    # Bounding the block to ONE featured game + <=3 chips gives the LIVE tile a FIXED height regardless of the game
+    # count (Item 1.1) -- the CSS caps + clips it; this just supplies a bounded, deterministically-ordered structure.
+    def _settling_key(g):
         gs = g["gs"]
-        our = None                                     # who we HOLD (ML) -> mark in the score line
-        for p in g["positions"]:
-            if _kind(p.get("ticker")) == "moneyline":
-                our = _held_team_code(p.get("ticker"), p.get("held_leg"))
-                break
-        row = {"has_scoreboard": gs is not None, "label": None, "away": None, "home": None, "home_lead": False,
-               "away_ours": False, "home_ours": False, "detail": None, "age_sec": None,
-               "positions": _event_rows(g["positions"], marks)}
-        if gs is not None:
-            asc = "" if gs.away.score is None else str(gs.away.score)
-            hsc = "" if gs.home.score is None else str(gs.home.score)
-            row["away"] = ("%s %s" % (gs.away.abbr or "-", asc)).strip()
-            row["home"] = ("%s %s" % (gs.home.abbr or "-", hsc)).strip()
-            row["label"] = "%s @ %s" % (gs.away.abbr or "-", gs.home.abbr or "-")
-            row["home_lead"] = (gs.home.score or 0) > (gs.away.score or 0)
-            row["detail"] = _score_detail(gs)
-            row["age_sec"] = getattr(gs, "age_sec", None)
-            a_code, h_code = _ordered_teams(g["ticker"])   # ticker-space away/home -> marker is position-based (feed-abbr safe)
-            row["away_ours"] = bool(our and our == (a_code or "").upper())
-            row["home_ours"] = bool(our and our == (h_code or "").upper())
+        inn = (getattr(gs, "inning", None) or 0) if gs is not None else 0
+        outs = (getattr(gs, "outs", None) or 0) if gs is not None else 0
+        a_code, _h = _ordered_teams(g["ticker"])
+        return (-inn, -outs, -len(g["positions"]), (a_code or "").upper())
+    ranked = sorted(groups.values(), key=_settling_key)     # featured first (closest to settling), then the chips
+    feat_g, others = ranked[0], ranked[1:]
+
+    our = next((_held_team_code(p.get("ticker"), p.get("held_leg")) for p in feat_g["positions"]
+                if _kind(p.get("ticker")) == "moneyline"), None)
+    featured = {"has_scoreboard": feat_g["gs"] is not None, "label": None, "away": None, "home": None,
+                "home_lead": False, "away_ours": False, "home_ours": False, "detail": None, "age_sec": None,
+                "positions": _event_rows(feat_g["positions"], marks)[:3],
+                "more_positions": max(0, len(feat_g["positions"]) - 3)}
+    gs = feat_g["gs"]
+    if gs is not None:
+        asc = "" if gs.away.score is None else str(gs.away.score)
+        hsc = "" if gs.home.score is None else str(gs.home.score)
+        featured["away"] = ("%s %s" % (gs.away.abbr or "-", asc)).strip()
+        featured["home"] = ("%s %s" % (gs.home.abbr or "-", hsc)).strip()
+        featured["label"] = "%s @ %s" % (gs.away.abbr or "-", gs.home.abbr or "-")
+        featured["home_lead"] = (gs.home.score or 0) > (gs.away.score or 0)
+        featured["detail"] = _score_detail(gs)
+        featured["age_sec"] = getattr(gs, "age_sec", None)
+        a_code, h_code = _ordered_teams(feat_g["ticker"])   # ticker-space away/home -> position-based marker (feed-abbr safe)
+        featured["away_ours"] = bool(our and our == (a_code or "").upper())
+        featured["home_ours"] = bool(our and our == (h_code or "").upper())
+    else:
+        p0 = feat_g["positions"][0]
+        featured["label"], _ = name_market(p0.get("ticker"), p0.get("held_leg"), (marks or {}).get(p0.get("ticker")), None, cat)
+
+    chips = []                                              # each OTHER underway game -> one line: matchup + <=2 pairs
+    for g in others[:3]:
+        ggs = g["gs"]
+        if ggs is not None:
+            clabel = "%s@%s" % (ggs.away.abbr or "-", ggs.home.abbr or "-")
         else:
-            p0 = g["positions"][0]
-            row["label"], _ = name_market(p0.get("ticker"), p0.get("held_leg"), (marks or {}).get(p0.get("ticker")), None, cat)
-        rows.append(row)
-    return {"rows": rows, "more": max(0, len(ordered) - 3)}
+            q0 = g["positions"][0]
+            clabel, _ = name_market(q0.get("ticker"), q0.get("held_leg"), (marks or {}).get(q0.get("ticker")), None, cat)
+        pairs = []
+        for p in g["positions"]:
+            tk, leg = p.get("ticker"), p.get("held_leg")
+            bid = marks_mod.bid_for_leg((marks or {}).get(tk), leg)
+            val = (p.get("contracts") * bid) if (bid is not None and p.get("contracts") is not None) else None
+            pairs.append({"short": _short_label(tk, _kind(tk), leg), "value": val, "value_known": val is not None})
+        chips.append({"label": clabel, "pairs": pairs[:2], "overflow": len(pairs) > 2})
+    return {"featured": featured, "others": chips, "more": max(0, len(others) - 3), "n_live": len(groups)}
 
 
 def _next_event(category, positions, marks, now_ts, starts=None):

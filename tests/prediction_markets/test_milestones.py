@@ -405,8 +405,8 @@ def test_live_event_block_non_mlb_via_milestone():
     starts = {"KXATPMATCH-26SEP12ABCDEF": NOW - 600}
     ev = LV._live_event("atp", [_pos("KXATPMATCH-26SEP12ABCDEF-XYZ")], {}, {}, NOW, starts)
     assert ev is not None
-    assert len(ev["rows"]) == 1
-    row = ev["rows"][0]
+    row = ev["featured"]                                 # Item 1: one featured game (+ chips for others)
+    assert ev["others"] == [] and ev["n_live"] == 1
     assert row["has_scoreboard"] is False               # no scores in scope for non-MLB
     assert row["label"] and "KXATPMATCH" not in row["label"]   # R2: never a raw ticker
     assert len(row["positions"]) == 1
@@ -444,7 +444,7 @@ def test_build_subdivisions_context_classifies_atp_live_via_milestone():
     ctx = _atp_ctx({"KXATPMATCH-26SEP12ABCDEF": NOW - 600})
     live = [t for t in ctx["sections"]["LIVE"] if t["category"] == "atp"]
     assert len(live) == 1 and live[0]["activity"] == "LIVE"
-    assert live[0]["event"] is not None and len(live[0]["event"]["rows"]) == 1
+    assert live[0]["event"] is not None and len(live[0]["event"]["featured"]["positions"]) == 1   # Item 1 structure
 
 
 def test_build_subdivisions_context_atp_upcoming_without_milestone():
