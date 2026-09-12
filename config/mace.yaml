@@ -110,6 +110,14 @@ management:
   time_exit_dte: 21
   time_exit_at_et: "15:30"
   exdiv_guard_sessions: 5
+  exit_winner_band: 0.10                # GDX P1 2026-09-11: winner (time-exit/PT) close prices at
+                                        # MID and caps the debit at mid + this band -- never crosses
+                                        # the full bid-ask spread on a profitable close (SPY natural
+                                        # is inside the band -> unaffected; wide GDX/XLE is capped).
+  time_exit_defer_floor_dte: 14         # time-exit at DTE>this DEFERS if it cannot fill within
+                                        # mid+band (retries next tick, walking DTE down); at/below
+                                        # this it FORCES natural (some close beats carrying a
+                                        # defined-risk condor toward expiry). PT has NO floor.
 
 execution:
   entry_start_offset_usd: 0.02          # attempt 1 limit = fresh mid - 0.02 (credit walks

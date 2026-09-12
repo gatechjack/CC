@@ -75,6 +75,8 @@ class ManagementConfig:
     time_exit_dte: int
     time_exit_at_et: str
     exdiv_guard_sessions: int
+    exit_winner_band: float          # winner (time/PT) close cap = mid + this (GDX P1 2026-09-11)
+    time_exit_defer_floor_dte: int   # time-exit defers above this DTE, forces natural at/below
 
 
 @dataclass(frozen=True)
@@ -327,6 +329,12 @@ def load_mace_config(
     time_exit_dte = num(m, "time_exit_dte", "management", typ=int, lo=1)
     time_exit_at = hhmm(m, "time_exit_at_et", "management")
     exdiv_sessions = num(m, "exdiv_guard_sessions", "management", typ=int, lo=0)
+    # GDX P1 fix (2026-09-11): winner-close band + time-exit defer floor. Optional with
+    # defaults so an older config still loads (mirrors min_strike_separation_usd).
+    exit_band = (num(m, "exit_winner_band", "management", lo=0.0, lo_excl=True)
+                 if "exit_winner_band" in m else 0.10)
+    time_defer_floor = (num(m, "time_exit_defer_floor_dte", "management", typ=int, lo=0)
+                        if "time_exit_defer_floor_dte" in m else 14)
 
     x = sect("execution")
     start_off = num(x, "entry_start_offset_usd", "execution", lo=0.0)
@@ -481,6 +489,8 @@ def load_mace_config(
             time_exit_dte=int(time_exit_dte),
             time_exit_at_et=time_exit_at,
             exdiv_guard_sessions=int(exdiv_sessions),
+            exit_winner_band=float(exit_band),
+            time_exit_defer_floor_dte=int(time_defer_floor),
         ),
         execution=ExecutionConfig(
             entry_start_offset_usd=float(start_off),

@@ -370,6 +370,7 @@ class ExitOutcome:
     exhausted: bool = False   # ladder ran out / unconfirmed / error -> stays CLOSING + URGENT
     pt_race: bool = False     # PT filled during the pre-exit cancel-and-confirm
     aborted: bool = False     # could not confirm PT dead -> refused to double-close
+    deferred: bool = False    # winner (TIME>floor / PT) unfilled within mid+band -> stays OPEN, retries
 
 
 # ── the executor ──────────────────────────────────────────────────────────
@@ -770,12 +771,20 @@ class MaceExecutor:
         return pt_id
 
     # -- EXIT: cancel PT first, then the emulated-market debit ladder ---------
-    async def close_rung(self, rung: RungState, reason: str) -> ExitOutcome:
-        """Close a whole condor for a management reason (stop/time/exdiv/gap).
+    async def close_rung(self, rung: RungState, reason: str, *,
+                         pricing: str = "marketable",
+                         defer_on_unfilled: bool = False) -> ExitOutcome:
+        """Close a whole condor for a management reason (stop/time/exdiv/gap/pt).
         FIRST cancel-and-confirm the resting PT; if the PT filled in that race,
-        book the PT exit and stop. Then walk a marketable DEBIT ladder UP from
-        natural (≤ width×ceiling); exhaustion/unconfirmed/error leaves the rung
-        CLOSING + URGENT (operator manual backstop). Never books on error/partial."""
+        book the PT exit and stop. Then walk a DEBIT ladder:
+          pricing="marketable" (stop/exdiv/gap/time<=floor): start at NATURAL
+              (cross-the-spread), walk UP by tick to the width cap -- a loser/deadline
+              MUST fill. exhaustion/unconfirmed/error -> CLOSING + URGENT.
+          pricing="winner" (time-exit>floor / PT -- GDX P1 2026-09-11): start at MID and
+              cap the debit at mid + exit_winner_band -- never cross the whole spread on a
+              profitable close. A CLEAN no-fill with defer_on_unfilled -> DEFER (rung stays
+              OPEN, retries next tick); error/unconfirmed still -> CLOSING + URGENT.
+        Never books on error/partial."""
         spec, contracts, rung_id = rung.spec, rung.contracts, rung.rung_id
 
         # 1) resting PT must be provably dead before we place any closing order.
@@ -803,22 +812,43 @@ class MaceExecutor:
             # PT confirmed dead -> proceed.
             self.store.clear_pt(rung_id)
 
-        # 2) mark CLOSING (crash-recoverable) then run the debit ladder.
-        self.store.mark_closing(rung_id)
-        self._audit("mace_exit_start", rung_id=rung_id, reason=reason,
-                    symbol=spec.symbol,
-                    line=exit_disposition_line(spec, reason, phase="start"))
+        # 2) Pricing mode (GDX P1 fix 2026-09-11). WINNER (time-exit>floor / PT) prices at
+        # MID and caps the debit at mid + exit_winner_band -- never cross the whole spread
+        # on a profitable close. A resting PT (pt_order_id set) is a committed close ->
+        # force marketable (a winner-defer must not leave a resting order live).
         x = self.cfg.execution
+        m = self.cfg.management
+        winner = (pricing == "winner") and not rung.pt_order_id
+        band = m.exit_winner_band
+        winner_step = band / max(1, x.exit_max_attempts - 1)
         ceiling = spec.width_dollars * x.exit_hard_ceiling_mult_of_width
+        # mark CLOSING (crash-recoverable) ONLY on the committed marketable path; a
+        # winner-defer stays OPEN so the next manage tick re-evaluates it.
+        if not winner:
+            self.store.mark_closing(rung_id)
+        self._audit("mace_exit_start", rung_id=rung_id, reason=reason, symbol=spec.symbol,
+                    pricing=("winner" if winner else "marketable"),
+                    line=exit_disposition_line(spec, reason, phase="start"))
 
         for k in range(1, x.exit_max_attempts + 1):
             quotes = await self._fresh_quotes(spec)
-            natural = self._natural_debit(quotes)
-            if natural is None:
-                self._audit("mace_exit_unpriceable", rung_id=rung_id, attempt=k)
-                continue
-            raw = natural + (k - 1) * x.entry_tick_usd
-            limit = round_to_tick(raw, x.entry_tick_usd, mode="up")
+            if winner:
+                # WINNER: price at MID, walk toward mid+band across the attempts, HARD-CAP at
+                # mid+band (never cross to natural). mid None -> can't price -> skip attempt.
+                mid = self._credit_mid(quotes)
+                if mid is None:
+                    self._audit("mace_exit_unpriceable", rung_id=rung_id, attempt=k, pricing="winner")
+                    continue
+                raw = min(mid + (k - 1) * winner_step, mid + band)
+                limit = round_to_tick(raw, x.entry_tick_usd, mode="up")
+            else:
+                # MARKETABLE: natural (cross-the-spread), walk UP by tick. natural None -> skip.
+                natural = self._natural_debit(quotes)
+                if natural is None:
+                    self._audit("mace_exit_unpriceable", rung_id=rung_id, attempt=k)
+                    continue
+                raw = natural + (k - 1) * x.entry_tick_usd
+                limit = round_to_tick(raw, x.entry_tick_usd, mode="up")
             if limit > ceiling:
                 limit = ceiling  # never pay more than max structural value (width)
             combo_id = f"{rung_id}-x{k}"
@@ -862,14 +892,43 @@ class MaceExecutor:
                 # confirmed dead -> next attempt.
             # no order id -> next attempt.
 
+        # Clean ladder exhaustion (every attempt placed + cancelled-confirmed-dead; nothing
+        # filled/unconfirmed -> no live order remains). WINNER-defer: leave the rung OPEN and
+        # retry next tick (TIME walks DTE to the floor; PT retries, no floor). MARKETABLE:
+        # stays CLOSING + URGENT.
+        if defer_on_unfilled:
+            return self._exit_deferred(spec, rung_id, reason)
         return self._exit_exhausted(spec, rung_id, reason, x.exit_max_attempts)
+
+    def _exit_deferred(self, spec: CondorSpec, rung_id: str, reason: str) -> ExitOutcome:
+        # WINNER (TIME>floor / PT) could not fill within mid+band -- DEFER rather than force a
+        # profit-giving-back cross-the-spread fill (the GDX 2026-09-11 P1). The rung was NOT
+        # marked closing, so it stays OPEN; the next manage tick re-evaluates (TIME re-fires at
+        # DTE<=time_exit_dte, walking DTE to time_exit_defer_floor_dte where it forces natural;
+        # PT re-fires while mark<=pt_target, no floor). The ladder cancelled-and-confirmed each
+        # attempt dead before exhausting, so no live order remains.
+        self._audit("mace_exit_deferred", rung_id=rung_id, reason=reason, symbol=spec.symbol,
+                    detail="winner close unfilled within mid+band -- deferred, retry next tick")
+        return ExitOutcome(rung_id, False, reason=reason, deferred=True)
 
     def _exit_exhausted(self, spec: CondorSpec, rung_id: str, reason: str,
                         attempts: int) -> ExitOutcome:
-        # Rung STAYS `closing` (already marked) — operator manual action is the backstop.
+        # Committed close (marketable, or a winner that hit an error/unconfirmed placement):
+        # ensure CLOSING (idempotent -- marketable already marked it; a winner error path did
+        # not) so it is crash-recoverable + re-driven. Operator manual action is the backstop.
+        self.store.mark_closing(rung_id)
         self.notifier.close_exhausted(symbol=spec.symbol, expiry=spec.expiry.isoformat(),
                                       contracts=self._contracts_of(rung_id), attempts=attempts)
         self._audit("mace_exit_exhausted", rung_id=rung_id, reason=reason, attempts=attempts)
+        # Broker-connect fail-safe (Option B, 2026-09-11): a MACE close that exhausts its
+        # ladder is a MISSED EXIT needing manual action -- most acutely when the RH
+        # session is down (place raises -> exhaust). Distinct audit kind so it is
+        # queryable/alertable alongside the platform-wide broker_missed_exit signal (the
+        # operator alert itself is notifier.close_exhausted above). MACE confirms the exit
+        # was due (it fired a stop/time/pt/exdiv/gap decision), so this is a CONFIRMED
+        # missed exit, not the coarse "risk" alert pmcc/pead raise.
+        self._audit("mace_missed_exit", rung_id=rung_id, reason=reason, symbol=spec.symbol,
+                    attempts=attempts, detail="exit could not complete -- manual close needed")
         return ExitOutcome(rung_id, False, reason=reason, attempts=attempts, exhausted=True)
 
     def _exit_partial(self, spec: CondorSpec, rung_id: str, reason: str, k: int,

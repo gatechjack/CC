@@ -209,6 +209,26 @@ class RobinhoodBroker(Broker):
 
             # Pull the full account list once, cache for all instances
             _ACCOUNT_LIST = await self._fetch_accounts()
+            # ITEM4-AUTHVALIDATE (2026-09-11): rs.login can "succeed" (no raise) while
+            # the session is UNAUTHENTICATED — an MFA device-challenge / 429 rate-limit
+            # leaves a dead session that 401s on the first real read. On 2026-09-10 this
+            # logged "1 account" (vs 4 healthy) then 401'd, and connect_all silently
+            # seated a PaperBroker on all live RH divisions. Do NOT log false success:
+            # validate real auth (accounts present AND the active 401 sentinel clear).
+            # On failure RAISE so connect_all's live-only guard marks the division
+            # degraded (never a paper swap). We deliberately do NOT reset _LOGIN_DONE
+            # here — that would make the other RH divisions in this SAME connect_all
+            # pass each re-hit /login → 429 hammer; the background retry loop owns the
+            # re-auth (reset_shared_login + connect on a backoff).
+            if not _ACCOUNT_LIST or await self._auth_is_401():
+                log.error(
+                    "RobinhoodBroker login did NOT authenticate (user=%s; %d account(s) "
+                    "discovered, session 401) — raising so the connect fail-safe engages",
+                    self._username, len(_ACCOUNT_LIST),
+                )
+                raise RobinhoodAuthError(
+                    f"RH login unauthenticated ({len(_ACCOUNT_LIST)} accounts / session 401)"
+                )
             log.info(
                 "RobinhoodBroker logged in (user=%s) — %d account(s) discovered",
                 self._username, len(_ACCOUNT_LIST),
@@ -241,6 +261,17 @@ class RobinhoodBroker(Broker):
             self._account_filter, self._account_number or "default",
             self._account_label or "default",
         )
+
+    @staticmethod
+    def reset_shared_login() -> None:
+        """Clear the module-level shared-login latch so the NEXT connect() re-runs
+        rs.login instead of piggybacking a dead session. Used by the connect-retry
+        loop (data_exec) so a degraded RH session is actually RE-AUTHENTICATED. All
+        RH divisions share one login, so one reset + one connect re-auths the whole
+        family; the retry loop's backoff interval is the /login 429 guard."""
+        global _LOGIN_DONE
+        with _LOGIN_LOCK:
+            _LOGIN_DONE = False
 
     # ITEM3-REAUTH: active 401 sentinel + guarded in-process re-login + latch -----------
     async def _auth_is_401(self) -> bool:
