@@ -305,23 +305,32 @@ _POLY_UFC_RE = re.compile(
     r"^ufc-(?P<codes>.+?)-(?P<date>\d{4}-\d{2}-\d{2})(?P<suffix>.*)$"
 )
 _SUFFIX_DISTANCE = "-go-the-distance"
+# method markets (2026-09-12): trailing dedup fragments Poly appends on a slug collision (e.g. "...-947-915"); the
+# method suffix (optionally fighter-prefixed); and the TITLE shapes that classify MOV (named) vs MOF (generic) and
+# carry the MOV fighter's FULL name. Slug classifies (fighter token present -> MOV); title supplies the full name.
+_NOISE_RE = re.compile(r"(?:-\d+)+$")
+_METHOD_SUFFIX_RE = re.compile(r"^-(?:(?P<ftr>.+)-)?win-by-(?P<method>ko-tko|submission)$")
+_MOV_TITLE_RE = re.compile(r"^\s*will\s+(?P<ftr>.+?)\s+win\s+by\s+(?:ko\s*or\s*tko|submission)\s*\??\s*$", re.I)
 
 
 @dataclass(frozen=True)
 class ParsedPolyBet:
     """Parsed Polymarket UFC bet. Mirrors the MLB ParsedPolyBet public surface."""
-    market_type: str        # "moneyline" | "go_the_distance" | "non_ufc" | "prop" | "unparseable"
+    market_type: str        # "moneyline" | "go_the_distance" | "method_finish" | "method_victory" | "non_ufc" | "prop" | "unparseable"
     date_iso: str | None    # fight date, YYYY-MM-DD (ET)
-    fighter_a: str | None   # full name of one fighter (from outcome or None)
+    fighter_a: str | None   # full name of one fighter (moneyline: the bet fighter; method_victory: the named fighter from the TITLE)
     fighter_b: str | None   # full name of the other fighter (only set when known)
     side: str | None        # "a" | "b" — which fighter the whale bet (moneyline only)
     side_name: str | None   # full name of the bet fighter
-    leg: str | None         # "yes" | "no" (go_the_distance: from outcome string; moneyline: always "yes")
+    leg: str | None         # "yes" | "no" (go_the_distance/method_*: from the Yes/No outcome; moneyline: always "yes")
     fail_reason: str | None = None
     raw: dict = field(default_factory=dict)
+    # method markets (2026-09-12): the finish method the whale bet. "sub" -> KX*MOF/MOV -SUB; "kotko" -> -KOTKODQ.
+    # None for moneyline/go_the_distance (byte-identical to pre-method constructions -- defaulted, positional-safe).
+    method: str | None = None
 
 
-def parse_poly_ufc_bet(slug: str, outcome: str) -> ParsedPolyBet:
+def parse_poly_ufc_bet(slug: str, outcome: str, title: str = None) -> ParsedPolyBet:
     """Parse one Poly activity row into a ParsedPolyBet.
 
     `slug`    — the Polymarket event slug, optionally with a market-type suffix
@@ -364,6 +373,35 @@ def parse_poly_ufc_bet(slug: str, outcome: str) -> ParsedPolyBet:
                                  fail_reason=f"distance_outcome_not_yes_no:{outcome!r}", raw=raw)
         return ParsedPolyBet("go_the_distance", date_iso, None, None, None, None, leg, raw=raw)
 
+    # ── method markets: -win-by-ko-tko / -win-by-submission (2026-09-12) ─────────
+    # Strip trailing dedup fragments FIRST so "...-win-by-ko-tko-947-915" parses identically to the clean slug
+    # (the fragments are pure noise Poly appends on a slug collision; a suffix that is ONLY "-<digits>" is not a
+    # method market and falls through to the prop skip below -- a SAFE miss, never a wrong parse). The SLUG
+    # classifies MOV (a fighter token before -win-by-) vs MOF (none); the TITLE supplies the MOV fighter FULL name.
+    mm = _METHOD_SUFFIX_RE.match(_NOISE_RE.sub("", suffix))
+    if mm:
+        method = "kotko" if mm.group("method") == "ko-tko" else "sub"
+        oc = (outcome or "").strip().lower()
+        leg = "yes" if oc == "yes" else "no" if oc == "no" else None
+        is_mov = mm.group("ftr") is not None
+        mt = "method_victory" if is_mov else "method_finish"
+        rawm = {**raw, "method": method, "fighter_slug": mm.group("ftr")}
+        if leg is None:
+            return ParsedPolyBet(mt, date_iso, None, None, None, None, None,
+                                 fail_reason=f"method_outcome_not_yes_no:{outcome!r}", raw=rawm, method=method)
+        if not is_mov:
+            # MOF, either fighter: no fighter identity in the signal. The matcher resolves the bout by
+            # date+uniqueness (safe-miss on a multi-bout date), mirroring go_the_distance.
+            return ParsedPolyBet("method_finish", date_iso, None, None, None, None, leg, raw=rawm, method=method)
+        # MOV, named fighter: the FULL name comes from the TITLE ("Will {Fighter} win by ..."), NOT the lossy slug
+        # lastname. No parseable title -> we cannot resolve the fighter -> SAFE fail (never guess from the slug).
+        tm = _MOV_TITLE_RE.match(title or "")
+        fighter = tm.group("ftr").strip() if tm else None
+        if not fighter:
+            return ParsedPolyBet("method_victory", date_iso, None, None, None, None, leg,
+                                 fail_reason=f"mov_fighter_unresolved_from_title:{title!r}", raw=rawm, method=method)
+        return ParsedPolyBet("method_victory", date_iso, fighter, None, None, None, leg, raw=rawm, method=method)
+
     if suffix:
         # Some other prop suffix — labelled skip
         return ParsedPolyBet("prop", date_iso, None, None, None, None, None, raw=raw)
@@ -379,7 +417,9 @@ def parse_poly_ufc_bet(slug: str, outcome: str) -> ParsedPolyBet:
 
 
 # ── COPYABLE_MARKET_TYPES ──────────────────────────────────────────────────
-COPYABLE_MARKET_TYPES = ("moneyline", "go_the_distance")
+COPYABLE_MARKET_TYPES = ("moneyline", "go_the_distance", "method_finish", "method_victory")
+# The method tokens as they appear at the END of a Kalshi MOF/MOV ticker suffix (code-anchored parse below).
+_KALSHI_METHOD_TOKEN = {"sub": "SUB", "kotko": "KOTKODQ"}   # our parsed method -> Kalshi ticker method token
 
 
 # ── Kalshi fight index ─────────────────────────────────────────────────────
@@ -399,6 +439,9 @@ class KalshiFight:
     ticker_a: str                   # KXUFCFIGHT ticker for fighter_a YES
     ticker_b: str                   # KXUFCFIGHT ticker for fighter_b YES
     distance_ticker: str | None     # KXUFCDISTANCE ticker for this bout (may be absent)
+    # method markets (2026-09-12), attached like distance_ticker (joined by the shared date+blob):
+    mof_by_method: dict = field(default_factory=dict)        # {"sub"|"kotko": KXUFCMOF ticker}  (either fighter)
+    mov_by_code_method: dict = field(default_factory=dict)   # {(fighter_kcode, "sub"|"kotko"): KXUFCMOV ticker}
 
 
 @dataclass(frozen=True)
@@ -419,6 +462,86 @@ _KALSHI_FIGHT_RE = re.compile(
 _KALSHI_DIST_RE = re.compile(
     r"^KXUFCDISTANCE-(?P<date>\d{2}[A-Z]{3}\d{2})(?P<blob>[A-Z0-9]{6})-DIST$"
 )
+# KXUFCMOF-{YYMONDD}{BLOB}-{METHOD}   METHOD in {SUB,KOTKODQ,DEC,DRAW}; "either fighter" (how only).
+# KXUFCMOV-{YYMONDD}{BLOB}-{FTRCODE}{METHOD}  or  -DRAW.  blob is variable-length (a same-code bout -> 7 chars, e.g.
+# MORMOR2); we join by (date,blob) against the fight index (which already drops such bouts, so they safe-miss).
+_KALSHI_MOF_RE = re.compile(r"^KXUFCMOF-(?P<date>\d{2}[A-Z]{3}\d{2})(?P<blob>[A-Z0-9]+)-(?P<method>[A-Z]+)$")
+_KALSHI_MOV_RE = re.compile(r"^KXUFCMOV-(?P<date>\d{2}[A-Z]{3}\d{2})(?P<blob>[A-Z0-9]+)-(?P<suffix>[A-Z0-9]+)$")
+# our method key <- the Kalshi ticker's method token (the ONLY two we copy; DEC/DRAW are ignored -> safe skip).
+_MOF_TOKEN_TO_METHOD = {"SUB": "sub", "KOTKODQ": "kotko"}
+
+
+def _split_mov_suffix(suffix: str):
+    """Split a KXUFCMOV ticker suffix into (fighter_code, method) by matching a KNOWN method token at the END --
+    anchored on the ticker's OWN structure, never a free-text label. 'SILKOTKODQ'->('SIL','kotko');
+    'MOR2SUB'->('MOR2','sub'). Returns (None, None) for DRAW / DEC / anything else (safe skip)."""
+    for tok, method in (("KOTKODQ", "kotko"), ("SUB", "sub")):
+        if suffix.endswith(tok) and len(suffix) > len(tok):
+            return suffix[:-len(tok)], method
+    return None, None
+
+
+def attach_method_tickers(fight_index: dict, mof_markets: list[dict], mov_markets: list[dict]) -> dict:
+    """Return a new index with KXUFCMOF (either-fighter) + KXUFCMOV (fighter+method) tickers attached to their bouts,
+    joined by the shared (date_str, blob) prefix -- the SAME join attach_distance_tickers uses. CODE-ANCHORED for MOV
+    (the FED lesson): the fighter is bound to the MOV ticker by the ticker's OWN 3-char code (matched to a fight-index
+    fighter_kcode), and the market TITLE ("{Fighter} by {Method}") is a cross-check -- if the code's fighter and the
+    title's fighter DISAGREE, the market is REFUSED (not attached) -> safe miss, never a wrong-fighter bind. A ticker
+    whose bout is absent from the fight index (unparseable/collision blob) is silently skipped."""
+    by_blob: dict = {}
+    for fight in fight_index.values():
+        blob = fight.fighter_a_kcode + fight.fighter_b_kcode
+        by_blob[(fight.date_str, blob)] = fight
+        by_blob[(fight.date_str, fight.fighter_b_kcode + fight.fighter_a_kcode)] = fight
+    new_index = {k: replace(v, mof_by_method=dict(v.mof_by_method), mov_by_code_method=dict(v.mov_by_code_method))
+                 for k, v in fight_index.items()}
+    key_of = lambda f: _fight_index_key(f.date_iso, f.fighter_a_name, f.fighter_b_name)
+
+    for mkt in (mof_markets or []):
+        m = _KALSHI_MOF_RE.match((mkt.get("ticker") or "").strip())
+        if not m:
+            continue
+        method = _MOF_TOKEN_TO_METHOD.get(m.group("method"))
+        if method is None:                                  # DEC / DRAW / other -> not copied
+            continue
+        f = by_blob.get((m.group("date"), m.group("blob")))
+        if f is None:
+            continue
+        new_index[key_of(f)].mof_by_method[method] = (mkt.get("ticker") or "").strip()
+
+    for mkt in (mov_markets or []):
+        ticker = (mkt.get("ticker") or "").strip()
+        title = (mkt.get("title") or "").strip()
+        m = _KALSHI_MOV_RE.match(ticker)
+        if not m:
+            continue
+        f = by_blob.get((m.group("date"), m.group("blob")))
+        if f is None:
+            continue
+        code, method = _split_mov_suffix(m.group("suffix"))
+        if method is None:                                  # DRAW / DEC / other -> not copied
+            continue
+        # CODE-ANCHORED bind: the ticker's own code must BE one of the bout's fighter kcodes, and the title's fighter
+        # (parsed from "Will {Fighter} win by ..." OR "{Fighter} by {Method}") must match THAT fighter -- else refuse.
+        if code == f.fighter_a_kcode:
+            fighter_name = f.fighter_a_name
+        elif code == f.fighter_b_kcode:
+            fighter_name = f.fighter_b_name
+        else:
+            continue                                        # code not a bout fighter -> refuse (safe skip)
+        tname = _mov_title_fighter(title)
+        if tname is not None and not match_fighter_name(tname, fighter_name):
+            continue                                        # code<->title disagree (mislabel) -> refuse (safe skip)
+        new_index[key_of(f)].mov_by_code_method[(code, method)] = ticker
+    return new_index
+
+
+def _mov_title_fighter(title: str):
+    """Extract the fighter full name from a KXUFCMOV market title, tolerant of the two live shapes:
+    'Jean Silva wins by Submission?' and 'Jean Silva by KO/TKO/DQ'. Returns None if neither shape parses."""
+    t = (title or "").strip()
+    m = re.match(r"^(?P<f>.+?)\s+wins\s+by\s+", t, re.I) or re.match(r"^(?P<f>.+?)\s+by\s+(?:ko|tko|submission)", t, re.I)
+    return m.group("f").strip() if m else None
 
 
 def _fight_index_key(date_iso: str, name_a: str, name_b: str) -> tuple:
@@ -736,6 +859,62 @@ def match_bet(
         return MatchResult("abbrev_collision_ambiguous", 0.5,
                            reason=f"multiple_distance_fights_on_{date_iso}_need_fighter_hint",
                            market_type="go_the_distance")
+
+    # ── method_finish (KXUFCMOF, either fighter) ─────────────────────────────
+    # No fighter identity in the signal (title = "Will the fight be won by ..."), so -- exactly like go_the_distance
+    # -- resolve the bout by DATE + UNIQUENESS: match ONLY when a single bout on the date carries a MOF ticker for
+    # this method; a multi-bout date is a labelled ambiguous SAFE MISS (never a guess), never a wrong-bout order.
+    if mt == "method_finish":
+        leg, method = parsed.leg, parsed.method
+        if leg is None or method is None:
+            return MatchResult("fail", 0.0, reason="method_finish_leg_or_method_missing", market_type=mt)
+        cands = [f for key, f in fight_index.items() if key[0] == date_iso and f.mof_by_method.get(method)]
+        if not cands:
+            if date_iso not in kalshi_dates:
+                return MatchResult("out_of_window", 0.0, reason="fight_date_outside_kalshi_fetch_window", market_type=mt)
+            return MatchResult("no_kalshi_contract", 0.0, reason=f"no_kxufcmof_{method}_on_date", market_type=mt)
+        if len(cands) > 1:
+            return MatchResult("abbrev_collision_ambiguous", 0.5,
+                               reason=f"multiple_mof_{method}_fights_on_{date_iso}_no_fighter_in_signal", market_type=mt)
+        return MatchResult("matched", 1.0, kalshi_ticker=cands[0].mof_by_method[method], leg=leg,
+                           reason="mof_single_fight_on_date", market_type=mt)
+
+    # ── method_victory (KXUFCMOV, named fighter) ─────────────────────────────
+    # The fighter FULL NAME is parsed.fighter_a (from the Poly TITLE). Resolve the bout + the fighter's Kalshi code
+    # via _resolve_winner_side (the SAME code-anchored + code-swap-guarded resolver the moneyline uses), then look up
+    # the MOV ticker by (code, method) in the CODE-ANCHORED index -- so the fighter->ticker bind is on the ticker's
+    # OWN code end-to-end, never a free-text label. A wrong/absent fighter or missing method -> a labelled safe miss.
+    if mt == "method_victory":
+        leg, method, outcome_name = parsed.leg, parsed.method, parsed.fighter_a
+        if leg is None or method is None:
+            return MatchResult("fail", 0.0, reason="method_victory_leg_or_method_missing", market_type=mt)
+        if not outcome_name:
+            return MatchResult("fail", 0.0, reason=parsed.fail_reason or "method_victory_fighter_unresolved", market_type=mt)
+        cands = [f for key, f in fight_index.items() if key[0] == date_iso]
+        if not cands:
+            if date_iso not in kalshi_dates:
+                return MatchResult("out_of_window", 0.0, reason="fight_date_outside_kalshi_fetch_window", market_type=mt)
+            return MatchResult("no_kalshi_contract", 0.0, reason="no_kxufcfight_on_date", market_type=mt)
+        matches = [f for f in cands
+                   if match_fighter_name(outcome_name, f.fighter_a_name)
+                   or match_fighter_name(outcome_name, f.fighter_b_name)]
+        if not matches:
+            return MatchResult("winner_outcome_unresolved", 0.0,
+                               reason=f"mov_fighter_not_in_any_fight_on_{date_iso}:{outcome_name!r}", market_type=mt)
+        if len(matches) > 1:
+            return MatchResult("abbrev_collision_ambiguous", 0.5,
+                               reason=f"mov_fighter_found_in_multiple_fights:{outcome_name!r}", market_type=mt)
+        fight = matches[0]
+        code, _tk, name = _resolve_winner_side(outcome_name, fight)
+        if code is None:
+            return MatchResult("winner_outcome_unresolved", 0.0,
+                               reason=f"mov_side_unresolved_in_fight:{outcome_name!r}", market_type=mt)
+        mov_ticker = fight.mov_by_code_method.get((code, method))
+        if mov_ticker is None:
+            return MatchResult("no_kalshi_contract", 0.0,
+                               reason=f"no_kxufcmov_{method}_for_{name!r}", market_type=mt)
+        return MatchResult("matched", 1.0, kalshi_ticker=mov_ticker, leg=leg,
+                           reason="mov_fighter_method_resolved", market_type=mt)
 
     # Should not reach here
     return MatchResult("fail", 0.0, reason=f"unhandled_market_type:{mt}", market_type=mt)

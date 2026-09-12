@@ -65,7 +65,10 @@ from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event
 
 _LOG = logging.getLogger(__name__)
 SERIES = ("KXMLBGAME", "KXMLBTOTAL", "KXMLBSPREAD")   # Jack's scope ruling: moneyline+total+spread
-UFC_SERIES = ("KXUFCFIGHT", "KXUFCDISTANCE")          # B2: UFC moneyline (per-fighter YES) + go-the-distance (binary)
+UFC_SERIES = ("KXUFCFIGHT", "KXUFCDISTANCE", "KXUFCMOF", "KXUFCMOV")  # winner + go-distance + Method of Finish/Victory
+# ^ (2026-09-12) +KXUFCMOF (Method of Finish, either fighter) +KXUFCMOV (Method of Victory, fighter+method). The two
+#   new series are fetched + indexed unconditionally (like distance); whether they COPY is gated per-sub by market_types
+#   (method_finish / method_victory) -> INERT until Jack enables them. Off-season/empty fetch -> empty index, safe.
 # tennis (2026-09-04): the category -> Kalshi MATCH series map. atp/wta split men's/women's on BOTH venues; the ctx
 # builder fetches exactly one series per category (match-winner only -- no set/game/futures/table-tennis).
 TENNIS_SERIES = {"atp": "KXATPMATCH", "wta": "KXWTAMATCH"}
@@ -224,8 +227,7 @@ async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketConte
     so this builder NEVER reads occurrence_datetime. A market with no title is skipped by build_kalshi_fight_index."""
     from pykalshi import MarketStatus
     markets: dict = {}
-    fight_markets: list = []       # [{ticker, title}] -> build_kalshi_fight_index (title carries the fighter full name)
-    distance_markets: list = []    # [{ticker, title}] -> attach_distance_tickers (matched by the ticker's date+blob)
+    by_series: dict = {"KXUFCFIGHT": [], "KXUFCDISTANCE": [], "KXUFCMOF": [], "KXUFCMOV": []}  # [{ticker,title}] each
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     for series in UFC_SERIES:
         for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
@@ -236,11 +238,12 @@ async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketConte
                 if not tk:
                     continue
                 markets[tk.upper()] = _market_quote_dict(m)
-                entry = {"ticker": tk, "title": getattr(m, "title", None)}
-                (fight_markets if series == "KXUFCFIGHT" else distance_markets).append(entry)
+                by_series.setdefault(series, []).append({"ticker": tk, "title": getattr(m, "title", None)})
     await _merge_raw_market_fields(client, markets, series_list=UFC_SERIES)   # exchange_index (SDK-dropped) from raw
-    fight_idx = U.build_kalshi_fight_index(fight_markets)
-    fight_idx = U.attach_distance_tickers(fight_idx, distance_markets)
+    fight_idx = U.build_kalshi_fight_index(by_series["KXUFCFIGHT"])
+    fight_idx = U.attach_distance_tickers(fight_idx, by_series["KXUFCDISTANCE"])
+    # method markets (2026-09-12): attach KXUFCMOF (either-fighter) + KXUFCMOV (fighter+method, CODE-ANCHORED bind).
+    fight_idx = U.attach_method_tickers(fight_idx, by_series["KXUFCMOF"], by_series["KXUFCMOV"])
     dates = frozenset(k[0] for k in fight_idx)          # ISO dates FROM THE TICKER (card-local), never occurrence
     return execution.MarketContext({}, {}, {}, dates, markets, fight_index=fight_idx)
 
@@ -649,6 +652,13 @@ def _audit_leg_independent(category, signal_outcome, ticker, leg):
         if tk.startswith("KXUFCDISTANCE-"):                       # go-the-distance is a Yes/No binary, not a name
             low = oc.lower(); exp = "yes" if low == "yes" else "no" if low == "no" else None
             return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:distance_leg!=outcome:%s/%s" % (leg, oc))
+        if tk.startswith("KXUFCMOF-") or tk.startswith("KXUFCMOV-"):   # (2026-09-12) method markets: Yes/No leg, NOT a
+            # fighter name -- the whale's outcome IS "Yes"/"No", so re-derive the expected leg from it, independent of
+            # the matcher's bout/fighter/method transform (which the fill-watch read-back covers). A disagreeing leg is
+            # the inversion class -> REVIEW. (The fighter/method BIND is checked code-anchored at match time; the outcome
+            # string carries no fighter/method, so this net checks the LEG -- closing the 'na' gap for these types.)
+            low = oc.lower(); exp = "yes" if low == "yes" else "no" if low == "no" else None
+            return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:method_leg!=outcome:%s/%s" % (leg, oc))
         code = tk.rsplit("-", 1)[-1] if "-" in tk else ""         # the ticker's OWN side code (independent evidence)
         c = re.sub(r"[^a-z0-9]", "", _fold(code)); n = re.sub(r"[^a-z0-9]", "", _fold(oc))
         i = 0

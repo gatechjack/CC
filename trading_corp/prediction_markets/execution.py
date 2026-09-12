@@ -415,7 +415,9 @@ def _mlb_match(parsed, ctx, allowed_market_types):
 
 
 def _ufc_parse(slug, outcome, title=None):
-    return U.parse_poly_ufc_bet(slug, outcome)
+    # (2026-09-12) title now PASSED: method_victory reads the fighter FULL name from it ("Will {Fighter} win by ...").
+    # moneyline/go_the_distance/method_finish ignore it -> byte-identical to the pre-method call for those types.
+    return U.parse_poly_ufc_bet(slug, outcome, title)
 
 
 def _ufc_match(parsed, ctx, allowed_market_types):
