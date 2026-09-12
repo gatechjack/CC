@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 from ..market_describe import describe_market
 from ...data.mlb_poly_kalshi_match import kalshi_to_iso_date
 from ...data.sports_team_mapping import MLB_TEAMS
-from . import feed_mlb, marks as marks_mod
+from . import feed_mlb, marks as marks_mod, milestones as milestones_mod
 from .. import leg_audit        # canonical leg-audit state constants (shared with the fill-watch runner -> no drift)
 
 KINDS = ("moneyline", "total", "spread")
@@ -752,6 +752,14 @@ SPORTS = {
     "mex": "Soccer", "fed": "Rate decisions",
 }
 LIVE_CAPABLE = frozenset({"mlb", "cs2", "nfl", "nba", "nhl", "wnba", "cfb"})
+# Categories whose LIVE/UPCOMING start comes from the Kalshi MILESTONE feed (2026-09-12): the date-only sports that
+# carry no ticker HHMM and have no game feed -- tennis (atp/wta), MMA (ufc) and the soccer leagues. This is an
+# EXPLICIT ALLOWLIST: a LIVE_CAPABLE category keeps its ticker-HHMM/feed source (a milestone NEVER overrides the MLB
+# feed, even when the feed is momentarily down -> MLB falls back to its own ticker HHMM, not a milestone), and fed
+# has no start state at all -> both are excluded, so a stray/mis-swept event ticker can never fabricate a LIVE.
+# Derived from SPORTS so a new soccer league added there is covered automatically, minus anything already LIVE_CAPABLE.
+MILESTONE_START_CATEGORIES = frozenset(
+    ({"atp", "wta", "ufc"} | {c for c, v in SPORTS.items() if v == "Soccer"}) - LIVE_CAPABLE)
 # Coarse categories retired for finer ones (R7): a sub on one can never trade -> the dashed orphan tile.
 RETIRED_CATEGORIES = frozenset({"soccer"})
 _ARM_DISPLAY = {"armed": "ARMED", "disarmed": "DISARMED", "absent": "NEVER ARMED", "unavailable": "STATE UNAVAILABLE"}
@@ -800,6 +808,21 @@ def parse_ticker_start(category, ticker) -> int | None:
         return None
 
 
+def start_ts_for_ticker(category, ticker, starts=None) -> int | None:
+    """The best available START time (unix) for a held ticker. FIRST the ticker's own HHMM where it carries one
+    (LIVE_CAPABLE -- MLB and the structural sports); ELSE, ONLY for a MILESTONE_START_CATEGORIES category (the
+    date-only sports with no HHMM and no feed -- tennis/ufc/soccer), the Kalshi milestone start for its event ticker.
+    A LIVE_CAPABLE category NEVER uses a milestone (its HHMM/feed is authoritative -- an MLB ticker with no HHMM stays
+    UNKNOWN rather than borrowing a milestone that would bypass the feed), and fed is excluded entirely. None -> start
+    UNKNOWN -> the caller stays honest (UPCOMING); a T00:00:00Z placeholder milestone is already None."""
+    st = parse_ticker_start(category, ticker)
+    if st is not None:
+        return st
+    if str(category or "").lower() in MILESTONE_START_CATEGORIES:
+        return milestones_mod.start_for_event_ticker(starts, ticker)
+    return None
+
+
 def name_market(ticker, leg, mark, feed_game, category) -> tuple:
     """A MEANINGFUL market name (R2), NEVER a raw ticker. Priority: MLB feed matchup ("NYY @ BAL") -> cached Kalshi
     market title (Mark.title) -> market_describe (MLB) -> "<CATEGORY> <market type>". Returns (name, named_ok);
@@ -819,10 +842,14 @@ def name_market(ticker, leg, mark, feed_game, category) -> tuple:
     return ("%s %s" % (str(category or "").upper(), mtype), False)
 
 
-def _event_underway(category, tickers, feed_games, marks, now_ts) -> bool:
-    """Is an event this sub holds a position on CURRENTLY underway? MLB: the feed says in_progress for a held game.
-    LIVE_CAPABLE non-MLB: a held ticker's HHMM start has passed AND the market is not finalized. Everything else
-    (date-only, no feed): False -> stays UPCOMING (honest per inventory item 12 -- the endpoint gives no start)."""
+def _event_underway(category, tickers, feed_games, marks, now_ts, starts=None) -> bool:
+    """Is an event this sub holds a position on CURRENTLY underway? MLB (with a feed): AUTHORITATIVE -- the feed says
+    in_progress for a held game (the feed knows in-progress vs final, which a start time alone cannot). Everything
+    else: a held ticker's START has passed AND the market is not finalized, where the start comes from the ticker's
+    HHMM (LIVE_CAPABLE) or the Kalshi milestone (the cross-category feed -- tennis/ufc/soccer). An UNKNOWN start
+    (date-only ticker with no milestone, or a placeholder) -> stays UPCOMING (honest -- never a fabricated LIVE).
+    NOTE: with no live scores in scope, "underway" means STARTED-and-still-held; a game that has ended but not yet
+    settled reads LIVE until we settle it -- the honest limit of a start-times-only feed."""
     cat = str(category or "").lower()
     if cat == "mlb" and feed_games:
         for t in tickers:
@@ -832,11 +859,10 @@ def _event_underway(category, tickers, feed_games, marks, now_ts) -> bool:
                 if gs is not None and gs.is_live:
                     return True
         return False
-    if cat in LIVE_CAPABLE:
-        for t in tickers:
-            st = parse_ticker_start(cat, t)
-            if st is not None and st <= int(now_ts) and getattr((marks or {}).get(t), "status", None) != "finalized":
-                return True
+    for t in tickers:
+        st = start_ts_for_ticker(cat, t, starts)
+        if st is not None and st <= int(now_ts) and getattr((marks or {}).get(t), "status", None) != "finalized":
+            return True
     return False
 
 
@@ -872,7 +898,7 @@ def _event_rows(positions, marks):
     return rows
 
 
-def _live_event(category, positions, feed_games, marks, now_ts):
+def _live_event(category, positions, feed_games, marks, now_ts, starts=None):
     """The LIVE tile's event block -- ONE compact row PER UNDERWAY GAME the sub holds a position on. FIX
     (2026-09-11): each row carries that game's scoreboard (MLB) or market label (non-MLB) and ONLY that game's held
     positions -- the prior version attached EVERY open position to a single underway game (jack/mlb showed a PHI
@@ -881,6 +907,8 @@ def _live_event(category, positions, feed_games, marks, now_ts):
     stays counted on the OPEN line. Positions on games that are NOT underway are also not in the block. Rows are
     ordered most-recently-started first, capped at 3, with `more` = the overflow ('+N more live' -> detail page).
     The held ML team is marked in the score line (away_ours/home_ours) so who we're cheering for is unmistakable.
+    Non-MLB rows carry a market label + positions (no scoreboard -- scores are out of scope); the start comes from
+    the ticker HHMM or the Kalshi milestone (2026-09-12), so tennis/ufc/soccer now populate the block once underway.
     Returns None if no underway game."""
     if not positions:
         return None
@@ -899,11 +927,11 @@ def _live_event(category, positions, feed_games, marks, now_ts):
             if g is None:
                 g = groups[gk] = {"start": parse_ticker_start(cat, tk) or 0, "gs": gs, "positions": [], "ticker": tk}
             g["positions"].append(p)
-        elif cat in LIVE_CAPABLE:
-            st = parse_ticker_start(cat, tk)
+        else:
+            st = start_ts_for_ticker(cat, tk, starts)   # ticker HHMM (LIVE_CAPABLE) or Kalshi milestone start
             if st is None or st > int(now_ts) or getattr((marks or {}).get(tk), "status", None) == "finalized":
                 continue                               # not underway (no start, future, or already settled)
-            key = tk.rsplit("-", 1)[0]                  # the match stem (strip the leg/side suffix)
+            key = tk.rsplit("-", 1)[0]                  # the match stem (strip the leg/side suffix) == the event ticker
             g = groups.get(key)
             if g is None:
                 g = groups[key] = {"start": st, "gs": None, "positions": [], "ticker": tk}
@@ -941,15 +969,16 @@ def _live_event(category, positions, feed_games, marks, now_ts):
     return {"rows": rows, "more": max(0, len(ordered) - 3)}
 
 
-def _next_event(category, positions, marks, now_ts):
-    """The UPCOMING tile's NEXT line: the SOONEST held event's label (R2 name) + starts_in (only where a start is
-    sourceable -- LIVE_CAPABLE ticker HHMM; date-only sports carry None -> the template says 'start time
-    unavailable')."""
+def _next_event(category, positions, marks, now_ts, starts=None):
+    """The UPCOMING tile's NEXT line: the SOONEST held event's label (R2 name) + starts_in. The start comes from the
+    ticker HHMM (LIVE_CAPABLE) or the Kalshi milestone (2026-09-12), so tennis/ufc/soccer now show a countdown too;
+    where NO start is sourceable (still unknown, or a placeholder) starts_in stays None -> the template says 'start
+    time unavailable', never a guessed time."""
     if not positions:
         return None
     best = None
     for p in positions:
-        st = parse_ticker_start(category, p.get("ticker"))
+        st = start_ts_for_ticker(category, p.get("ticker"), starts)
         if st is not None and (best is None or st < best[0]):
             best = (st, p)
     p = best[1] if best else positions[0]
@@ -961,12 +990,15 @@ def _next_event(category, positions, marks, now_ts):
 def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub, liveness_present, pnl_all,
                                realized_windows, positions_by_sub, last_events, marks, feed_games, now_ts,
                                thin_floor, mark_age_sec, active_account, viewer_role, viewer_account, logo_codes,
-                               poll_interval, global_arm, max_order_id, leg_audit_reviews=None, name_exceptions=None):
+                               poll_interval, global_arm, max_order_id, leg_audit_reviews=None, name_exceptions=None,
+                               starts=None):
     """Assemble the redesigned Live Sub-divisions context. `subs` = tiles_all rows already SCOPED to the visible
     accounts. Segments the ACTIVE account's tiles by activity (alarm pulled out first, R5), sorts each bucket by
     |today| desc then code, and rolls up the summary bar + tab counts for every visible account. Pure -- no DB, no
     network. `name_exceptions` (a mutable list, optional) collects any (account, category, ticker) whose name fell
-    back to the category label so the caller can log the R2 exception."""
+    back to the category label so the caller can log the R2 exception. `starts` is the cached Kalshi milestone
+    start-time index (event ticker -> unix start); it feeds the cross-category LIVE/UPCOMING clock compare -- None
+    means no index (every category behaves exactly as it did before the milestone feed: honest UPCOMING)."""
     arm_subs = (arm_all or {}).get("subs", {})
     tiles_by_acct: dict = {}
     for s in subs:
@@ -986,7 +1018,7 @@ def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub,
         n_live_trades = int(s.get("n_live_trades") or 0)
         has_history = booked > 0 or n_live_trades > 0
         tickers = [x.get("ticker") for x in pos]
-        underway = _event_underway(cat, tickers, feed_games, marks, now_ts) if pos else False
+        underway = _event_underway(cat, tickers, feed_games, marks, now_ts, starts) if pos else False
         activity = ("UNATTACHED" if not attached
                     else ("LIVE" if (pos and underway) else "UPCOMING") if pos
                     else ("SETTLED" if has_history else "INACTIVE"))
@@ -1008,8 +1040,8 @@ def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub,
             openb = {"count": len(pos), "cost": sum(float(x.get("cost_basis_usd") or 0.0) for x in pos),
                      "value": vp["value"], "value_known": vp["known"], "priced": vp["n_priced"],
                      "of": vp["n_total"], "complete": vp["complete"], "mark_age": mark_age_sec}
-        event = _live_event(cat, pos, feed_games, marks, now_ts) if activity == "LIVE" else None
-        next_event = _next_event(cat, pos, marks, now_ts) if activity == "UPCOMING" else None
+        event = _live_event(cat, pos, feed_games, marks, now_ts, starts) if activity == "LIVE" else None
+        next_event = _next_event(cat, pos, marks, now_ts, starts) if activity == "UPCOMING" else None
         if name_exceptions is not None:
             for x in pos:
                 _, ok = name_market(x.get("ticker"), x.get("held_leg"), (marks or {}).get(x.get("ticker")), None, cat)

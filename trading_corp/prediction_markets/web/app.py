@@ -1037,7 +1037,7 @@ def _load_live_list(active_account: str | None = None, identity: str | None = No
         now_ts=now_ts, thin_floor=floor, mark_age_sec=mark_age_sec, active_account=active_account,
         viewer_role=viewer_role, viewer_account=viewer_account, logo_codes=set(_LOGO_VERSIONS),
         poll_interval=live_view.POLL_INTERVAL_SECONDS, global_arm=global_arm, max_order_id=max_order_id,
-        leg_audit_reviews=leg_audit_reviews, name_exceptions=name_exceptions)
+        leg_audit_reviews=leg_audit_reviews, name_exceptions=name_exceptions, starts=snap.starts)
     if name_exceptions:
         log.warning("pm_web /live: %d held position(s) named by CATEGORY fallback (no feed/mark/describe) -- %s",
                     len(name_exceptions), name_exceptions[:8])
