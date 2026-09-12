@@ -135,5 +135,67 @@ Engine `trading-corp` NEVER restarted, NEVER behavior-changed.** No migration ->
 --------------------------------------------------------------------------------
 ## 8. RUNNERS (cc/, read-only unless noted)
 `pm_live_boxshas_ro.*` (box==prod-live), `pm_roster_suite.*` (box §1 suite), `pm_roster_boxtie_ro.*` (RO reader
-tie-out on the box DB), `pm_roster_render.py` (renders). Deploy runners (graft/restart/postcheck) to be authored at
-deploy time from the milestone deploy's proven pattern.
+tie-out on the box DB), `pm_roster_render.py` (renders). Deploy (below): `pm_roster_precheck_ro.*`,
+`pm_roster_graft.*` (verify|graft), `pm_milestone_restart_az.ps1` (reused, pm_web-only restart),
+`pm_roster_postcheck_ro.*`, `pm_roster_prodlive_ff.ps1`.
+
+--------------------------------------------------------------------------------
+## 9. DEPLOY 9 — LIVE ON PROD 2026-09-12 (board-authorized, full atomic authority)
+
+**SHIPPED `afbcfbea` (branch pm-live-roster-2026-09-12) off prod-live `dfbb140a`. prod-live FF `dfbb140a ->
+afbcfbea`, tag `pm-roster-deploy9-2026-09-12`. pm_web-only + one engine-shared additive file; ONE pm_web restart;
+engine `trading-corp` NEVER touched. Box == prod-live 42/42 web files + subdivision.py, before AND after.**
+
+**Pre-deploy (RO, all green):** prod-live tip still `dfbb140a`; branch FF-able; **subdivision.py diff = 112
+insertions / 0 deletions** (the 3 new functions only -> engine-shared but ADDITIVE-ONLY, behavior-neutral for the
+engine; recorded here for whoever restarts the engine next); box == prod-live 40/40 (pre); schema head **21**;
+engine `trading-corp` MainPID **351422** NRestarts 0 / pm_web **360799** NRestarts 0; 9-file BEFORE gate all OK.
+Attachment rows recorded: jack/mlb = 3 active + 1 inactive (SDTrading `0x16bb9951`, added 1787975891 removed
+1788468918); karen/mlb = 3 active. `/live/kalshi_jack/mlb` before = 201280 bytes, old panel ("Copies these whales",
+no "roster").
+
+**Graft (scp+tar, `pm_roster_graft.ps1 -Mode graft`):** drift-gate box==BEFORE (no drift); **backup =
+`/home/azureuser/pm_roster_deploy9_backup_20260912T143619Z`** (OUTSIDE the service path; 7 existing files backed up
+and sha-verified == box before any write); 9 files written, each post CR-sha16 == AFTER; py_compile OK;
+import/route/standalone gate OK (detach route present, `/pm/arm`=0, engine-modules=0). Before -> After CR-sha16:
+
+| file | BEFORE | AFTER |
+|---|---|---|
+| subdivision.py | f11d755e1045068f | 83e3893079a40625 |
+| web/authz.py | b566c96fdf0d7221 | 3799a80c56698f0c |
+| web/app.py | b8b512ea6f9bcea9 | ef1dec75a25c52cc |
+| web/templates/pm_live_subdivision.html | fff281bf65acea7c | cea30f343374b212 |
+| web/templates/partials/pm_whale_roster.html | ABSENT | 8f7d3e9ea5ff79a7 |
+| web/templates/partials/pm_detach_confirm.html | ABSENT | f50b3d8536266fe0 |
+| web/templates/partials/pm_trade_drawer.html | 48d579db5c2deb65 | fc251c6d37310eb4 |
+| web/static/pm_desk.css | 246a3fa9dd20376c | c5efb60aae99071d |
+| web/templates/pm_shell.html | d7fae4fc4fdc2081 | 7e73fe614372fce5 |
+
+**Restart:** `az vm run-command ... 'systemctl restart prediction-markets-web'` -> pm_web **360799 -> 363574**
+(NRestarts 0, active). **Engine `trading-corp` 351422 NRestarts 0 UNCHANGED** immediately after and through every
+subsequent step.
+
+**Post-deploy (RO, all green):** 9 files sha16 == AFTER; served pm_desk.css sha8 **c5efb60a** + shell ?v=**c5efb60a**
+(target). Roster renders jack/mlb (on-roster + formerly-live) and karen/mlb (on-roster) — "attached since", span
+dates, per-whale placed/booked/W-L/unbooked/realized + open with N-of-M priced, THIN, Detach on on-roster rows only,
+**0 double-escaped entities, 0 raw tickers** on the roster panel. **DEPLOYED reader ties on live data:** jack/mlb
+(3 on + 1 former) placed 115==115 booked 101==101 realized 3.3691==3.3691; karen/mlb (3 on) placed 70==70 booked
+65==65 realized -16.9120==-16.9120. **Authz (owner-or-admin, NO POST on prod):** karen confirm OWN -> 200; karen
+confirm JACK -> 403; no identity -> 403; jack page as no-identity -> 403 (scoped). Farm `/farm/mlb` 200 with
+live-whale badges; deployed app.py carries the new demote-409 text pointing at the roster page. All pages 200
+(`/`, `/live`, both account tabs, both account pages, every real `/farm/{category}`); all static assets 200
+(`GET /farm/search` -> 404 is a POST search-action path caught by the href grep, a GET to a non-category ->
+pm_category_404 by design, PRE-EXISTING — farm untouched by this deploy, NOT a regression). `journalctl` 0 errors
+since the restart.
+
+**Shared-module proof (for whoever restarts the engine next):** subdivision.py changed BEFORE `f11d755e1045068f`
+-> AFTER `83e3893079a40625`, a PURE ADDITION of `whale_live_records` + `_bid_for_leg` + `_realized_today_by_whale`
+(git diff = 112 insertions, 0 deletions; no existing function's signature or body changed). The engine imports
+subdivision.py (via driver_roster.py + settlement.py); its next restart loads a behavior-identical file. Precedent:
+tiles Deploy-7 shipped a subdivision.py change (`f11d755e`) the same pm_web-only way.
+
+**Truth:** box == prod-live 42/42 web files + subdivision.py, after the FF. main untouched; 95e78c4 reachable.
+
+**★ FIRST REAL DETACH NOT YET EXERCISED** (R7 held: no POST on prod). Jack performs the first Detach; the expected
+observation is that whale's next signal showing "placed 0" on the driver heartbeat within one ~7s cycle (copying
+stops, no restart; its open positions ride to settlement).
