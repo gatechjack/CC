@@ -77,7 +77,7 @@ Git-only: `tests/prediction_markets/test_live_fixes_item{1,3}.py`, this report; 
 backup-is-a-gate; engine untouched; advance prod-live after post-check. Same proven graft pattern as Deploy 9.
 
 --------------------------------------------------------------------------------
-## 5. ITEM 2 — NON-MLB GAME LABELS — BUILT (commit `<item2>`)
+## 5. ITEM 2 — NON-MLB GAME LABELS — BUILT (commit `aaba70a5`)
 
 Every non-MLB position/trade now reads as **matchup + signed shorthand**, never a raw ticker/slug, through **ONE
 shared formatter** `live_view.format_market_label(matchup, kind, short, title) -> (primary, secondary)`. Three
