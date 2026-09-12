@@ -183,3 +183,106 @@ KNOWN/inferred figure -- the build wires the live grounding per whale.)
 - Live per-whale loss-omission %: MEASURABLE now via the existing `loss_grounding` (windowed, a floor) -- the build
   wires it into the score; this pass used the documented/inferred figures (SDTrading 94%, the 7323-0 exhibit).
 - Full copy-simulation for un-copied whales: feasible, deferred to the build (windowed by `/activity`).
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## 8. JACK'S RULINGS (2026-09-12) + FORK-4 SCOPE + THE DESIGN SPEC
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+### Rulings recorded
+- **Fork 1:** the six equity-curve dimensions are OUT of the score (they INVERT the ranking -- reward hiding
+  losses). KEEP max-drawdown as a **LABELLED-FICTION display** ("$0 drawdown across 7,323 wins" = the single most
+  legible loss-dropping tell), never a score input.
+- **Fork 2:** tiers named for the ACTION -- **INSUFFICIENT-DATA / PROMOTE / WATCH / PASS.**
+- **Fork 3:** loss-grounding is **ON DEMAND, not in-score.** Ungrounded -> omission reads **UNKNOWN (never zero)**;
+  the tier caps below PROMOTE and the verdict says "would PROMOTE if it grounds clean."
+
+### FORK 4 -- COPY-SIMULATION: SCOPED, NOT BUILT (Jack's correction accepted: sim vs /activity is NOT omission-biased)
+- **Correction stands:** simulating against `/activity` (which carries the dropped losers) is omission-FREE; only
+  simulating against `/closed-positions` would inherit the bias. So the real constraint is the **~5000-row window**,
+  not bias.
+- **What it needs, and what EXISTS vs does NOT:**
+  - Whale entry prices + sizes + ts + side: **EXISTS** (`/activity`, windowed).
+  - Resolution (won/lost): **EXISTS** (gamma, `fetch_market_resolutions`).
+  - Our sizing: **EXISTS** (flat 5 contracts / `fixed_stake_usd=5`).
+  - ★ Kalshi-side price AT the whale's entry time for markets we never matched: **DOES NOT EXIST.** We persist NO
+    historical Kalshi price (journal `fill_price` is only markets we traded; there is no PM price-history store).
+    Kalshi's `get_market_trades` COULD backfill it per ticker, but that needs the historical Kalshi CATALOG to
+    map each old Poly trade -> a Kalshi ticker, which we also do not retain. => a faithful "our Kalshi copy
+    return" needs either a Kalshi-history backfill (many calls, and the market often didn't exist yet) or a
+    **Polymarket-price proxy** (assume Kalshi ~= Poly at entry -- a real basis error).
+- **Therefore split it:**
+  - **Phase A (near-FREE, folds into grounding): the whale's OWN honest windowed return** = `/activity` entries at
+    their prices + gamma resolution, cost-based. This is the omission-free version of the whale's edge, over the
+    window. It is a BYPRODUCT of the exact fetch grounding already makes -> ~zero marginal cost, same on-demand action.
+  - **Phase B (a real build, DEFER): our Kalshi copy return** = matcher-on-history + Kalshi historical pricing (or
+    the Poly proxy) + 5-contract sizing + slippage. The matcher-on-history + historical-price gap is the work.
+- **Coverage, per whale (the same discipline grounding uses):** report `n_trades_seen` + `span` + `coverage_pct`
+  (fraction of the whale's closed era the window reached). A QUIET whale's whole history fits in 5000 rows (full);
+  an ACTIVE whale gets a recent slice (state it). A sim that can't state coverage is another confident number.
+- **★ Is windowed actually WORSE? I argue NO -- windowed is arguably RIGHT for a COPY decision.** We copy the
+  whale's FUTURE trades; recent behaviour (style, wallet age, strategy) predicts the future better than a lifetime
+  average washed out by a whale's earlier, possibly-different self. A bounded RECENT window is the correct signal,
+  GATED on sample size (a quiet whale's window may be too thin). So treat the window as a FEATURE with a coverage
+  bound, not a compromise.
+- **Placement / cost:** Phase A rides the on-demand grounding fetch (~10-15 calls, seconds -- already paid). Phase B
+  is a SEPARATE on-demand action (like grounding), not folded into the ad-hoc Analyze button, deferred to a build ruling.
+- **Real copy P&L stays as CONFIRMATION where it exists** -- the only figure that is neither simulated nor
+  omission-bounded (214 real fills on `0x684baa57c3` outweighs any reconstruction).
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## 9. THE SCORING DESIGN -- SPECIFICATION (for Jack to rule)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+★★ n_excluded=0 DOES NOT MEAN HONEST -- the dropped losers never enter our table, so the omission is INVISIBLE in
+our own data. This is the trap most likely to fool a future reader. It is why `omission` is a first-class column
+with an UNKNOWN state, and why an ungrounded whale can never reach PROMOTE.
+
+### 9a. Tiers + entry conditions (thresholds PROPOSED, tunable -- Jack rules the numbers)
+Evaluated top-down; first match wins. `n_honest` = grounded decided count (else `n_resolved`, flagged UNKNOWN).
+- **INSUFFICIENT-DATA** (a GATE, not a low rank) if ANY: `n_honest < 30`; OR single-trade net-share `> 0.60`
+  (the record is one position); OR grounded with `coverage_pct < 0.90` (win-rate is only a floor); OR ungrounded AND
+  the verdict would hinge on an unconfirmed win-rate (high WR + thin). -> "watch, not judgeable"; may add "would
+  PROMOTE/WATCH if it grounds clean."
+- **PASS** if (clears the gate but) no honest edge: cost-ROI `<= ~0`; OR grounded honest record is a coinflip/negative
+  once the dropped losses are added; OR chalk (`avg_win_price >= 0.85`) with negligible ROI.
+- **PROMOTE** if (clears the gate) ALL: GROUNDED (omission known); cost-ROI `> 0` on the honest set; the honest
+  win-rate still shows real edge (not chalk-only); single-trade net-share `< 0.30`; two-sided acknowledged
+  (`< 0.40` OR one-sided ROI positive); ideally real copy P&L `>= 0`. An UNGROUNDED whale that would otherwise
+  qualify is capped at WATCH.
+- **WATCH** = everything else: an edge with a MATERIAL caveat (moderate dominance/omission, hedger upper-bound,
+  chalk-with-edge, OR ungrounded-but-promising -> "run grounding").
+
+### 9b. The sort NUMBER + what is displayed beside it (and why it is never alone)
+Sort within tier by **cost-based ROI** (the ruled metric). ALWAYS displayed beside it, each carrying its trust-flag:
+`n_honest` (sample -- ROI without it is noise) · `dominance` net-share (one position?) · `omission %` or UNKNOWN
+(mirage?) · `two-sided %` (hedger -> ROI is an upper bound) · `avg-win-price` (chalk=no-edge / contested=real) ·
+`[labelled-fiction] drawdown over W/L` (the loss-drop smell, explicitly NOT a risk number) · `copy fills` (ground
+truth if we copy it). The tier CAPS the number: a dominated or mirage whale cannot be PROMOTE regardless of ROI.
+
+### 9c. Skill reasoning order (Sonnet; each step can short-circuit to a tier)
+1. GATE (n_honest / coverage / extreme dominance / ungrounded-unjudgeable) 2. TRUST THE WIN-RATE (grounding: mirage?)
+3. ONE POSITION OR MANY (dominance) 4. REAL OR CHALK EDGE (ROI + avg-win-price + two-sided) 5. REAL COPY EVIDENCE
+(journal) 6. EMIT the template.
+
+### 9d. Brevity mechanism (PART OF THE SPEC, not a style note)
+The model is HANDED numbers with TRUST-FLAGS pre-attached (`win_rate=92% [OMISSION-INFLATED: grounding UNKNOWN]`,
+`win_rate=100% [MIRAGE: 7323-0 -- losses invisible]`). Output is a fixed TEMPLATE (header line of flagged numbers +
+optional drawdown-tell line + ONE sentence naming the single decisive factor). No free prose -> a caveat is citable
+ONCE and there is no room to restate it. Model Haiku -> Sonnet for the reasoning; output tokens capped hard (~120).
+
+### 9e. THE ACTUAL OUTPUT SHAPE -- the four whales, in the final format (what Jack reads every day)
+```
+PASS          0xbca08c1bc2 / mlb    ROI +73%   n=7323   dom 1%   omission [MIRAGE ~100%: 7323-0 impossible]   px chalk
+  drawdown-tell: $0 over 7323W / 0L   -- NOT a risk figure; near-$0 across thousands of wins = losses invisible.
+  Our data cannot see this whale's losses at all -- the +73% ROI and 100% win-rate are both omission artifacts.
+
+WATCH         0x684baa57c3 / mlb    ROI +89%   n=213    dom 4%   omission UNKNOWN(run grounding)   copy 214 fills
+  Diversified, strong cost-ROI, and 214 REAL copy fills in our book -- would PROMOTE if grounding confirms the 92% isn't a mirage.
+
+WATCH         0x3dfb153c19 / ufc    ROI +19%   n=56     dom 42% [concentrated]   omission UNKNOWN(run grounding)   copy 12 fills
+  42% of net profit is one fight (Strickland-Khamzat); the edge is concentration, not a repeatable skill.
+
+INSUFFICIENT  0xc2f2d01b22 / golf   ROI +2307% n=6 [thin]   dom 29%   span 2d
+  Six positions over two days -- a watch, not a rank; +2307% is noise.
+```
+(0x684baa57c3 lands at WATCH not PROMOTE ONLY because it is ungrounded -- Fork 3: no PROMOTE without a confirmed
+win-rate. One on-demand grounding run either promotes it or exposes the mirage. That conditional IS the design.)
