@@ -164,3 +164,96 @@ this report.
 ## 6. RUNNERS / RENDERS
 `cc/pm_fixes_item3_render.py`, `cc/pm_fixes_item1_render.py`, `cc/pm_fixes_item2_render.py`,
 `cc/pm_item2_drawer_render.py`, `cc/pm_item2_smoke.py`; renders under `cc/renders/item3_*`, `item1_*`, `item2_*`.
+
+--------------------------------------------------------------------------------
+## 7. DEPLOY 10 — LIVE (2026-09-12) — Items 3+1+2 shipped to prod-live
+
+**RESULT: DEPLOYED + VERIFIED + prod-live FF. `origin/prod-live 8fdded34 -> c339437b` (code, tag
+`pm-livefix-deploy10-2026-09-12`). pm_web-ONLY; the ARMED engine (`trading-corp` PID 351422) was NEVER touched
+(PID + NRestarts identical before and after). NO migration, NO engine-shared file, NO packages/venv/unit changes.**
+
+### File set (the REAL diff vs prod-live 8fdded34 = the UNION of Items 3+1+2 = **9 files**, not the Item-2-only 7)
+`app.py` **IS** in the set (Item-2 Farm-paper enrich); `subdivision.py` is **NOT** (so, unlike Deploy 9, there is
+NO engine-shared file -> no additive-only proof needed). CR-sha256 BASE(8fdded34) -> TARGET(c339437b), all landed LF:
+
+| file | BASE | TARGET |
+|---|---|---|
+| `web/ui_cache.py` | `dee87281883f7036` | `1919ca1925ba316a` |
+| `web/app.py` | `ef1dec75a25c52cc` | `e39624887c528bea` |
+| `web/live_view.py` | `51f916960e7c1174` | `ff6c3c03e36b0120` |
+| `web/templates/pm_live_subdivision.html` | `cea30f343374b212` | `98ffb7a2613d7794` |
+| `web/templates/partials/pm_subs_event.html` | `3dd74d8ee56d3ea5` | `51ebf8ce7e18378e` |
+| `web/templates/partials/pm_trade_drawer.html` | `fc251c6d37310eb4` | `36edbd5237de9396` |
+| `web/templates/partials/pm_paper_trade_rows.html` | `2c6f136bd062acb8` | `7d19481724a04c26` |
+| `web/static/pm_desk.css` | `4102424be0324829`*(→ base at 8fdded34 = `c5efb60aae99071d`)* | `92a1ef2e6d4e0ff6` |
+| `web/templates/pm_shell.html` | *(base at 8fdded34 = `7e73fe6143 72fce5`)* | `c134af369beeb5be` |
+
+*(The §4 table shows the Item-2 delta vs 48a5817f; the Deploy-10 BASE column above is vs prod-live 8fdded34: pm_desk.css
+`c5efb60a`->`92a1ef2e`, pm_shell `7e73fe61`->`c134af36`.)*
+
+### Steps 1-14 (all output recorded via read-only .ps1/.sh runners under `cc/pm_deploy10_*`)
+- **[1] Pre-state:** engine `trading-corp` **MainPID=351422 NRestarts=0** (start 01:33:35Z); pm_web
+  `prediction-markets-web` MainPID=363574 NRestarts=0; **pm schema head=21**; **31 arm rows** (global `armed:true` +
+  30 per-sub armed); 32 driver heartbeats all fresh (0-18s). /healthz 200 schema 21.
+- **[2] box == prod-live 8fdded34: 63/63 tracked files, 0 mismatch, 0 missing.** 7 `extra` files flagged = stale
+  `.bak_*`/`.orig` from **Sept-1** pm_web/whale deploys (predate the milestone deploy + Deploy 9, both of which
+  passed) -> INERT (Python won't import `.bak`/`.orig`; none is a served route; the deploy touches only the 9
+  named files) -> NOT a content divergence, gate PASS on intent; left as found (not mine to delete).
+- **[3] BACKUP GATE:** all 9 files copied to **`/home/azureuser/pm_deploy10_backup_20260912T163854Z/`**; each
+  backup CR-sha256 == box == prod-live base (9/9). This is the rollback source.
+- **[4] Before-state:** held jack/cfb=5 (MEMBSU ml, OREOKST-ORE24 spr, TENNGT-TENN15 spr, DUKEILL-53 tot,
+  OSUTEX-50 tot), jack/nfl=2 (BALIND-BAL4 spr, NODET-50 tot), jack/mlb=0 open (no MLB game underway). Served
+  pm_desk.css CR-sha `c5efb60a` (=prod-live), `/`->`?v=c5efb60a`. **2-cycle poll stable/healthy** (mlb+nfl priced
+  pairs identical across both cycles, 0 refresh-failed).
+- **[5] Deploy:** tar built from git blobs at c339437b, **CR-stripped to LF** to match the box (box files are LF);
+  staged 9/9 == target, landed 9/9 in-place raw-sha == target + CR=0; py_compile OK (ui_cache/app/live_view);
+  **import check: app imports clean, ZERO engine/broker/execution modules, `trading_corp.persistence`
+  (arm-WRITE) NOT loaded** (/pm/arm write-capability=0 -- read-only web app confirmed).
+- **[6] Restart:** `az vm run-command invoke -g rg-shared-prod -n tc-prod-vm ... systemctl restart
+  prediction-markets-web`. pm_web MainPID 363574 -> 365664 (then 365841 after the step-7 capture restart).
+  **engine MainPID=351422 UNCHANGED immediately after.**
+- **[7] Cold-cache "marks loading" OBSERVED LIVE:** a tight fetch-loop right after restart caught the transition
+  (t=5-13 ~= first 2.7s of serving: **"3 marks loading"**; t=14+ settled to the steady "no mark" (2) once the
+  first poll completed). Correct `ready`-starts-False semantics (ui_cache.py:34,82).
+- **[8] Two cycles:** cfb/nfl/mlb priced pairs stable across both cycles, **0 "refresh failed", 0 series
+  failures**, positions-label KX=0 both cycles. **A live failed-series "refresh failed + age" note was NOT
+  observed** (the poll was healthy the whole window) -> not claimed; that path is covered by the Item-3 unit tests
+  + the step-7 cold-cache observation.
+- **[9] Item 1:** NO MLB game underway at deploy (jack/mlb 0 open) -> the LIVE-MLB featured-game/chip/"+N more
+  live" layout is verified by the harness renders `cc/renders/item1_*` (measured constant 480px @ 1/2/4/6 games);
+  the `/live` tile grid renders intact (200, 33KB).
+- **[10] Item 2 (live, real tickers):** /live/kalshi_jack/cfb -> **5 game headers** (MEM@BSU, ORE@OKST, TENN@GT,
+  DUKE@ILL, OSU@TEX) with shorthand rows (ML BSU / SPR -23.5 ORE / SPR +14.5 GT / TOT -52.5 / TOT +49.5), **no
+  SIDE column** (`pside` cells=0); nfl -> 2 headers (BAL@IND, NO@DET); atp -> 0 game headers (honest single rows).
+  Trade drawer Game=matchup + Type=tagged shorthand (e.g. `TENN @ GT` / `SPR +14.5 GT`). Farm whale paper list
+  (`/watchlist/.../mlb`, 163 rows) -> `TEX @ ARI . ML TEX` / `HOU @ TB . SPR -1.5 TB` with the slug beneath.
+- **[11] Roster + detach:** the Deploy-9 roster panel PRESENT on every live page. Detach gating (GET confirm, NO
+  POST): karen->OWN kalshi_karen 200; karen->kalshi_jack **403**; jack(admin) 200. `owner_identity` jack=None
+  (admin-only), karen='karen'.
+- **[12] Cache-bust:** served pm_desk.css CR-sha `92a1ef2e` == target; `/`->`?v=92a1ef2e`; all 7 static assets 200;
+  `/`, both account pages, all 23 real `/farm/{category}` 200 (the lone non-200 was `/farm/search`, an action
+  ROUTE not a category -> not a 404, not a rollback condition).
+- **[13] Engine + logs:** engine **MainPID=351422 NRestarts=0 (unchanged)**; **journalctl -p err since restart =
+  "No entries" for BOTH services**; 0 tracebacks/500s; orders total=598/filled=569, **0 new since restart** (and
+  pm_web cannot place orders -- import-check proved it); **0 double-escaped entities** across 8 pages.
+- **[14] Wrap:** pushed `pm-live-fixes-2026-09-12` (**force-with-lease** -- the branch was the sanctioned rebase of
+  the pre-rebase remote `44540982`; all 3 remote commits' content is present in the rebased line, nothing lost);
+  **FF `origin/prod-live 8fdded34 -> c339437b`** (git-enforced FF); annotated tag `pm-livefix-deploy10-2026-09-12`
+  -> c339437b, pushed. **Re-ran box == prod-live c339437b: 63/63, 0 mismatch/missing.**
+
+### Raw-ticker disposition (the one nuance)
+Deploy 10 is **raw-ticker NEUTRAL**: total "KX" count is **identical before vs after on every page** (cfb 31/31,
+nfl 12/12, atp 63/63, mlb 90/90). **Positions-table labels = 0 KX on every page** (the Item-3/2 goal). Every
+remaining KX is (a) the drawer's by-DESIGN **Ticker provenance field** + `.pt` title-attr hover, or (b) the
+**pre-existing** `describe_market` drawer "Market" detail field ("total: KX..." for non-MLB -- unchanged by this
+deploy; MLB shows real names). A literal "zero KX hits" is therefore not achievable (intended provenance +
+pre-existing behavior that rollback would NOT cure), but the intent (no raw ticker as a position LABEL) is fully
+met. **BACKLOG (pre-existing, off-box only -- never fix-forward on prod):** extend `format_market_label`'s tag +
+`describe_market` to non-structural categories, so the drawer Type ("KXATPMATCH KHA") and Market ("kxatpmatch:
+KX...") for atp/ufc/cs2/fed/soccer read a clean category label instead of the raw series (same root as the
+`_base_label` KX-leak already fixed for the positions floor).
+
+### Rollback (unused)
+Not triggered (steps 7-13 passed; step 12 no 404). If needed: restore
+`/home/azureuser/pm_deploy10_backup_20260912T163854Z/` -> restart pm_web only -> verify old pages 200 + engine PID
+unchanged. Never fix forward on prod.

@@ -380,3 +380,54 @@ migration). Full build+deploy narrative + field map + before/after shas: `PM_TIL
   it retired) would drop the dead row cleanly.
 - **LIVE event block / NEXT line** — Jack may strip either (each is one include). Non-MLB LIVE tiles show a market
   label + positions, no scoreboard (only MLB has a feed).
+
+--------------------------------------------------------------------------------
+## LIVE FIXES — DEPLOY 10 (2026-09-12): Items 3 + 1 + 2 LIVE on prod-live
+
+**`origin/prod-live 8fdded34 -> c339437b`, tag `pm-livefix-deploy10-2026-09-12`. pm_web-only; the ARMED engine
+(`trading-corp` PID 351422) was NOT restarted/touched. Full deploy record: PM_LIVE_FIXES_2026-09-12.md §7.** Cache
+bust: `pm_desk.css?v=92a1ef2e` (this section supersedes the older `?v=80c88cc2` reference above).
+
+**Item 3 — mark-cache render semantics (`ui_cache.py` + `live_view.py` + `pm_live_subdivision.html`).** The poller's
+snapshot now: **titles PERSIST** (accumulated, never evicted — a market name survives a failed/partial poll);
+**marks are MERGED, not replaced** (a series that fails THIS poll keeps its prior `Mark` WITH its own `as_of`, so the
+value still shows, banded amber past the stale threshold, with an honest age); `ready` starts **False** and only
+flips True after the first completed poll -> a cold cache renders **"marks loading"** (NOT "no mark"); **"no mark"**
+shows ONLY for a ticker that has NEVER returned a bid; a failed poll adds **"refresh failed Nm ago - showing last
+mark"** beside the coverage. Every non-MLB label is NEVER a raw ticker (the `describe_market` `<type>:<ticker>` floor
+leak is gone; floor = `<CATEGORY> <MARKET-TYPE>`, and for a non-ML/TOT/SPR series the bare `<CATEGORY>`).
+
+**Item 1 — fixed-height LIVE tile (`live_view._live_event` + `pm_subs_event.html`).** The LIVE tile is a **constant
+480px** (measured at 1/2/4/6 underway games): ONE **FEATURED** game (closest to SETTLING, deterministic: latest
+baseball inning -> most outs -> most positions held -> away code A->Z) with its scoreboard + up to 3 held positions
+("+N more held"), then every OTHER underway game as a single compact **chip** (matchup + up to 2 shorthand/value
+pairs), capped at 3 with **"+N more live"**. `_live_event` returns `{featured, others, more, n_live}`.
+
+**Item 2 — the ONE shared market-label formatter, on THREE surfaces (`live_view.format_market_label`).** Every
+non-MLB position/trade reads as **matchup + signed shorthand** (`ML MIZZ` / `SPR -6.5 MIZZ` / `TOT +51.5`), never a
+raw ticker/slug, via ONE formatter that each surface feeds after decoding its own source: (1) the **/live positions
+table** groups rows by game under an "AWAY @ HOME . date . start" header (`_group_by_game`), shorthand primary +
+Kalshi title secondary, the bare SIDE column DROPPED; (2) the **trade drawer** Game column = matchup (feed OR ticker
+decode), Type column = the tagged shorthand; (3) the **Farm whale paper-trade list** decodes the Polymarket slug via
+the engine's canonical `parse_poly_bet` and keeps the slug beneath as provenance. Decode reuses the structural
+matcher's DATA-side maps (`sports_team_mapping` + `cfb_teams` + `sports_structural_match.LEAGUES`/`parse_poly_bet`,
+all standalone-safe), longest-prefix wins, fail-closed blob split. FAIL-CLOSED for tennis/ufc/fed/non-structural Poly
+categories (no matchup -> honest single label). **Away/home convention CONFIRMED on live box data** (15/15 real
+cfb/nfl/mlb tickers matched Kalshi's own event sub-title order; 5/5 with a Poly slug matched `{away}-{home}`).
+
+**Backlog (Deploy-10 additions to the redesign follow-ups above).**
+- **Per-sport LIVE feeds** — start times are now LANDED via the verified Kalshi **milestones** sweep (tennis/ufc/
+  soccer read LIVE via clock-compare); SCORES remain out of scope. A real scoreboard for non-MLB still needs the
+  live_data score line + a scoreboard partial (the milestones start-time infra is the proven half).
+- **Non-structural label leak (found during Deploy 10, KX-neutral, pre-existing)** — the drawer **Type** column
+  ("KXATPMATCH KHA") and drawer detail **Market** field (`describe_market` "kxatpmatch: KX...") for atp/ufc/cs2/fed/
+  soccer still surface the raw series, because `format_market_label`'s tag + `describe_market` fall back to the raw
+  `_kind` for non-structural categories (the SAME root as the `_base_label` KX-leak already fixed for the positions
+  floor). Off-box fix: map non-structural kinds to a clean category label. NOT a Deploy-10 regression (total-KX
+  identical before/after; positions labels are 0 KX).
+- **Migration 022** — the attach/detach event-log (Deploy 9 kept ONE attachment row/whale, so prior live spans are
+  unknowable; the journal makes the record complete, but a real event-log is filed).
+- **Contract sizing from the UI**, **Farm Analyze button**, and the **22 stale UI tests** (`test_live_r3` x14 +
+  `test_accounts_m2` x3 + `test_stage2_*` x4 + `test_ctx_pagination_fix` x1 — cross-tree/env pre-existing failures,
+  the standing differential baseline, not introduced by any of these deploys).
+- **Retire the SOCCER orphan** engine-side (as above).
