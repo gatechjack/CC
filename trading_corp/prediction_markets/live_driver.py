@@ -51,7 +51,7 @@ import logging
 import time as _time
 import urllib.parse   # (2026-09-11) URL-encode opaque Kalshi cursors in the paginated raw-merge loop
 
-from . import arm, boot_reconcile, db, execution, heartbeat, paper, settlement, shard_balance, venue_exposure
+from . import arm, boot_reconcile, db, driver_roster, execution, heartbeat, paper, settlement, shard_balance, venue_exposure
 from ..data import mlb_poly_kalshi_match as M
 from ..data import ufc_poly_kalshi_match as U   # B2: UFC fight/distance index builders for fetch_ufc_market_context
 from ..data import tennis_poly_kalshi_match as TN   # tennis (atp/wta) match index builder for fetch_tennis_market_context
@@ -74,7 +74,24 @@ UFC_SERIES = ("KXUFCFIGHT", "KXUFCDISTANCE", "KXUFCMOF", "KXUFCMOV")  # winner +
 TENNIS_SERIES = {"atp": "KXATPMATCH", "wta": "KXWTAMATCH"}
 CS2_SERIES = "KXCS2GAME"   # rung 2 (2026-09-06): the single Kalshi cs2 match/series-winner series (both YES tickers/match)
 FED_SERIES = "KXFEDDECISION"   # rung 4 (2026-09-07): the single Kalshi FOMC rate-decision series (5 buckets/meeting)
-_SETTLED_LOOKBACK_SEC = 160 * 86400
+# Kalshi SETTLED-market lookback for the ctx builders' `min_close_ts` filter. Bounds ONLY the
+# status=SETTLED fetch; the status=OPEN fetch is DATE-UNBOUNDED (extra={}) and is unaffected -- so
+# shrinking this can NEVER make a still-open game unreachable. 2 DAYS (was an uncommented 160 days;
+# pre-reconcile history squashed -> rationale lost, which is how a bare integer becomes folklore).
+# WHY ONLY 2 DAYS: the settled portion of the ctx is FUNCTIONALLY INERT (traced 2026-09-12). A whale
+# NEVER signals on a settled game -- entry signals come only from positions with curPrice strictly in
+# (0,1), so a settled Polymarket position is filtered by paper.is_genuinely_open BEFORE it can match;
+# a settled Kalshi ticker cannot be entered (no book -> gate 3 skip:illiquid) nor exited (no bid); and
+# NOTHING outside execution.py's matcher/evaluate reads the ctx (reconcile / settlement-close /
+# describe / display / order-booking all use the journal + venue APIs). So settled only ever changes a
+# SKIP REASON, never a decision. The 2 days are kept purely for a cleaner skip DIAGNOSTIC during the
+# brief "Kalshi settled but Polymarket not yet resolved" skew (matched-then-skip:illiquid reads as
+# 'market settled' vs a bare skip:out_of_window). Cutting 160d -> 2d shrinks the per-refresh fetch
+# ~20x in markets (MLB settled ~20k -> ~1k; ~19 pages -> ~3): that fetch was the dominant Kalshi GET
+# burst that tripped shared-IP rate-limit backoff into ~200s WHOLE-ACCOUNT stalls (~6x/6h, both
+# accounts blank together). Full trace + measurement:
+# reports/prediction_markets/HEARTBEAT_STALL_INVESTIGATION_2026-09-12.md.
+_SETTLED_LOOKBACK_SEC = 2 * 86400
 # ★ SUSTAINED-SHARD-UNDERFUNDING alarm threshold (gate 6b, Jack RULED 2026-08-30: SURFACED, NOT latched). N=3 cycles:
 # Kalshi auto-rebalances every 10s and the driver polls ~7s, so a transient gap while a rebalance is mid-flight lasts
 # ~1-2 cycles; N=3 (~21s at poll=7s) clears that transient with margin, so the alarm fires only on a GENUINE sustained
@@ -892,6 +909,47 @@ CATEGORY_CTX_BUILDERS["fed"] = fetch_fed_market_context
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────
+def _account_refresh_phase_sec(pm_db_path, account_id: str, interval_sec: float) -> float:
+    """A deterministic per-account PHASE OFFSET (seconds) so the N driven accounts refresh their
+    catalogs OUT OF PHASE instead of all at once. WHY: every account task boots at engine start and
+    seeds all its per-category refresh timers to the SAME instant, so their 900s refreshes fire
+    together -- and one Kalshi rate-limit-throttle window then blanks BOTH accounts at once (the
+    ~200s dual-account trading blackout measured 2026-09-12). Spacing accounts EVENLY across the
+    interval (rank * interval / N) makes a throttle event hit ONE account at a time, halving the
+    per-event blast radius independently of whether the b1 fetch-shrink lands.
+
+    ★ POPULATION = the DRIVER ROSTER, not every active account. We rank over the DISTINCT accounts in
+    driver_roster.active_driver_subdivisions (active sub-division on an active account WITH >=1 active
+    attachment) -- the SAME set main.py groups its tasks from -- so the even spacing matches the
+    accounts that actually RUN. Ranking over a raw `pm_account WHERE active=1` would count a
+    detached/orphan account (active row but no live attachment -> no task) and silently squeeze the two
+    running accounts closer than half the interval (a review finding). Residual: main.py additionally
+    drops an account whose broker KEYS fail to resolve -- a rare staged state this PM-side read cannot
+    see; that only DEGRADES the spacing gracefully (never a collision, never breaks), and the fully
+    exact fix (pass the spawn set from main.py) is deferred to keep this graft PM-only off the shared
+    engine-restart path.
+
+    ★ RESTART-STABLE BY CONSTRUCTION: a pure function of the SORTED roster-account list + this account's
+    rank -- NO wall-clock, NO random -- so every restart re-derives the IDENTICAL offset. (Aligned-at-
+    boot is exactly what created the problem; a random/clock offset would re-align or drift.) For the
+    two live accounts (kalshi_jack, kalshi_karen) this is half the interval: jack->0s, karen->
+    interval/2. Any read failure -> 0.0 (no stagger, never breaks the driver -- safe degrade)."""
+    import sqlite3 as _s3
+    try:
+        _c = _s3.connect("file:%s?mode=ro" % pm_db_path, uri=True)
+        _c.row_factory = _s3.Row
+        try:
+            accts = sorted({r["account_id"] for r in driver_roster.active_driver_subdivisions(_c)})
+        finally:
+            _c.close()
+        if len(accts) > 1 and account_id in accts:
+            return (accts.index(account_id) * float(interval_sec)) / len(accts)
+    except Exception as e:  # noqa: BLE001 -- the stagger must NEVER stop the driver; degrade to no-offset
+        _LOG.warning("pm_live_driver: refresh-phase computation failed for %s -> 0 offset (no stagger): %s",
+                     account_id, e)
+    return 0.0
+
+
 async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, account_id, categories=None,
                                  category=None, poll_sec=7.0, index_refresh_sec=900.0, legacy_db_path=None,
                                  log=None, ctx_builders=None, _prior_snapshots=None, _max_cycles=None):
@@ -955,6 +1013,16 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
     # MISSED exit, accepted). `_prior_snapshots` is a TEST seam (like `_max_cycles`): pass a dict to inspect the
     # (category, wallet) keys after a bounded run; production leaves it None -> a fresh dict.
     prior_snapshots: dict = _prior_snapshots if _prior_snapshots is not None else {}
+    # ★ STAGGER (2026-09-12): this account's periodic-refresh PHASE OFFSET. Seeding each category's
+    # refresh timer in the PAST by this offset shifts the account's whole refresh cadence relative to
+    # the other account, so a Kalshi throttle window hits ONE account at a time instead of both (the
+    # boot catalogs are still built FRESH below; only the NEXT-refresh instant is shifted -> no
+    # staleness). Restart-stable + evenly spaced -- jack->0s, karen->interval/2 -- see
+    # _account_refresh_phase_sec.
+    _refresh_phase = _account_refresh_phase_sec(pm_db_path, account_id, index_refresh_sec)
+    log.info("pm_live_driver: refresh phase offset for %s = %.0fs (index_refresh_sec=%.0f) -- staggers the "
+             "two accounts so a Kalshi rate-limit window does not blank both at once", account_id,
+             _refresh_phase, index_refresh_sec)
     # BOOT: per-category catalog build.
     for c in cats:
         _bld = builders.get(c)
@@ -963,7 +1031,9 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                         "SKIPPED (fail-safe: no catalog, no signals). Register it before enabling.", c, account_id)
             continue
         try:
-            ctx_by_cat[c] = await _bld(client, int(_time.time())); last_idx_by_cat[c] = _time.time()
+            # last_idx seeded at completion time MINUS the account phase (keeps the within-account
+            # micro-stagger; shifts the whole account by _refresh_phase for the cross-account stagger).
+            ctx_by_cat[c] = await _bld(client, int(_time.time())); last_idx_by_cat[c] = _time.time() - _refresh_phase
         except Exception as e:  # noqa: BLE001
             log.warning("pm_live_driver: boot index build failed for %s/%s: %s", account_id, c, e)
     with db.connect(pm_db_path) as conn:
@@ -1067,6 +1137,20 @@ async def scheduled_pm_live_loop(pm_db_path, broker, positions_client, *, accoun
                         heartbeat.safe_beat(heartbeat.mark_skipped, conn, account_id, c, int(_time.time()),
                                             "skipped_no_builder", log=log)
                         continue                                # no catalog builder -> no signals (fail-safe skip)
+                    # ★★ STANDING TRAP FOR b2 (the deferred structural fix, do NOT get this backwards):
+                    # this `await _bld(...)` is a SYNCHRONOUS catalog refresh INSIDE the account's trading
+                    # loop -- while it runs, task_alive stalls and the WHOLE account stops trading (no
+                    # entries, no whale-exits, no settlement-close, no opposing-guard). b1 (the 2-day
+                    # _SETTLED_LOOKBACK_SEC) shrinks the fetch that triggers this under Kalshi throttle; the
+                    # DURABLE fix (b2) is to move this fetch OFF the loop -- a BACKGROUND task refreshes
+                    # ctx_by_cat[c] and atomically swaps the reference; the loop reads the cached ctx without
+                    # awaiting. ★ DO NOT "fix" this by backgrounding the HEARTBEAT instead of the fetch: a
+                    # background task_alive writer would pin the monitor GREEN through a real ~200s trading
+                    # blackout -- a safety check configured never to fire, this platform's most-repeated
+                    # failure class. UNBLOCK THE LOOP, NOT THE BEAT. ★ And b2 MUST stay OFF the placement
+                    # path: the background task may ONLY refresh the read-only ctx and must NEVER place or
+                    # touch the per-cycle Journal, else it reopens the M1 account-cap race (one task per
+                    # account, one shared Journal, sequential categories).
                     if ctx_by_cat[c] is None or (_time.time() - last_idx_by_cat[c]) > index_refresh_sec:
                         try:
                             ctx_by_cat[c] = await _bld(client, int(_time.time())); last_idx_by_cat[c] = _time.time()
