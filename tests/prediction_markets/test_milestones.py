@@ -343,10 +343,11 @@ def test_fed_never_uses_milestone_even_with_matching_key():
     assert LV.start_ts_for_ticker("fed", "KXFED-26SEP-T3", {fed_evt: NOW - 1}) is None
 
 
-def test_live_capable_category_never_uses_milestone():
-    # a LIVE_CAPABLE category keeps its ticker-HHMM/feed source: a HHMM-less LIVE_CAPABLE ticker stays UNKNOWN even
-    # when a milestone exists for it (the milestone must not bypass the feed/HHMM authority). cs2 ticker here has no
-    # HHMM group, so parse_ticker_start -> None; the milestone is present but must be IGNORED.
+def test_hhmm_authoritative_category_never_uses_milestone():
+    # mlb + cs2 are HHMM/feed-AUTHORITATIVE (NOT milestone-eligible): a HHMM-less cs2 ticker stays UNKNOWN even when a
+    # milestone exists for it (the milestone must not bypass the HHMM/feed authority). ★ The STRUCTURAL LIVE_CAPABLE
+    # sports (cfb/nfl/wnba/nba/nhl) DO fall back to the milestone -- see test_milestone_start_categories_membership.
+    # cs2 ticker here has no HHMM group, so parse_ticker_start -> None; the milestone is present but must be IGNORED.
     evt = "KXCSGOGAME-26SEP12TEAMAB"
     starts = {evt: NOW - 600}
     assert LV.start_ts_for_ticker("cs2", evt + "-YES", starts) is None
@@ -363,10 +364,13 @@ def test_mlb_no_hhmm_ticker_does_not_borrow_milestone_when_feed_down():
 
 
 def test_milestone_start_categories_membership():
-    # the allowlist covers the date-only sports the feed serves, and EXCLUDES every ticker-HHMM/feed cat + fed
-    for c in ("atp", "wta", "ufc", "epl", "ucl", "uel", "lal", "fl1", "sea", "bun", "mls", "bra", "mex"):
+    # the fallback set = the date-only sports (tennis/ufc/soccer) PLUS the STRUCTURAL sports (2026-09-12: their
+    # tickers carry no HHMM in practice, so they fall back to the milestone), and EXCLUDES the HHMM/feed-authoritative
+    # mlb+cs2, fed (no start state), and 'soccer' (a SPORTS-value family label, not a category code).
+    for c in ("atp", "wta", "ufc", "epl", "ucl", "uel", "lal", "fl1", "sea", "bun", "mls", "bra", "mex",
+              "nfl", "cfb", "nba", "nhl", "wnba"):
         assert c in LV.MILESTONE_START_CATEGORIES, c
-    for c in ("mlb", "cs2", "nfl", "cfb", "nba", "nhl", "wnba", "fed", "soccer"):
+    for c in ("mlb", "cs2", "fed", "soccer"):
         assert c not in LV.MILESTONE_START_CATEGORIES, c
 
 

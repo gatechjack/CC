@@ -923,15 +923,31 @@ SPORTS = {
     "fl1": "Soccer", "sea": "Soccer", "bun": "Soccer", "mls": "Soccer", "bra": "Soccer",
     "mex": "Soccer", "fed": "Rate decisions",
 }
+# Categories whose Kalshi ticker CAN carry an HHMM start right after the date -- parse_ticker_start tries this
+# source FIRST for all of them. mlb + cs2 carry it RELIABLY (mlb also has a game feed); the STRUCTURAL sports
+# (nfl/cfb/wnba/nba/nhl) carry it only SOMETIMES -- in practice their tickers are date+teams with NO HHMM (measured
+# 2026-09-12: 0/794 cfb, 0/60 nfl), so they fall back to the milestone index (see MILESTONE_START_CATEGORIES).
+# ★★ INTERDEPENDENCE -- READ THIS LIST AND MILESTONE_START_CATEGORIES TOGETHER: a structural category is in
+# LIVE_CAPABLE for the HHMM-FIRST attempt AND must ALSO be milestone-eligible below; a structural category dropped
+# from BOTH lists is served by NEITHER source and reads UPCOMING while underway (the exact cfb/nfl defect fixed
+# 2026-09-12). Do NOT edit one list without checking the other.
 LIVE_CAPABLE = frozenset({"mlb", "cs2", "nfl", "nba", "nhl", "wnba", "cfb"})
-# Categories whose LIVE/UPCOMING start comes from the Kalshi MILESTONE feed (2026-09-12): the date-only sports that
-# carry no ticker HHMM and have no game feed -- tennis (atp/wta), MMA (ufc) and the soccer leagues. This is an
-# EXPLICIT ALLOWLIST: a LIVE_CAPABLE category keeps its ticker-HHMM/feed source (a milestone NEVER overrides the MLB
-# feed, even when the feed is momentarily down -> MLB falls back to its own ticker HHMM, not a milestone), and fed
-# has no start state at all -> both are excluded, so a stray/mis-swept event ticker can never fabricate a LIVE.
-# Derived from SPORTS so a new soccer league added there is covered automatically, minus anything already LIVE_CAPABLE.
+# HHMM/feed-AUTHORITATIVE: reliably carry an HHMM (cs2) or have a game feed (mlb) -> NEVER a milestone fallback
+# (a milestone must not bypass the mlb feed; an mlb ticker with no HHMM stays UNKNOWN, not borrowed from a milestone).
+# ★ A NEW HHMM/feed sport added to LIVE_CAPABLE MUST also be added HERE -- otherwise it auto-becomes milestone-
+# eligible below (benign, since HHMM-first still wins for a reliably-HHMM sport, but not the intent). The default
+# polarity is deliberate: a new STRUCTURAL sport added to LIVE_CAPABLE alone becomes milestone-eligible = CORRECT.
+_HHMM_AUTHORITATIVE = frozenset({"mlb", "cs2"})
+# Categories eligible for the Kalshi MILESTONE start FALLBACK (2026-09-12): the date-only sports with no ticker HHMM
+# and no feed -- tennis (atp/wta), MMA (ufc) and the soccer leagues -- PLUS the STRUCTURAL sports
+# (= LIVE_CAPABLE minus the HHMM/feed-authoritative mlb+cs2 = nfl/cfb/wnba/nba/nhl), whose tickers carry no HHMM in
+# practice so their HHMM-first attempt yields nothing. ★★ start_ts_for_ticker tries HHMM FIRST, so this is a pure
+# FALLBACK: a structural game that DOES carry an HHMM still uses it, and mlb/cs2 (excluded here) stay HHMM/feed-
+# authoritative -- so a stray/mis-swept milestone can never override the mlb feed or a real cs2 HHMM. fed is in
+# NEITHER list -> no start state. Derived from SPORTS + LIVE_CAPABLE so a new soccer league (in SPORTS) or a new
+# structural sport (in LIVE_CAPABLE) is covered automatically -- see the INTERDEPENDENCE note on LIVE_CAPABLE above.
 MILESTONE_START_CATEGORIES = frozenset(
-    ({"atp", "wta", "ufc"} | {c for c, v in SPORTS.items() if v == "Soccer"}) - LIVE_CAPABLE)
+    {"atp", "wta", "ufc"} | {c for c, v in SPORTS.items() if v == "Soccer"} | (LIVE_CAPABLE - _HHMM_AUTHORITATIVE))
 # Coarse categories retired for finer ones (R7): a sub on one can never trade -> the dashed orphan tile.
 RETIRED_CATEGORIES = frozenset({"soccer"})
 _ARM_DISPLAY = {"armed": "ARMED", "disarmed": "DISARMED", "absent": "NEVER ARMED", "unavailable": "STATE UNAVAILABLE"}
@@ -959,9 +975,10 @@ _START_RE = re.compile(r"^KX[A-Z0-9]+-(\d{2}[A-Z]{3}\d{2})(\d{4})")
 
 def parse_ticker_start(category, ticker) -> int | None:
     """Unix ts of the event start ENCODED IN THE TICKER (YYMONDD + HHMM, ET) or None (inventory item 10). Only
-    LIVE_CAPABLE categories carry an HHMM: MLB and the structural sports put it right after the date, CS2 the same.
-    Date-only sports (tennis/ufc/soccer/fed) have no HHMM group -> None (they never read LIVE). A structural ticker
-    that OMITS the HHMM (some NBA) -> None for that ticker, which is honest (no start known)."""
+    Only LIVE_CAPABLE categories are checked for an HHMM (mlb/cs2 carry it reliably; the structural sports only
+    sometimes). Date-only sports (tennis/ufc/soccer/fed) are not LIVE_CAPABLE -> None here (they take the milestone/
+    none path in start_ts_for_ticker). A structural ticker that OMITS the HHMM (cfb/nfl in practice) -> None HERE,
+    then start_ts_for_ticker falls back to the Kalshi milestone (2026-09-12); mlb with no HHMM stays UNKNOWN (feed)."""
     if str(category or "").lower() not in LIVE_CAPABLE:
         return None
     m = _START_RE.match(str(ticker or "").upper())
@@ -982,11 +999,12 @@ def parse_ticker_start(category, ticker) -> int | None:
 
 def start_ts_for_ticker(category, ticker, starts=None) -> int | None:
     """The best available START time (unix) for a held ticker. FIRST the ticker's own HHMM where it carries one
-    (LIVE_CAPABLE -- MLB and the structural sports); ELSE, ONLY for a MILESTONE_START_CATEGORIES category (the
-    date-only sports with no HHMM and no feed -- tennis/ufc/soccer), the Kalshi milestone start for its event ticker.
-    A LIVE_CAPABLE category NEVER uses a milestone (its HHMM/feed is authoritative -- an MLB ticker with no HHMM stays
-    UNKNOWN rather than borrowing a milestone that would bypass the feed), and fed is excluded entirely. None -> start
-    UNKNOWN -> the caller stays honest (UPCOMING); a T00:00:00Z placeholder milestone is already None."""
+    (LIVE_CAPABLE); ELSE, for a MILESTONE_START_CATEGORIES category, the Kalshi milestone start for its event ticker.
+    HHMM-FIRST, so a game that carries an HHMM uses it; the milestone FALLBACK then serves the date-only sports
+    (tennis/ufc/soccer) AND the STRUCTURAL sports (cfb/nfl/wnba/nba/nhl) whose tickers carry no HHMM (2026-09-12 fix).
+    mlb + cs2 are HHMM/feed-AUTHORITATIVE and NEVER borrow a milestone (an mlb ticker with no HHMM stays UNKNOWN rather
+    than bypassing the feed); fed is excluded entirely. None -> start UNKNOWN -> the caller stays honest (UPCOMING); a
+    T00:00:00Z placeholder milestone is already None (so a placeholder reads time-unknown, never midnight)."""
     st = parse_ticker_start(category, ticker)
     if st is not None:
         return st
