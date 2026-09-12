@@ -1,8 +1,10 @@
 # PM UI — HANDOFF for the next UI code agent
 
-**STATUS: CURRENT — last updated 2026-09-12 (DEPLOY 9: per-whale live-copy ROSTER + Detach). prod-live tip =
-`afbcfbea`.** (This handoff now lives ON prod-live — the truth-consistent home; previously only on the
-pm-farm-livewhale branch.)
+**STATUS: CURRENT — last updated 2026-09-12 (through DEPLOY 11: contract sizing from the UI + migration 022).
+prod-live code tip = `ce52ef3c`, docs tip = `489a9ddb`.** (This handoff lives ON prod-live — the
+truth-consistent home.) Deploy sections below: 9 (roster+detach), 10 (live fixes 3+1+2), 11 (sizing + 022).
+
+> **Jack's plain-language deploy log (what landed and how to restore it): `jacks-log.md` (same directory).**
 
 **★★ DEPLOY 9 (2026-09-12) — PER-WHALE LIVE RECORD + DETACH. prod-live `dfbb140a -> afbcfbea` (FF), tag
 `pm-roster-deploy9-2026-09-12`.** The "Copies these whales" line on `/live/{account}/{category}` is now the whale
