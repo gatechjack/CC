@@ -532,28 +532,43 @@ def _journal_summary(open_positions, orders, marks, now_ts) -> dict:
     }
 
 
-def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales_by_ticker) -> dict:
-    """The non-MLB category view: a positions TABLE (active = open; complete = settled/exit/opposed), each row with
-    ticker, honest description (the market title if we have a mark carrying one, else describe_market's
-    '<type>:<ticker>' fallback), side, contracts, cost basis, current value or 'no mark', status, and the copied
-    whale(s). Same bid-valuation + coverage the cards use -- never $0 for an unpriced position, never cost as value."""
+def _base_label(ticker, kind, category) -> str:
+    """The always-present base label for a non-MLB row -- NEVER a raw ticker (Item 3.1 floor; Item 2 upgrades it to
+    the ticker-derived matchup + signed shorthand). Interim: "<CATEGORY> <MARKET-TYPE>" (e.g. "CFB TOTAL"), which
+    describe_market's '<type>:<ticker>' fallback would have leaked the ticker into."""
+    mt = KIND_LABEL.get(kind, (kind or "").upper()) if kind else "MARKET"
+    return ("%s %s" % (str(category or "").upper(), mt)).strip()
+
+
+def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales_by_ticker,
+                    titles=None, category=None, now_ts=None) -> dict:
+    """The non-MLB category view: a positions TABLE (active = open; complete = settled/exit/opposed). Each row's
+    human name (`desc`) comes from the PERSISTED title map (Item 3.1: survives a failed/partial poll) else the
+    category+market-type base label (Item 3.1 floor -- NEVER describe_market's '<type>:<ticker>', which embedded the
+    raw ticker). An open row carries the held-leg BID value + the mark's own `as_of`/`age_sec` so the template bands
+    it amber past the stale threshold; `ever_priced` is True when a title has EVER resolved for the ticker (so 'no
+    mark' shows ONLY for a ticker that has never returned a bid, not for one whose latest poll dropped it)."""
+    titles = titles or {}
     active, complete = [], []
     all_tickers = {o.get("ticker") for o in (orders or []) if o.get("ticker")}
     for tk in sorted(all_tickers):
         kind = _kind(tk)
         whales = whales_by_ticker.get(tk, [])
+        ptitle = titles.get(tk)                          # PERSISTED title (never evicted) -- survives a failed poll
         op = open_by_ticker.get(tk)
         if op is not None:
             leg = op.get("held_leg"); mk = (marks or {}).get(tk)
             bid = marks_mod.bid_for_leg(mk, leg); contracts = op.get("contracts")
             value = (contracts * bid) if (bid is not None and contracts is not None) else None
-            title = getattr(mk, "title", None) if mk is not None else None
+            mk_as_of = getattr(mk, "as_of", None) if mk is not None else None
+            age_sec = (int(now_ts) - int(mk_as_of)) if (now_ts is not None and mk_as_of is not None) else None
             active.append({"ticker": tk, "kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
-                           "desc": (title or describe_market(tk, leg)), "market_title": title, "held_leg": leg,
-                           "contracts": contracts, "cost": op.get("cost_basis_usd"), "avg_fill": op.get("avg_price"),
-                           "fee": op.get("fees_usd"), "current_value": value, "value_known": value is not None,
-                           "bid": bid, "settled": False, "status": "open", "whales": whales,
-                           "whale_tag": _whale_tag(whales)})
+                           "desc": (ptitle or _base_label(tk, kind, category)), "market_title": ptitle,
+                           "held_leg": leg, "contracts": contracts, "cost": op.get("cost_basis_usd"),
+                           "avg_fill": op.get("avg_price"), "fee": op.get("fees_usd"), "current_value": value,
+                           "value_known": value is not None, "bid": bid, "as_of": mk_as_of, "age_sec": age_sec,
+                           "ever_priced": bool(ptitle) or value is not None, "settled": False, "status": "open",
+                           "whales": whales, "whale_tag": _whale_tag(whales)})
             continue
         # not open -> a terminal (settled / exit / opposed) row, if any close exists for it
         settle = settle_by_ticker.get(tk)
@@ -571,7 +586,8 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
         # since the net-open holder set is empty once the position closed.
         cw = _entry_whales(tk_orders)
         complete.append({"ticker": tk, "kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
-                         "desc": describe_market(tk, settled_leg), "market_title": None, "held_leg": settled_leg,
+                         "desc": (ptitle or _base_label(tk, kind, category)), "market_title": ptitle,
+                         "held_leg": settled_leg,
                          "contracts": contracts, "cost": None, "avg_fill": None, "fee": None,
                          "current_value": payout, "value_known": payout is not None, "bid": None, "settled": True,
                          "won": won, "realized": (settle.get("realized") if settle else None),
@@ -583,7 +599,8 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
 
 # ── top-level assembly ───────────────────────────────────────────────────────────────────────────────────────
 def build_live_context(*, orders: list, open_positions: list, open_positions_by_whale: list,
-                       slate, marks_result, now_ts: int, category: str | None = None) -> dict:
+                       slate, marks_result, now_ts: int, category: str | None = None,
+                       titles: dict | None = None, poll_status: dict | None = None) -> dict:
     """Pure assembly: journal rows + open positions + a feed SlateResult + a MarksResult -> the template context.
     No DB, no network -- the route fetches those and passes them in (so this unit-tests directly).
 
@@ -654,10 +671,20 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
     else:
         # ── non-MLB positions view (item 2): a positions table + journal totals that NEVER use the sport parser ─
         positions_view = _positions_view(orders or [], open_by_ticker, settle_by_ticker, agg, marks,
-                                         whales_by_ticker)
+                                         whales_by_ticker, titles=titles, category=category, now_ts=now_ts)
         summary = _journal_summary(open_positions or [], orders or [], marks, now_ts)
 
     trades = _trade_rows(orders or [], agg, marks, slate_games, mismatch_by_gk, now_ts)
+
+    # MARK-POLL STATUS (Item 3.3): distinct from the SPORTS-feed status. `marks_ok` is THIS poll's result; a failed or
+    # partial mark poll (marks_ok False / mark_error set) drives the "refresh failed Nm ago - showing last mark" note
+    # beside the coverage label. `mark_age_sec` is the age of the last refresh. Defaults from marks_result when the
+    # caller (a direct unit test) does not pass a snapshot-derived poll_status.
+    ps = poll_status or {}
+    marks_ok = ps.get("marks_ok", (marks_result.ok if marks_result is not None else False))
+    mark_refreshed_ts = ps.get("refreshed_ts")
+    mark_error = ps.get("last_error", (marks_result.error if marks_result is not None else None))
+    mark_age_sec = (int(now_ts) - int(mark_refreshed_ts)) if mark_refreshed_ts is not None else None
 
     return {
         "mode": "mlb_cards" if is_mlb else "positions",
@@ -668,8 +695,10 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
         "trades": trades,
         "feed_meta": {"ready": slate is not None, "source": (slate.source if slate else None),
                       "ok": (slate.ok if slate else False),
-                      "marks_ok": (marks_result.ok if marks_result is not None else False),
+                      "marks_ok": marks_ok,
                       "as_of": (slate.as_of if slate else None), "has_game_feed": is_mlb},
+        "mark_status": {"ok": marks_ok, "error": mark_error, "refreshed_ts": mark_refreshed_ts,
+                        "age_sec": mark_age_sec},
         "poll_interval": POLL_INTERVAL_SECONDS, "retention_hours": RETENTION_HOURS,
     }
 
@@ -705,9 +734,14 @@ def build_from_cache(*, orders, open_positions, open_positions_by_whale, cache, 
     src = next((s.source for s in snap.slates.values() if s.ok), None)
     merged = feed_mlb.SlateResult(_et_date(now_ts) or "", merged_games, bool(merged_games), src,
                                   snap.refreshed_ts)
+    # Item 3.3: hand the render the PERSISTED titles + the mark-poll status (ok/error/refresh-age) off the snapshot,
+    # so a failed/partial poll shows "refresh failed - showing last mark" and never blanks a known name.
+    poll_status = {"marks_ok": (snap.marks.ok if snap.marks is not None else False),
+                   "refreshed_ts": snap.refreshed_ts, "last_error": snap.last_error}
     return build_live_context(orders=orders, open_positions=open_positions,
                               open_positions_by_whale=open_positions_by_whale, slate=merged,
-                              marks_result=snap.marks, now_ts=now_ts, category=category) | {"warming": not snap.ready}
+                              marks_result=snap.marks, now_ts=now_ts, category=category,
+                              titles=snap.titles, poll_status=poll_status) | {"warming": not snap.ready}
 
 
 # ── LIVE SUB-DIVISIONS TILE PAGE (Phase 2, 2026-09-07) ─────────────────────────────────────────────────────────

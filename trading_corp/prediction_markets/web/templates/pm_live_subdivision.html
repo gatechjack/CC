@@ -186,8 +186,14 @@
     <td class="pnum pval">
       {%- if p.settled -%}
         {%- if p.value_known -%}<span class="{{ 'won' if p.won else 'lost' }}">{{ p.current_value|money }}</span>{%- else -%}<span class="dim">unresolved</span>{%- endif -%}
+      {%- elif p.value_known -%}
+        {# Item 3: the last known bid-value, banded by its OWN mark age (amber past stale) -- the merge keeps a prior
+           mark, so a series that failed THIS poll still shows its value with an honest age, never blank. #}
+        {{ p.current_value|money }}{% if p.age_sec is not none %} {{ agechip(p.age_sec, 180) }}{% endif %}
+      {%- elif warming -%}
+        <span class="dim">marks loading</span>
       {%- else -%}
-        {{ p.current_value|money if p.value_known else '<span class="dim">no mark</span>'|safe }}
+        <span class="dim">no mark</span>
       {%- endif -%}
     </td>
     <td class="pstat">
@@ -246,9 +252,10 @@
     <div class="cell"><div class="u">Unsettled &mdash; at cost</div><div class="val">{{ summary.unsettled_cost|money }}</div>
       <div class="caveat">What we paid. Not what it is worth.</div></div>
     <div class="cell"><div class="u">Unsettled &mdash; current value</div>
-      <div class="val" style="color:var(--live)">{% if summary.unsettled_total == 0 %}{{ 0.0|money }}{% elif summary.unsettled_priced == 0 %}no mark{% else %}{{ summary.unsettled_value|money }}{% endif %}</div>
+      <div class="val" style="color:var(--live)">{% if summary.unsettled_total == 0 %}{{ 0.0|money }}{% elif summary.unsettled_priced == 0 %}{% if warming %}<span style="color:var(--dim)">marks loading</span>{% else %}no mark{% endif %}{% else %}{{ summary.unsettled_value|money }}{% endif %}</div>
       {# mark coverage ALWAYS shown (Jack's ruling): N of M priced under every current-value figure, incl. full coverage and 0 positions. #}
-      <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if feed_meta.as_of %}, {{ agechip(now_ts - feed_meta.as_of, 180) }}{% endif %} refreshed on the {{ poll_interval }}s poll. &middot;
+      {# Item 3.3: a FAILED/partial mark poll says so beside the coverage -- "showing last mark" -- so a stale value is never read as fresh. #}
+      <div class="caveat">Kalshi <b>bid</b> &times; contracts{% if feed_meta.as_of %}, {{ agechip(now_ts - feed_meta.as_of, 180) }}{% endif %} refreshed on the {{ poll_interval }}s poll.{% if mark_status and not mark_status.ok and not warming %} <span class="wsm">refresh failed {{ mark_status.age_sec|agefmt if mark_status.age_sec is not none else 'recently' }} &middot; showing last mark</span>{% endif %} &middot;
         {% if summary.unsettled_total == 0 %}<span class="dim">0 positions</span>{% elif summary.unsettled_priced == summary.unsettled_total %}<span class="dim">{{ summary.unsettled_priced }} of {{ summary.unsettled_total }} priced</span>{% else %}<span class="wsm">partial: {{ summary.unsettled_priced }} of {{ summary.unsettled_total }} priced</span>{% endif %}</div></div>
     <div class="cell"><div class="u">Realized today</div><div class="val {{ summary.realized_today|pnlcls }}">{{ summary.realized_today|signed }}</div>
       <div class="caveat">{{ summary.settled_today }} position{{ '' if summary.settled_today == 1 else 's' }} settled today. One day is not a result.</div></div>
