@@ -65,3 +65,35 @@ state on boot (arm persists across restart); boot-reconcile runs; open positions
 ## Refs
 - Branch `pm-heartbeat-stall-invest-2026-09-12` @ `1b71bf10` (code) on prod-live `489a9ddb`.
 - Investigation: `reports/prediction_markets/HEARTBEAT_STALL_INVESTIGATION_2026-09-12.md`.
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## ★★★ DEPLOYED LIVE 2026-09-12 ~21:00Z (Board-authorized; Jack warned co-tenants + ran the restart)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+- **STEP 1 GRAFT** (Board-authorized `pm_b1stagger_graft.ps1`): drift-gate box==base `6561b569` PASS ->
+  backup `~/pm_b1stagger_backup_20260912T205615Z_live_driver.py` -> applied -> post==target
+  `265397e03ff2da97` PASS -> py_compile OK -> edits present (b1=1 stagger=1 b2trap=1). Inert until restart.
+- **STEP 2 RESTART** (Board-authorized canonical `restart_tc.ps1`, root az): `Enable succeeded`. Engine
+  **PID 351422 -> 370246**, boot **2026-09-12 21:00:28Z**, NRestarts=0, SubState=running.
+- **THREE-WAY PROVE (CR-stripped)**: worktree == branch `1b71bf10` == box == **`265397e03ff2da97`**. All agree.
+- **STEP 3 SMOKE (read-only) -- GREEN**:
+  - ★ STAGGER TOOK (verbatim boot log): `refresh phase offset for kalshi_jack = 0s (index_refresh_sec=900)`
+    and `... kalshi_karen = 450s (index_refresh_sec=900)` -- exactly half the interval.
+  - PM LIVE DRIVER WIRED (jack 17 / karen 15 categories, skipped=[]); boot-reconcile BOTH
+    `reconciled=True latched=False latched_categories=()`.
+  - Heartbeats: task jack 7s / karen 12s; **category heartbeats fresh(<120s) = 32 of 32**.
+  - Arm intact: `arm_global=1 armed_subs=30`.
+  - Tracebacks since boot = **3, all telegram/httpx network retries at 21:05:32** (known boot noise, NOT
+    from the change); pm_live_driver error/fault check EMPTY; NO 'refresh-phase computation failed' (the
+    stagger helper ran clean -- karen=450 is the computed value, not a fallback). `index refresh failed`=0.
+  - Co-tenants: bitunix (24/7) fully recovered (ws feed / HTF / SFP observers / reconcilers clean);
+    MACE/PMCC/PEAD idle = EXPECTED (17:12 ET, post equity close). Engine healthy, no crash.
+  - (Self-caught measurement bug: the first smoke's traceback count was an UNBOUNDED all-history grep
+    reading 28855; re-run bounded to since-boot = 3. Corrected, not a real regression.)
+- **STEP 4 RE-MEASURE (+~6h, PENDING, does NOT gate the fold)**: re-run `pm_hb_gap_ro.ps1` (same 6h journal
+  method). Report SEPARATELY: (a) did the **>=214s gap tier COLLAPSE** (b1) and (b) did the two accounts'
+  events **stop coinciding** (stagger). ★ If the >=214s tier PERSISTS, that is the finding -- the throttle
+  is NOT page-count-driven and b2 becomes inevitable (Jack decides; **b2 remains UNAUTHORIZED**).
+- **STEP 5 FOLD**: origin/prod-live **`489a9ddb` -> (this branch tip)** via `git push origin <tip>:prod-live`
+  (fast-forward; prod-live was an ancestor). Deploy is complete once prod-live carries it.
+- **ROLLBACK if ever needed**: restore `~/pm_b1stagger_backup_20260912T205615Z_live_driver.py` + restart ->
+  back to `6561b569`.
