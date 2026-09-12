@@ -54,3 +54,30 @@ HHMM still uses it; mlb/cs2 never borrow a milestone). Interdependence warning a
 ## Refs
 - Branch `pm-milestone-cfb-gap-2026-09-12` @ `7e4a2497` on prod-live `68af1b94`.
 - Investigation: `reports/prediction_markets/MILESTONE_CFB_GAP_INVESTIGATION_2026-09-12.md`.
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## ★★★ DEPLOYED LIVE 2026-09-12 ~22:19Z (pm_web-ONLY; engine + 30 armed subs UNTOUCHED)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+- **GRAFT** (Board-authorized `pm_mscfb_graft.ps1`): drift-gate box==base `ff6c3c03` PASS -> backup
+  `~/pm_mscfb_backup_20260912T221510Z_live_view.py` -> applied -> post==target `c6901968` PASS ->
+  py_compile OK -> import-closure OK.
+- **RESTART pm_web ONLY** (Jack ran it): `prediction-markets-web` **PID -> 372688**, boot 22:19:06Z,
+  running. ★ Engine `trading-corp` **PID 370246 UNCHANGED** (boot 21:00:28Z) -- NOT bounced, 0
+  divisions touched.
+- **SMOKE** (read-only): deployed live_view CR-sha == target `c6901968`; milestone_union=1; pm_web
+  tracebacks since restart (BOUNDED 6min) = **0**; no error lines.
+- **★ POST-DEPLOY LIVE REPRODUCTION** (local milestone sweep + mode=ro journal read, no box IP load):
+  the OPEN cfb/nfl positions jack/karen hold, classified by the DEPLOYED routing (cfb/nfl have no HHMM
+  -> milestone):
+  - `KXNCAAFGAME-26SEP12MEMBSU` (Memphis@BoiseSt) start 22:00:00Z (23 min ago) -> **STARTED -> LIVE**
+    (held net=5.00 both accounts). Pre-fix this read UPCOMING (no HHMM + no milestone); deployed reads
+    LIVE. `KXNCAAFTOTAL-26SEP12DUKEILL` (19:30Z) -> also LIVE. => THE FIX WORKS on a real underway game.
+  - `KXNCAAFSPREAD-26SEP12TENNGT` (23:00Z) + `KXNCAAFTOTAL-26SEP12OSUTEX` (23:30Z) held but NOT started
+    -> correctly **UPCOMING** (countdown), NOT a fabricated LIVE. NFL `BALIND`/`NODET` (26SEP13 17:00Z,
+    tomorrow) -> UPCOMING. => the clock-compare is honest; a start we now have is not a state until it
+    passes. NOT inconclusive -- a real underway structural game reads LIVE on the deployed code.
+- **FOLD**: three-way prove box==prod-live(new)==branch on live_view.py CR-sha `c6901968`; FF
+  `git push origin <tip>:prod-live` (linear descendant of 68af1b94). Deploy complete once prod-live
+  carries it.
+- **ROLLBACK if ever needed**: restore `~/pm_mscfb_backup_20260912T221510Z_live_view.py` + restart
+  pm_web -> back to `ff6c3c03`.
