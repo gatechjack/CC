@@ -7,6 +7,23 @@ per-sub enable), ARM, prod-live advance.
 **Branch:** `pm-ufc-method-types-2026-09-12` @ **312f8743** (base = ctx-fix line `6a753b71`, i.e. box-truth).
 **3 engine files + 1 test + this manifest.** NO shared-trio file (agents/data_exec.py, main.py, brokers/robinhood.py).
 
+## ★ HEADLINE — read before reading "four types"
+**`method_finish` is NEAR-INERT IN PRACTICE.** MOF ("either fighter") carries NO fighter identity in the Poly
+signal (the market title is just "Will the fight be won by KO or TKO?"), so it resolves the bout by
+**date + uniqueness** and **safe-misses on ANY normal multi-bout card** (a labelled ambiguous miss, never a
+wrong-bout order). Of the four types, **the two generic (MOF) ones will rarely fire**; the real coverage is
+**`method_victory`** (fighter-specific, code-anchored) — ~**302** historical fighter-specific KO/TKO positions vs
+~152 generic. This is the shape of the market, not a defect — but the payoff is **narrower than "four new types"
+sounds**, and no reader should think `method_finish` is doing work it is not.
+
+**★★ ENABLE TRAP (the same failure shape as the cfb enable that looked done and wasn't):** a NULL/empty
+`market_types` falls back to the **MLB** COPYABLE tuple `(moneyline,total,spread)`, which carries **NO method
+tokens**. So the enable MUST write the EXACT string **`moneyline,go_the_distance,method_finish,method_victory`** —
+get one token wrong and the sub stays **silently inert while looking enabled**. The enable runner's POST therefore
+proves the **resolved** config through `sub_config_from_row` (the resolver the chokepoint sees), NOT a column
+read-back (the column is the input; NULL-resolving-to-defaults is exactly the hazard), and asserts every OTHER
+sub byte-unchanged **POST-vs-PRE** (not POST-vs-default — that comparison has caught a verifier's own false alarm).
+
 ## 1. Scope (Jack-ruled) — the four types
 | Poly | Kalshi | market_type | leg |
 |---|---|---|---|
