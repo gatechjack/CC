@@ -103,4 +103,120 @@ Every trading path lives AFTER the refresh await, inside the same blocked task:
 Measurement design (read-only): (i) heartbeat snapshot + multi_category_ok + CR-hash of the running code;
 (ii) systemd journal retrospective (boot time, index-refresh-failed / Server-disconnected / 429 lines, cycle-log
 inter-arrival gaps per account); (iii) a bounded ~150 s task_alive sampler (mode=ro) to measure the cycle period
-directly and opportunistically catch a live freeze + confirm the grain. STATUS: pending Jack's authorization.
+directly and opportunistically catch a live freeze + confirm the grain. STATUS: DONE (Part C).
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## PART C — MEASUREMENT RESULTS (read-only box runs, board-authorized; engine 351422 untouched)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+Two read-only runners: `pm_hb_measure_ro` (snapshot + 150 s sampler) at 19:15 Z; `pm_hb_gap_ro`
+(6 h journal retrospective) at 19:38 Z. Box code hashes MATCH the analysed files
+(live_driver `6561b569`, heartbeat `57afdcc6`); schema 22; both accounts `multi_category_ok=1`;
+arm global + 30 subs armed (intact). WIRED log: kalshi_jack 17 categories, kalshi_karen 15,
+cycle order `mlb, atp, cfb, ...` (mlb 1st, cfb 3rd).
+
+### C1. The stall is REAL and RECURRING — ~170-240 s, ~6x in 6 h (NOT a one-off, NOT every refresh)
+6 h journal, per-account cycle period from a once-per-cycle wallet's `/positions` reads:
+- kalshi_jack: mean 6.8 s, **max_gap 237.3 s**, exactly **6 gaps >=60 s, all 214-237 s**, then a
+  cliff to ~44 s.
+- kalshi_karen: mean 24.8 s, **max_gap 239.6 s**, **6 gaps of 216-239 s**, then ~47 s.
+- Combined `/positions` INFO stream (108,849 lines) top gaps: **212.8 / 192.2 / 191.5 / 189.3 /
+  187.7 / 172.9 s**, then a cliff to ~19 s. **189.3 s is literally in the data == the UI agent's
+  event.** Both accounts blank TOGETHER (they booted aligned 01:33:35 Z) -> each event is a
+  DUAL-account blackout.
+- Frequency ~6/6 h (~1 per hour), INTERMITTENT (not the ~24 you'd see if every 900 s refresh
+  stalled). The spacing tracks rate-limit windows, not a code cadence.
+
+### C2. The 150 s live sampler MISSED the stall (expected) but pinned the baseline
+Normal full-account cycle ~24-28 s (all 17/15 categories); max caught 44 s; mlb/cfb did NOT
+refresh in the window (reach_age==eval_age throughout). A ~200 s event occupies ~5 % of the
+timeline, so a 2.5 min sample missing it is expected -- which is why the RETROSPECTIVE journal
+(C1) is the authoritative source, not a live catch.
+
+### C3. Mechanism = KALSHI RATE-LIMIT BACKOFF on the shared engine IP (not the things it could be)
+Ruled OUT, each on evidence:
+- NOT a disconnect: `Server disconnect` = **0** in 6 h.
+- NOT a refresh FAILURE: `index refresh failed` = **0** -> the fetch SUCCEEDS, just slowly.
+- NOT the Polymarket 429s: `HTTP 429` = 385 in 6 h, but those are `/positions` (Polymarket) and
+  429 there RAISES IMMEDIATELY (polymarket_data_api_client.py:690, no backoff) -> per-whale
+  skip, adds no latency.
+- NOT CPU index-building: `build_kalshi_{game,total,spread}_index` are O(n) single passes
+  (mlb_poly_kalshi_match.py:303/454/466) -> sub-second over 20 k tickers.
+- Intrinsic Kalshi fetch is ~5-7 s: measured LOCALLY (public /markets endpoint, clean IP, 3 runs
+  5.7/5.4/7.4 s) for the full MLB refresh = **~20,000 markets / 24 pages** (KXMLBTOTAL settled
+  10,526/11pp + KXMLBSPREAD settled 7,406/8pp dominate). ~200 s is ~30x that -> environmental.
+=> The account tasks block on slow Kalshi HTTP during rate-limit-throttle windows on the shared
+engine IP; the 24-page index refresh (fired every 900 s per category x2 accounts, aligned) is the
+dominant Kalshi-call burst that triggers/sustains the throttle. Both accounts stall together
+because the throttle is per-IP and their refresh phases are boot-aligned.
+
+### C4. Correction banked (suspect-my-own-hypothesis, caught by reading the diff not the blame)
+The 2026-09-11 ctx-pagination fix (`6a753b71`) did NOT inflate the settled fetch. Pre-fix was
+`fetch_all=(status==MarketStatus.SETTLED)` -> **settled was ALWAYS fully paginated; only OPEN was
+single-page**. The fix flipped OPEN to `fetch_all=True` (a no-op for settled). So the
+~20 k-market/19-page settled fetch is BASELINE, not a regression. (An earlier lean that "the fix
+made the settled stall ~20x worse", inferred from the blame line-number, was wrong -> refuted by
+`git show 6a753b71`.) Separately: the fix DID enlarge the cfb OPEN fetch (2,508/2,541 open now
+paginated), which adds to the shared-IP Kalshi load but is not the MLB stall.
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## PART D — BLAST RADIUS, THRESHOLD VERDICT, TWO COSTED FIXES, RECOMMENDATION
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+### D1. Blast radius -> this is a TRADING GAP (answer to brief #4)
+During each ~200 s event BOTH accounts do NO entries, NO whale-exits (`/positions`+`/activity`),
+NO settlement-close, NO opposing-pair guard -- every trading path sits after the refresh `await`
+in the blocked task (A7). Duty cycle: 6 x ~200 s / 21,600 s ~= **~5.5 % of the time both accounts
+are fully blocked**, in ~200 s contiguous chunks, ~24x/day. For a "copy within seconds" system
+that is a real latency-SLA gap (a whale entry/exit landing in the window is copied up to ~200 s
+late) -- not a correctness break (the exit paths are eventually-consistent), but a measurable hole.
+**Plainly: a TRADING GAP whose heartbeat stall is only the symptom, NOT a monitoring artefact.**
+
+### D2. Threshold verdict -> the alarm did NOT fire; the blind window is the real monitor issue
+Max stall 237 s < BOOT_GRACE 600 s -> subs read BOOTING, and `_LV_ALARM_STATES=("STALE","NEVER")`
+excludes BOOTING -> **no page-top alarm fired in 6 h.** The "STALE threshold (300 s) must sit above
+189 s or the strip fires on schedule" framing is a MIS-READ: the governing gate is the 600 s boot
+grace, and it already covers the observed stalls. BUT the boot grace's cost is a real, RECURRING
+BLIND WINDOW: for ~200 s, ~6x/6 h (~5 % of the time), a genuinely dead driver is INDISTINGUISHABLE
+from a throttled-but-alive one (both BOOTING). Headroom is only ~2.5x (237 vs 600): more categories,
+larger sizes, a worse throttle window, or a convergent multi-category refresh could push a stall
+past 600 s -> then it false-alarms AND still hides the blind window.
+
+### D3. The two fixes, costed
+(a) **Raise the STALE / boot threshold above the stall.** Cost ~trivial (one constant). BUT the
+    threshold is NOT currently breached (no alarm to suppress) -> it fixes a non-problem today,
+    WIDENS the already-recurring blind window, and does nothing for D1. Per #4 trading IS blocked,
+    so (a) would silence the symptom of a real gap. **NOT a fix.**
+(b) **Make the refresh not block the ACCOUNT LOOP.** Engine work + one restart. Two levers:
+    - **b1 (cheapest, highest-leverage, targeted): shrink `_SETTLED_LOOKBACK_SEC` (160 days).**
+      It pulls ~20 k MLB markets / ~19 settled pages per refresh -- the dominant Kalshi-call burst
+      and rate-limit surface -- and has NO rationale comment (unlike its neighbours). A few days
+      would cut it ~20-30x (-> ~1-2 pages) so a refresh drops from ~200 s-under-throttle to seconds
+      AND lowers the shared-IP throttle for everything. ★ CONTINGENT on the engine owner confirming
+      what CONSUMES settled ctx entries: entries only match OPEN markets, so settled is there for
+      describe/booking of already-held positions at most -- if nothing needs 160 days, shrink it.
+      Shared constant -> benefits all categories.
+    - **b2 (structural, purpose-agnostic): background the catalog fetch** (separate task/executor
+      updates `ctx_by_cat`; the trading loop reads the latest cached ctx without awaiting). Fixes
+      the block regardless of fetch size / mechanism. More invasive; adds a concurrency seam -- but
+      NOT on the placement path, so the account-cap race M1 guards against is untouched. Pair with
+      STAGGERING the two accounts' refresh phase so they never blank together (halves per-event
+      blast radius).
+    - ★ **TRAP: decoupling ONLY the heartbeat** (a background task_alive writer) pins the monitor
+      GREEN during the 200 s trading blackout -- the worst outcome. (b) must unblock the LOOP, not
+      just the beat.
+
+### D4. Recommendation (Jack rules the fix)
+1. **Reject (a) as a fix.** At most, a stall approaching 600 s is a signal to ship b1/b2 -- not to
+   raise the grace.
+2. **Ship b1 first: shrink the 160-day settled lookback**, once the engine owner confirms the
+   settled-ctx consumer. Cheapest, one constant, attacks the fetch volume that drives the throttle,
+   benefits every category. Re-measure the 6 h gap distribution after (expect the >=214 s tier to
+   vanish).
+3. **If b1 cannot fully eliminate it (or settled is needed), add b2** (background the fetch) as the
+   structural guarantee, plus refresh-phase staggering across accounts.
+
+Residual uncertainties (honest): the exact blocking Kalshi call is inferred (the dominant 24-page
+refresh), not proven per-call -- but the fix is robust to which Kalshi call is the straw (both b1
+and b2 help regardless). 6 h is one sample (US afternoon, real load); the ~1/hour spacing is
+throttle-driven and may vary. No engine CPU was sampled during a stall (CPU ruled out by code, not
+measurement). The sampler did not catch a stall live (the journal did, retrospectively -- stronger).
