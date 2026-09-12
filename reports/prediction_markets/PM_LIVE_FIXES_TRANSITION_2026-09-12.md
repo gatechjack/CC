@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED 2026-09-12 by `PM_TRANSITION_2026-09-12.md`.** For the current armed state, the
+> STOP command, and the git-truth reconcile (the next session's subject), read that doc first.
+> This file remains valid ONLY as the Item 3→1→2 build spec for the three LIVE-page fixes.
+
 # PM UI — LIVE FIXES — TRANSITION (2026-09-12, end of session)
 
 You are a fresh code agent with none of the prior conversation. This hands you everything
