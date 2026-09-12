@@ -1,8 +1,10 @@
 # PM /live — LIVE FIXES (Items 3 -> 1 -> 2) — 2026-09-12
 
-**STATUS: Item 3 + Item 1 BUILT + TESTED + RENDERED + COMMITTED (local). Item 2 SCOPED — a decode finding needs a
-ruling before it is built safely (see §5).** NOT deployed / NOT pushed. pm_web-only. Engine untouched.
-Branch `pm-live-fixes-2026-09-12` rebased onto `origin/prod-live`.
+**STATUS: Items 3 + 1 + 2 all BUILT + TESTED + RENDERED + COMMITTED (local). ALL THREE DONE.** NOT deployed /
+NOT pushed. pm_web-only. Engine untouched. Branch `pm-live-fixes-2026-09-12` rebased onto `origin/prod-live`.
+Item 2 was expanded per Jack's ruling (2026-09-12): the same label rule now covers the trade drawer's market
+column AND the Farm whale paper-trade list, via ONE shared formatter — no second implementation, fail-closed
+everywhere.
 
 --------------------------------------------------------------------------------
 ## 1. REBASE + TRUTH + BASELINE
@@ -75,37 +77,82 @@ Git-only: `tests/prediction_markets/test_live_fixes_item{1,3}.py`, this report; 
 backup-is-a-gate; engine untouched; advance prod-live after post-check. Same proven graft pattern as Deploy 9.
 
 --------------------------------------------------------------------------------
-## 5. ITEM 2 — NON-MLB GAME LABELS — SCOPED, NOT BUILT (a decode finding to rule on)
+## 5. ITEM 2 — NON-MLB GAME LABELS — BUILT (commit `<item2>`)
 
-**The transition doc §3 assumed `_ordered_teams` decodes the cfb matchup ("MIZ @ KAN"). IT DOES NOT** —
-`_ordered_teams` and `game_key_from_ticker` are MLB-centric and return `(None, None)`/`None` for CFB/NFL. `_short_label`
-decodes the TOTAL line everywhere ("+51.5") and the NFL spread ("-3.5 BAL") but NOT the CFB spread (returns raw
-"MIZZ7" — its parser assumes <=3-char team codes; CFB codes are 4-char, e.g. MIZZ).
+Every non-MLB position/trade now reads as **matchup + signed shorthand**, never a raw ticker/slug, through **ONE
+shared formatter** `live_view.format_market_label(matchup, kind, short, title) -> (primary, secondary)`. Three
+surfaces, one rule (Jack's ruling 2026-09-12), each decoding its OWN source then feeding the same formatter:
 
-**The decode IS available, standalone-safe** (the transition doc's intended tool): `trading_corp/data/
-sports_structural_match.py` (imports only stdlib + data-side maps) + `trading_corp/data/cfb_teams.py`
-(**CFB_TEAMS: 269 codes -> 151 schools**, `MIZZ->Missouri`, `KU->Kansas`) + `LEAGUES` (cfb/nfl/nba/nhl/wnba/mlb).
-`parse_kalshi_ticker(ticker, cfg)` decodes a GAME ticker's two teams. BUT a **TOTAL/SPREAD ticker has no "yes" team**,
-so it needs a GENERAL two-team blob split ("MIZZKU" -> MIZZ|KU) against the map, which carries two correctness
-subtleties that must be handled fail-closed + validated against real box tickers (per 2.4) before shipping:
-  1. **Blob-split ambiguity** — a split is only safe when EXACTLY ONE partition has BOTH codes in the map; otherwise
-     fall back to an honest label (no invented matchup).
-  2. **Away/home ORDER** — the ticker gives an unordered pair (the matcher keys on a frozenset); the "AWAY @ HOME"
-     order must be confirmed against real tickers (a wrong order is a display nit, not a money error, but should be
-     right). The transition doc itself flagged this ("confirm the away@home order matches the matcher's decode").
-  3. **cfb 4-char spread shorthand** — `_short_label`'s spread branch needs a fix for 4-char codes.
+- **/live positions table** (Kalshi tickers): `_positions_view` decorates each row with `market_matchup(tk)` +
+  `structural_game_key(tk)` + `_short_label`; `_group_by_game` groups rows under one **"AWAY @ HOME · date ·
+  start|unavailable"** header. Row `desc` = the tagged shorthand (`SPR -6.5 MIZZ` / `TOT +51.5` / `ML MIZZ`), `sub`
+  = the Kalshi title (or the matchup when titleless). The bare **SIDE column is dropped** (the sign carries the
+  held direction). Template `pm_live_subdivision.html`: `posrow` shows `desc`+`sub`; `postable(groups)` renders the
+  per-game header; view uses `pv.active_groups`/`pv.complete_groups`.
+- **Trade drawer** (`pm_trade_drawer.html`, Kalshi tickers): the *Game* column resolves matchup from the MLB feed
+  OR the ticker decode (`market_matchup`) so a cfb/nfl row names its game; the *Type* column shows `t.label` = the
+  same tagged shorthand from `format_market_label`.
+- **Farm whale paper-trade list** (`pm_paper_trade_rows.html`, **Polymarket slugs**): `app._load_watchlist_whale`
+  decorates each paper trade via `live_view.poly_market_label(category, slug, outcome, title)`, which parses the
+  slug with the engine's canonical `parse_poly_bet` (no re-implementation) and feeds the SAME formatter. The market
+  cell shows matchup + tagged shorthand; the **slug is always kept beneath as provenance**.
 
-**Why I stopped here rather than build it now:** Item 2 is a correctness-sensitive decode on REAL-money position
-labels, and the transition doc under-specified it (its `_ordered_teams` assumption is wrong). Per the standing
-discipline (stop-and-report at forks; surface anomalies; do not rush a fragile decoder), I am surfacing this with a
-precise, ready-to-build plan rather than shipping an uncertain decoder at speed. **The build is straightforward once
-ruled:** a `_structural_game(tk)` helper (category -> `LEAGUES[cat]`; blob-split fail-closed; away/home from the
-ticker convention) + group `_positions_view` by game + shorthand-first rows (drop the SIDE column) + tennis/ufc/fed
-single-row + the same NEXT-line label + tests from real cfb/nfl/atp box tickers.
+**The decode** reuses the structural matcher's DATA-side maps so pm_web's labels can never diverge from the
+matcher's: `_SPORT_TEAM_MAP` (MLB/NFL/NBA/NHL/WNBA + `CFB_TEAMS`) with **longest-prefix wins** (KXWNBA≠KXNBA);
+`_split_team_blob` splits "AWAYHOME" **fail-closed** (a split is returned ONLY when EXACTLY ONE partition has both
+codes in the map — an ambiguous blob yields no matchup, never a guess); the `_short_label` spread regex widened
+`[A-Z]{2,3}`→`[A-Z]{2,}` so 4-char CFB codes (MIZZ7) decode. `LEAGUES`/`parse_poly_bet` verified standalone-safe
+(stdlib + data-side only; `mlb_poly_kalshi_match` imports only `re`/`dataclasses`/`sports_team_mapping`).
 
-**RECOMMENDATION:** ship Items 3+1 as their own deploy now (they are complete, safe, and independently valuable),
-and build Item 2 next with the plan above (I can proceed immediately on your go). Items 3+1 do not depend on Item 2.
+**FAIL-CLOSED everywhere** (validated): tennis/ufc/fed tickers and non-structural Poly categories → `matchup=None`
+→ the honest single label (no game header); a Poly prop suffix (`-nrfi`, `-1h-*`) or non-sport slug →
+`(None,None,None)` → the paper row keeps its title/slug. Decode proof (smoke + tests): CFB `MIZZKU`→`MIZZ @ KU`;
+spread `MIZZ7` yes→`-6.5 MIZZ`/no→`+6.5 KU`; total `52`→`+51.5`; NFL `BAL4`→`-3.5 BAL`/`+3.5 IND`; MLB `CINCHC`→
+`CIN @ CHC`; ATP/UFC→no matchup; Poly `cfb-mizz-ku-…-spread-home-6pt5` Kansas→`SPR -6.5 KU`, Missouri→`SPR +6.5 MIZZ`.
+
+**Base-floor bug fixed (found by the Item-2 tennis cold-cache test):** `_base_label` appended `_kind`'s fallback
+token, which for a non-ML/TOT/SPR series is the raw series (`kxatpmatch`) — so the Item-3 floor for a titleless
+tennis/ufc row was **"ATP KXATPMATCH"**, LEAKING `KX` into the very label the floor exists to keep ticker-free.
+Fixed: known market type → "CFB TOT"; otherwise the bare "<CATEGORY>" ("ATP"). (Latent before Item 2 because
+tennis/ufc rows normally carry a persisted title.)
+
+**Tests: 12 new** (`test_live_fixes_item2.py` — Kalshi decode both legs of ml/total/spread across cfb/nfl/mlb,
+Poly decode incl. 4 fail-closed cases, `_group_by_game`, two `build_live_context` integrations [cfb grouped
+shorthand + tennis fail-closed floor], and the drawer `_trade_rows` fallback). **3 Item-3 tests reconciled** to the
+composed behavior (a CFB row's `desc` is now the shorthand, the persisted title survives as the `sub` secondary —
+the Item-3 title-persistence invariant still asserted, just on the secondary line). **Renders viewed:**
+`cc/renders/item2_{cfb,nfl,atp}_positions.png` (cfb/nfl grouped under a game header with signed shorthand + Side
+column gone; atp unchanged — no header, honest single rows), `item2_cfb_drawer.png` (drawer Game=matchup,
+Type=`SPR +6.5 KU`/`TOT +51.5`/`ML MIZZ`), `item2_farm_paper.png` (paper rows `MIZZ @ KU · ML MIZZ`/`TOT +52.5`/
+`SPR +6.5 MIZZ`; the `-nrfi` prop fails closed to "No first-quarter score", slug kept beneath).
+
+**Full suite after Items 3+1+2: 200 tests, 22 failures (the SAME baseline set), 0 NEW failures.**
+
+**Away/home order note (per 2.4):** for the Poly path the slug encodes `{away}-{home}` (authoritative). For the
+Kalshi path the blob order (away+home) is the MLB-verified convention (`SDCIN=SD@CIN`) applied uniformly; a wrong
+order would be a display nit, never a money error (the matcher keys on a frozenset). Box RO validation against a
+real held cfb/nfl ticker + its Poly source is the remaining confirmation before any deploy.
+
+### ITEM 2 — FILE DIFF vs the branch tip `48a5817f` (CR-sha16 BEFORE -> AFTER)
+
+`app.py` IS touched this item (the Farm-paper enrichment in `_load_watchlist_whale`); items 3+1 had left it
+untouched. No migration, no shared-trio, no schema change. `pm_desk.css` gains `.psub`/`tr.pgame`/`.pgm` →
+`pm_shell.html` `?v=` bumped `4102424b`→`92a1ef2e` (CR-stripped sha8).
+
+| file | BEFORE | AFTER |
+|---|---|---|
+| `web/app.py` | `ef1dec75a25c52cc` | `e39624887c528bea` |
+| `web/live_view.py` | `1f930df60b36e041` | `ff6c3c03e36b0120` |
+| `web/templates/pm_live_subdivision.html` | `d1494f6f84e1ac9e` | `98ffb7a2613d7794` |
+| `web/templates/partials/pm_trade_drawer.html` | `fc251c6d37310eb4` | `36edbd5237de9396` |
+| `web/templates/partials/pm_paper_trade_rows.html` | `2c6f136bd062acb8` | `7d19481724a04c26` |
+| `web/static/pm_desk.css` | `4102424be0324829` | `92a1ef2e6d4e0ff6` |
+| `web/templates/pm_shell.html` | `8b5a340e44a13e59` | `c134af369beeb5be` |
+
+Git-only: `tests/prediction_markets/test_live_fixes_item2.py` (new), `test_live_fixes_item3.py` (3 reconciled),
+this report.
 
 --------------------------------------------------------------------------------
 ## 6. RUNNERS / RENDERS
-`cc/pm_fixes_item3_render.py`, `cc/pm_fixes_item1_render.py`; renders under `cc/renders/item3_*`, `item1_*`.
+`cc/pm_fixes_item3_render.py`, `cc/pm_fixes_item1_render.py`, `cc/pm_fixes_item2_render.py`,
+`cc/pm_item2_drawer_render.py`, `cc/pm_item2_smoke.py`; renders under `cc/renders/item3_*`, `item1_*`, `item2_*`.

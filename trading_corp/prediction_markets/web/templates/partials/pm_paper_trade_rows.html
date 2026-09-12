@@ -26,7 +26,10 @@
     <tr data-status="{{ t.status }}" data-cid="{{ t.condition_id }}" data-oi="{{ t.outcome_index }}">
       <td><span class="pm-badge pm-pstatus pm-pstatus-{{ t.status }}">{{ t.status }}</span></td>
       <td>
-        <div class="pm-mktline">{{ t.title or t.slug or '&mdash;'|safe }}</div>
+        {# Item 2 (2026-09-12): matchup + signed shorthand (the same label rule as /live positions + the trade #}
+        {# drawer, one shared formatter) when the Poly slug decodes; else the honest title/slug. Slug always kept #}
+        {# below as provenance. #}
+        <div class="pm-mktline">{% if t.mlabel %}{{ t.matchup }} &middot; {{ t.mlabel }}{% else %}{{ t.title or t.slug or '&mdash;'|safe }}{% endif %}</div>
         <div class="pm-mktsub pm-mono">{{ t.slug or '&mdash;'|safe }}{% if t.event_slug %} &middot; <span class="pm-muted">{{ t.event_slug }}</span>{% endif %}</div>
       </td>
       <td>{{ t.outcome or '&mdash;'|safe }}<span class="pm-muted pm-oi">&nbsp;({{ t.outcome_index }})</span></td>

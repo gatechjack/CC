@@ -18,7 +18,7 @@
         <td class="pri">{{ t.entry_ts|ettime }}</td>
         <td>{{ t.entry_ts|etdate }}</td>
         <td class="pri">{{ t.matchup or '&mdash;'|safe }}{% if t.time_mismatch %} <span class="wsm" title="feed and ticker disagree on the scheduled start time -- see the row detail">&dagger;</span>{% endif %}</td>
-        <td>{{ t.kind_label }}</td>
+        <td>{{ t.label or t.kind_label }}</td>
         <td class="pri">{{ t.whale_label or '&mdash;'|safe }}</td>
         <td class="n">{{ '%g'|format(t.contracts) }}</td>
         <td class="n">{% if t.submitted is not none %}${{ '%.2f'|format(t.submitted) }}{% else %}&mdash;{% endif %}</td>

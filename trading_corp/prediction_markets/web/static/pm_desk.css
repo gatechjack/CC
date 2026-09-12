@@ -213,6 +213,11 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .postbl .pwh{white-space:nowrap;max-width:190px;overflow:hidden}
 .postbl .pwh .wtag{max-width:180px}
 .postbl tr.prow.live .pval{color:var(--live)}
+/* Item 2 (2026-09-12): a game's rows sit under one "AWAY @ HOME - date - start" header (tr.pgame); the row's own
+   secondary line (.psub -- the Kalshi/Poly title, or the matchup for a titleless row) is dim under the shorthand. */
+.postbl .psub{display:block;font-family:var(--sans);font-size:10px;color:var(--dimmer);margin-top:2px}
+.postbl tr.pgame td{background:#0d1420;color:var(--dim);font-family:var(--sans);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:7px 14px}
+.postbl tr.pgame .pgm{color:var(--text);font-weight:600;letter-spacing:.04em}
 .badge.live{color:var(--live);border-color:#1e4f66}
 .badge.won{color:var(--won);border-color:#1d5a41}
 .badge.lost{color:var(--lost);border-color:#6b2a2a}

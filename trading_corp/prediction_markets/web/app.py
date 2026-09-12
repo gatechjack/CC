@@ -1242,6 +1242,13 @@ def _load_watchlist_whale(wallet: str, category: str, now_ts: int) -> dict:
         pstats = positions.paper_stats_row(conn, wallet, category)
         trades = positions.paper_trades(conn, wallet, category)
         refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
+    # Item 2 (2026-09-12): decorate each paper trade with the SAME structural label rule as the /live positions table
+    # + the trade drawer -- matchup + signed shorthand -- via the ONE shared formatter (live_view.poly_market_label,
+    # which parses the Poly slug with the engine's canonical parse_poly_bet). Fail-closed: a non-structural category
+    # or an unparseable/prop slug leaves mlabel/matchup None so the template keeps its honest title/slug display.
+    for t in trades:
+        mu, primary, secondary = live_view.poly_market_label(category, t.get("slug"), t.get("outcome"), t.get("title"))
+        t["matchup"], t["mlabel"], t["msub"] = mu, primary, secondary
     return {"whale": whale, "pstats": pstats, "trades": trades, "refresh": refresh}
 
 

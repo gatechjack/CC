@@ -179,8 +179,9 @@
 {% macro posrow(p) %}
   {%- set cls = ('won' if p.won else 'lost') if p.settled else 'live' -%}
   <tr class="prow {{ cls }}">
-    <td class="pdesc"><span class="pt" title="{{ p.ticker }}">{{ p.desc }}</span><span class="pk">{{ p.kind_label }}</span></td>
-    <td class="pside">{{ (p.held_leg or '&mdash;')|upper }}</td>
+    {# Item 2.2: SHORTHAND first (ML KAN / SPR -6.5 MIZZ / TOT +51.5), the Kalshi title (or matchup) as the secondary
+       line; the bare SIDE column is dropped (the sign in the shorthand already carries the held direction). #}
+    <td class="pdesc"><span class="pt" title="{{ p.ticker }}">{{ p.desc }}</span>{% if p.sub %}<span class="psub">{{ p.sub }}</span>{% endif %}</td>
     <td class="pnum">{{ '%g'|format(p.contracts) if p.contracts is not none else '&mdash;'|safe }}</td>
     <td class="pnum">{% if p.settled %}&mdash;{% else %}{{ p.cost|money if p.cost is not none else '&mdash;'|safe }}{% endif %}</td>
     <td class="pnum pval">
@@ -206,11 +207,18 @@
   </tr>
 {% endmacro %}
 
-{% macro postable(rows) %}
+{# Item 2.1: GROUP the non-MLB table BY GAME -- one "AWAY @ HOME - date - start|unavailable" header per matchup, then
+   that game's rows. A row with no decodable matchup (tennis/ufc/fed) is header-less (single row). #}
+{% macro postable(groups) %}
   <div class="panel" style="margin-top:12px;overflow-x:auto">
     <table class="postbl">
-      <thead><tr><th>Market</th><th>Side</th><th class="pnum">Contracts</th><th class="pnum">Cost</th><th class="pnum">Value</th><th>Status</th><th>Whale</th></tr></thead>
-      <tbody>{% for p in rows %}{{ posrow(p) }}{% endfor %}</tbody>
+      <thead><tr><th>Market</th><th class="pnum">Contracts</th><th class="pnum">Cost</th><th class="pnum">Value</th><th>Status</th><th>Whale</th></tr></thead>
+      <tbody>
+      {% for g in groups %}
+        {% if g.matchup %}<tr class="pgame"><td colspan="6"><span class="pgm">{{ g.matchup }}</span>{% if g.date %} <span class="dim">&middot; {{ g.date }}</span>{% endif %} <span class="dim">&middot; {% if g.start %}{{ g.start|ettime }}{% else %}start time unavailable{% endif %}</span></td></tr>{% endif %}
+        {% for p in g.rows %}{{ posrow(p) }}{% endfor %}
+      {% endfor %}
+      </tbody>
     </table>
   </div>
 {% endmacro %}
@@ -301,8 +309,9 @@
 
   {% else %}
   {# ---------- non-MLB POSITIONS view (item 2/4): a positions table, NO scoreboard / diamond / inning text ---------- #}
-  {% set pv = positions_view or {'active': [], 'complete': [], 'n_active': 0, 'n_complete': 0} %}
+  {% set pv = positions_view or {'active': [], 'complete': [], 'n_active': 0, 'n_complete': 0, 'active_groups': [], 'complete_groups': []} %}
   {% set shown_pos = pv.complete if tab == 'complete' else pv.active %}
+  {% set shown_groups = pv.complete_groups if tab == 'complete' else pv.active_groups %}
   <div style="display:flex;align-items:center;gap:16px;margin:32px 0 12px;flex-wrap:wrap">
     <div class="toggle">
       <a class="tgl" href="{{ request.url.path }}" role="button" aria-pressed="{{ 'true' if tab != 'complete' else 'false' }}">Active ({{ pv.n_active }})</a>
@@ -312,7 +321,7 @@
   </div>
 
   {% if shown_pos %}
-    {{ postable(shown_pos) }}
+    {{ postable(shown_groups) }}
   {% else %}
   <div class="panel pad"><p class="caveat" style="margin:0">{% if tab == 'complete' %}No completed {{ category|upper }} positions right now.{% elif not feed_meta.ready %}No positions yet &mdash; the poller has not run, or this sub-division holds nothing open.{% else %}No open {{ category|upper }} positions right now.{% endif %}</p></div>
   {% endif %}

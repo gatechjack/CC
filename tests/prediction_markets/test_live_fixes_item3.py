@@ -68,9 +68,12 @@ def _ctx(marks_result, titles=None, poll_status=None):
 
 
 def test_nonmlb_label_never_a_raw_ticker_on_cold_cache_and_failed_poll():
+    # Item 2 (2026-09-12): a CFB ticker decodes to matchup + signed shorthand, so the desc is the shorthand
+    # ('TOT +51.5', TICKER-derived -> present even on a cold cache/failed poll), never a raw ticker. The
+    # '<CATEGORY> <TYPE>' base floor still applies to a no-matchup ticker (tennis/ufc) -- see test_live_fixes_item2.
     ctx = _ctx(_res({}, ok=False, err="KXNCAAFTOTAL:HTTPError"), titles={})   # cold titles + failed poll
     row = ctx["positions_view"]["active"][0]
-    assert row["desc"] == "CFB TOT"                       # the base label floor (category + market-type) -- NOT a ticker
+    assert row["desc"] == "TOT +51.5"                     # signed shorthand (Item 2), NOT a ticker
     assert "KX" not in row["desc"]
     assert row["market_title"] is None                   # no title has ever resolved
     assert row["value_known"] is False and row["ever_priced"] is False
@@ -79,8 +82,11 @@ def test_nonmlb_label_never_a_raw_ticker_on_cold_cache_and_failed_poll():
 def test_nonmlb_label_uses_persisted_title_when_known():
     ctx = _ctx(_res({}, ok=False), titles={"KXNCAAFTOTAL-26SEP11MIZZKU-52": "Over 51.5 points"})
     row = ctx["positions_view"]["active"][0]
-    assert row["desc"] == "Over 51.5 points"              # persisted title survives the failed poll
-    assert row["ever_priced"] is True and "KX" not in row["desc"]
+    # Item 2: the signed shorthand is the PRIMARY; the persisted title (which survives the failed poll -- the Item-3
+    # merge point) is the SECONDARY line. Both hold; neither is a raw ticker.
+    assert row["desc"] == "TOT +51.5" and "KX" not in row["desc"]
+    assert row["sub"] == "Over 51.5 points"              # persisted title survives the failed poll (now the secondary)
+    assert row["ever_priced"] is True
 
 
 def test_value_carries_mark_age_for_amber_banding():
@@ -132,9 +138,10 @@ def _client(monkeypatch, tmp_path):
 def test_rendered_cfb_positions_label_has_no_raw_ticker(monkeypatch, tmp_path):
     cl = _client(monkeypatch, tmp_path)   # cold ui_cache -> warming, no marks
     html = cl.get("/live/kalshi_jack/cfb", headers={"Remote-User": "jack"}).text
-    # the positions table's VISIBLE label (the .pt span text) must be the base label, never the raw ticker
+    # the positions table's VISIBLE label (the .pt span text) must be the shorthand, never the raw ticker
     import re
     labels = re.findall(r'<span class="pt"[^>]*>([^<]*)</span>', html)
     assert labels, "expected at least one position label rendered"
     assert all("KX" not in lbl for lbl in labels), labels     # zero raw tickers as a visible label
-    assert any("CFB" in lbl for lbl in labels)                # the base label floor
+    assert any("TOT" in lbl for lbl in labels)                # Item 2: the signed shorthand market-type tag
+    assert "MIZZ @ KU" in html                                # Item 2: the row groups under its game header

@@ -28,12 +28,30 @@ from zoneinfo import ZoneInfo
 
 from ..market_describe import describe_market
 from ...data.mlb_poly_kalshi_match import kalshi_to_iso_date
-from ...data.sports_team_mapping import MLB_TEAMS
-from . import feed_mlb, marks as marks_mod, milestones as milestones_mod
+from ...data.sports_team_mapping import MLB_TEAMS, NBA_TEAMS, NHL_TEAMS, NFL_TEAMS, WNBA_TEAMS
+from ...data.cfb_teams import CFB_TEAMS    # Item 2 (2026-09-12): the structural matcher's team maps are DATA-side
+from ...data.sports_structural_match import LEAGUES as _STRUCT_LEAGUES, parse_poly_bet as _parse_poly_bet  # Item 2: Poly slug decode (stdlib+data-only)
+from . import feed_mlb, marks as marks_mod, milestones as milestones_mod   # (stdlib-only) -> pm_web stays standalone
 from .. import leg_audit        # canonical leg-audit state constants (shared with the fill-watch runner -> no drift)
 
 KINDS = ("moneyline", "total", "spread")
 KIND_LABEL = {"moneyline": "ML", "total": "TOT", "spread": "SPR"}
+# Item 2: SPORT (Kalshi series prefix, after KX and before the market-type) -> the team-code map. The structural
+# matcher (data/sports_structural_match.py LEAGUES) is the source of these; we reuse the SAME data-side maps so
+# pm_web's label decode can never diverge from the matcher's. Longest prefix wins (WNBA before NBA).
+_SPORT_TEAM_MAP = {"MLB": MLB_TEAMS, "NFL": NFL_TEAMS, "NBA": NBA_TEAMS, "NHL": NHL_TEAMS,
+                   "WNBA": WNBA_TEAMS, "NCAAF": CFB_TEAMS}
+
+
+def _team_map_for_ticker(ticker):
+    """The per-league team-code map for a Kalshi ticker (via its series prefix KX<SPORT><TYPE>), or None if the
+    sport has no map (tennis/ufc/fed -- no two-team structural ticker). Longest prefix wins so KXWNBA* != KXNBA*."""
+    series = str(ticker or "").split("-", 1)[0].upper()
+    body = series[2:] if series.startswith("KX") else series
+    for sport in sorted(_SPORT_TEAM_MAP, key=len, reverse=True):
+        if body.startswith(sport):
+            return _SPORT_TEAM_MAP[sport]
+    return None
 RETENTION_HOURS = 24
 POLL_INTERVAL_SECONDS = 60
 _SETTLE_SOURCES = ("settlement", "settlement_void")
@@ -43,15 +61,14 @@ _SETTLE_SOURCES = ("settlement", "settlement_void")
 _STEM_RE = re.compile(r"^(\d{2}[A-Z]{3}\d{2})(\d{4})?([A-Z0-9]+)$")
 
 
-def _split_team_blob(blob: str):
-    """A team blob 'AWAYHOME' (e.g. SDCIN, SEABOS, NYYLAA, CWSHOU) -> (away_code, home_code) using MLB_TEAMS as
-    the split oracle (both halves must be known clubs). None if no unique valid split -> the game degrades to
-    unavailable rather than mis-joining. Concatenation order is away+home (verified: SDCIN=SD@CIN)."""
-    for k in range(2, len(blob) - 1):
-        a, b = blob[:k], blob[k:]
-        if a in MLB_TEAMS and b in MLB_TEAMS:
-            return a, b
-    return None
+def _split_team_blob(blob: str, team_map: dict = MLB_TEAMS):
+    """A team blob 'AWAYHOME' (e.g. SDCIN, SEABOS, MIZZKU) -> (away_code, home_code) using `team_map` as the split
+    oracle (both halves must be known clubs). Concatenation order is away+home (verified MLB SDCIN=SD@CIN). FAIL
+    CLOSED (Item 2): returns None unless EXACTLY ONE split point yields two mapped codes -- an AMBIGUOUS blob (two
+    valid splits) degrades to no-matchup rather than guessing (never a wrong game/team on a real-money row)."""
+    hits = [(blob[:k], blob[k:]) for k in range(2, len(blob) - 1)
+            if blob[:k] in team_map and blob[k:] in team_map]
+    return hits[0] if len(hits) == 1 else None
 
 
 def game_key_from_ticker(ticker: str):
@@ -142,7 +159,7 @@ def _short_label(ticker: str, kind: str, held_leg: str | None) -> str:
         if mo:
             return ("+" if mo.group(1) == "O" else "-") + mo.group(2)
     if kind == "spread":
-        ms = re.match(r"^([A-Z]{2,3})(\d+)$", suffix)
+        ms = re.match(r"^([A-Z]{2,})(\d+)$", suffix)          # Item 2: >=2 chars -> CFB 4-char codes (MIZZ7) decode too
         if ms:
             team_code, n = ms.group(1), int(ms.group(2))
             strike = "%.1f" % (n - 0.5)
@@ -367,10 +384,15 @@ def _retain_anchor_ts(slots: list, gs) -> int | None:
 
 
 def _ordered_teams(ticker: str):
-    """(away_code, home_code) from a ticker's stem blob (away+home order), or (None, None). Lets the card show the
-    matchup from the TICKER even when the sports feed is down (the teams are ticker-derived, not feed-derived)."""
+    """(away_code, home_code) from a ticker's stem blob (away+home order), or (None, None). Ticker-derived so the
+    matchup resolves even when the sports feed is down. Item 2 (2026-09-12): now works for EVERY structural sport
+    with a team map (mlb/nfl/nba/nhl/wnba/cfb) via _team_map_for_ticker -- fail-closed (None) for a sport with no
+    map (tennis/ufc/fed) or an ambiguous/unmapped split, so a matchup is never invented."""
     parts = str(ticker or "").split("-")
     if len(parts) < 2:
+        return (None, None)
+    team_map = _team_map_for_ticker(ticker)
+    if team_map is None:
         return (None, None)
     m = _STEM_RE.match(parts[1])
     if not m:
@@ -379,7 +401,7 @@ def _ordered_teams(ticker: str):
     gm = re.search(r"G(\d)$", blob)
     if gm:
         blob = blob[:gm.start()]
-    return _split_team_blob(blob) or (None, None)
+    return _split_team_blob(blob, team_map) or (None, None)
 
 
 def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker, marks, gs, now_ts,
@@ -464,11 +486,18 @@ def _trade_rows(orders: list, agg: dict, marks: dict, slate_games: dict, mismatc
         # tolerant join (match_in_slate), so the matchup resolves even when the feed's start time skews from the
         # ticker's; the per-game feed<->ticker time mismatch (item 1) rides on the row so the drawer flags it.
         gs = feed_mlb.match_in_slate(slate_games, gk[0], gk[3], gk[1], gk[2]) if (gk and slate_games) else None
-        matchup = ("%s @ %s" % (gs.away.abbr, gs.home.abbr)) if gs else None
+        # Item 2 (2026-09-12): matchup resolves from the FEED (MLB) OR, when there is no feed, the ticker decode
+        # (market_matchup) -- so a cfb/nfl drawer row names the game too, never a raw ticker. `label` = the TAGGED
+        # signed shorthand ('TOT +51.5') from the ONE shared formatter, exactly as the positions table shows it.
+        kind = _kind(tk)
+        matchup = ("%s @ %s" % (gs.away.abbr, gs.home.abbr)) if gs else market_matchup(tk)
+        short = _short_label(tk, kind, leg)
+        label, _ = format_market_label(matchup, kind, short, None)
         rows.append({
-            "order_id": o.get("id"), "ticker": tk, "kind": _kind(tk),
-            "kind_label": KIND_LABEL.get(_kind(tk), _kind(tk).upper()),
+            "order_id": o.get("id"), "ticker": tk, "kind": kind,
+            "kind_label": KIND_LABEL.get(kind, kind.upper()),
             "desc": describe_market(tk, leg), "matchup": matchup,
+            "short": short, "label": label,
             "whale_wallet": o.get("wallet"), "whale_name": o.get("user_name"),
             "whale_label": o.get("user_name") or o.get("wallet"),
             "leg": leg, "contracts": contracts,
@@ -533,11 +562,79 @@ def _journal_summary(open_positions, orders, marks, now_ts) -> dict:
 
 
 def _base_label(ticker, kind, category) -> str:
-    """The always-present base label for a non-MLB row -- NEVER a raw ticker (Item 3.1 floor; Item 2 upgrades it to
-    the ticker-derived matchup + signed shorthand). Interim: "<CATEGORY> <MARKET-TYPE>" (e.g. "CFB TOTAL"), which
-    describe_market's '<type>:<ticker>' fallback would have leaked the ticker into."""
-    mt = KIND_LABEL.get(kind, (kind or "").upper()) if kind else "MARKET"
-    return ("%s %s" % (str(category or "").upper(), mt)).strip()
+    """The always-present base label for a non-MLB row -- NEVER a raw ticker (Item 3.1 floor). Used ONLY when the
+    ticker has no two-team matchup (tennis/ufc/fed) or the decode fails closed. "<CATEGORY> <MARKET-TYPE>" for a
+    KNOWN market type ("CFB TOT"); the bare "<CATEGORY>" otherwise -- because `_kind`'s fallback for a
+    non-ML/TOT/SPR series is the raw series ("kxatpmatch"), and appending its upper-case would LEAK 'KX' into the
+    very label this floor exists to keep ticker-free (Item 2, 2026-09-12: found by the tennis cold-cache test)."""
+    cat = str(category or "").upper()
+    if kind in KIND_LABEL:
+        return ("%s %s" % (cat, KIND_LABEL[kind])).strip()
+    return cat or "MARKET"
+
+
+# ── Item 2 (2026-09-12): the ONE canonical structural-market label (matchup + signed shorthand). ONE implementation
+# used by the non-MLB positions table, the trade drawer's market column, AND the Farm whale paper-trade list -- no
+# second copy. FAIL CLOSED everywhere: a ticker with no two-team map (tennis/ufc/fed) or an ambiguous split yields
+# matchup=None, and the caller shows the honest single label, never an invented matchup or a raw ticker. ──────────
+def market_matchup(ticker) -> str | None:
+    """'AWAY @ HOME' (team codes, away+home Kalshi convention) for a structural two-team ticker, or None (fail-closed
+    for tennis/ufc/fed and any ambiguous/unmapped blob). Ticker-derived -> resolves without a sports feed."""
+    a, h = _ordered_teams(ticker)
+    return ("%s @ %s" % (a, h)) if (a and h) else None
+
+
+def structural_game_key(ticker):
+    """A stable per-GAME key for grouping a structural sub-division's rows: (matchup, event-date) so a game's
+    moneyline/total/spread rows (different market-type prefixes, same stem) group under ONE header. None -> the row
+    has no decodable game (tennis/ufc/fed) and stays ungrouped."""
+    mu = market_matchup(ticker)
+    if mu is None:
+        return None
+    parts = str(ticker or "").split("-")
+    m = _STEM_RE.match(parts[1]) if len(parts) > 1 else None
+    date_iso = kalshi_to_iso_date(m.group(1)) if m else None
+    return (mu, date_iso)
+
+
+def format_market_label(matchup, kind, short, title):
+    """The SHARED formatter (Ruling: same rule on the positions table, the drawer, and the Farm paper list). Returns
+    (primary, secondary): PRIMARY is the signed shorthand with the market-type tag ('SPR -6.5 MIZZ'); SECONDARY is
+    the Kalshi/Poly title (enrichment), or the matchup when there is no title. NEVER a raw ticker."""
+    tag = KIND_LABEL.get(kind, (kind or "").upper()) if kind else ""
+    primary = ("%s %s" % (tag, short)).strip() if short else (tag or "market")
+    secondary = title or matchup or None
+    return (primary, secondary)
+
+
+def poly_market_label(category, slug, outcome, title=None):
+    """The SAME label rule as the Kalshi positions table + trade drawer, applied to a Polymarket PAPER bet (the Farm
+    whale paper-trade list). ONE formatter (format_market_label); the only difference is the SOURCE decode -- a Poly
+    slug is parsed by the engine's canonical `parse_poly_bet` (data-side, no re-implementation) instead of a Kalshi
+    ticker. Returns (matchup, primary, secondary) or (None, None, None) FAIL-CLOSED for a non-structural category
+    (tennis/ufc/cs2/soccer -- no LEAGUES entry), a prop/unparseable slug, or an unresolved side -> the caller keeps
+    its honest title/slug display, never an invented matchup. matchup + shorthand are ticker-free by construction."""
+    cfg = _STRUCT_LEAGUES.get(str(category or "").lower())
+    if cfg is None:                                        # tennis/ufc/cs2/soccer/... -> no two-team structural decode
+        return (None, None, None)
+    pb = _parse_poly_bet(slug or "", outcome or "", cfg, title)
+    if pb.market_type not in KINDS or pb.away_code is None or pb.home_code is None:
+        return (None, None, None)                          # non_moneyline/non_sport/unparseable -> honest fallback
+    if pb.away_name is None or pb.home_name is None:       # a code off the map -> no guessed matchup
+        return (None, None, None)
+    matchup = "%s @ %s" % (pb.away_code, pb.home_code)     # away+home, the same convention as market_matchup
+    short = None
+    if pb.market_type == "moneyline":
+        short = pb.away_code if pb.side == "away" else pb.home_code if pb.side == "home" else None
+    elif pb.market_type == "total" and pb.line is not None and pb.leg in ("yes", "no"):
+        short = ("+" if pb.leg == "yes" else "-") + ("%.1f" % pb.line)   # Over(YES)=+line / Under(NO)=-line
+    elif pb.market_type == "spread" and pb.line is not None and pb.leg in ("yes", "no") and pb.anchor_side:
+        anchor = pb.away_code if pb.anchor_side == "away" else pb.home_code
+        other = pb.home_code if pb.anchor_side == "away" else pb.away_code
+        strike = "%.1f" % pb.line
+        short = ("-%s %s" % (strike, anchor)) if pb.leg == "yes" else ("+%s %s" % (strike, other))
+    primary, secondary = format_market_label(matchup, pb.market_type, short, title)
+    return (matchup, primary, secondary)
 
 
 def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales_by_ticker,
@@ -555,6 +652,7 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
         kind = _kind(tk)
         whales = whales_by_ticker.get(tk, [])
         ptitle = titles.get(tk)                          # PERSISTED title (never evicted) -- survives a failed poll
+        mu = market_matchup(tk); gkey = structural_game_key(tk)   # Item 2: ticker-derived matchup + game grouping
         op = open_by_ticker.get(tk)
         if op is not None:
             leg = op.get("held_leg"); mk = (marks or {}).get(tk)
@@ -562,8 +660,11 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
             value = (contracts * bid) if (bid is not None and contracts is not None) else None
             mk_as_of = getattr(mk, "as_of", None) if mk is not None else None
             age_sec = (int(now_ts) - int(mk_as_of)) if (now_ts is not None and mk_as_of is not None) else None
+            short = _short_label(tk, kind, leg)
+            primary, secondary = format_market_label(mu, kind, short, ptitle)   # Item 2: shorthand FIRST, title second
             active.append({"ticker": tk, "kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
-                           "desc": (ptitle or _base_label(tk, kind, category)), "market_title": ptitle,
+                           "desc": primary if mu else (ptitle or _base_label(tk, kind, category)), "sub": secondary,
+                           "short": short, "matchup": mu, "game_key": gkey, "market_title": ptitle,
                            "held_leg": leg, "contracts": contracts, "cost": op.get("cost_basis_usd"),
                            "avg_fill": op.get("avg_price"), "fee": op.get("fees_usd"), "current_value": value,
                            "value_known": value is not None, "bid": bid, "as_of": mk_as_of, "age_sec": age_sec,
@@ -585,8 +686,11 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
         # a settled/closed row shows its copied-from whale too (Jack 2026-09-04) -- from the entry-fill copiers,
         # since the net-open holder set is empty once the position closed.
         cw = _entry_whales(tk_orders)
+        short = _short_label(tk, kind, settled_leg)
+        primary, secondary = format_market_label(mu, kind, short, ptitle)
         complete.append({"ticker": tk, "kind": kind, "kind_label": KIND_LABEL.get(kind, kind.upper()),
-                         "desc": (ptitle or _base_label(tk, kind, category)), "market_title": ptitle,
+                         "desc": primary if mu else (ptitle or _base_label(tk, kind, category)), "sub": secondary,
+                         "short": short, "matchup": mu, "game_key": gkey, "market_title": ptitle,
                          "held_leg": settled_leg,
                          "contracts": contracts, "cost": None, "avg_fill": None, "fee": None,
                          "current_value": payout, "value_known": payout is not None, "bid": None, "settled": True,
@@ -594,7 +698,41 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
                          "settled_at": (settle.get("settled_ts") if settle else None),
                          "status": status, "whales": cw, "whale_tag": _whale_tag(cw)})
     active.sort(key=lambda r: r["ticker"]); complete.sort(key=lambda r: r["ticker"])
-    return {"active": active, "complete": complete, "n_active": len(active), "n_complete": len(complete)}
+    return {"active": active, "complete": complete, "n_active": len(active), "n_complete": len(complete),
+            "active_groups": _group_by_game(active), "complete_groups": _group_by_game(complete)}
+
+
+def _group_by_game(rows) -> list:
+    """Group structural-sport rows BY GAME (Item 2.1): one entry per matchup, in first-seen order, so a game's
+    moneyline/total/spread rows sit together under an 'AWAY @ HOME - date - start|unavailable' header. A row with no
+    matchup (tennis/ufc/fed, or a fail-closed decode) is its OWN header-less group (single row, no invented game).
+    start = the ticker's HHMM where it carries one (date-only sports -> None -> the template says 'start time
+    unavailable'); date is from the game key."""
+    groups: list = []
+    by_key: dict = {}
+    for r in rows:
+        gk = r.get("game_key")
+        if gk is None:                                   # tennis/ufc/fed -> ungrouped single row (no game header)
+            groups.append({"matchup": None, "date": None, "start": None, "rows": [r]})
+            continue
+        g = by_key.get(gk)
+        if g is None:
+            start = parse_ticker_start(_category_hint(r.get("ticker")), r.get("ticker"))
+            g = by_key[gk] = {"matchup": gk[0], "date": gk[1], "start": start, "rows": []}
+            groups.append(g)
+        g["rows"].append(r)
+    return groups
+
+
+def _category_hint(ticker) -> str:
+    """The lower-case category implied by a Kalshi ticker's sport prefix (for parse_ticker_start's LIVE_CAPABLE
+    gate). NCAAF->cfb; else the sport token lower-cased (mlb/nfl/nba/nhl/wnba). None-safe."""
+    series = str(ticker or "").split("-", 1)[0].upper()
+    body = series[2:] if series.startswith("KX") else series
+    for sport in sorted(_SPORT_TEAM_MAP, key=len, reverse=True):
+        if body.startswith(sport):
+            return "cfb" if sport == "NCAAF" else sport.lower()
+    return ""
 
 
 # ── top-level assembly ───────────────────────────────────────────────────────────────────────────────────────
@@ -1040,7 +1178,17 @@ def _next_event(category, positions, marks, now_ts, starts=None):
         if st is not None and (best is None or st < best[0]):
             best = (st, p)
     p = best[1] if best else positions[0]
-    label, _ = name_market(p.get("ticker"), p.get("held_leg"), (marks or {}).get(p.get("ticker")), None, category)
+    tk = p.get("ticker")
+    # Item 2 (2026-09-12): the NEXT line carries the SAME matchup + signed shorthand as the positions table when the
+    # ticker decodes to a two-team game ("MIZZ @ KU - SPR -6.5 MIZZ"); tennis/ufc/fed (no matchup) fall back to the
+    # R2 name_market label. Fail-closed -- never a raw ticker.
+    mu = market_matchup(tk)
+    if mu:
+        kind = _kind(tk)
+        primary, _ = format_market_label(mu, kind, _short_label(tk, kind, p.get("held_leg")), None)
+        label = "%s · %s" % (mu, primary)
+    else:
+        label, _ = name_market(tk, p.get("held_leg"), (marks or {}).get(tk), None, category)
     starts_in = (int(best[0]) - int(now_ts)) if best else None
     return {"label": label, "starts_in_seconds": starts_in if (starts_in is not None and starts_in > 0) else None}
 
