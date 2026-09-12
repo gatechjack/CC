@@ -128,10 +128,18 @@ Type=`SPR +6.5 KU`/`TOT +51.5`/`ML MIZZ`), `item2_farm_paper.png` (paper rows `M
 
 **Full suite after Items 3+1+2: 200 tests, 22 failures (the SAME baseline set), 0 NEW failures.**
 
-**Away/home order note (per 2.4):** for the Poly path the slug encodes `{away}-{home}` (authoritative). For the
-Kalshi path the blob order (away+home) is the MLB-verified convention (`SDCIN=SD@CIN`) applied uniformly; a wrong
-order would be a display nit, never a money error (the matcher keys on a frozenset). Box RO validation against a
-real held cfb/nfl ticker + its Poly source is the remaining confirmation before any deploy.
+**Away/home order — CONFIRMED on live box data (board-authorized RO run 2026-09-12T16:22Z, read-only, no writes):**
+`cc/pm_item2_awayhome_ro.{ps1,sh}` pulled the real held structural-sport tickers from the live journal
+(`pm_subdivision_order`, `file:...?mode=ro`) and fetched each game's matchup from Kalshi (market/event titles) +
+Polymarket (slug); `cc/pm_item2_awayhome_compare.py` decoded each with the shipped Item-2 code. Result: **15/15
+real tickers** (6 cfb, 3 nfl, 6 mlb control) — my `market_matchup` away/home order **== Kalshi's own event
+sub-title order on every one** (e.g. `KXNCAAFGAME-…OKLAMICH`→`OKLA @ MICH` = Kalshi "OKLA vs MICH"; `…MEMBSU`→
+`MEM @ BSU`). For the **5 games that had a retrievable Polymarket slug** (MEMBSU, OKLAMICH, OREOKST, BALIND, NODET)
+the order **also matches Poly's authoritative `{away}-{home}`** (cross_order_match=True all 5). The fail-closed
+4-char blob split resolved every real CFB blob uniquely (OKLA|MICH, MEM|BSU, RUTG|BC, ORE|OKST, MIZZ|KU, SMU|FSU).
+**Conclusion: the away+home convention is correct across cfb/nfl/mlb — NO label changes needed.** (Run was
+LOUD-capped at 6 games/category; cfb had 9 distinct games, mlb 92 — the sample is unanimous and the convention is
+structural.)
 
 ### ITEM 2 — FILE DIFF vs the branch tip `48a5817f` (CR-sha16 BEFORE -> AFTER)
 
