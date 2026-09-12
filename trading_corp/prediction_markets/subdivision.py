@@ -393,6 +393,118 @@ def live_copies_by_whale(conn, account_id: str, category: str, *, thin_floor: in
     return sorted(rec.values(), key=lambda x: (not x["attached"], -x["copies"], x["wallet"]))
 
 
+# ── THE PER-WHALE ROSTER RECORD (2026-09-12): the "Copies these whales" panel becomes a ROSTER -----------------
+# Each whale's REAL-money live-copy record for THIS (account, category), grouped ON-ROSTER (active attachment) vs
+# FORMERLY-LIVE (a past attachment, or copies with no active attachment), each with the dates the attachment row
+# carries. THE RECORD IS THE JOURNAL, FILTERED (Ruling 1): it is live_copies_by_whale enriched with (a) the
+# attachment dates + active status, (b) per-whale CURRENT VALUE at held-leg BID with honest N-of-M coverage (marks
+# passed IN -- pm_web's cache; None -> honest no-mark, never $0), (c) realized TODAY (ET calendar, settlements only),
+# (d) unbooked = every close that booked no settled outcome (opposed + whale-exit), counted, never hidden.
+# Pure + read-only: `marks` is a {ticker: Mark-like} map (duck-typed .yes_bid/.no_bid, so subdivision.py imports no
+# web module); `today_start_ts` is the ET-calendar day start the CALLER computes (keeps the ET/zoneinfo logic in the
+# web layer). It never touches the order path.
+
+def _bid_for_leg(mark, leg):
+    """The held leg's BID off a Mark-like object (duck-typed: .yes_bid / .no_bid), or None. 'yes' -> yes_bid,
+    'no' -> no_bid; no mark / no resting bid on that leg -> None (the caller renders honest no-mark, never $0)."""
+    if mark is None or not leg:
+        return None
+    lg = str(leg).lower()
+    if lg == "yes":
+        return getattr(mark, "yes_bid", None)
+    if lg == "no":
+        return getattr(mark, "no_bid", None)
+    return None
+
+
+def _realized_today_by_whale(conn, account_id: str, category: str, today_start_ts: int) -> dict:
+    """{wallet: realized_pnl booked from SETTLEMENTS with settled_ts >= today_start_ts} for this sub-division. Mirrors
+    the platform 'realized today' convention (settlements only, net of fees). Empty if the journal is absent."""
+    if today_start_ts is None or not _table_exists(conn, "pm_subdivision_order"):
+        return {}
+    rows = conn.execute(
+        "SELECT wallet, COALESCE(SUM(realized_pnl), 0) rt FROM pm_subdivision_order "
+        "WHERE account_id=? AND category=? AND dry_run=0 AND is_exit=1 AND close_source='settlement' "
+        "  AND settled_ts IS NOT NULL AND settled_ts >= ? AND realized_pnl IS NOT NULL "
+        "GROUP BY wallet", (account_id, category, int(today_start_ts))).fetchall()
+    return {(r["wallet"] or ""): float(r["rt"] or 0.0) for r in rows}
+
+
+def whale_live_records(conn, account_id: str, category: str, *, marks=None, now_ts: int,
+                       today_start_ts: int | None = None, thin_floor: int = 50) -> dict:
+    """THE WHALE ROSTER for a sub-division: per-whale real-money live-copy record, grouped on-roster vs formerly-live.
+
+    Returns {"on_roster": [rec...], "formerly_live": [rec...], "thin_floor": int} where each rec carries (all
+    journal-derived, read-only): wallet, user_name, active, added_ts, removed_ts (the attachment span; None where the
+    schema cannot know it -- a re-attach preserves the original added_ts and clears removed_ts, so a PRIOR span's
+    bounds are unknowable, stated in the report); placed (copies), booked_closes (settlements), settled_w/settled_l,
+    unbooked_closes (opposed + whale-exit = n_closed - booked; unknown, never zero); realized_pnl (net of fees, all-
+    time) + realized_today; n_open / open_contracts / open_cost_usd / open_value (contracts x held-leg BID) /
+    n_priced / n_total (honest N-of-M coverage; open_value None until >=1 priced); thin (booked < thin_floor).
+
+    Grouping: ON-ROSTER = a live (active=1) attachment; FORMERLY-LIVE = an inactive attachment OR journal copies with
+    no active attachment. A re-attached whale appears ONCE, on-roster, since the schema keeps one row per whale (the
+    journal record spans every attach period regardless -- Ruling 1)."""
+    if not _table_exists(conn, "pm_subdivision_attachment"):
+        return {"on_roster": [], "formerly_live": [], "thin_floor": int(thin_floor)}   # pre-money-layer -> honest empty
+    base = {r["wallet"]: dict(r) for r in live_copies_by_whale(conn, account_id, category, thin_floor=thin_floor)}
+    # authoritative attachment status + dates + name (ALL rows, active 0 and 1) -- the on-roster/formerly-live line
+    att: dict = {}
+    if _table_exists(conn, "pm_subdivision_attachment"):
+        has_whale = _table_exists(conn, "pm_whale")
+        name_sel = ", w.user_name" if has_whale else ", NULL AS user_name"
+        join = "LEFT JOIN pm_whale w ON w.wallet = at.wallet " if has_whale else ""
+        for r in conn.execute(
+                "SELECT at.wallet, at.active, at.added_ts, at.removed_ts" + name_sel + " "
+                "FROM pm_subdivision_attachment at " + join +
+                "WHERE at.account_id=? AND at.category=?", (account_id, category)).fetchall():
+            att[(r["wallet"] or "")] = {"active": int(r["active"] or 0), "added_ts": r["added_ts"],
+                                        "removed_ts": r["removed_ts"], "user_name": r["user_name"]}
+    # fold in any inactive-attachment whale that never copied (so a formerly-live-but-never-copied whale still shows)
+    for wal, a in att.items():
+        if wal not in base:
+            base[wal] = {"wallet": wal, "user_name": a.get("user_name"), "attached": a["active"] == 1, "copies": 0,
+                         "settled_w": 0, "settled_l": 0, "n_settled": 0, "opposed_closed": 0, "n_closed": 0,
+                         "realized_pnl": 0.0, "open_contracts": 0.0, "open_cost_usd": 0.0, "n_open": 0,
+                         "thin_sample": True}
+    # per-whale open positions -> current value at held-leg bid + honest N-of-M coverage
+    val: dict = {}
+    for h in live_positions_by_whale(conn, account_id, category):
+        wal = h.get("wallet") or ""
+        v = val.setdefault(wal, {"value": 0.0, "n_priced": 0, "n_total": 0})
+        v["n_total"] += 1
+        bid = _bid_for_leg((marks or {}).get(h.get("ticker")), h.get("held_leg"))
+        if bid is not None:
+            v["value"] += float(h.get("contracts") or 0.0) * float(bid)
+            v["n_priced"] += 1
+    rt = _realized_today_by_whale(conn, account_id, category, today_start_ts)
+    on_roster, formerly = [], []
+    for wal, e in base.items():
+        a = att.get(wal)
+        active = (a["active"] == 1) if a else False
+        n_settled = int(e.get("n_settled", 0))
+        rec = {
+            "wallet": wal, "user_name": e.get("user_name") or (a.get("user_name") if a else None), "active": active,
+            "added_ts": a["added_ts"] if a else None, "removed_ts": a["removed_ts"] if a else None,
+            "placed": int(e.get("copies", 0)), "booked_closes": n_settled,
+            "settled_w": int(e.get("settled_w", 0)), "settled_l": int(e.get("settled_l", 0)),
+            "unbooked_closes": max(0, int(e.get("n_closed", 0)) - n_settled),
+            "opposed_closed": int(e.get("opposed_closed", 0)),
+            "realized_pnl": float(e.get("realized_pnl", 0.0)), "realized_today": float(rt.get(wal, 0.0)),
+            "n_open": int(e.get("n_open", 0)), "open_contracts": float(e.get("open_contracts", 0.0)),
+            "open_cost_usd": float(e.get("open_cost_usd", 0.0)),
+            "thin": n_settled < int(thin_floor),
+        }
+        v = val.get(wal)
+        rec["n_total"] = int(v["n_total"]) if v else 0
+        rec["n_priced"] = int(v["n_priced"]) if v else 0
+        rec["open_value"] = (float(v["value"]) if (v and v["n_priced"] > 0) else None)
+        (on_roster if active else formerly).append(rec)
+    on_roster.sort(key=lambda x: (-x["placed"], (x["user_name"] or x["wallet"]).lower()))
+    formerly.sort(key=lambda x: (-(x["removed_ts"] or 0), -x["placed"], (x["user_name"] or x["wallet"]).lower()))
+    return {"on_roster": on_roster, "formerly_live": formerly, "thin_floor": int(thin_floor)}
+
+
 # ── P&L / win-loss aggregation across sub-divisions (multi-account foundation, 2026-09-01) ──────────────────────
 # REALIZED-ONLY basis (the credential-free basis, R2 ruling): pm_web holds no venue keys, so open positions are
 # shown at COST (live_positions), NEVER marked-to-market -- a mark would need a live venue read pm_web cannot do.

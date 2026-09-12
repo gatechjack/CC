@@ -1,0 +1,23 @@
+{% extends "pm_shell.html" %}
+{% block title %}Detach {{ rec.user_name or wallet }} &middot; {{ account_id }} {{ category|upper }} &middot; Prediction Markets{% endblock %}
+{% block main_class %}class="wrap desk"{% endblock %}
+{% block content %}
+{# R6 DETACH CONFIRM -- server-rendered, JS-off safe. GET shows the consequences on the real numbers; the button POSTs. #}
+<section class="roster-confirm">
+  <div class="panel pad">
+    <div class="u">Detach a whale from a live sub-division</div>
+    <h1>Detach {{ rec.user_name or wallet }}{% if not rec.user_name %} <span class="dim" style="font-size:15px">(wallet only)</span>{% endif %}?</h1>
+    <p class="rc-line">Stops new copies from <b>{{ rec.user_name or wallet }}</b> on
+      <b>{{ account_id }} &middot; {{ category|upper }}</b> within one engine cycle (~7s) &mdash; no restart.</p>
+    <p class="rc-line">Open positions copied from this whale
+      (<b>{{ rec.n_open }}</b> position{{ '' if rec.n_open == 1 else 's' }}, <b>{{ rec.open_cost_usd|money }}</b> at cost)
+      are <b>NOT</b> closed &mdash; they ride to settlement.</p>
+    <p class="rc-line">The whale stays on the Farm paper list; re-attaching later resumes with its record intact.</p>
+    <form method="post" action="/live/{{ account_id }}/{{ category }}/detach/{{ wallet }}" class="rc-actions">
+      <button type="submit" class="rc-detach">Detach {{ rec.user_name or wallet }}</button>
+      <a class="rc-cancel" href="/live/{{ account_id }}/{{ category }}">Cancel</a>
+    </form>
+    <p class="caveat" style="margin-top:14px">Full wallet: <span class="mono">{{ wallet }}</span></p>
+  </div>
+</section>
+{% endblock %}

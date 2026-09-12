@@ -90,3 +90,23 @@ def visible_accounts(request, accounts) -> set:
     """Request wrapper: the visible account_ids for THIS request (identity from Remote-User, admin from
     PM_ADMIN_IDENTITIES). `accounts` must carry owner_identity per row."""
     return visible_account_ids(current_identity(request), is_admin(request), accounts)
+
+
+# ── OWNER-OR-ADMIN AUTHORIZATION (2026-09-12) -- the first use of owner_identity to gate a WRITE, not just SEE. ──
+def can_act_on_account(identity: str | None, is_admin_flag: bool, account) -> bool:
+    """May this identity perform a per-account MUTATING action (e.g. Detach a whale) on ONE account? Owner-OR-admin,
+    FAIL CLOSED (same posture as visible_account_ids but for a single-account WRITE gate): an ADMIN may act on ANY
+    account; a non-admin ONLY if the account's owner_identity EQUALS their identity; a NULL/empty owner_identity, a
+    missing account, or NO identity (header absent) -> DENY. `account` is a {owner_identity: ...}-bearing mapping (or
+    None). Distinct from visible_account_ids (SEE): Detach is owner-or-admin; Promote/Attach stay admin-only."""
+    if is_admin_flag:
+        return True
+    if not identity or not account:
+        return False
+    owner = account.get("owner_identity")
+    return bool(owner) and owner == identity
+
+
+def can_act_on_account_request(request, account) -> bool:
+    """Request wrapper for can_act_on_account (identity from Remote-User, admin from PM_ADMIN_IDENTITIES)."""
+    return can_act_on_account(current_identity(request), is_admin(request), account)

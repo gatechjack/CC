@@ -449,3 +449,35 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .subs .h2note{font-family:var(--sans);font-size:11px;letter-spacing:0;text-transform:none;color:var(--dimmer);font-weight:400;margin-left:auto;text-align:right;max-width:52ch}
 .subs h2{display:flex;align-items:baseline;gap:10px}
 .subs h2 .n{font-family:var(--dmono);color:var(--dimmer);letter-spacing:.04em}
+
+/* WHALE ROSTER (2026-09-12): the per-whale live-copy record + Detach on /live/{account}/{category}. Scoped under
+   .roster so it never restyles other panels; reuses the desk palette (green gain / red loss / cyan unrealized). */
+.roster .rgrp{margin-top:12px}
+.roster .rgh{font-family:var(--dmono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);border-bottom:1px solid var(--line);padding-bottom:4px;margin-bottom:6px}
+.roster .wr{padding:9px 0;border-bottom:1px solid var(--line)}
+.roster .wr:last-child{border-bottom:none}
+.roster .wr-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.roster .wname{font-family:var(--sans);font-size:14px;font-weight:600;color:var(--text);background:none;border:none;padding:0;cursor:pointer;max-width:26ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.roster .wname:hover{color:var(--live)}
+.roster .wname.filtering{color:var(--live);text-decoration:underline}
+.roster .wr-wo{font-size:11px}
+.roster .wr-thin{color:var(--stale);font-family:var(--dmono);font-size:9px;letter-spacing:.08em;border:1px solid #6b4a1c;border-radius:2px;padding:0 4px}
+.roster .wr-when{font-size:11px;color:var(--dim)}
+.roster .wr-actions{margin-left:auto;display:flex;gap:12px;align-items:baseline}
+.roster .wr-link{font-size:11px;color:var(--dim);text-decoration:none}
+.roster .wr-link:hover{color:var(--text)}
+.roster .wr-detach{font-family:var(--dmono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--lost);border:1px solid #6b2626;border-radius:2px;padding:3px 9px;text-decoration:none}
+.roster .wr-detach:hover{background:#2a1414;border-color:var(--lost)}
+.roster .wr-figs{display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:5px;font-size:12px;color:var(--text)}
+.roster .wr-k{font-family:var(--dmono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);margin-right:5px}
+.roster .wr-figs .gain{color:var(--won)} .roster .wr-figs .loss{color:var(--lost)} .roster .wr-figs .flat{color:var(--dim)}
+
+/* Detach CONFIRM page (server-rendered, JS-off safe). */
+.roster-confirm{max-width:640px;margin:36px auto}
+.roster-confirm h1{font-size:20px;margin:6px 0 14px}
+.roster-confirm .rc-line{font-size:13px;color:var(--text);line-height:1.5;margin:8px 0}
+.roster-confirm .rc-actions{display:flex;gap:14px;align-items:center;margin-top:20px}
+.roster-confirm .rc-detach{font-family:var(--dmono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:#7a1f1f;border:1px solid var(--lost);border-radius:2px;padding:9px 16px;cursor:pointer}
+.roster-confirm .rc-detach:hover{background:#9a2626}
+.roster-confirm .rc-cancel{font-size:12px;color:var(--dim);text-decoration:none}
+.roster-confirm .rc-cancel:hover{color:var(--text)}

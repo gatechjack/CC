@@ -1,0 +1,81 @@
+{# R2/R3/R4/R6 WHALE ROSTER -- the "Copies these whales" panel is now each whale's REAL-money live-copy record for
+   THIS sub-division (journal-filtered, Ruling 1), grouped ON-ROSTER vs FORMERLY-LIVE, each with the attachment dates,
+   dollars-first honest figures, a Detach control (owner-or-admin), and a click-to-filter-the-drawer drill-through
+   (R4: JS-only; JS-off shows all). Rendered from `whale_records` + `can_detach` (see _load_live_subdivision). #}
+{% macro whale_row(w, formerly) %}
+  <div class="wr" data-whale="{{ w.wallet }}">
+    <div class="wr-head">
+      <button type="button" class="wname" data-whale="{{ w.wallet }}" title="Copied from {{ w.user_name or w.wallet }} ({{ w.wallet }}) &mdash; click to filter the trade drawer">{{ w.user_name or w.wallet }}</button>
+      {% if not w.user_name %}<span class="dim wr-wo">wallet only</span>{% endif %}
+      {% if w.thin %}<span class="wr-thin" title="under {{ whale_records.thin_floor }} booked settlements &mdash; too few to read as a result">thin</span>{% endif %}
+      <span class="wr-when">
+        {% if formerly %}live {{ w.added_ts|etdate if w.added_ts else '?' }} &ndash; {{ w.removed_ts|etdate if w.removed_ts else '?' }}
+        {% else %}attached {{ w.added_ts|etdate if w.added_ts else '&mdash;'|safe }}{% endif %}
+      </span>
+      <span class="wr-actions">
+        <a class="wr-link" href="/watchlist/{{ w.wallet }}/{{ category }}">profile</a>
+        {% if not formerly and can_detach %}<a class="wr-detach" href="/live/{{ account_id }}/{{ category }}/detach/{{ w.wallet }}">Detach</a>{% endif %}
+      </span>
+    </div>
+    <div class="wr-figs">
+      <span class="wr-fig"><span class="wr-k">realized</span>
+        <b class="{{ w.realized_pnl|pnlcls }}">{{ w.realized_pnl|signed }}</b> all-time
+        &middot; <span class="{{ w.realized_today|pnlcls }}">{{ w.realized_today|signed }}</span> today
+        <span class="dim">on {{ w.booked_closes }} of {{ w.placed }} cop{{ 'y' if w.placed == 1 else 'ies' }}</span></span>
+      <span class="wr-fig"><span class="wr-k">open</span>
+        {{ w.n_open }} &middot; {{ w.open_cost_usd|money }} at cost &middot;
+        {% if w.open_value is none %}<span class="wsm">no mark</span>{% else %}<b style="color:var(--live)">{{ w.open_value|money }}</b> now{% endif %}
+        <span class="dim">({{ w.n_priced }} of {{ w.n_total }} priced)</span></span>
+      <span class="wr-fig"><span class="wr-k">record</span>
+        {{ w.booked_closes }} booked ({{ w.settled_w }}&ndash;{{ w.settled_l }}) &middot;
+        {{ w.unbooked_closes }} unbooked<span class="dim"> (opposed/whale-exit &mdash; unknown, not zero)</span></span>
+    </div>
+  </div>
+{% endmacro %}
+{% if whale_records and (whale_records.on_roster or whale_records.formerly_live) %}
+<div id="whale-roster" class="panel pad roster" style="margin-top:16px">
+  <div class="u">Copies these whales &mdash; roster</div>
+  <p class="caveat" style="margin:4px 0 10px">Real-money live-copy record for this sub-division (the journal, filtered to each whale). Click a whale to filter the trade drawer below to its rows. <span id="roster-filter-note" class="wsm"></span></p>
+  {% if whale_records.on_roster %}
+  <div class="rgrp"><div class="rgh">On roster &middot; {{ whale_records.on_roster|length }}</div>
+    {% for w in whale_records.on_roster %}{{ whale_row(w, false) }}{% endfor %}
+  </div>
+  {% endif %}
+  {% if whale_records.formerly_live %}
+  <div class="rgrp"><div class="rgh">Formerly live &middot; {{ whale_records.formerly_live|length }}</div>
+    {% for w in whale_records.formerly_live %}{{ whale_row(w, true) }}{% endfor %}
+  </div>
+  {% endif %}
+</div>
+{# R4 drill-through: JS-ONLY filter of the trade drawer by whale wallet (data-wallet on each drawer row). JS-off: this
+   never runs and the drawer shows every row. Toggling the same whale clears the filter. #}
+<script>
+(function () {
+  var roster = document.getElementById('whale-roster');
+  var drawer = document.querySelector('details.drawer');
+  if (!roster || !drawer) return;
+  var mains = drawer.querySelectorAll('tr.main[data-wallet]');
+  if (!mains.length) return;
+  var note = document.getElementById('roster-filter-note');
+  var active = null;
+  function detFor(main) { return drawer.querySelector('tr.det[data-detrow="' + main.getAttribute('data-row') + '"]'); }
+  function apply(w) {
+    active = (active === w) ? null : w;
+    if (active) { try { drawer.open = true; } catch (e) {} }
+    mains.forEach(function (r) {
+      var show = !active || r.getAttribute('data-wallet') === active;
+      r.style.display = show ? '' : 'none';
+      var det = detFor(r);
+      if (det) det.style.display = show ? '' : 'none';   // matching det stays collapsed via its [hidden] attr
+    });
+    roster.querySelectorAll('.wname').forEach(function (b) {
+      b.classList.toggle('filtering', active !== null && b.getAttribute('data-whale') === active);
+    });
+    if (note) note.textContent = active ? 'Drawer filtered to one whale — click that whale again to clear.' : '';
+  }
+  roster.querySelectorAll('.wname').forEach(function (b) {
+    b.addEventListener('click', function () { apply(b.getAttribute('data-whale')); });
+  });
+})();
+</script>
+{% endif %}

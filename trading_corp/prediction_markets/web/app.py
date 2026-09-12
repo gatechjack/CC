@@ -753,12 +753,84 @@ async def demote_action(request: Request, category: str, wallet: str):
     # attachment). Say WHY instead of failing silently: 409 naming the live attachments; the operator detaches from
     # live first (CLI), then demotes.
     if isinstance(result, dict) and result.get("reason") == "attached_live_detach_first":
-        accts = ", ".join("%s/%s" % (a.get("account_id"), a.get("category"))
-                          for a in (result.get("attachments") or []))
+        atts = result.get("attachments") or []
+        accts = ", ".join("%s/%s" % (a.get("account_id"), a.get("category")) for a in atts)
+        # R6 (2026-09-12): point at the sub-division's own roster page (the Detach control lives there now), not "the CLI".
+        pages = ", ".join("/live/%s/%s" % (a.get("account_id"), a.get("category")) for a in atts) or "the sub-division's Live page"
         return PlainTextResponse(
-            "cannot demote %s in %s: still LIVE-attached (%s). Detach from live first (CLI), then demote."
-            % ((wallet or "").lower(), category, accts or "live"), status_code=409)
+            "cannot demote %s in %s: still LIVE-attached (%s). Detach it from each sub-division's roster first "
+            "(open %s -> \"Copies these whales\" -> Detach), then demote."
+            % ((wallet or "").lower(), category, accts or "live", pages), status_code=409)
     return RedirectResponse("/farm/%s" % category, status_code=303)
+
+
+# ── DETACH a whale from a LIVE sub-division (2026-09-12) -- owner-OR-admin, the roster's back-out for a wrong promote.
+# Mirrors the promote/demote pattern: POST-only, idempotent (farm_actions.detach_from_live is a no-op if not attached),
+# Post/Redirect/Get. The ONE difference from promote/attach (admin-only): Detach is OWNER-OR-ADMIN, so Karen may
+# detach from her OWN sub-divisions and Jack from all -- the first use of owner_identity to gate a WRITE. A real
+# CONFIRM step precedes it (a server-rendered page, JS-off safe): GET shows the consequences, POST performs it. The
+# engine's per-cycle roster query is attachment-gated (live_driver.py:1096, SELECT ... WHERE active=1), so copying
+# stops within one ~7s cycle with NO restart; open positions are NOT closed -- they ride to settlement.
+def _owner_or_admin_gate(request: Request, account_id: str):
+    """403/404 owner-or-admin gate for a per-account mutation. Returns a response to RETURN (deny) or None (proceed).
+    Reads the account's owner_identity server-side -- hiding the button is a UI hint, THIS is the boundary."""
+    with connect() as conn:
+        accts = subdivision.active_accounts(conn)
+    acct = next((a for a in accts if a["account_id"] == account_id), None)
+    if acct is None:
+        return PlainTextResponse("no such account", status_code=404)
+    if not authz.can_act_on_account(authz.current_identity(request), authz.is_admin(request), acct):
+        return PlainTextResponse("forbidden: not your account", status_code=403)   # Karen on Jack's sub -> here
+    return None
+
+
+def _detach_confirm_ctx(account_id: str, category: str, wallet: str, now_ts: int):
+    """The CONFIRM page context: the whale's CURRENT roster record (name + open count/at-cost) so the consequences are
+    stated on the real numbers. Returns None if the whale is not CURRENTLY attached (active=1) -> nothing to detach."""
+    marks, _ = _cache_marks()
+    today_start_ts = live_view.et_window_cutoffs(now_ts)["today"]
+    with connect() as conn:
+        sub = subdivision.get_subdivision(conn, account_id, category)
+        if sub is None:
+            return None
+        recs = subdivision.whale_live_records(conn, account_id, category, marks=marks, now_ts=now_ts,
+                                              today_start_ts=today_start_ts, thin_floor=search.DEFAULT_MIN_RESOLVED_FLOOR)
+    rec = next((r for r in recs["on_roster"] if r["wallet"] == wallet), None)
+    if rec is None:
+        return None                              # not currently attached -> nothing to confirm
+    return {"account_id": account_id, "category": category, "wallet": wallet, "rec": rec, "now_ts": now_ts}
+
+
+def _detach_live(account_id: str, category: str, wallet: str, now_ts: int) -> dict:
+    with connect() as conn:
+        return farm_actions.detach_from_live(conn, account_id, category, wallet, now_ts)
+
+
+@app.get("/live/{account_id}/{category}/detach/{wallet}", response_class=HTMLResponse)
+async def detach_confirm_page(request: Request, account_id: str, category: str, wallet: str):
+    """The Detach CONFIRM page (server-rendered -> JS-off safe). GET does NOT mutate: it states plainly that new copies
+    stop within one engine cycle, open positions are NOT closed (they ride to settlement), and the whale stays on the
+    Farm paper list. OWNER-OR-ADMIN. The Detach button on it POSTs to the same path."""
+    account_id = (account_id or "").strip(); category = (category or "").strip().lower(); wallet = (wallet or "").lower()
+    denied = _owner_or_admin_gate(request, account_id)
+    if denied is not None:
+        return denied
+    data = await asyncio.to_thread(_detach_confirm_ctx, account_id, category, wallet, int(time.time()))
+    if data is None:                              # sub missing, or the whale is not currently attached
+        return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)
+    return templates.TemplateResponse(request, "partials/pm_detach_confirm.html", {"request": request, **data})
+
+
+@app.post("/live/{account_id}/{category}/detach/{wallet}")
+async def detach_action(request: Request, account_id: str, category: str, wallet: str):
+    """DETACH (owner-or-admin, server-side gate). Idempotent (a no-op if not attached). Sets active=0 on the
+    attachment -> the engine's next cycle drops the whale (no restart). 303 back to the sub-division page (PRG)."""
+    account_id = (account_id or "").strip(); category = (category or "").strip().lower(); wallet = (wallet or "").lower()
+    denied = _owner_or_admin_gate(request, account_id)
+    if denied is not None:
+        return denied
+    await asyncio.to_thread(_detach_live, account_id, category, wallet, int(time.time()))
+    return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)
 
 
 async def _refresh_whale(wallet: str, now_ts: int) -> str:
@@ -1056,6 +1128,8 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
     here (off the loop); the feed/marks come from ui_cache, so the render never blocks on the network. The cards
     degrade honestly: feed-unavailable renders nothing feed-derived, a position with no mark renders 'no mark',
     and cost basis is always distinct from current value."""
+    marks, _marks_as_of = _cache_marks()                                            # cached Kalshi marks (per-whale current value)
+    today_start_ts = live_view.et_window_cutoffs(now_ts)["today"]                    # ET-calendar day start (roster "today")
     with connect() as conn:
         accts = subdivision.active_accounts(conn)                                    # carries owner_identity (M4)
         if account_id not in authz.visible_account_ids(identity, is_admin_flag, accts):
@@ -1063,6 +1137,7 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
         sub = subdivision.get_subdivision(conn, account_id, category)
         if sub is None:
             return None
+        acct = next((a for a in accts if a["account_id"] == account_id), None)       # for the owner-or-admin Detach gate (R6)
         attached = subdivision.attached_whales(conn, account_id, category)
         orders = subdivision.live_orders(conn, account_id, category)
         n_live_trades = subdivision.live_order_count(conn, account_id, category)   # uncapped -> honest 'N of M' when truncated
@@ -1070,6 +1145,9 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
         positions_by_whale = subdivision.live_positions_by_whale(conn, account_id, category)   # open per (ticker, whale)
         floor = search.DEFAULT_MIN_RESOLVED_FLOOR
         copies_by_whale = subdivision.live_copies_by_whale(conn, account_id, category, thin_floor=floor)
+        # THE WHALE ROSTER (2026-09-12): per-whale live-copy record, on-roster vs formerly-live, with current value.
+        whale_records = subdivision.whale_live_records(conn, account_id, category, marks=marks, now_ts=now_ts,
+                                                       today_start_ts=today_start_ts, thin_floor=floor)
         # L3 DRIVER LIVENESS for THIS sub (read-only): the one matching row from the expected-set liveness read.
         liveness_present = heartbeat.table_present(conn)
         _live = [r for r in heartbeat.read_liveness(conn, now_ts=now_ts)
@@ -1077,9 +1155,11 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
     ctx = live_view.build_from_cache(orders=orders, open_positions=open_positions,
                                      open_positions_by_whale=positions_by_whale,
                                      cache=ui_cache.cache(), now_ts=now_ts, category=category)
+    can_detach = authz.can_act_on_account(identity, is_admin_flag, acct)   # R6: owner-or-admin (UI hint; the POST route is the gate)
     return {"sub": sub, "attached": attached, "n_live_trades": n_live_trades,
             "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
             "account_id": account_id, "category": category,
+            "whale_records": whale_records, "can_detach": can_detach,
             "arm_badge": _arm_badge(account_id, category, now_ts=now_ts),
             "liveness_present": liveness_present, "liveness": _live[0] if _live else None,
             "sizing_summary": subdivision.sizing_summary(sub), **ctx}

@@ -14,7 +14,7 @@
     </tr></thead>
     <tbody>
     {% for t in trades %}
-      <tr class="main" data-row="{{ t.order_id }}">
+      <tr class="main" data-row="{{ t.order_id }}" data-wallet="{{ t.whale_wallet or '' }}">
         <td class="pri">{{ t.entry_ts|ettime }}</td>
         <td>{{ t.entry_ts|etdate }}</td>
         <td class="pri">{{ t.matchup or '&mdash;'|safe }}{% if t.time_mismatch %} <span class="wsm" title="feed and ticker disagree on the scheduled start time -- see the row detail">&dagger;</span>{% endif %}</td>

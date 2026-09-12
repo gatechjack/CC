@@ -230,15 +230,7 @@
   <p class="caveat" style="margin-top:14px">Feed cache is warming up (first {{ poll_interval }}s poll not yet complete) &mdash; current values and scores appear once the poller has run.</p>
   {% endif %}
 
-  {% if attached %}
-  <div class="panel pad" style="margin-top:16px">
-    <div class="u">Copies these whales</div>
-    <p class="caveat" style="margin:6px 0 0">
-      {% for w in attached %}<a href="/watchlist/{{ w.wallet }}/{{ category }}">{{ w.user_name or w.wallet }}</a>{% if not w.user_name %} <span class="dim">(wallet only)</span>{% endif %}{% if not loop.last %} &middot; {% endif %}{% endfor %}
-      &mdash; real-money copies. Per-trade whale attribution is in the trade drawer below.
-    </p>
-  </div>
-  {% endif %}
+  {% include "partials/pm_whale_roster.html" %}
 
   <div class="strip" style="margin-top:20px">
     {% if summary.has_game_feed %}
