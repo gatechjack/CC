@@ -220,3 +220,92 @@ refresh), not proven per-call -- but the fix is robust to which Kalshi call is t
 and b2 help regardless). 6 h is one sample (US afternoon, real load); the ~1/hour spacing is
 throttle-driven and may vary. No engine CPU was sampled during a stall (CPU ruled out by code, not
 measurement). The sampler did not catch a stall live (the journal did, retrospectively -- stronger).
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## PART E — SETTLED-CONTEXT CONSUMER TRACE (b1 due-diligence, read-only)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+### E1. WHO consumes MarketContext, by file:line -- and the OPEN/SETTLED split
+The ONLY consumers of `MarketContext` (any field) are in `execution.py`, all on the ENTRY/EXIT
+matcher path, invoked from live_driver's cycle:
+- matcher adapters read the indices + `kalshi_dates`: `_mlb_match` (413), `_ufc_match` (427),
+  `_tennis_match` (440), `_cs2_match` (453), `_soccer` (478), `_structural` (496-498, also reads
+  total/spread_index), `_fed_match` (466-467).
+- `evaluate` reads `ctx.markets.get(ticker)` ONCE (567) for the matched ticker's quote: entry
+  price `_leg_ask` (579), exit price `_leg_exit_bid` (579), gate-3 `liquidity_ok` (622) +
+  `_top_of_book_depth_usd` (626), gate-6b shard `exchange_index` (568).
+Repo-wide sweep (Explore agent + grep): **NOTHING else reads MarketContext.** Reconcile
+(`run_boot_reconcile`, no ctx param), settlement-close (`book_settlements`, takes venue
+`/portfolio/settlements`), order booking (`record_order` 694-708 stamps the match `ticker` +
+`signal_slug`/`signal_outcome`, NOT a ctx-derived description), market-describe/naming, leg-audit,
+and pm_web display all work off the JOURNAL + venue APIs. No test asserts on the settled lookback.
+
+### E2. Do SETTLED tickers do anything? -- NO (functionally inert)
+A settled ticker cannot be traded: (i) `_merge_raw_market_fields` fetches `status=open` ONLY
+(live_driver.py:149), so settled tickers get NO `*_size_fp`/`exchange_index` merged -> gate-3
+`_top_of_book_depth_usd`=0 -> `skip:illiquid` for an entry; (ii) a settled market has no bid ->
+exit `_leg_exit_bid`=None -> `skip:no_quote`. And a whale never even SIGNALS on a settled game:
+`positions_to_entry_signals` runs only on `paper.is_genuinely_open` positions (curPrice strictly
+between 0 and 1), so a settled Polymarket position is filtered out before it can match. => the
+settled portion of the index only ever changes a SKIP CLASSIFICATION (matched-then-`skip:illiquid`
+vs `skip:out_of_window`) for whale positions on already-settled games -- which are never copyable.
+
+### E3. Oldest genuinely-needed settled entry -- ~ZERO days
+No consumer reaches for a settled entry to place, close, reconcile, settle, describe, or display.
+The only marginal value of a SHORT settled window is a cleaner skip DIAGNOSTIC during the brief
+"Kalshi settled but Polymarket not yet resolved" skew (a matched-`skip:illiquid` reads as "market
+settled" vs a bare `skip:out_of_window`) -- that needs ~1-2 days, not 160. **The 160 value has no
+rationale comment AND its pre-reconcile history is squashed (git shows only the reconcile commit)
+-> nobody currently knows why it is 160; it reads as an arbitrary "safe big number" (~a season).**
+
+### E4. What breaks if the lookback is cut -- NOTHING functional (and a conflation to NOT repeat)
+- Reconcile / settlement-close / describe / display / booking / leg-audit / tests: UNAFFECTED
+  (none read the ctx).
+- The only change is COSMETIC: some skip reasons flip `illiquid`->`out_of_window` for un-copyable
+  settled games. No position stops closing, no display goes blank, no reconcile degrades.
+- ★ CONFLATION TO AVOID (the Explore agent initially made it): "cutting the lookback strands whales
+  with old OPEN positions." FALSE. The OPEN fetch is DATE-UNBOUNDED (`status=OPEN, extra={}`,
+  live_driver.py:200); `_SETTLED_LOOKBACK_SEC` bounds ONLY the SETTLED fetch. A whale's game that
+  is still OPEN on Kalshi is fetched regardless of the settled lookback -> still matchable. Cutting
+  settled cannot make an open game unreachable. (Named here so it is not "discovered" post-cut.)
+
+### E5. b1 vs b2 -- costed
+- **b1 (shrink/drop `_SETTLED_LOOKBACK_SEC`): nearly free and SAFE per E1-E4.** Concretely, MLB's
+  refresh is ~24 get_markets pages of which ~19 are SETTLED (KXMLBTOTAL 11 + KXMLBSPREAD 8 + game
+  2); shrinking to ~2 days drops those to ~1 page each -> MLB refresh ~24->~9 Kalshi GETs (~2.5-3x
+  fewer pages, ~20x fewer markets); dropping settled entirely -> ~6 GETs. Same lever helps cfb and
+  every category (shared constant). This attacks the CAUSE (the Kalshi GET burst that trips the
+  shared-IP throttle).
+  - Does b1 alone eliminate the >=214s tier? **Likely knocks out the CURRENT tier and buys large
+    headroom -- but it is mechanism-dependent and does NOT remove the structural vulnerability.**
+    The stall is a synchronous blocking `await` in the trading loop; b1 makes the trigger (a big
+    GET burst coinciding with a throttle window) rarer/smaller, but the RESIDUAL open fetches
+    (esp. cfb's ~6 OPEN pages, which the 2026-09-11 ctx-fix deliberately added) still hit the
+    shared IP, so any future throttle window (from other Kalshi traffic, a rate-limit change, a
+    venue hiccup) re-opens the same ~hundreds-of-seconds block. So b1 SHRINKS/DELAYS; it does not
+    structurally guarantee.
+- **b2 (background the catalog fetch): mechanism-agnostic, structural, survives Kalshi changing its
+  limits.** A separate task/executor refreshes `ctx_by_cat[c]` (fetch + build index) and atomically
+  swaps the ctx reference; the account task reads the latest cached ctx WITHOUT awaiting the fetch.
+  This removes the blocking `await` from the trading loop entirely, regardless of fetch size or
+  throttle. => **b2 is the durable fix; b1 is the cheap high-leverage first move.**
+- ★ **b2 STAYS OFF THE PLACEMENT PATH -- confirmed, with the design constraint stated:** the
+  background task must ONLY refresh the read-only market index and swap the `ctx_by_cat[c]`
+  reference (an atomic dict assignment under the GIL; the account task reads one immutable
+  `MarketContext`, no torn read). It must NEVER place an order and NEVER touch the per-cycle
+  `Journal`. Under that constraint the account task remains the SOLE, sequential placer sharing the
+  ONE per-cycle Journal -> M1's account-cap invariant (one task/account, one Journal, no
+  within-cycle over-place race) is preserved. A background CATALOG fetch adds concurrency only to
+  the market-data READ, never to the order write path.
+- Orthogonal cheap mitigation: STAGGER the two accounts' refresh phase (they boot aligned 01:33:35
+  -> they blank together). Staggering halves the per-event blast radius (one account trades while
+  the other refreshes) even before b1/b2.
+
+### E6. Recommendation refined
+Ship **b1 (shrink `_SETTLED_LOOKBACK_SEC` to ~2 days; dropping settled entirely is also
+functionally safe per E1-E4)** first -- one constant, safe, attacks the cause, benefits every
+category. Re-measure the 6 h gap distribution; expect the >=214s tier to collapse. Because b1 is
+mechanism-dependent and leaves the blocking-await structural vulnerability, **treat b2 (background
+the fetch) as the durable fix to schedule next** if the trading gap is to be CLOSED rather than
+shrunk -- b1 buys the headroom cheaply and makes b2 non-urgent, but does not make it unnecessary.
+Stagger the two accounts' refresh phase as a cheap independent win. Do NOT raise the threshold.
