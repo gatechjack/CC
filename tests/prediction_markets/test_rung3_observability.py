@@ -16,10 +16,11 @@ from trading_corp.prediction_markets.live_driver import _audit_leg_independent
 
 
 # ── migration 021 ──────────────────────────────────────────────────────────────────────────
-def test_schema_head_is_21_and_contiguous():
+def test_schema_head_is_22_and_contiguous():
+    # head moved 21 -> 22 with migration 022 (pm_subdivision_sizing_audit; sizing-from-UI). Contiguity is the invariant.
     vers = sorted(v for v, _ in db.MIGRATIONS)
     assert vers == list(range(1, db.SCHEMA_HEAD + 1)), vers
-    assert db.SCHEMA_HEAD == 21, db.SCHEMA_HEAD
+    assert db.SCHEMA_HEAD == 22, db.SCHEMA_HEAD
 
 
 def test_migration_021_adds_columns_and_is_idempotent(tmp_path):
@@ -30,7 +31,7 @@ def test_migration_021_adds_columns_and_is_idempotent(tmp_path):
     ver = con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     cols = [r[1] for r in con.execute("PRAGMA table_info(pm_subdivision_order)")]
     con.close()
-    assert ver == 21, ver
+    assert ver == db.SCHEMA_HEAD, ver   # init_db migrates to the head (now 22); the 021 columns still present below
     for c in ("signal_outcome", "signal_slug", "leg_audit"):
         assert c in cols, (c, cols)
 

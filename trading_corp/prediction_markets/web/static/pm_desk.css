@@ -499,3 +499,17 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .roster-confirm .rc-detach:hover{background:#9a2626}
 .roster-confirm .rc-cancel{font-size:12px;color:var(--dim);text-decoration:none}
 .roster-confirm .rc-cancel:hover{color:var(--text)}
+
+/* SIZING control (2026-09-12) -- a compact chip row in the sub-division header, near arm/liveness. The change
+   affordance (owner-or-admin) is a JS-off-safe GET form; the value + who/age read like the arm row. */
+.sizectl{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;font-family:var(--dmono);font-size:12px}
+.sizectl .sizlbl{font-family:var(--sans);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.sizectl .sizval{color:var(--text)}
+.sizectl .sizval.dim{color:var(--dim)}
+.sizectl .sizby{color:var(--dimmer);font-size:11px}
+.sizectl .sizform{display:flex;align-items:center;gap:6px;margin:0}
+.sizectl .sizinput{width:56px;background:var(--panel,#0d1420);color:var(--text);border:1px solid var(--line);border-radius:2px;padding:4px 6px;font-family:var(--dmono);font-size:12px}
+.sizectl .sizgo{font-family:var(--dmono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text);background:#12324a;border:1px solid #1e4f66;border-radius:2px;padding:5px 12px;cursor:pointer}
+.sizectl .sizgo:hover{background:#184060}
+.sizectl .sizhint{font-size:11px}
+.sizchg{font-family:var(--dmono);color:var(--dim)}

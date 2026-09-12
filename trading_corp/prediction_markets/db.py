@@ -923,6 +923,26 @@ MIGRATION_021: list[str] = [
     "ALTER TABLE pm_subdivision_order ADD COLUMN leg_audit      TEXT",   # independent post-fill verdict: ok|na|unchecked|REVIEW:*
 ]
 
+# migration 022 (2026-09-12, PER-SUB-DIVISION SIZING FROM THE UI): the append-only audit of every contracts-per-copy
+# change made from pm_web -- who (Authelia identity), from, to, when. pm_web-OWNED: the ENGINE never reads or writes
+# this table (it reads pm_subdivision.contracts, migration 014, UNCHANGED); pm_web writes the audit row ALONGSIDE the
+# UPDATE in ONE transaction (prediction_markets/sizing.py). ADDITIVE -- one new table, no existing schema touched, so
+# behaviour is neutral for the engine (loads the new db.py on its next restart; the table simply exists). ★ 022 IS THE
+# NEXT CONTIGUOUS after 021 (test_schema_head_tracks_migrations: [v...] == range(1, HEAD+1)); the DEPLOY GATE must
+# drift-check the LIVE box schema head == 21 immediately before applying and renumber to box-head+1 on any collision.
+MIGRATION_022: list[str] = [
+    "CREATE TABLE IF NOT EXISTS pm_subdivision_sizing_audit ("
+    "  id             INTEGER PRIMARY KEY,"           # append-only change history (the 'last 5 changes' feed)
+    "  account_id     TEXT NOT NULL,"
+    "  category       TEXT NOT NULL,"
+    "  old_contracts  INTEGER,"                       # the value before the change
+    "  new_contracts  INTEGER NOT NULL,"              # the value after (bounds-checked by sizing.py)
+    "  changed_by     TEXT,"                          # Authelia identity (owner or admin); the route blocks a NULL identity upstream
+    "  changed_ts     INTEGER NOT NULL"
+    ")",
+    "CREATE INDEX IF NOT EXISTS ix_pm_sizing_audit ON pm_subdivision_sizing_audit(account_id, category, changed_ts)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -948,6 +968,8 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
                            # drift-check + renumber-to-021 (see the MIGRATION_020 banner). Contiguous by design.
     (21, MIGRATION_021),   # LEG-INDEPENDENCE obs: pm_subdivision_order.signal_outcome/signal_slug/leg_audit (Rung 3).
                            # ★ DEPLOY GATE: drift-check box head == 20 before applying; renumber to box-head+1 on collision.
+    (22, MIGRATION_022),   # SIZING-FROM-UI audit: pm_subdivision_sizing_audit (pm_web-owned; engine never reads it).
+                           # ★ DEPLOY GATE: drift-check box head == 21 before applying; renumber to box-head+1 on collision.
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

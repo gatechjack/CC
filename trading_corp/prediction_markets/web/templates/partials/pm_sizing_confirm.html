@@ -1,0 +1,23 @@
+{% extends "pm_shell.html" %}
+{% block title %}Sizing {{ account_id }} {{ category|upper }} &middot; Prediction Markets{% endblock %}
+{% block main_class %}class="wrap desk"{% endblock %}
+{% block content %}
+{# SIZING CONFIRM (R3) -- server-rendered, JS-off safe. GET states the change on the real numbers; the button POSTs. #}
+<section class="roster-confirm">
+  <div class="panel pad">
+    <div class="u">Change contracts per copy</div>
+    <h1>Set {{ account_id }} &middot; {{ category|upper }} to {{ new_n }} contract{{ '' if new_n == 1 else 's' }} per copy?</h1>
+    <p class="rc-line">Sets <b>{{ account_id }} &middot; {{ category|upper }}</b> to <b>{{ new_n }}</b>
+      contract{{ '' if new_n == 1 else 's' }} per copy (was <b>{{ cur.contracts }}</b>). Applies to <b>NEW</b> copies
+      from the next engine cycle (~7s) &mdash; no restart. Open positions are <b>NOT</b> changed.</p>
+    <p class="rc-line">
+      {% if est_cost is not none %}At recent fill prices (~{{ '$%.2f'|format(avg_fill) }}/contract) this is about
+        <b>{{ '$%.2f'|format(est_cost) }}</b> per copy. <span class="caveat">An estimate from recent fills, not a quote.</span>
+      {% else %}No fills yet to estimate from.{% endif %}</p>
+    <form method="post" action="/live/{{ account_id }}/{{ category }}/sizing/{{ new_n }}" class="rc-actions">
+      <button type="submit" class="rc-detach">Set {{ new_n }} per copy</button>
+      <a class="rc-cancel" href="/live/{{ account_id }}/{{ category }}">Cancel</a>
+    </form>
+  </div>
+</section>
+{% endblock %}

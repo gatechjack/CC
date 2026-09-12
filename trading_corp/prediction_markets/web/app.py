@@ -36,6 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..db import connect, pm_db_path
 from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot, heartbeat
+from .. import sizing   # per-sub-division flat-contracts sizing from the UI (2026-09-12): reader + owner/admin-gated write + audit
 from . import authz   # M4: fail-closed identity/admin resolution + account-visibility scoping (reads headers+env only)
 from . import live_view, poller, ui_cache   # UI rewrite: game-card assembly + the 60s feed/marks poller + its cache
 from ..market_describe import describe_market
@@ -833,6 +834,89 @@ async def detach_action(request: Request, account_id: str, category: str, wallet
     return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)
 
 
+# ── PER-SUB-DIVISION CONTRACT SIZING FROM THE UI (2026-09-12) -- owner-or-admin LOWERS, admin RAISES (R1). Mirrors
+# Detach: a server-rendered CONFIRM (GET, JS-off safe) then a POST that writes pm_subdivision.contracts (READ PER
+# CYCLE by the engine at execution.py:544 via live_driver.py:1080 -> effect on the next ~7s cycle, NO restart) plus
+# the pm_web-owned audit row (sizing.set_contracts, migration 022). BOUNDS (R2) are sizing.CONTRACTS_MIN/MAX, a UI
+# ruling -- NOT the engine's USD caps. The gates here (bounds/mode/authz) ARE the boundary; the header link is a hint.
+def _sizing_confirm_ctx(account_id: str, category: str, new_n: int, now_ts: int):
+    with connect() as conn:
+        cur = sizing.read_sizing(conn, account_id, category, now_ts=now_ts)
+        if cur is None:
+            return None
+        avg_fill, est_cost = sizing.estimate_cost(conn, account_id, category, new_n)
+    return {"account_id": account_id, "category": category, "cur": cur, "new_n": new_n,
+            "avg_fill": avg_fill, "est_cost": est_cost, "now_ts": now_ts}
+
+
+def _load_sizing(account_id: str, category: str, now_ts: int):
+    with connect() as conn:
+        return sizing.read_sizing(conn, account_id, category, now_ts=now_ts)
+
+
+def _apply_sizing(account_id: str, category: str, new_n: int, changed_by, now_ts: int) -> dict:
+    with connect() as conn:
+        return sizing.set_contracts(conn, account_id, category, new_n, changed_by, now_ts)
+
+
+def _sizing_gate(request: Request, account_id: str, category: str, new_n: int, cur: dict | None):
+    """The full R1/R2/mode boundary shared by GET-confirm and POST. Returns a Response to RETURN (deny) or None
+    (proceed). Order: owner-or-admin (403/404) -> sub exists + is on 'contracts' mode (409) -> RAISE requires admin
+    (403). `cur` is the already-read current sizing (None => sub missing)."""
+    denied = _owner_or_admin_gate(request, account_id)          # owner-or-admin; no-identity / not-owner -> 403; no account -> 404
+    if denied is not None:
+        return denied
+    if cur is None:
+        return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)   # sub vanished
+    if not cur["editable"]:                                      # sizing_mode != 'contracts' -> the number is UNREAD
+        return PlainTextResponse("conflict: %s/%s is on '%s' sizing; the contract count is not read (switch to "
+                                 "contracts mode first)" % (account_id, category, cur["sizing_mode"]), status_code=409)
+    if new_n > int(cur["contracts"]) and not authz.is_admin(request):   # R1: only admin may RAISE
+        return PlainTextResponse("forbidden: raising the contract count requires admin (owner may only lower it)",
+                                 status_code=403)
+    return None
+
+
+@app.get("/live/{account_id}/{category}/sizing", response_class=HTMLResponse)
+async def sizing_confirm_page(request: Request, account_id: str, category: str, n: str | None = None):
+    """The sizing CONFIRM page (server-rendered -> JS-off safe). `?n=<new>` is the target from the header form. GET
+    does NOT mutate. Owner-or-admin; bounds (400) named; non-contracts mode (409); RAISE requires admin (403)."""
+    account_id = (account_id or "").strip(); category = (category or "").strip().lower()
+    if n is None:
+        return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)
+    try:
+        new_n = sizing.validate_contracts(n)                    # R2 bounds -> 400 naming the bound
+    except sizing.SizingError as e:
+        return PlainTextResponse("bad request: %s" % e, status_code=400)
+    data = await asyncio.to_thread(_sizing_confirm_ctx, account_id, category, new_n, int(time.time()))
+    denied = _sizing_gate(request, account_id, category, new_n, (data or {}).get("cur"))
+    if denied is not None:
+        return denied
+    return templates.TemplateResponse(request, "partials/pm_sizing_confirm.html", {"request": request, **data})
+
+
+@app.post("/live/{account_id}/{category}/sizing/{n}")
+async def sizing_action(request: Request, account_id: str, category: str, n: str):
+    """APPLY the sizing change (owner-or-admin lower / admin raise, server-side). The target count is in the PATH
+    (no form body -> no python-multipart dependency). Bounds (400); non-contracts (409); writes
+    pm_subdivision.contracts + the audit row (sizing.set_contracts). 303 back to the sub-division page (PRG)."""
+    account_id = (account_id or "").strip(); category = (category or "").strip().lower()
+    try:
+        new_n = sizing.validate_contracts(n)                    # R2 bounds -> 400
+    except sizing.SizingError as e:
+        return PlainTextResponse("bad request: %s" % e, status_code=400)
+    now_ts = int(time.time())
+    cur = await asyncio.to_thread(_load_sizing, account_id, category, now_ts)
+    denied = _sizing_gate(request, account_id, category, new_n, cur)
+    if denied is not None:
+        return denied
+    try:
+        await asyncio.to_thread(_apply_sizing, account_id, category, new_n, authz.current_identity(request), now_ts)
+    except sizing.SizingError as e:                             # a race (mode flip / bounds) -> honest error, no silent write
+        return PlainTextResponse("bad request: %s" % e, status_code=400)
+    return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)
+
+
 async def _refresh_whale(wallet: str, now_ts: int) -> str:
     """The REFRESH BUTTON's work (Jack's on-demand ruling): a FULL ad-hoc re-pull of ONE whale's completed history
     (search_run.refresh_one -> ingest.refresh_wallet), then a rollup so the re-pulled data reflects in the
@@ -1152,6 +1236,9 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
         liveness_present = heartbeat.table_present(conn)
         _live = [r for r in heartbeat.read_liveness(conn, now_ts=now_ts)
                  if r.account_id == account_id and r.category == category]
+        # SIZING (2026-09-12): the header control's current value + last-change (who/age) + the drawer's last-5 audit.
+        sizing_state = sizing.read_sizing(conn, account_id, category, now_ts=now_ts)
+        sizing_changes = sizing.recent_changes(conn, account_id, category, limit=5)
     ctx = live_view.build_from_cache(orders=orders, open_positions=open_positions,
                                      open_positions_by_whale=positions_by_whale,
                                      cache=ui_cache.cache(), now_ts=now_ts, category=category)
@@ -1160,6 +1247,10 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
             "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
             "account_id": account_id, "category": category,
             "whale_records": whale_records, "can_detach": can_detach,
+            # SIZING: `can_size` = owner-or-admin (may LOWER; the change link shows only for them); `viewer_is_admin`
+            # gates the RAISE affordance. The POST/GET routes are the true boundary (server-side R1), not these hints.
+            "sizing": sizing_state, "sizing_changes": sizing_changes, "can_size": can_detach,
+            "viewer_is_admin": is_admin_flag,
             "arm_badge": _arm_badge(account_id, category, now_ts=now_ts),
             "liveness_present": liveness_present, "liveness": _live[0] if _live else None,
             "sizing_summary": subdivision.sizing_summary(sub), **ctx}

@@ -240,6 +240,9 @@
   </div>
   {% endif %}
 
+  {# SIZING control (2026-09-12) -- current contracts-per-copy + who/age + a JS-off-safe change form (owner-or-admin). #}
+  {% include "partials/pm_sizing_control.html" %}
+
   {% if warming %}
   <p class="caveat" style="margin-top:14px">Feed cache is warming up (first {{ poll_interval }}s poll not yet complete) &mdash; current values and scores appear once the poller has run.</p>
   {% endif %}

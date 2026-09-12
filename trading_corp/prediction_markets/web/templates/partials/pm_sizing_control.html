@@ -1,0 +1,20 @@
+{# Per-sub-division SIZING control (2026-09-12) -- current contracts-per-copy + who/when (R4), plus a JS-off-safe
+   "change" form that GETs the confirm page with the chosen count. The change affordance shows ONLY to an
+   owner-or-admin (can_size) on a 'contracts'-mode sub (sizing.editable); otherwise the value is read-only. The
+   server routes (owner-or-admin to lower, admin to raise; bounds) are the real boundary -- this is a hint. #}
+{% if sizing %}
+<div class="sizectl" data-editable="{{ '1' if sizing.editable else '0' }}">
+  <span class="sizlbl">Sizing</span>
+  {% if sizing.editable %}<span class="sizval">{{ sizing.contracts }} contract{{ '' if sizing.contracts == 1 else 's' }} / copy</span>
+  {% else %}<span class="sizval dim">{{ sizing.sizing_mode }} sizing &mdash; contract count not used</span>{% endif %}
+  {% if sizing.last_change %}<span class="sizby">set by {{ sizing.set_by or 'unknown' }}{% if sizing.set_age_sec is not none %} &middot; {{ sizing.set_age_sec|agefmt }}{% endif %}</span>{% endif %}
+  {% if sizing.editable and can_size %}
+    <form class="sizform" method="get" action="/live/{{ account_id }}/{{ category }}/sizing">
+      <input class="sizinput" type="number" name="n" min="{{ sizing.min }}" max="{{ sizing.max }}" step="1"
+             value="{{ sizing.contracts }}" aria-label="new contracts per copy" />
+      <button class="sizgo" type="submit">change</button>
+    </form>
+    {% if not viewer_is_admin %}<span class="caveat sizhint">you may lower it &mdash; raising needs admin</span>{% endif %}
+  {% endif %}
+</div>
+{% endif %}
