@@ -48,10 +48,15 @@
   {% for r in prospects %}
     <tr>
       <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
-      {# JUDGE cell. data-sort-value is the tier-then-number composite (r.score.sort_value), NEGATED: the shared
-         client sorter (pm_sort.js) sorts ASCENDING on the first click, and our composite is higher=better, so negating
-         makes an ascending click put the best tier (PROMOTE) at the TOP and un-analyzed at the BOTTOM -- on every
-         click, not just the first. The tier still caps the number (the composite dominates within the negation). #}
+      {# JUDGE cell. data-sort-value is the tier-then-number composite (r.score.sort_value), NEGATED ON PURPOSE.
+         ★★ DO NOT "simplify" the minus away -- it is load-bearing. The shared client sorter (pm_sort.js) sorts
+         ASCENDING on the first click (its OWN "first click = descending" comment is WRONG -- the code does ascending).
+         Our composite is higher=better, so WITHOUT this negation a first click on JUDGE floats INSUFFICIENT_DATA (the
+         loss-omission MIRAGES) and un-analyzed rows to the TOP of the very list used to pick whales -- the exact
+         inversion the tier-cap exists to prevent, and it would look like it was working. The minus contains the fix
+         to THIS column instead of flipping the shared sorter's global direction (owned by another workstream). With
+         it, an ascending click puts the best tier (PROMOTE) at the top and un-analyzed at the bottom, every click; the
+         tier still caps the number. If pm_sort.js is ever fixed to descending-first, drop this minus AND re-verify. #}
       <td class="pm-judge-col" data-sort-value="{{ -r.score.sort_value }}">{{ score_cell(r.score, r.wallet, r.category) }}</td>
       <td class="pm-num" data-sort-value="{{ r.n_resolved or 0 }}">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
       {# ★ win% + its per-whale F-1 omission caveat, IN THE SAME CELL (the caveat travels with the number). When the
