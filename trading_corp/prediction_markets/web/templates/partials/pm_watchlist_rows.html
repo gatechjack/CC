@@ -28,7 +28,7 @@
     <tr>
       {# whale name -> the PAPER detail (all its paper trades), NOT the completed /whale detail (basis separation) #}
       <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/watchlist/' ~ r.wallet ~ '/' ~ r.category) }}</td>
-      <td class="pm-judge-col">{{ score_badge(r.score) }}</td>
+      <td class="pm-judge-col">{{ score_badge(r.score, r.wallet) }}</td>
       <td class="pm-num"><a class="pm-drill-link" href="/watchlist/{{ r.wallet }}/{{ r.category }}" title="open paper positions -- click for all paper trades">{{ r.n_open or 0 }}</a></td>
       <td class="pm-num">{{ r.n_closed if r.n_closed is not none else 0 }}</td>
       <td class="pm-num">{% if r.n_stale %}<span class="pm-badge pm-badge-anom" title="{{ r.n_stale }} stale paper exit(s) -- excluded from win/loss (survivorship-visible).">{{ r.n_stale }}</span>{% else %}0{% endif %}</td>

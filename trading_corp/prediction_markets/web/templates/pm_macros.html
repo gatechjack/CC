@@ -124,15 +124,25 @@
 </span>
 {%- endmacro %}
 
-{# ── score_badge(sc) ──────────────────────────────────────────────────────────────────────────────
+{# ── score_badge(sc, wallet=None, category=None, oob=False) ─────────────────────────────────────────
    Compact READ-ONLY tier+score badge for surfaces that already carry their own Analyze control (Watchlist,
    /live roster) -- so a whale keeps its judged verdict visible AFTER it is promoted off Prospects (the score is
-   keyed (wallet, category), it does not vanish). UN-analyzed -> a muted 'not analyzed' (never a 0), same idiom. #}
-{% macro score_badge(sc) -%}
+   keyed (wallet, category), it does not vanish). UN-analyzed -> a muted 'not analyzed' (never a 0), same idiom.
+   ★ When `wallet` is given the badge is wrapped in id="pm-scoreb-{wallet}" so an Analyze RESULT can OOB-update it
+   IN PLACE (the loop closing on the Watchlist, same as score_cell does for Prospects). WITHOUT this id the badge
+   only refreshed on a full reload -- the "Watchlist doesn't populate after Analyze" bug. The id needs NO category:
+   a /farm/{cat} or /live/{acct}/{cat} page is SINGLE-category, so the wallet is unique per page (and omitting the
+   lowercase slug keeps the F-3 casing guard, test_category_page_knows_its_category, honest). It is DISTINCT from
+   score_cell's pm-score-{w}-{c}; the analyze result emits BOTH OOB fragments, each no-ops where its surface is
+   absent (a whale is pinned XOR candidate on a page). #}
+{% macro score_badge(sc, wallet=None, oob=False) -%}
+{% set _id = ('pm-scoreb-' ~ wallet) if wallet else '' %}
+<span{% if _id %} id="{{ _id }}"{% endif %} class="pm-scoreb-wrap"{% if oob %} hx-swap-oob="true"{% endif %}>
   {%- if not sc or not sc.analyzed -%}
     <span class="pm-tier pm-tier-none" title="Not analyzed yet -- no stored score (use Analyze).">not&nbsp;analyzed</span>
   {%- else -%}
     <span class="pm-tier pm-tier-{{ sc.tier|lower|replace('_','-') }}"
        title="{{ sc.reason }}{% if not sc.grounded %} (ungrounded -- omission UNKNOWN){% endif %}">{{ 'INSUF DATA' if sc.tier == 'INSUFFICIENT_DATA' else sc.tier }}</span>{% if sc.sort_roi is not none %} <span class="pm-score-num{% if sc.flagged %} pm-score-flagged{% endif %}">{{ '%+.0f'|format(sc.sort_roi * 100) }}%{% if sc.flagged %}<sup>*</sup>{% endif %}</span>{% endif %}
   {%- endif -%}
+</span>
 {%- endmacro %}

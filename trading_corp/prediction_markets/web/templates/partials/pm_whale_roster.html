@@ -9,7 +9,7 @@
       <button type="button" class="wname" data-whale="{{ w.wallet }}" title="Copied from {{ w.user_name or w.wallet }} ({{ w.wallet }}) &mdash; click to filter the trade drawer">{{ w.user_name or w.wallet }}</button>
       {% if not w.user_name %}<span class="dim wr-wo">wallet only</span>{% endif %}
       {# ★ the stored ANALYZE verdict, kept visible on the live surface (the score persists past Promote-to-live). #}
-      <span class="wr-score">{{ score_badge(w.score) }}</span>
+      <span class="wr-score">{{ score_badge(w.score, w.wallet) }}</span>
       {% if w.thin %}<span class="wr-thin" title="under {{ whale_records.thin_floor }} booked settlements &mdash; too few to read as a result">thin</span>{% endif %}
       <span class="wr-when">
         {% if formerly %}live {{ w.added_ts|etdate if w.added_ts else '?' }} &ndash; {{ w.removed_ts|etdate if w.removed_ts else '?' }}

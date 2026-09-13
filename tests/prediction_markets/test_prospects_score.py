@@ -82,3 +82,16 @@ def test_score_badge_compact_mirage_and_unanalyzed():
     assert "INSUF DATA" in html_m and "pm-score-flagged" in html_m and "<sup>*</sup>" in html_m
     html_u = _render("score_badge", "{{ score_badge(sc_u) }}")
     assert "not" in html_u and "analyzed" in html_u and "pm-score-num" not in html_u
+
+
+def test_score_badge_oob_id_for_watchlist_live_update():
+    # ★ THE WATCHLIST/ROSTER FIX: with wallet+category the badge carries id="pm-scoreb-{w}-{c}" + hx-swap-oob so the
+    # Analyze result can update it IN PLACE. The bug was score_badge had NO id, so a Watchlist row stayed 'not
+    # analyzed' after clicking Analyze (only a full reload populated it).
+    html = _render("score_badge", "{{ score_badge(sc_m, '0x684baa57c3', oob=True) }}")
+    # id is wallet-ONLY (no category slug): unique per single-category page AND keeps the F-3 casing guard honest.
+    assert 'id="pm-scoreb-0x684baa57c3"' in html and 'hx-swap-oob="true"' in html
+    assert "INSUF DATA" in html and "pm-score-flagged" in html          # still renders the flagged mirage badge
+    assert 'id="pm-score-' not in html                                  # distinct from score_cell -> no collision
+    # back-compat: no wallet -> no id wrapper (callers that don't need OOB)
+    assert 'id="pm-scoreb' not in _render("score_badge", "{{ score_badge(sc_m) }}")
