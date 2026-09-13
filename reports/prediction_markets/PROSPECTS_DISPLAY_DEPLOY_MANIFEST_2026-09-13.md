@@ -97,3 +97,31 @@ unaffected; only pm_web reloads on its restart.
   **fixed** (negated JUDGE `data-sort-value`, + a DOM-ordering test); Skeptic-2 found **no BLOCKER/HIGH** (read-only,
   engine-untouched, category/wallet-case-consistent, NULL-correct), its LOW "never break the page" addressed with a
   `_score_cell` try/except. No outstanding BLOCKER/HIGH.
+
+---
+
+## 5. DEPLOYED LIVE 2026-09-13 — OUTCOME (every step board-authorized)
+
+**origin/prod-live `614313bb` → `6afa5ccc` (FF); tag `pm-prospects-display-deploy-2026-09-13`.** pm_web-only, NO
+migration; engine `trading-corp` **PID 370246 NEVER touched**; pm_web `prediction-markets-web` **376953 → 379568
+→ 381803** (two restarts: the initial deploy + the OOB-fix redeploy).
+
+Sequence as executed:
+- **Step 0 pre-flight RO**: head 23, box == `614313bb` (9/9), `pm_whale_score` present (3 scored), `0x684/mlb` =
+  INSUFFICIENT_DATA + active on jack/karen mlb rosters (acceptance data present).
+- **Step 1 graft** (9 files) → **Step 2 restart** → landed `69921719`.
+- **★ Watchlist bug caught in review (Jack):** the Watchlist/roster JUDGE badge stayed "not analyzed" after Analyze.
+  Read-only diagnosis: LOAD path fine (all 11 pinned-scored ATP whales render tiers on reload; the mirage acceptance
+  actually passes — the earlier post-check "fail" was a slicing bug in the CHECK, two `data-whale` per roster whale).
+  Root cause: `score_badge` had no element id, so the analyze OOB (targeting `score_cell`'s `pm-score-{w}-{c}`) never
+  reached it → no live update. **Fix:** wallet-only OOB id `pm-scoreb-{wallet}` on `score_badge` (keeps the F-3
+  casing guard — a category-bearing id had regressed `test_category_page_knows_its_category` 21→22) + a second OOB
+  fragment from the analyze result. `614313bb`→`5157470f`→`8cf29d9b`→`69921719`→`6afa5ccc`.
+- **Step 1b re-graft** (4 templates) → **Step 2b restart** → landed `6afa5ccc`.
+- **Post-check green:** box == `6afa5ccc` (9/9); engine 370246 unchanged; `/farm/atp` Watchlist = **11 OOB anchors +
+  11 tier badges**; mirage acceptance PASSES (`0x684` = `INSUF DATA` + flagged on the live roster); `/farm` + `/live`
+  200, heartbeats fresh. No DB write throughout (display reads `pm_whale_score` only).
+
+**Live now:** the stored ANALYZE score (tier + sort number, tier-capped, trust-flagged) shows on **Prospects
+(sortable JUDGE column), Watchlist, and the /live roster**; un-analyzed reads "not analyzed" (never a 0); analyzing
+from any surface updates the badge in place. Closes Requirement One (the score is viewable and sortable).
