@@ -405,8 +405,8 @@ def report_from_json(s: str) -> PMAnalysisReport:
 # ── forked LLM helpers (langchain is a third-party lib, NOT an engine module -- forking the wrapper) ───
 def is_llm_available() -> bool:
     """True iff langchain-anthropic is importable AND ANTHROPIC_API_KEY is set. Forked verbatim from
-    agents/llm.is_llm_available. NOTE: an importable library is CAPABILITY, not a working token -- the key
-    is not wired into pm_web yet (e3, Jack's hands), so this returns False in production today."""
+    agents/llm.is_llm_available. ★ THE KEY IS WIRED IN PROD (Jack 2026-09-12), so this returns True in production
+    today and the Sonnet narrator RUNS live -- an importable library alone is only CAPABILITY, but the token is set."""
     import os
     if not os.getenv("ANTHROPIC_API_KEY"):
         return False
@@ -418,7 +418,7 @@ def is_llm_available() -> bool:
 
 
 def _build_chat_model(max_tokens: int = PM_ANALYZE_MAX_OUTPUT_TOKENS):
-    """Forked from agents/llm.build_chat_model, pinned to Haiku (Analyze's only model). SYNC caller."""
+    """Forked from agents/llm.build_chat_model, pinned to Sonnet (PM_ANALYZE_MODEL, Analyze's only model). SYNC caller."""
     from langchain_anthropic import ChatAnthropic  # type: ignore
     return ChatAnthropic(model=PM_ANALYZE_MODEL, max_tokens=max_tokens, temperature=0.1)
 
@@ -435,8 +435,8 @@ def _extract_usage(resp: object) -> dict:
 
 
 def _cost_for_usage(usage: dict) -> float:
-    """Haiku-only cost from a usage dict. Forked from agents/research/cost.cost_for_anthropic_usage with the
-    Haiku price row pinned (cache-read billed 10% of input, cache-creation 125%)."""
+    """Cost from a usage dict at the pinned _MODEL_PRICE (Sonnet $3/$15). Forked from
+    agents/research/cost.cost_for_anthropic_usage (cache-read billed 10% of input, cache-creation 125%)."""
     if not usage:
         return 0.0
     in_tok = int(usage.get("input_tokens") or 0) + int(usage.get("prompt_tokens") or 0)
@@ -554,9 +554,9 @@ def narrate(rep: PMAnalysisReport, *, narrator_enabled: bool = True, chat: objec
     """The 4 legacy LLM gates + the data-refusal, in priority order. DB-free (cap_hit is passed in; the cost
     ledger is the orchestrator's job) so it is trivially testable with a fake `chat`.
 
-    Gate order matters for the KEY-DEFERRED period: an 'empty' slice refuses on DATA (no_resolved_positions)
-    before the LLM gates, because narrating zero numbers is meaningless whether or not the key is wired --
-    so the zero-rows pair shows the honest data-refusal, not a misleading 'the LLM would have narrated'."""
+    Gate order matters: an 'empty' slice refuses on DATA (no_resolved_positions) before the LLM gates, because
+    narrating zero numbers is meaningless whether or not the key is wired -- so the zero-rows pair shows the honest
+    data-refusal, not a misleading 'the LLM would have narrated'."""
     if not narrator_enabled:
         return NarrationResult(None, NULL_DISABLED, 0.0, 0, 0, None)
     if rep.data_state == "empty":                        # data refusal -- nothing to narrate
@@ -564,7 +564,7 @@ def narrate(rep: PMAnalysisReport, *, narrator_enabled: bool = True, chat: objec
     if cap_hit:
         return NarrationResult(None, NULL_CAP, 0.0, 0, 0, None)
     if chat is None:
-        if not is_llm_available():                       # key not wired -> this fires in production today
+        if not is_llm_available():                       # key IS wired in prod -> this does NOT fire today (Sonnet runs)
             return NarrationResult(None, NULL_UNAVAILABLE, 0.0, 0, 0, None)
         try:
             chat = _build_chat_model()

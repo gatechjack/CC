@@ -119,10 +119,13 @@ def _f(v) -> float:
 def honest_windowed_roi(activity_rows, closed_rows, resolutions: dict) -> HonestWindowedReturn:
     """Cost-based ROI over the honest windowed set. `activity_rows`/`closed_rows`/`resolutions` are the SAME rows
     loss_grounding.ground_losses consumes (so this rides the one grounding fetch). Closed rows contribute
-    cost=total_bought*avg_price, pnl=realized_pnl. A_only held-to-resolution rows (in /activity, ABSENT from closed)
-    contribute cost=net USDC committed, pnl = (won ? net_long_contracts - cost : -cost) -- i.e. a held-to-worthless
-    loser loses its whole committed cost (the F-1 loss /closed-positions dropped). Pure; mirrors the
-    loss_grounding held/won conventions."""
+    cost=total_bought*avg_price (GROSS buy), pnl=realized_pnl. A_only held-to-resolution rows (in /activity, ABSENT
+    from closed) use the SAME gross basis: cost = buy_usd (total USDC bought, NOT net-of-sales), and the sale proceeds
+    net into pnl -- winner: kept net_sz shares pay $1 each + sale proceeds - gross buy; loser (held-to-worthless):
+    sale proceeds - gross buy. ★ The gross basis is the fix for the partial-sale-winner inflation: a net-of-sales
+    denominator (buy_usd - sell_usd) shrinks the basis while the full held payout is still credited, over-stating the
+    return -- e.g. BUY 100@$0.50, SELL 40@$0.75, hold 60 to a WIN reads +80% on the gross basis, +200% on the net one.
+    Pure; mirrors the loss_grounding held/won conventions and the closed side's denominator."""
     # aggregate size + usdc per (cid, oi) from TRADE activity
     agg: dict = {}
     for a in activity_rows:
@@ -170,15 +173,18 @@ def honest_windowed_roi(activity_rows, closed_rows, resolutions: dict) -> Honest
         r = resolutions.get(cid) or {}
         if str(r.get("status") or "").lower() != "resolved":
             continue
-        committed = e["buy_usd"] - e["sell_usd"]           # net USDC still in the held position = its cost basis
-        if committed <= 0:
+        buy_usd, sell_usd = e["buy_usd"], e["sell_usd"]
+        if buy_usd <= 0:                                   # no gross cost basis -> nothing to divide (mirrors closed cb<=0)
             continue
         try:
             won = int(r.get("winning_outcome_index")) == oi
         except (TypeError, ValueError):
             won = False
-        cost += committed
-        pnl += (net_sz - committed) if won else (-committed)   # win: net_sz shares pay $1 each; loss: lose the cost
+        # GROSS basis (= buy_usd) to match the closed side; the sale proceeds net into pnl, NOT the denominator, so a
+        # partial-sale winner reads its true return (see docstring). win: kept net_sz shares pay $1 + sales - buy;
+        # loss (held-to-worthless): sales - buy.
+        cost += buy_usd
+        pnl += (net_sz + sell_usd - buy_usd) if won else (sell_usd - buy_usd)
         n += 1
     roi = (pnl / cost) if cost > 0 else None
     return HonestWindowedReturn(cost, pnl, roi, n)

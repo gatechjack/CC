@@ -147,6 +147,29 @@ def test_honest_roi_recovered_winner_pays_out():
     assert abs(hw.honest_cost - 30.0) < 1e-6 and abs(hw.honest_pnl - 70.0) < 1e-6
 
 
+def test_honest_roi_partial_sale_winner_uses_gross_basis_not_inflated():
+    # Skeptic-1 regression: BUY 100 @ $0.50 ($50), SELL 40 @ $0.75 ($30), hold 60 to a WIN. GROSS basis (=buy $50)
+    # -> pnl = 60 held-payout + 30 sales - 50 buy = +40 -> ROI +80%. A NET-of-sales basis ($50-$30=$20) would credit
+    # the same +40 over a shrunken $20 denom -> a bogus +200%. The fix keeps the A_only side on the closed convention.
+    closed = []
+    acts = [_Act("cidP", 0, "BUY", 100.0, 50.0), _Act("cidP", 0, "SELL", 40.0, 30.0)]
+    res = {"cidP": {"status": "resolved", "winning_outcome_index": 0}}
+    hw = S.honest_windowed_roi(acts, closed, res)
+    assert hw.n_positions == 1
+    assert abs(hw.honest_cost - 50.0) < 1e-6 and abs(hw.honest_pnl - 40.0) < 1e-6
+    assert hw.honest_roi is not None and abs(hw.honest_roi - 0.80) < 1e-6   # +80%, NOT +200%
+
+
+def test_honest_roi_partial_sale_loser_held_to_worthless():
+    # BUY 100 @ $0.50 ($50), SELL 40 @ $0.60 ($24), hold 60 to a LOSS (worthless). GROSS basis $50; the kept shares
+    # pay $0 -> pnl = 24 sales - 50 buy = -26 -> ROI -52%. Symmetric with the winner: sales net into pnl, basis is gross.
+    closed = []
+    acts = [_Act("cidPL", 1, "BUY", 100.0, 50.0), _Act("cidPL", 1, "SELL", 40.0, 24.0)]
+    res = {"cidPL": {"status": "resolved", "winning_outcome_index": 0}}   # oi=1 lost
+    hw = S.honest_windowed_roi(acts, closed, res)
+    assert abs(hw.honest_cost - 50.0) < 1e-6 and abs(hw.honest_pnl - (-26.0)) < 1e-6
+
+
 # ── build_score assembler: the four real whales, end to end ──
 def _rows(pnls, wons=None, titles=None):
     wons = wons if wons is not None else [1 if p > 0 else 0 for p in pnls]
