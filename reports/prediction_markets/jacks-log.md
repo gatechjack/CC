@@ -198,6 +198,125 @@ FINDING (handed off, not a bug): right after the restart the driver heartbeats l
       driver handles fail-safe (skip the cycle, never place blind).
 
 
+════════════════════════════════════════════════════════════════════════════════════════════════════
+SESSION 2026-09-13 — FOUR PM DEPLOYS AFTER DEPLOY 11 (for a git-truth reconciler)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+prod-live walked:  489a9ddb -> 68af1b94 -> e02d73ea -> 614313bb -> 5e03b7a2.
+ALL FOUR ARE CLEAN FAST-FORWARDS (git merge-base --is-ancestor confirmed each consecutive pair).
+SHARED TRIO UNTOUCHED the whole span: git diff --name-only 489a9ddb 5e03b7a2 -- trading_corp/main.py
+  trading_corp/agents/data_exec.py trading_corp/brokers/robinhood.py  == EMPTY. Every runtime file below is
+  under trading_corp/prediction_markets/ (the PM division).
+★ ENGINE PID CHANGED THIS SESSION. The standing fact at the top ("MainPID 351422 ... NEVER restarted") held
+  THROUGH Deploy 11. The FIRST deploy tonight (heartbeat b1+stagger) INTENTIONALLY restarted the engine:
+  351422 -> 370246. The three deploys AFTER it are pm_web-only and left 370246 untouched (PID + NRestarts=0
+  checked before/after each).
+
+[1] HEARTBEAT-STALL FIX — b1 (_SETTLED_LOOKBACK_SEC 160d->2d) + cross-account refresh stagger (2026-09-12)
+  prod-live 489a9ddb -> 68af1b94.  FAST-FORWARD: clean.  TAG: none.
+  WHAT: closes a ~189s recurring heartbeat/trading gap (Kalshi rate-limit backoff on the shared IP, not a
+        disconnect). Shrinks the settled-lookback and staggers the per-account refresh so they don't collide.
+  FILES (ENGINE, division-scoped): trading_corp/prediction_markets/live_driver.py  (the ONLY runtime file)
+        + tests/prediction_markets/test_refresh_stagger_and_lookback.py + 2 report docs.  NOT the shared trio.
+  SERVICES: ENGINE restart — the only deploy this session that BOUNCED EVERY DIVISION.  engine 351422 -> 370246.
+
+[2] MILESTONE START-TIMES REACH CFB — Item A / A3 consumer routing (2026-09-12)
+  prod-live 68af1b94 -> e02d73ea.  FAST-FORWARD: clean.  TAG: none.
+  WHAT: milestone start-times weren't reaching cfb; milestone-eligible is now derived as
+        LIVE_CAPABLE minus _HHMM_AUTHORITATIVE({mlb,cs2}).
+  FILES (pm_web, division-scoped): trading_corp/prediction_markets/web/live_view.py  (the ONLY runtime file)
+        + test_milestone_structural_fallback.py + test_milestones.py + 2 report docs.  NOT the shared trio.
+  SERVICES: pm_web-only restart -> PID 372688.  Engine 370246 untouched.
+
+[3] ANALYZE UPGRADE — deterministic promotion-judge + Sonnet narrator + MIGRATION 023 (2026-09-13)
+  prod-live e02d73ea -> 614313bb.  FAST-FORWARD: clean.  TAG: pm-analyze-upgrade-deploy-2026-09-13.
+  WHAT: Haiku->Sonnet one-sentence narration OVER a deterministic, stored, sortable score (scoring.py); a
+        loss-grounding Phase-A honest windowed ROI.
+  FILES (division-scoped): scoring.py (NEW), analyze.py, db.py, loss_grounding.py, web/app.py
+        + tests (test_scoring, test_analyze_score, test_rung3_observability) + 2 report docs.  NOT the shared
+        trio.  db.py is engine-shared ONLY as the PM DB schema module (migration 023 = additive CREATE TABLE);
+        it is not main/data_exec/robinhood.
+  MIGRATION: 023 = pm_whale_score (the stored promotion-judge score).  head 22 -> 23.  Pure additive CREATE
+        TABLE + index; pm_web-owned (engine never reads it).  ★ APPLIED BY THE 01:30Z paper-poll CRON before my
+        manual step (see the STANDING DEPLOY FACT below); the manual step then read head==23 and correctly
+        STOPPED.  Verified clean vs the head-22 backup snapshot (config byte-identical, table empty, engine
+        untouched).  On-box backup: /home/azureuser/pm_analyze_backup_20260913T011517Z/.
+  SERVICES: pm_web-only restart -> PID 376953.  Engine 370246 untouched (it runs its old db.py in memory
+        against a head-23 DB = a non-event; it never reads pm_whale_score).
+  LIVE PROOF: first Analyze on 0x684baa57c3/mlb returned model=claude-sonnet-4-6 read from the API response
+        (NOT the config), cost $0.00275 — the Sonnet swap is live.  It exposed that whale (the most-copied,
+        222 fills) as a loss-omission MIRAGE: closed-table 196W/17L looks 92%, but 80% of its losses were
+        dropped at 36% coverage -> tier INSUFFICIENT_DATA.
+  TESTS: 27 new; 0 new regressions vs the pre-existing UI-test baseline.
+
+[4] PROSPECTS DISPLAY — the stored score on the whale lists (2026-09-13)
+  prod-live 614313bb -> 5e03b7a2.  FAST-FORWARD: clean.  TAG: pm-prospects-display-deploy-2026-09-13.
+  WHAT: the tier + sort number (tier-capped, trust-flagged) now shows and sorts on Prospects (a sortable JUDGE
+        column), the Watchlist, and the /live roster.  Un-analyzed reads "not analyzed", never a 0.
+  FILES (pm_web, division-scoped): scoring.py, web/app.py, web/static/pm_desk.css (?v= 422c45ec -> 2a290250),
+        web/templates/pm_macros.html, web/templates/pm_shell.html, and 4 partials (pm_prospects_rows,
+        pm_watchlist_rows, pm_whale_roster, pm_analyze_result) + tests + 1 manifest doc.  NOT the shared trio.
+  MIGRATION: NONE — reads the already-live pm_whale_score.
+  SERVICES: pm_web-only, TWO restarts — the initial deploy (PID 379568) then a same-session redeploy for a
+        Watchlist live-update fix (PID 381803).  Engine 370246 untouched both times.
+  BOX == PROD-LIVE: 9/9 runtime files at 5e03b7a2 (sha256, CR-stripped).  On-box backups:
+        /home/azureuser/pm_pd_backup_20260913T032138Z/ (9 files) and pm_pd_backup2_20260913T063200Z/ (4 files).
+  ACCEPTANCE (proven on the deployed page): 0x684baa57c3/mlb renders INSUF DATA + flagged on the /live roster
+        and sorts BELOW a PROMOTE — the list cannot make the loss-omission mirage look good.
+  TESTS: 40 new; 0 new regressions vs the pre-existing UI-test baseline.
+
+
+★ STANDING DEPLOY FACT — PM MIGRATIONS SELF-APPLY VIA THE pm_cli CRONS (read before you graft a db.py)
+------------------------------------------------------------------------------------------------------
+Extends the Deploy-11 migration-mechanism note into a warning.  PM migrations apply through db.init_db, which
+the pm_cli crons call (paper-poll every 30 min; refresh/adjudicate/rollup daily).  So the MOMENT you graft a new
+db.py, THE NEXT CRON TICK APPLIES THE MIGRATION ON ITS OWN — you do not control the timing.  Tonight the 01:30Z
+paper-poll applied grafted migration 023 BEFORE my manual apply; my manual step read head==23 and correctly
+STOPPED (drift-check) instead of double-applying.  EXPECT THE CRON TO WIN THE RACE.  The self-renumber-at-apply
+drift-check (assert box head == expected; renumber to box-head+1 on collision) is what makes that safe, and it
+is now the DEFAULT for every future PM migration.  After a cron-applied migration, verify against the pre-graft
+DB snapshot (config byte-identical, table created + empty, engine untouched), not the manual apply's own
+before/after.
+MIGRATION NUMBERS: 023 landed this session; head is now 23; the NEXT is 024.  ★ ITEM B (an engine workstream)
+also has a candidate claim on 023 — the collision is real; whoever lands second renumbers to 024 (contiguous).
+
+
+★ TWO CODE TRAPS (a reconciler or a future agent will want to "fix" these back — DO NOT)
+----------------------------------------------------------------------------------------
+1. web/static/pm_sort.js: its FIRST click sorts ASCENDING, even though its own comment says "first click =
+   descending" — the COMMENT IS WRONG (the code is `asc = dir !== "asc"`, true on the first click).  That is why
+   the Prospects JUDGE column emits a NEGATED data-sort-value ({{ -r.score.sort_value }}): with an
+   ascending-first sorter, negating puts the best tier (PROMOTE) at the top and un-analyzed at the bottom.
+   Remove the minus and the list silently INVERTS — the INSUFFICIENT_DATA mirages float to the top — and it
+   LOOKS like it works.  Only a descending-first fix to the shared pm_sort.js should retire the minus.
+2. The score_badge OOB id is pm-scoreb-{wallet} — WALLET-ONLY, on purpose.  A category-bearing id put the
+   lowercase slug in an attribute and regressed the F-3 casing guard test_category_page_knows_its_category
+   (every lowercase category must be a URL path segment).  A /farm/{cat} or /live/{acct}/{cat} page is
+   single-category, so the wallet alone is a unique OOB anchor — the category is redundant.
+
+
+SELF-CORRECTIONS THIS SESSION (distrust the instrument — the habit that keeps this honest)
+------------------------------------------------------------------------------------------
+  - An unbounded traceback grep over a huge append log read 28,855; the bounded/correct count was 3.  The
+    instrument over-counted, not the system.
+  - narrate() was going to report model = PM_ANALYZE_MODEL (what we REQUESTED); a silent Haiku fallback would
+    pass that identically and the model check would prove nothing.  Fixed to read response_metadata.model (what
+    the API RETURNED) + a test that a Haiku answer surfaces as Haiku.
+  - Tonight's post-check FALSE-FAILED the mirage acceptance: it sliced "to the next data-whale", but the roster
+    renders TWO data-whale attrs per whale (the <div> and the name <button>), so it stopped inside the same
+    whale, before the badge.  The PAGE was right; the CHECK was wrong.  Re-sliced on `class="wr" data-whale=`
+    before drawing any conclusion.
+
+
+OPEN AFTER THIS SESSION
+-----------------------
+  - The b1+stagger RE-MEASUREMENT (deploy [1]) is DUE AND UNTAKEN — confirm the ~189s gap actually shrank.
+  - Engine Items B and C (Item B carries the competing 023 migration claim above).
+  - Small-rungs cleanup.
+  - Pre-existing nits surfaced (not regressions): legacy kalshi_copy_trader "Apify FEED DOWN" (engine legacy
+    halted-but-enabled loop); db.py:connect() sets WAL before a busy_timeout, so a transient "database is locked"
+    can hit init_db (one old traceback in pm_poll.log).
+
+
 STANDING RULE (from corrections #1 and #2)
 ------------------------------------------
 Every box touch — READ-ONLY included — goes through a written, ASCII-validated .ps1 runner, executed as
@@ -221,8 +340,11 @@ OTHER FINDINGS HANDED TO OTHER WORKSTREAMS / THE BACKLOG
 
 IF PROD-LIVE DIVERGES FROM THE BOX
 ----------------------------------
-1. Find out what SHOULD be there. prod-live is truth; the current tip is 489a9ddb (Deploy 11 docs), the
-   code it carries is ce52ef3c (tag pm-sizing-deploy11-2026-09-12). Compare, CR-stripped:
+1. Find out what SHOULD be there. prod-live is truth; the current tip is 5e03b7a2 (tag
+   pm-prospects-display-deploy-2026-09-13). Through Deploy 11 the code was ce52ef3c (tag
+   pm-sizing-deploy11-2026-09-12); the FOUR deploys after it are in the SESSION 2026-09-13 block above, each
+   with its prod-live before/after sha, its tag (analyze/prospects; the heartbeat + milestone ones are
+   untagged), and its on-box backup dir. Compare, CR-stripped:
      for the pm_web tree + db.py + sizing.py, on the box compute
        hashlib.sha256(open(path,'rb').read().replace(b'\r',b'')).hexdigest()
      and compare to `git show ce52ef3c:<path> | tr -d '\r' | sha256sum`.
