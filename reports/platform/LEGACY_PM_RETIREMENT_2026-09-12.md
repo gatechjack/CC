@@ -43,7 +43,7 @@
 | 3 (=Jack's "Phase 5") | Archive kcv2 data (lab DB + prod `kcv2_*` tables) — the ~3.16 GB win; **drop deferred to Ph7** | **DONE 2026-09-13 (session 5): LOCAL archive WRITTEN + VERIFIED PASS** (prod kcv2_* 278.6MB gz + lab 110.8MB gz; restore→row counts+schema+spot-check all match; checksums recorded §17.10). Ruled dest=both blob+local; **BLOB copy still owed (no storage account exists yet).** Observer STILL writing → Ph7 stops it first. See §17. | no | no | archive=yes; drop=NO (Ph7, now archive-authorized) |
 | 4 | Cancel/park paid + legacy-only APIs (Apify, the-odds-api, Finnhub-dead) after their divisions are disabled | NOT STARTED | no | no | YES (re-provision KV) |
 | 4.5 | **FULL-TREE DRIFT SWEEP** (pre-removal gate, read-only) | **DONE 2026-09-13 (session 4)** — box vs prod-live `fcbcd4a7`, both directions, byte-safe. **No unrelated runtime drift.** Only 2 known-benign non-runtime box-BEHIND files (test_pmcc_logic.py, BACKLOG.md — no action); 8 shared files IDENTICAL + baselined; 6 never-deployed KEPT files (2 survivor→owner); 1 unattributed scratch (`strategies.yaml.block_bs`). See §16. | no | no | n/a |
-| 5 | Code removal — LEGACY-ONLY files (strategies/data/brokers/scripts) + graft the shared `main.py` wiring block-by-block. **Baseline in §16.7; prove survivor counts unchanged.** | NOT STARTED (sweep-gated: CLEAR to proceed) | **YES ×1** | **YES (poly_kalshi_mlb window only)** | git-revert |
+| 5-6 (=Jack's "Phase 6") | Code removal — **Option 2 (engine-side; web deferred)** per Jack's ruling: main.py loop graft + delete ~30 orphaned files + remove breaking web routes + timers + poly_kalshi auto_execute. 6 blocked files DEFERRED (ADDITION 2). | **IN PROGRESS (session 6) — §16.7 re-verified; scope locked §18; building main.py graft + deletions LOCALLY. NOT pushed/deployed/restarted.** Revival SHA `fcbcd4a7`. | **YES ×1 (Jack)** | PM stays armed; post-restart gate = PM PLACING | git-revert; box backups per file |
 | 6 | Shared-file surgical edits (`brokers/kalshi.py` discovery, `web/data.py`/`web/routes.py` PM sections, resolvers) | NOT STARTED | YES (fold into Ph5 window) | as Ph5 | git-revert |
 | 7 | Archive/branch/tag disposition of removed code + final DB shrink verification | NOT STARTED | no | no | n/a |
 
@@ -529,3 +529,35 @@ Dump ran chunked with **live PM healthy every chunk** (`PM_ok=True`, hb_age ≤4
 
 ### 17.11 CHANNEL NOTE (correction, 2026-09-13)
 One box read this phase (the dump-orphan check) was run as **ad-hoc `ssh … bash` in the Bash tool** — a breach of the sanctioned-channel rule ([[command-paste-rule]]: box access only via a validated `.ps1` runner, even read-only). Jack corrected it. All other Phase-5 box ops used validated `.ps1` runners; local-only python (lab read, restore, hashing) is not a box channel. Standing discipline reaffirmed: **every** ssh/scp/az touch goes through an ASCII-validated `.ps1` runner — no inline ssh/scp in the Bash/PowerShell tools.
+
+---
+
+## 18. PHASE 6 — CODE REMOVAL (in progress, session 6, 2026-09-13). Jack ruled **Option 2 (engine-side; web deferred)**.
+
+Removal worktree `cc-legpm-removal-wt` branch `legpm-code-removal-2026-09-13` off prod-live `fcbcd4a7`. Build+prove LOCAL first; PUSH/RESTART/az-root/table-drop/disarm = Jack. **§16.7 re-verified holds** (all 8 shared files identical box↔prod-live; survivor counts bitunix 196 / mace 119 / pm_live 4 / pmcc 2 / pead 2 / donchian 3). Do-no-harm before: 31/31 armed, PIDs 370246/381803/656 NRestarts 0, open 214/161.
+
+### 18.1 REVIVAL SHA = `fcbcd4a7cde71abb33ba418be12d7ad5ff2e8869`
+Last prod-live commit containing EVERY removed legacy division. Revival = `git checkout fcbcd4a7 -- <path>`. (Removal-with-history satisfies "preserved in GitHub"; no separate tag/branch needed — noted per charter.)
+
+### 18.2 ★ ADDITION-2 DECISION — `kalshi_whale_stats` NOT edited (defer). 
+Live-PM `prediction_markets/stats.py` imports ONLY pure primitives from it (`_edge_factor`, `time_weighted_outcomes`, `wilson_lcb_95`, `wilson_lcb_95_weighted`; calls `score_net_roi/recency_weighted/snapshot`). The `kalshi_apify_client` types are used ONLY as legacy-function param annotations (L234/236/328) live-PM never calls. Removal is *possible* but edits the live-PM-imported file (annotations eval at def-time). Per ADDITION 2 → **STOP: do not edit; keep `kalshi_apify_client`.** ⇒ cascades to deferring ALL 6 blocked-file deletions.
+
+### 18.3 SCOPE — what Phase 6 DELETES vs KEEPS-DEFERRED
+**DELETE (~30 cleanly-orphaned, no keeper importer after the graft):** strategies polymarket_arbitrage, polymarket_copy_trader, kalshi_tail_price_arb, kalshi_temporal_bucket_arb, kalshi_llm_arbitrage, kalshi_weather_arb, kalshi_crypto_arb, kalshi_sports_scout, kalshi_sports_arb_observer, kalshi_copy_trader, poly_kalshi_copy_trader, poly_kalshi_executor, roster_split, kalshi_crypto_v2_observer + helpers _polymarket_prompts, _sports_math, _whale_autopause, _weather_math + data crypto_spot_provider, crypto_vol_provider, weather_forecast, weather_stations, metar_client, open_meteo_client, iem_cli_client, residual_logic, nbm_client, odds_api_client, polymarket_whale_stats, kalshi_matchable + agents kalshi_resolver, polymarket_resolver, poly_kalshi_marks, polymarket_whale_analyst + research/polymarket_whale_audit_cache + trading_corp/scripts legacy PM scripts. main.py graft: remove legacy loop wiring + defs (preserve pm_live_driver 1550-1643 / M3 1645-1678 / survivors). Remove only the web/routes.py routes that import a deleted module.
+**KEEP — DEFERRED to the web/shared pass (dead-but-present rows):**
+| deferred item | why kept | who still references it | Phase-7 effect |
+|---|---|---|---|
+| `data/kalshi_apify_client.py` | live-PM `kalshi_whale_stats` imports its types (ADDITION 2) | kalshi_whale_stats.py L40 | none |
+| `data/kalshi_market_map.py` | shared `brokers/kalshi.py` lazy-imports it (→ live-PM via kalshi_live) | kalshi.py L402 | none |
+| `brokers/polymarket.py` + `polymarket_live.py` | main.py broker-factory (L3152/3173) builds them for the still-registered polymarket divisions | main.py factory | none |
+| `web/kalshi_crypto_vol_v2.py` | shared `web/data.py` top-level import (L19), consumed by the deferred dashboard | web/data.py L19 | tables emptied |
+| `web/data.py` legacy PM dashboard (~2,500 LOC: `build_prediction_market_view` + 15 helpers, `_hydrate_pm_overview` woven into shared `_hydrate_division_metrics`) | web deferred per ruling | shared /prediction-markets/ routes | reads legacy round_trip tables → go stale/empty |
+| non-breaking `web/routes.py` PM routes (`/prediction-markets/`, `/partials/prediction-markets/*` — call `build_prediction_market_view`, do NOT import deleted modules) | web deferred | — | dashboard shows disabled/empty divisions |
+| legacy `divisions.yaml` slugs + `strategies.yaml` disabled blocks | read by the deferred dashboard | web/data.py division load | — |
+The deferred web dashboard is **legacy-data-only** (0 refs to prediction_markets.db / live accounts — live PM is the separate `pm_web`). So it degrades (empty tiles) rather than breaks after removal; no live-PM danger.
+
+### 18.4 kcv2 OBSERVER dependency (ADDITION 3): the observer runs `-m trading_corp.agents.strategies.kalshi_crypto_v2_observer` (deleted this phase) as its OWN systemd process (PID 679). **The running process holds the code in memory; deleting the .py does NOT stop or crash the running service** — it only means a future RESTART of that unit would fail (ImportError). Phase 7 stops+disables the unit anyway. ⇒ removing kalshi_crypto_v2_observer.py is safe pre-Phase-7 (does not break the running observer); but DO NOT restart that unit after the .py is gone until Phase 7 formally retires it. Recorded.
+
+### 18.5 poly_kalshi persist-halt row (ADDITION 3): after this phase removes the poly_kalshi loop (files + main.py wiring), the division is stopped by **CODE ABSENCE** (no loop can run) — the strongest possible stop. The `agent_state strategy_state/poly_kalshi_mlb` persist-halt row becomes **no longer load-bearing**, BUT it is OUT OF SCOPE to touch (charter) and harmless to leave → **LEAVE IT**; a later cleanup may retire it once the removal is confirmed live.
+
+### 18.6 STATUS: scope locked; main.py graft + deletions being built + proven locally next. No box touch, no push, no restart, nothing deleted on the box.
