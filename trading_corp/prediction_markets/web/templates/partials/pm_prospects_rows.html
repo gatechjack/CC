@@ -28,7 +28,7 @@
          then ROI within a tier -- a PROMOTE outranks an INSUFFICIENT_DATA whatever the number (the tier caps the
          number). Un-analyzed sorts LAST and reads "not analyzed", never a 0. The td's data-sort-value is the
          scoring.score_sort_key composite, so the single-column client sort honours the cap. #}
-      <th class="pm-sortable pm-judge-col" data-sort="num" title="The stored ANALYZE verdict: TIER + cost-ROI (the sort number). Sorted by TIER first, then the number within a tier -- a PROMOTE ranks above an INSUFFICIENT_DATA whatever the ROI (the tier CAPS the number). Un-analyzed sorts last and reads 'not analyzed', never a 0. Click to sort.">judge <span class="pm-th-sub">(tier &middot; score)</span></th>
+      <th class="pm-sortable pm-judge-col" data-sort="num" title="The stored ANALYZE verdict: TIER + cost-ROI (the sort number). Sorted by TIER first, then the number within a tier -- a PROMOTE ranks above an INSUFFICIENT_DATA whatever the ROI (the tier CAPS the number). Un-analyzed sorts last and reads 'not analyzed', never a 0. Click to sort best-first (PROMOTE at top).">judge <span class="pm-th-sub">(tier &middot; score)</span></th>
       <th class="pm-num pm-sortable" data-sort="num" title="Scoreable resolved (completed) rows. Click to sort.">n</th>
       {# WIN% is NOT sortable (never the rank key -- ROI-denominator ruling) and the caveat rides ON THE HEADER,
          so it cannot be sorted-on to mislead. #}
@@ -48,8 +48,11 @@
   {% for r in prospects %}
     <tr>
       <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
-      {# JUDGE cell: data-sort-value = the tier-then-number composite (r.score.sort_value) so the tier caps the sort. #}
-      <td class="pm-judge-col" data-sort-value="{{ r.score.sort_value }}">{{ score_cell(r.score, r.wallet, r.category) }}</td>
+      {# JUDGE cell. data-sort-value is the tier-then-number composite (r.score.sort_value), NEGATED: the shared
+         client sorter (pm_sort.js) sorts ASCENDING on the first click, and our composite is higher=better, so negating
+         makes an ascending click put the best tier (PROMOTE) at the TOP and un-analyzed at the BOTTOM -- on every
+         click, not just the first. The tier still caps the number (the composite dominates within the negation). #}
+      <td class="pm-judge-col" data-sort-value="{{ -r.score.sort_value }}">{{ score_cell(r.score, r.wallet, r.category) }}</td>
       <td class="pm-num" data-sort-value="{{ r.n_resolved or 0 }}">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
       {# ★ win% + its per-whale F-1 omission caveat, IN THE SAME CELL (the caveat travels with the number). When the
          whale is UN-analyzed the caveat IS an [Analyze] control (omission_cell macro) -- the instruction is

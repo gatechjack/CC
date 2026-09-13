@@ -39,6 +39,14 @@ def test_score_cell_mirage_flagged_and_sorts_below_promote():
     assert app._score_cell(None, 1000)["sort_value"] < m["sort_value"]   # un-analyzed is the very bottom
 
 
+def test_dom_sort_value_ascending_puts_best_first():
+    # ★ the shared client sorter (pm_sort.js) sorts ASCENDING on the first click; the JUDGE <td> emits -sort_value,
+    # so ascending = best-first. Verify the DOM values order PROMOTE < mirage(INSUF) < un-analyzed (so an ascending
+    # click surfaces PROMOTE at the top, the 88.5% mirage in the INSUF band, un-analyzed at the very bottom).
+    dom = lambda sc: -app._score_cell(sc, 1000)["sort_value"]
+    assert dom(_PROMOTE) < dom(_MIRAGE) < dom(None)
+
+
 # ── macro rendering (bare Jinja env, no TestClient) ──
 def _render(macro, call):
     from jinja2 import Environment, FileSystemLoader

@@ -360,8 +360,9 @@ def _load_loss_grounding_map(conn, category: str) -> dict:
 
 
 # ── the stored promotion-judge SCORE on the list (migration 023 pm_whale_score) ───────────────────────────
-_SCORE_UNANALYZED_SORT = -1e12   # un-analyzed rows sort to the BOTTOM of the Score column without pretending to be
-                                 # a 0 score -- the cell reads "not analyzed", the number just groups them at the end.
+_SCORE_UNANALYZED_SORT = -1e12   # composite convention is higher=better, so un-analyzed is the LOWEST rank. The
+                                 # Prospects <td> NEGATES sort_value for the ascending-first client sorter, so this
+                                 # lands un-analyzed at the BOTTOM. The cell still reads "not analyzed", never a 0 score.
 
 
 def _score_cell(row: dict | None, now_ts: int) -> dict:
@@ -373,24 +374,27 @@ def _score_cell(row: dict | None, now_ts: int) -> dict:
     its caveat onto the row, not just into the Analyze narration."""
     if not row:
         return {"analyzed": False, "sort_value": _SCORE_UNANALYZED_SORT}
-    tier = row.get("tier")
-    sort_roi = row.get("sort_roi")
-    grounded = bool(row.get("grounded"))
-    cov = row.get("coverage_pct")
-    omis = row.get("omission_pct")
-    floor = bool(row.get("omission_floor")) or (grounded and cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)
-    ts = row.get("computed_ts") or 0
-    key = scoring.score_sort_key(tier, sort_roi)
-    return {
-        "analyzed": True, "tier": tier, "tier_rank": scoring.tier_rank(tier), "reason": row.get("reason"),
-        "sort_roi": sort_roi, "honest_roi": row.get("honest_roi"), "grounded": grounded,
-        "omission_pct": omis, "coverage_pct": cov, "floor": floor,
-        "dominance_net": row.get("dominance_net"), "two_sided_pct": row.get("two_sided_pct"),
-        "chalk": bool(row.get("chalk")), "copy_fills": row.get("copy_fills"),
-        "flagged": (not grounded) or (omis is not None and omis > 0) or floor,
-        "sort_value": key if key is not None else _SCORE_UNANALYZED_SORT,
-        "age_days": ((now_ts - ts) / 86400.0) if ts else None,
-    }
+    try:
+        tier = row.get("tier")
+        sort_roi = row.get("sort_roi")
+        grounded = bool(row.get("grounded"))
+        cov = row.get("coverage_pct")
+        omis = row.get("omission_pct")
+        floor = bool(row.get("omission_floor")) or (grounded and cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)
+        ts = row.get("computed_ts") or 0
+        key = scoring.score_sort_key(tier, sort_roi)
+        return {
+            "analyzed": True, "tier": tier, "tier_rank": scoring.tier_rank(tier), "reason": row.get("reason"),
+            "sort_roi": sort_roi, "honest_roi": row.get("honest_roi"), "grounded": grounded,
+            "omission_pct": omis, "coverage_pct": cov, "floor": floor,
+            "dominance_net": row.get("dominance_net"), "two_sided_pct": row.get("two_sided_pct"),
+            "chalk": bool(row.get("chalk")), "copy_fills": row.get("copy_fills"),
+            "flagged": (not grounded) or (omis is not None and omis > 0) or floor,
+            "sort_value": key if key is not None else _SCORE_UNANALYZED_SORT,
+            "age_days": ((now_ts - ts) / 86400.0) if ts else None,
+        }
+    except Exception:  # noqa: BLE001 -- a malformed score row must degrade to 'not analyzed', NEVER 500 the list page
+        return {"analyzed": False, "sort_value": _SCORE_UNANALYZED_SORT}
 
 
 def _load_whale_score_map(conn, category: str) -> dict:
