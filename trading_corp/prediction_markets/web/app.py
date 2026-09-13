@@ -359,13 +359,14 @@ def _load_loss_grounding_map(conn, category: str) -> dict:
         "activity_truncated, grounded_ts FROM pm_loss_grounding_cache WHERE category=?", (category,)).fetchall()}
 
 
-def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grounding=None) -> dict:
+def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grounding=None, honest=None) -> dict:
     """Run Analyze on ONE short-lived connection, OFF the event loop. WRITES the PM DB (cache + cost ledger);
     reads/writes ONLY prediction_markets.db (db._assert_not_legacy guards the path). Sync (analyze narrates
     synchronously) so it drops straight into asyncio.to_thread with no nested event loop. `loss_grounding` (Stage 5)
     is the re-grounded loss set the async route fetched on a miss; None -> the report renders ungrounded."""
     with connect() as conn:
-        rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force, loss_grounding=loss_grounding)
+        rep = analyze.analyze_whale(conn, wallet, category, now_ts=now_ts, force=force,
+                                    loss_grounding=loss_grounding, honest=honest)
         if loss_grounding is not None:                        # (re)grounded THIS click -> cache the omission so the
             _upsert_loss_grounding(conn, wallet, category, loss_grounding, now_ts)   # Prospects LIST can show it beside win%
         day = analyze._utc_day(now_ts)
@@ -391,16 +392,16 @@ async def _ground_losses(wallet: str, category: str):
     try:
         from ...data.polymarket_data_api_client import PolymarketDataAPIClient
         async with PolymarketDataAPIClient() as client:
-            g = await loss_grounding.fetch_and_ground_losses(client, wallet, category, category_of=_row_category)
+            g, honest = await loss_grounding.fetch_and_ground_losses(client, wallet, category, category_of=_row_category)
         # Only surface a grounded block when /activity actually yielded in-category held-to-resolution decisions to
         # compare against. A zero-decision fetch has NOTHING to affirm -- rendering "0W/0L honest" would imply we
         # checked and found nothing when we may simply have no activity feed for this slice -- so treat it as
-        # UNGROUNDED (no block), the honest degrade.
-        return g if (g is not None and g.n_activity_held_resolved > 0) else None
+        # UNGROUNDED (no block), the honest degrade. `honest` (Phase A) travels with the grounding.
+        return (g, honest) if (g is not None and g.n_activity_held_resolved > 0) else (None, None)
     except Exception as exc:   # noqa: BLE001 -- caveat enrichment must never break Analyze; degrade to ungrounded
         log.warning("pm analyze: loss-grounding failed for %s/%s (%s) -- rendering ungrounded",
                     wallet[:10], category, type(exc).__name__)
-        return None
+        return (None, None)
 
 
 @app.post("/farm/analyze/{wallet}/{category}", response_class=HTMLResponse)
@@ -413,10 +414,10 @@ async def farm_analyze(request: Request, wallet: str, category: str, force: str 
     category = (category or "").strip().lower()
     do_force = str(force or "").strip().lower() in ("1", "true", "yes", "on")
     now_ts = int(time.time())
-    grounding = None
+    grounding, honest = None, None
     if do_force or not await asyncio.to_thread(_analysis_is_cached, wallet, category):
-        grounding = await _ground_losses(wallet, category)               # async network ON the loop; None on failure
-    data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, now_ts, grounding)
+        grounding, honest = await _ground_losses(wallet, category)       # async network ON the loop; (None,None) on failure
+    data = await asyncio.to_thread(_run_analyze, wallet, category, do_force, now_ts, grounding, honest)
     return templates.TemplateResponse(request, "partials/pm_analyze_result.html", {"request": request, **data})
 
 

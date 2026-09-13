@@ -943,6 +943,50 @@ MIGRATION_022: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_sizing_audit ON pm_subdivision_sizing_audit(account_id, category, changed_ts)",
 ]
 
+# migration 023 (2026-09-12, ANALYZE UPGRADE -- the stored, sortable promotion-judge score): pm_whale_score carries
+# the DETERMINISTIC tier + the sort number + the trust-flagged dimensions per (wallet, category). Written on an
+# Analyze run (on-demand). ★ An UN-analyzed whale has NO ROW -> the Prospects list reads NULL (not-analyzed),
+# DISTINCT from a PASS row (analyzed, scored low). pm_web-OWNED (Analyze is a pm_web action); the ENGINE never reads
+# it. ADDITIVE -- one new table, no existing schema touched (engine-neutral; loads the new db.py on its next restart).
+# ★★ 023 IS THE NEXT CONTIGUOUS after 022, and Item B ALSO has a candidate claim on 023 -> the DEPLOY GATE MUST
+# drift-check the LIVE box schema head == 22 immediately before applying and RENUMBER to box-head+1 (024) on any
+# collision -- a MAX(version) counter SILENTLY SKIPS a colliding number (the clobber hazard). ★ Jack ruled 2026-09-12
+# this SELF-RENUMBER-AT-APPLY is now the DEFAULT for EVERY future PM migration, not just this one: two workstreams
+# can then never silently skip each other's DDL regardless of which lands first.
+MIGRATION_023: list[str] = [
+    "CREATE TABLE IF NOT EXISTS pm_whale_score ("
+    "  wallet          TEXT NOT NULL,"
+    "  category        TEXT NOT NULL,"
+    "  tier            TEXT NOT NULL,"               # INSUFFICIENT_DATA | PROMOTE | WATCH | PASS
+    "  reason          TEXT,"                        # the ONE decisive phrase
+    "  sort_roi        REAL,"                        # cost-based ROI = the sort number (NULL if no cost basis)
+    "  n_resolved      INTEGER,"
+    "  n_honest        INTEGER,"
+    "  grounded        INTEGER NOT NULL DEFAULT 0,"  # 0 -> omission UNKNOWN -> cannot PROMOTE
+    "  omission_pct    REAL,"                        # NULL = UNKNOWN (ungrounded)
+    "  coverage_pct    REAL,"
+    "  omission_floor  INTEGER NOT NULL DEFAULT 0,"
+    "  honest_roi      REAL,"                        # Phase A windowed honest cost-ROI; NULL ungrounded
+    "  dominance_net   REAL,"
+    "  dominance_gross REAL,"
+    "  largest_pnl     REAL,"
+    "  largest_title   TEXT,"
+    "  two_sided_pct   REAL,"
+    "  avg_win_price   REAL,"
+    "  chalk           INTEGER NOT NULL DEFAULT 0,"
+    "  dd_tell         REAL,"                        # LABELLED FICTION (the drawdown smell); never a rank input
+    "  dd_wins         INTEGER,"
+    "  dd_losses       INTEGER,"
+    "  copy_fills      INTEGER NOT NULL DEFAULT 0,"  # DISPLAY-ONLY (Ruling 2: never a gate)
+    "  copy_pnl        REAL,"
+    "  skill_version   TEXT,"
+    "  computed_ts     INTEGER,"
+    "  PRIMARY KEY (wallet, category)"
+    ")",
+    # sort the Prospects list by tier then the number; NULL-row whales (never analyzed) simply don't appear here:
+    "CREATE INDEX IF NOT EXISTS ix_pm_whale_score_cat ON pm_whale_score(category, tier, sort_roi DESC)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -970,6 +1014,9 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
                            # ★ DEPLOY GATE: drift-check box head == 20 before applying; renumber to box-head+1 on collision.
     (22, MIGRATION_022),   # SIZING-FROM-UI audit: pm_subdivision_sizing_audit (pm_web-owned; engine never reads it).
                            # ★ DEPLOY GATE: drift-check box head == 21 before applying; renumber to box-head+1 on collision.
+    (23, MIGRATION_023),   # ANALYZE UPGRADE: pm_whale_score (the stored, sortable promotion-judge score; pm_web-owned).
+                           # ★ DEPLOY GATE: drift-check box head == 22 before applying; renumber to box-head+1 (024) on a
+                           # collision (Item B also claims 023). Self-renumber-at-apply is now the DEFAULT for every PM migration.
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

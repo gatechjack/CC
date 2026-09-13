@@ -29,11 +29,11 @@ What changed vs the legacy (Q2/Q3 rulings):
 Narration is SYNCHRONOUS here (chat.invoke, not ainvoke): pm_web runs every DB read through
 `asyncio.to_thread(<sync fn>)`, so a sync narrator drops straight into that model (no nested event loop).
 
-THE KEY IS NOT WIRED YET (e3, Jack's hands). is_llm_available() reads ANTHROPIC_API_KEY, which does NOT
-resolve in the standalone pm_web process today (proven read-only 2026-08-25) -> narration returns the
-`llm_unavailable` reasoned-null and the deterministic report renders without a verdict. Importable
-langchain/azure libraries are CAPABILITY, not a working token -- do not read the presence of the library as
-the key being reachable.
+★ THE ANTHROPIC KEY IS WIRED IN PROD (Jack 2026-09-12 -- corrects the earlier 'e3, not wired' note). So
+narration RUNS live: is_llm_available() reads ANTHROPIC_API_KEY (now present in the pm_web process) and the
+Sonnet verdict fills in. A cache HIT still spends nothing. ★ Because the swap is live on deploy, the post-check
+must verify a REAL (non-cached) call returns model=claude-sonnet-4-6 -- a silent Haiku fallback would look
+identical from the output side. `llm_unavailable` now fires only on a genuine key/transport failure, not by design.
 
 Spec: reports/prediction_markets/P2_PLAN.md §7.4 (amended in this commit); CP3b-2 rulings 2026-08-25.
 """
@@ -44,17 +44,24 @@ import logging
 import time
 from dataclasses import asdict, dataclass, replace
 
-from . import stats
+from . import scoring, stats
 from .db import SCOREABLE_PREDICATE_SQL, scoreable_where
 
 log = logging.getLogger(__name__)
 
 # ── forked constants (pinned in the PM package; NOT read from engine config/agents.yaml) ──────────────
-PM_ANALYZE_MODEL = "claude-haiku-4-5-20251001"   # was get_model_for('polymarket_whale_analyst'); pinned so
-                                                 # Analyze can't have its model swapped out from under it.
-PM_ANALYZE_MAX_OUTPUT_TOKENS = 220
+PM_ANALYZE_MODEL = "claude-sonnet-4-6"           # ANALYZE UPGRADE 2026-09-12 (Haiku -> Sonnet): the promotion judge
+                                                 # narrates over the DETERMINISTIC scoring.WhaleScore. Pinned so the
+                                                 # model can't be swapped from under Analyze. ★ The ANTHROPIC key IS
+                                                 # wired in prod (Jack 2026-09-12) -> this runs LIVE on deploy; POST-
+                                                 # DEPLOY verify a REAL (non-cached) call returns model=claude-sonnet-4-6
+                                                 # (a silent Haiku fallback looks identical from the output side).
+PM_ANALYZE_MAX_OUTPUT_TOKENS = 160               # ANALYZE UPGRADE: the verdict is ONE sentence over the score -> tighter
 PM_ANALYZE_DAILY_CAP_USD = 20.00                 # Jack ruling 2026-08-25 (legacy code=$1.00; §7.4 doc said $2)
-PM_ANALYZE_SKILL_VERSION = "3"                   # bump on ANY prompt/model/report-shape change -> cache miss
+PM_ANALYZE_SKILL_VERSION = "4"                   # bump on ANY prompt/model/report-shape change -> cache miss.
+#   "3"->"4" (2026-09-12, ANALYZE UPGRADE): Haiku->Sonnet + the deterministic scoring.WhaleScore (tier + trust-flagged
+#     dimensions) drives a ONE-sentence verdict template. Bumped so the first click on an already-analyzed whale
+#     recomputes instead of serving the old Haiku verdict (the standing skill-version-invalidation ruling).
 # Below this /activity-window coverage a grounded omission is a FLOOR, not a measurement (older losers lie beyond the
 # window) -> the UI marks it "(floor)". 0.90 matches the 'well-covered' bar the price-bucket re-grounding used. The
 # floor is EITHER truncation (hit the page ceiling) OR low coverage -- the two are NOT the same signal (a whale can be
@@ -65,8 +72,10 @@ LOSS_COVERAGE_FLOOR = 0.90
 #     (a top caveat tier + the honest win/loss lines), so the promotion-judge verdict itself reasons about the F-1
 #     omission -- not just the printed table. Settle this at "3" BEFORE the Anthropic key is wired, so the first
 #     PAID narration a wallet gets is the final-form one (key-last ordering, Jack 2026-08-31).
-# Haiku price per 1M tokens -- forked from agents/research/cost.py (the 'claude-haiku-4-5-20251001' row).
-_HAIKU_PRICE = {"input": 0.80, "output": 4.0}
+# Sonnet-4-6 price per 1M tokens -- forked from agents/research/cost.py ('claude-sonnet-4-6' = $3 in / $15 out). At
+# ~1.4k in / ~120 out a narration costs ~$0.006 (Haiku was ~$0.0016) -> ~3000/day under the $20 cap; ad-hoc usage is
+# a handful of clicks, so the Sonnet swap is negligible against the cap.
+_MODEL_PRICE = {"input": 3.0, "output": 15.0}
 
 # null-reason taxonomy. The FOUR LLM gates are preserved verbatim from the legacy narrator; `no_resolved_positions`
 # is the additional DATA-level refusal (Jack: "refuses honestly at zero rows") -- distinct from the LLM being off.
@@ -170,6 +179,10 @@ class PMAnalysisReport:
     # DISPLAY-ONLY (not fed to the narrator -> narration byte-identical -> NO skill_version bump): the coverage BEHIND
     # the omission % so the page cannot flatten '94% @ 96% cov' and '94% @ 31% cov (a floor)' into one number.
     loss_coverage_pct: float | None = None  # |closed re-found in /activity window| / |closed|; None when ungrounded/no-closed
+    # ── ANALYZE UPGRADE 2026-09-12: the DETERMINISTIC scoring.WhaleScore as a plain dict (json-trivial, no nested
+    # dataclass to reconstruct). tier + sort_roi + trust-flagged dimensions. Written to pm_whale_score separately for
+    # the sortable Prospects list; carried here so the verdict + the UI render off ONE object. None on a pre-upgrade cache row.
+    score: dict | None = None
 
     @property
     def is_thin(self) -> bool:
@@ -206,10 +219,24 @@ class NarrationResult:
 
 
 # ── deterministic report (pm_closed_position ONLY; reuses the ONE predicate + stats formulas) ─────────
+def _copy_fills(conn, wallet: str, category: str) -> tuple[int, float | None]:
+    """(n filled real copies, realized copy P&L or None) for THIS whale from OUR journal -- DISPLAY ONLY (Ruling 2:
+    never a gate). realized = settled/exit proceeds - entry cost - fee over round-trips; None when the sample is too
+    thin or nothing has settled (a handful of fills is noise). Read-only."""
+    try:
+        r = conn.execute(
+            "SELECT SUM(CASE WHEN outcome_status='filled' THEN 1 ELSE 0 END) AS filled "
+            "FROM pm_subdivision_order WHERE wallet=? AND category=? AND dry_run=0",
+            (wallet, category)).fetchone()
+        return (int((r["filled"] if r else 0) or 0), None)   # realized copy P&L deferred (thin sample; display fills only)
+    except Exception:  # noqa: BLE001 -- the score must never fail on a journal read
+        return (0, None)
+
+
 def build_pm_analysis(conn, wallet: str, category: str, *, now_ts: int,
                       min_resolved: int | None = None,
                       skill_version: str = PM_ANALYZE_SKILL_VERSION,
-                      loss_grounding=None) -> PMAnalysisReport:
+                      loss_grounding=None, honest=None) -> PMAnalysisReport:
     """Aggregate the (wallet, category) slice of pm_closed_position into the deterministic report. NO LLM,
     NO write. Every scoreable metric filters through `db.scoreable_where()` (the ONE §3A predicate) and uses
     the SAME formulas as `stats.rollup` -- see that function for the parity contract (roi cost-based, roi
@@ -321,6 +348,19 @@ def build_pm_analysis(conn, wallet: str, category: str, *, now_ts: int,
                       "rollup is stale (a refresh is pending). These numbers are fresh from the rows."
                       % (rollup_n, n_resolved))
 
+    # ── ANALYZE UPGRADE: the DETERMINISTIC WhaleScore (tier + trust-flagged dimensions), from the per-position rows
+    # (resolved_ts-ordered) for dominance + the drawdown-tell, plus the grounding + honest windowed return + copy fills.
+    _srows = conn.execute(
+        "SELECT realized_pnl, won, title FROM pm_closed_position "
+        "WHERE wallet=? AND category=? AND pnl_suspect=0 AND resolved_ts IS NOT NULL ORDER BY resolved_ts",
+        (wallet, category)).fetchall()
+    _score = scoring.build_score(
+        wallet=wallet, category=category,
+        pnls=[float(r["realized_pnl"] or 0.0) for r in _srows], wons=[r["won"] for r in _srows],
+        titles=[r["title"] or "" for r in _srows], sort_roi=roi, n_resolved=n_resolved,
+        two_sided_pct=two_sided_pct, avg_win_price=avg_win_price, one_sided_roi=onesided_roi,
+        grounding=loss_grounding, honest=honest, copy_fills=_copy_fills(conn, wallet, category)[0])
+
     return PMAnalysisReport(
         wallet=wallet, category=category, user_name=user_name, backfill_complete=backfill_complete,
         n_total_rows=n_total, n_resolved=n_resolved, n_excluded=n_excluded, n_anomaly=n_anomaly,
@@ -339,7 +379,8 @@ def build_pm_analysis(conn, wallet: str, category: str, *, now_ts: int,
         a_only_losses=(loss_grounding.a_only_losses if loss_grounding is not None else None),
         loss_omission_pct=(loss_grounding.loss_omission_pct if loss_grounding is not None else None),
         loss_completeness=(loss_grounding.completeness if loss_grounding is not None else None),
-        loss_coverage_pct=(loss_grounding.coverage_pct if loss_grounding is not None else None))
+        loss_coverage_pct=(loss_grounding.coverage_pct if loss_grounding is not None else None),
+        score=asdict(_score))
 
 
 def analysis_flags(rep: PMAnalysisReport) -> list[str]:
@@ -402,51 +443,33 @@ def _cost_for_usage(usage: dict) -> float:
     out_tok = int(usage.get("output_tokens") or 0) + int(usage.get("completion_tokens") or 0)
     cc = int(usage.get("cache_creation_input_tokens") or 0)
     cr = int(usage.get("cache_read_input_tokens") or 0)
-    p = _HAIKU_PRICE
+    p = _MODEL_PRICE
     return ((in_tok / 1_000_000.0) * p["input"] + (out_tok / 1_000_000.0) * p["output"]
             + (cc / 1_000_000.0) * p["input"] * 1.25 + (cr / 1_000_000.0) * p["input"] * 0.10)
 
 
-_SYSTEM_PROMPT = """You narrate a Polymarket whale's RESOLVED-POSITION record in ONE market category, in \
-2-4 plain-language sentences for a busy operator deciding whether the whale is worth copying.
+_SYSTEM_PROMPT = """You are a promotion judge for a Polymarket-copy desk. You are handed a whale's DETERMINISTIC \
+score for ONE category: a TIER that is ALREADY DECIDED, plus the numbers that decided it -- each carrying its own \
+TRUST-FLAG. Write exactly ONE sentence for a busy operator: name the SINGLE decisive factor for this tier.
 
-The numbers are computed deterministically from the whale's SETTLED positions in this category only. You do \
-NOT see individual fills, entry/exit timing, or partial sells -- only the settled outcome of each position. \
-Do not speculate about anything you cannot see.
+You do NOT recompute, re-rank, or override the tier or any number -- they are final. You only choose which ONE \
+factor to lead with and state it plainly.
 
-CRITICAL RULES:
-- DO NOT perform arithmetic. Every number you cite must appear VERBATIM in the user message. If only a \
-percentage is given, use it as written; never recompute or convert.
-- Never override or soften a flag. If the data says CONTAMINATED, or the sample is thin, say so plainly.
-- Describe; do not recommend. The operator decides whether to copy; you only characterize the record.
-- Tone: factual, dispassionate, like a quant summarizing a screen. No hedging words unless the data is \
-genuinely ambiguous.
-- Lead with the most decision-relevant caveat, in this priority:
-  1) LOSS SET MATERIALLY INCOMPLETE -- if a "Loss completeness" section is present AND it recovered \
-held-to-worthless losses (a_only > 0), the win rate above is OVER-STATED: /closed-positions dropped real losses. \
-Lead with the honest win/loss and the omission %, and say the copyable edge is smaller than the headline win rate \
-implies. (If NO "Loss completeness" section is present, say NOTHING about this -- do not speculate about omission.)
-  2) data quality CONTAMINATED -- the headline rests on a §3A-filtered subset
-  3) thin sample (n_resolved below the stated threshold) -- too few settled positions to trust the rate
-  4) two-sided share high -- the whale hedges / market-makes, so the one-sided ROI is an UPPER BOUND, not a \
-copyable return
-  5) CHALK (avg winning price >= 0.85) -- favorite-farming; a high win rate at these prices carries little edge
-  6) CONTESTED (avg winning price < 0.70) -- contrarian entries
-  7) a clean, adequately-sampled record if none of the above apply
+HARD RULES (this is the brevity mechanism -- do not break it):
+- EXACTLY ONE sentence. No second sentence. No semicolon-stacked clauses. No list.
+- DO NOT perform arithmetic. Every number you cite must appear VERBATIM in the input.
+- Cite the decisive number ONCE. Each number already carries its flag; do NOT restate the others.
+- Name the SINGLE most decision-relevant factor for THIS tier -- not a summary of all of them.
+- Never soften a flag. If the decisive number is flagged MIRAGE / UNKNOWN / concentrated / chalk / hedger, say it \
+in those terms.
 
-Vocabulary cues (apply only when the condition holds):
-- cost-based ROI is THE metric; notional ROI is shown for legacy comparison only -- never lead with it
-- one-sided ROI is an UPPER BOUND (excludes hedged markets; an entry-time copier cannot pick the survivors)
-- high two_sided_pct -> "hedges / market-makes"
-- avg_win_price >= 0.85 -> "favorite-farming profile"; avg_win_price < 0.70 -> "contrarian profile"
-- data_quality contaminated -> "the record rests on a filtered subset"
-- Loss completeness present with a_only > 0 -> "the win rate is over-stated; ~X% of this whale's losses were \
-omitted by the completed-trades API, so the honest record is <honest W/L>"; if it shows a LOWER BOUND (activity \
-windowed), add "and that omission is a floor -- there may be more beyond the window"
-- Loss completeness present with a_only = 0 -> "re-grounding confirms the loss set is complete -- the win rate is \
-not inflated by the completed-trades omission"
+What decides each tier -- lead with it:
+- PROMOTE: the honest edge that survived grounding (honest ROI + diversification).
+- WATCH: the ONE thing holding it back -- ungrounded (say "run grounding"), concentration, hedger upper-bound, or chalk.
+- PASS: why there is no honest edge -- a mirage win-rate, chalk with no return, or the edge vanishing under grounding.
+- INSUFFICIENT_DATA: what is missing -- too few honest positions, a one-position record, or low grounding coverage.
 
-Output: 2-4 sentences of prose. No bullets, no headings, no markdown."""
+Output: exactly ONE sentence. No markdown, no preamble, no restated caveats."""
 
 
 def _fmt_pct_signed(x) -> str:
@@ -466,66 +489,63 @@ def _fmt_usd(x) -> str:
 
 
 def _build_user_content(rep: PMAnalysisReport) -> str:
-    """Serialize the deterministic report as a stable plaintext block. Every number the narrator may cite is
-    PRE-FORMATTED here (percentages already computed) so the model never has to do arithmetic."""
-    if rep.chalk:
-        px_tag = "CHALK (favorite-farming)"
-    elif rep.contested:
-        px_tag = "CONTESTED (contrarian)"
+    """The flagged-number block the narrator reasons over. ★ THE BREVITY MECHANISM: every number carries its
+    TRUST-FLAG right here (MIRAGE / UNKNOWN / ONE-POSITION / hedger / chalk / LABELLED FICTION), so a caveat is
+    attached to the number and citable ONCE -- there is no free-prose field for the model to restate it in. The
+    tier + the decisive factor are ALREADY decided (deterministic); the model only writes the one sentence."""
+    s = rep.score or {}
+
+    def pct(x):   # signed, for returns
+        return "n/a" if x is None else "%+.0f%%" % (x * 100)
+
+    def pctu(x):  # unsigned, for shares
+        return "n/a" if x is None else "%.0f%%" % (x * 100)
+
+    grounded = bool(s.get("grounded"))
+    om = s.get("omission_pct")
+    if not grounded:
+        om_str = "UNKNOWN (ungrounded -- run grounding; the win-rate and ROI may be omission-inflated)"
+    elif om is not None and om >= 0.5:
+        om_str = "%s [MIRAGE: most of this whale's losses were dropped -- the headline is not the honest record]" % pctu(om)
+    elif om is not None and om > 0:
+        floor = " (a FLOOR -- more may lie beyond the /activity window)" if s.get("omission_floor") else ""
+        om_str = "%s of losses were dropped by /closed-positions%s" % (pctu(om), floor)
     else:
-        px_tag = "neither chalk nor contested"
-    thin = " [THIN: below the %d-position threshold]" % rep.min_resolved if rep.is_thin else ""
+        om_str = "clean (grounding found no dropped losses)"
+    dom = s.get("dominance_net")
+    if dom is None:
+        dom_str = "n/a (net loser)"
+    else:
+        tag = "ONE-POSITION RECORD" if dom > scoring.DOM_EXTREME_NET else (
+            "concentrated" if dom >= scoring.DOM_HIGH_NET else "diversified")
+        dom_str = "%s [%s]" % (pctu(dom), tag)
+    two = s.get("two_sided_pct")
+    two_str = "n/a" if two is None else ("%s%s" % (pctu(two),
+              " [hedger/market-maker -- the ROI is an UPPER BOUND]" if two >= scoring.TWO_SIDED_HIGH else ""))
+    px = s.get("avg_win_price")
+    px_str = "n/a" if px is None else ("%.2f%s" % (px, " [chalk -- favorite-farming, little edge]" if s.get("chalk") else ""))
     lines = [
-        "Whale: %s (%s...)" % (rep.user_name or "<no display name>", rep.wallet[:10]),
-        "Category: %s" % rep.category,
+        "Whale: %s (%s...)   Category: %s" % (rep.user_name or "<no name>", rep.wallet[:10], rep.category),
+        "TIER (already decided, final): %s" % s.get("tier"),
+        "Deterministic deciding factor: %s" % s.get("reason"),
         "",
-        "Resolved-position record (settled markets in this category only):",
-        "  n_resolved (scoreable) = %d%s" % (rep.n_resolved, thin),
-        "  n_excluded (quarantined, §3A) = %d   of %d total positions" % (rep.n_excluded, rep.n_total_rows),
-        "  wins = %d   losses = %d   win_rate = %s" % (rep.wins, rep.losses, _fmt_pct(rep.win_rate)),
-        "  net_realized_pnl = %s USDC" % _fmt_usd(rep.net_realized_pnl),
-        "  cost_basis = %.2f USDC (the ROI denominator)" % rep.cost_basis,
-        "  roi_cost_based = %s  <- THE metric" % _fmt_pct_signed(rep.roi),
-        "  roi_notional = %s  (legacy comparison only, NOT the metric)" % _fmt_pct_signed(rep.roi_notional),
-        "  avg_win_price = %s  [%s]" % (_fmt_px(rep.avg_win_price), px_tag),
+        "The numbers that decided it -- each with its trust-flag; cite the DECISIVE one, ONCE:",
+        "  cost-ROI (sort number) = %s   over n_honest=%s%s"
+        % (pct(s.get("sort_roi")), s.get("n_honest"), "" if grounded else " [n from /closed-positions -- ungrounded]"),
+        "  honest windowed ROI (did winning PAY) = %s%s"
+        % (pct(s.get("honest_roi")), "" if grounded else " [not computed -- ungrounded]"),
+        "  loss omission = %s" % om_str,
+        "  grounding coverage = %s" % pctu(s.get("coverage_pct")),
+        "  single-trade dominance (net-profit share) = %s   largest = %s [%s]"
+        % (dom_str, _fmt_usd(s.get("largest_pnl")), (s.get("largest_title") or "")[:44]),
+        "  two-sided share = %s" % two_str,
+        "  avg winning price = %s" % px_str,
+        "  drawdown-tell = %s over %sW/%sL  [LABELLED FICTION -- NOT a risk figure; near-$0 over many wins = losses hidden]"
+        % (_fmt_usd(s.get("dd_tell")), s.get("dd_wins"), s.get("dd_losses")),
+        "  our real copy fills = %s  [display only, never a gate]" % s.get("copy_fills"),
         "",
-        "Structure + data quality:",
-        "  two_sided_pct = %s over %s condition_ids  (hedge / market-making tell)"
-        % (_fmt_pct(rep.two_sided_pct), rep.n_condition_ids if rep.n_condition_ids is not None else "n/a"),
-        "  one_sided_roi = %s (n=%s)  [UPPER BOUND -- excludes hedged markets]"
-        % (_fmt_pct_signed(rep.onesided_roi), rep.onesided_n if rep.onesided_n is not None else "n/a"),
-        "  data_quality = %s  (quarantined: %s of positions, %s of |PnL|)"
-        % (rep.data_quality or "clean", _fmt_pct(rep.dq_count_pct), _fmt_pct(rep.dq_dollar_pct)),
-        "  backfill_complete = %s" % ("yes" if rep.backfill_complete else "NO (partial history -- not ranked)"),
+        "Write EXACTLY ONE sentence naming the single decisive factor for the %s tier." % s.get("tier"),
     ]
-    # Stage 5 (R2c + prompt rung): the re-grounded loss set, PRE-FORMATTED so the narrator cites it verbatim (the
-    # no-arithmetic rule). Present ONLY when the loss set was re-grounded from /activity -- when absent, the block is
-    # omitted entirely and the system prompt tells the model to say nothing about omission (no speculation).
-    if rep.loss_grounded:
-        lines += [
-            "",
-            "Loss completeness (re-grounded from /activity, held-to-resolution -- corrects the /closed-positions "
-            "under-reporting of held-to-worthless losses, the F-1 bias):",
-            "  honest win/loss = %sW / %sL   (vs the %dW / %dL above, which is /closed-positions only)"
-            % (rep.honest_wins if rep.honest_wins is not None else "n/a",
-               rep.honest_losses if rep.honest_losses is not None else "n/a", rep.wins, rep.losses),
-            "  held-to-worthless losses recovered (a_only) = %s"
-            % (rep.a_only_losses if rep.a_only_losses is not None else "n/a"),
-            "  loss omission = %s of honest losses were dropped by /closed-positions  (the measured bias for THIS whale)"
-            % _fmt_pct(rep.loss_omission_pct),
-            "  completeness = %s" % (rep.loss_completeness or "n/a"),
-        ]
-    if rep.samples:
-        lines.append("")
-        lines.append("Largest resolved positions by |PnL| (illustrative):")
-        for s in rep.samples:
-            outcome = "won" if s.won == 1 else ("lost" if s.won == 0 else "n/a")
-            sus = " [quarantined]" if s.pnl_suspect else ""
-            lines.append("  - %s | %s | entry %s | pnl %s%s"
-                         % ((s.title or "<untitled>")[:50], outcome, _fmt_px(s.avg_price),
-                            _fmt_usd(s.realized_pnl), sus))
-    lines.append("")
-    lines.append("Write 2-4 sentences.")
     return "\n".join(lines)
 
 
@@ -615,6 +635,25 @@ def _cache_evict(conn, wallet: str, category: str, skill_version: str) -> None:
                  (wallet, category, skill_version))
 
 
+def _store_whale_score(conn, score: dict, now_ts: int) -> None:
+    """Upsert the deterministic WhaleScore into pm_whale_score (migration 023) so the Prospects list is SORTABLE. An
+    un-analyzed whale has NO ROW -> the list reads NULL (not-analyzed), distinct from a PASS row. PM DB only."""
+    if not score:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO pm_whale_score(wallet, category, tier, reason, sort_roi, n_resolved, n_honest, "
+        "grounded, omission_pct, coverage_pct, omission_floor, honest_roi, dominance_net, dominance_gross, "
+        "largest_pnl, largest_title, two_sided_pct, avg_win_price, chalk, dd_tell, dd_wins, dd_losses, copy_fills, "
+        "copy_pnl, skill_version, computed_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (score.get("wallet"), score.get("category"), score.get("tier"), score.get("reason"), score.get("sort_roi"),
+         score.get("n_resolved"), score.get("n_honest"), 1 if score.get("grounded") else 0, score.get("omission_pct"),
+         score.get("coverage_pct"), 1 if score.get("omission_floor") else 0, score.get("honest_roi"),
+         score.get("dominance_net"), score.get("dominance_gross"), score.get("largest_pnl"),
+         score.get("largest_title"), score.get("two_sided_pct"), score.get("avg_win_price"),
+         1 if score.get("chalk") else 0, score.get("dd_tell"), score.get("dd_wins"), score.get("dd_losses"),
+         score.get("copy_fills"), score.get("copy_pnl"), score.get("skill_version"), int(now_ts)))
+
+
 def is_cached(conn, wallet: str, category: str, skill_version: str = PM_ANALYZE_SKILL_VERSION) -> bool:
     """True iff a stored verdict exists for this (wallet, category, skill_version). Read-only; the analyze route
     peeks this to decide whether to pay for the /activity loss-grounding fetch -- a cache HIT skips it entirely."""
@@ -627,7 +666,7 @@ def analyze_whale(conn, wallet: str, category: str, *, now_ts: int, force: bool 
                   skill_version: str = PM_ANALYZE_SKILL_VERSION,
                   min_resolved: int | None = None,
                   daily_cap_usd: float = PM_ANALYZE_DAILY_CAP_USD,
-                  loss_grounding=None) -> PMAnalysisReport:
+                  loss_grounding=None, honest=None) -> PMAnalysisReport:
     """The button/CLI entrypoint. Cache-hit -> return stored, spend NOTHING. Miss/force -> build the
     deterministic report, narrate under the cap, book any spend, and cache ONLY a successful verdict.
     Writes pm_analysis_cache + pm_analysis_cost (both PM DB); NEVER agent_state, NEVER the legacy DB."""
@@ -641,7 +680,8 @@ def analyze_whale(conn, wallet: str, category: str, *, now_ts: int, force: bool 
         _cache_evict(conn, wallet, category, skill_version)                     # re-analyze: clear stale verdict
 
     rep = build_pm_analysis(conn, wallet, category, now_ts=now_ts, min_resolved=min_resolved,
-                            skill_version=skill_version, loss_grounding=loss_grounding)
+                            skill_version=skill_version, loss_grounding=loss_grounding, honest=honest)
+    _store_whale_score(conn, rep.score, now_ts)     # the deterministic score is stored REGARDLESS of the narration
 
     day = _utc_day(now_ts)
     cap_hit = _cap_hit(conn, day, daily_cap_usd)

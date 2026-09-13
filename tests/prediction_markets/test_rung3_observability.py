@@ -16,11 +16,12 @@ from trading_corp.prediction_markets.live_driver import _audit_leg_independent
 
 
 # ── migration 021 ──────────────────────────────────────────────────────────────────────────
-def test_schema_head_is_22_and_contiguous():
-    # head moved 21 -> 22 with migration 022 (pm_subdivision_sizing_audit; sizing-from-UI). Contiguity is the invariant.
+def test_schema_head_is_23_and_contiguous():
+    # head moved 22 -> 23 with migration 023 (pm_whale_score; the ANALYZE-upgrade stored score). Contiguity is the
+    # invariant this test guards (a migration that skips a number is the clobber hazard); the pin bumps with each one.
     vers = sorted(v for v, _ in db.MIGRATIONS)
     assert vers == list(range(1, db.SCHEMA_HEAD + 1)), vers
-    assert db.SCHEMA_HEAD == 22, db.SCHEMA_HEAD
+    assert db.SCHEMA_HEAD == 23, db.SCHEMA_HEAD
 
 
 def test_migration_021_adds_columns_and_is_idempotent(tmp_path):

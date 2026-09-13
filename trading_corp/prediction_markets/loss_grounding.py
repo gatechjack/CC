@@ -181,4 +181,9 @@ async def fetch_and_ground_losses(client, wallet: str, category: str, *, categor
     closed_cat = [c for c in closed if category_of(c) == category]
     cids = list({getattr(x, "condition_id", None) for x in (acts_cat + closed_cat) if getattr(x, "condition_id", None)})
     resolutions = (await client.fetch_market_resolutions(cids)) if cids else {}
-    return ground_losses(acts_cat, closed_cat, resolutions, activity_truncated=trunc)
+    grounding = ground_losses(acts_cat, closed_cat, resolutions, activity_truncated=trunc)
+    # Phase A (Jack ruling 3: ships WITH grounding, SAME fetch): the whale's honest WINDOWED cost-ROI (did winning
+    # pay), $-accurate over /closed-positions UNION the recovered A_only held-to-worthless losers. scoring is pure.
+    from . import scoring
+    honest = scoring.honest_windowed_roi(acts_cat, closed_cat, resolutions)
+    return grounding, honest
