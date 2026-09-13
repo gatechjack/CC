@@ -171,3 +171,41 @@ The Anthropic key **is wired in the `prediction-markets-web` process today** (Ja
   basis on the A_only side, matching the closed convention) + regression-tested; Skeptic-2's LOW/cosmetic nits
   (stale Haiku/"not wired" comments) **retired**. No BLOCKER/HIGH outstanding.
 - The `rep.model`-is-config gap Jack flagged is **closed** (`_extract_model` reads the real response model).
+
+---
+
+## 8. DEPLOYED LIVE 2026-09-13 — OUTCOME (every step board-authorized)
+
+**origin/prod-live `e02d73ea` → this commit (FF); tag `pm-analyze-upgrade-deploy-2026-09-13`.** pm_web-only; engine
+`trading-corp` **PID 370246 NEVER touched**; pm_web `prediction-markets-web` **372688 → 376953** (one restart).
+
+Sequence as executed:
+- **Step 0 pre-flight RO** (01:12Z): head 22, box == `e02d73ea` (5/5), key wired (183 billed calls, Haiku/skill-3
+  baseline), engine 370246 / pm_web 372688, 44 subs recorded (atp jack=2 / karen=1).
+- **Step 1 backup** (01:15Z): 4 files == `e02d73ea`; **393 MB** DB snapshot head-22 → restore point
+  `/home/azureuser/pm_analyze_backup_20260913T011517Z`.
+- **Step 2 graft** (01:22Z): 5/5 landed == `b84bd61a` (LF), py_compile + import-gate clean (zero engine/broker
+  modules, `SCHEMA_HEAD=23`), no rollback.
+- **Step 3 migration 023**: my manual apply **STOPPED on head==23** — a **pm_cli `paper-poll` cron (01:30Z) applied
+  the grafted MIGRATION_023 itself** (PM migrations apply via `db.init_db` from crons). Verified clean vs the head-22
+  snapshot: head 22→23, `pm_whale_score` created + EMPTY + indexed (**26 cols** per the DDL; the RO check's
+  "expect 27" was a miscount — the 27th was the `PRIMARY KEY` clause), config **byte-identical** (44 subs incl atp
+  2/1), counts unchanged, engine + pm_web unrestarted.
+- **Step 4 restart** (01:42:59Z): pm_web 372688 → 376953; engine 370246 unchanged.
+- **Step 5a health**: box == `b84bd61a` (5/5), schema 23, heartbeats 0–2s fresh.
+- **Step 5b LIVE SONNET PROOF** (02:07Z): first Analyze on `0x684baa57c3/mlb` → **model=claude-sonnet-4-6 (the REAL
+  response model, not config)**, cost $0.00275, skill_version 4, one-sentence verdict, `pm_whale_score` stored. The
+  Sonnet swap is LIVE.
+
+**First-Analyze FINDING (report either way — Jack):** `0x684baa57c3/mlb` came back **GROUNDED**, tier=**INSUFFICIENT_DATA**.
+Our closed table shows **196 W / 17 L** (looks 92%, cost-ROI 88.5%), but grounding found **omission_pct=0.80** (80% of
+losses dropped) at **coverage 36%** → the win-rate is only a floor → refused to judge. Honest windowed ROI still +47%,
+diversified (dom 0.04), not chalk/hedger. **The loss-omission mirage caught in the wild on the most-copied whale
+(copy_fills=222).**
+
+**Do-no-harm:** engine PID 370246 unchanged throughout; `pm_subdivision` config byte-identical; PM live driver cycling.
+**Pre-existing / out-of-scope:** legacy `kalshi_copy_trader` "Apify FEED DOWN" (engine legacy loop, not this deploy);
+`db.py:connect()` sets WAL before a busy_timeout → a transient "database is locked" can hit `init_db` (one old
+traceback in `pm_poll.log`; filed as a backlog nit).
+
+**SEPARATE AUTHORIZATION (NOT shipped):** the pm_web Prospects/display surface that reads `pm_whale_score`.
