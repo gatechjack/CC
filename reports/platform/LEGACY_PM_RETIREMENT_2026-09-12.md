@@ -29,7 +29,7 @@
 | prod-live @ `93b5e908` | `5e03b7a2` (93b5e908 was the 2026-09-12 reconcile point; prod-live fast-forwarded through the PM deploys since) |
 | schema head 21, next free 022 | **head 23, next free 024** |
 | kcv2 lab DB "~228 MB" | **407 MB** (`kcv2_lab.db`, still-accrued corpus) |
-| poly_kalshi_mlb "COMPLETELY HALTED, not armed" | **config enabled+armed (auto_execute:true) + WIRED live (dry_run=False), but DURABLY persist-halted at runtime → places nothing (100% `blocked_halt`).** See ANOMALY-1 §7. Correct in *effect*, not in mechanism. |
+| poly_kalshi_mlb "COMPLETELY HALTED, not armed" | (Phase 1) config armed + WIRED live but DURABLY persist-halted → 100% `blocked_halt`. **(Phase 2) halt row read: `halt_reason="operator_disarm_2026-09-01"` — a deliberate operator disarm (not a loss-cap trip). NOW ALSO `enabled:false` (2026-09-13). Two independent stops.** See ANOMALY-1 §7 + §14. |
 | kcv2 observer "recorded PID 679 up since 2026-08-27" | **VERIFIED still active: PID 679, since 2026-08-27 15:25:45Z, still writing kcv2_* to the prod engine DB.** |
 
 ---
@@ -39,7 +39,7 @@
 | Ph | Name | State | Restart? | Disarm? | Reversible |
 |---|---|---|---|---|---|
 | **1** | **Read-only investigation → this doc + plan** | **DONE (this session)** | no | no | n/a |
-| 2 | Disable-first (config `enabled:false`, hot-reload) for all still-scanning legacy loops + stop legacy systemd timers + disable kcv2 observer service | NOT STARTED | no (hot) | no | YES (restore flags/units) |
+| 2 | Disable-first (config `enabled:false`, hot-reload) for all still-scanning legacy loops + stop legacy systemd timers | **PARTLY DONE 2026-09-13 (session 2)** — config disables DONE+proven (5 flips); timers **BLOCKED-ON-PRIVILEGE → handed to Jack** (runner ready); kcv2-observer disable **deferred** (not in Jack's Phase-2 scope). See §14. | no (hot) | no | YES (restore backup/flags) |
 | 3 | Archive-then-drop kcv2 data (lab DB + prod `kcv2_*` tables) — the ~3.15 GB win | NOT STARTED | no | no | archive=yes; drop=NO |
 | 4 | Cancel/park paid + legacy-only APIs (Apify, the-odds-api, Finnhub-dead) after their divisions are disabled | NOT STARTED | no | no | YES (re-provision KV) |
 | 5 | Code removal — LEGACY-ONLY files (strategies/data/brokers/scripts) + graft the shared `main.py` wiring block-by-block | NOT STARTED | **YES ×1** | **YES (poly_kalshi_mlb window only)** | git-revert |
@@ -97,6 +97,8 @@ Read-only runners authored + executed this session (all `mode=ro`, no writes, no
 ## 5. PART 1 — DIVISION INVENTORY (rows)
 
 Type legend: code / config / table / cron / service / task(win) / state-row / api / worktree.
+
+> **This table is the Phase-1 BASELINE snapshot. For CURRENT status of any touched row, see the §14 Phase-2 delta table.** Phase-2 (2026-09-13) changed: DIV-02/03/04/09/11 → `enabled:false` (config, done); DIV-14/15/16/17 timers → stop+disable pending Jack (§14.3).
 
 | ID | Division / unit | Type | Scope | Status (verified) | Phase | Evidence | VER | Rev | Ruling? |
 |---|---|---|---|---|---|---|---|---|---|
@@ -281,4 +283,62 @@ The reverse-import sweep was run with explicit patterns per module and cross-che
 
 ## 13. NEXT-SESSION PICKUP
 
-A later agent should: (1) re-run the do-no-harm baseline (`recon_arm_read_ro.ps1` + `legpm_inventory_ro.ps1`) and confirm anchors in §0; (2) get Jack's rulings on §3/§11; (3) execute the chosen phase, updating the Status/VER/Ruling cells of the affected rows in §5/§9/§11 in place. Do NOT write a separate report. Verify branch tips yourself (CR-stripped compare). Everything in §2 is fenced.
+A later agent should: (1) re-run the do-no-harm baseline (`recon_arm_read_ro.ps1` + `legpm_inventory_ro.ps1`) and confirm anchors in §0; (2) get Jack's rulings on §3/§11; (3) execute the chosen phase, updating the Status/VER/Ruling cells of the affected rows in §5/§9/§11 in place. Do NOT write a separate report. Verify branch tips yourself (CR-stripped compare). Everything in §2 is fenced. **Current state = §14 (Phase 2 log).**
+
+---
+
+## 14. PHASE 2 EXECUTION LOG — 2026-09-13 (session 2, hot & reversible only)
+
+Scope executed: Item 1 (poly_kalshi_mlb `enabled:false`), Item 3 (remaining hot config disables), Item 2 (legacy timers). All box writes were config-only or systemctl; **no restart, no code copy, no DB write beyond the config file, no deletion.** Runners preserved under `reports/platform/legacy_pm_ro_runners/legpm_p2_*`.
+
+### 14.1 DO-NO-HARM (before/after, PASSED)
+Identical baseline via `recon_arm_read_ro.ps1` + `recon_liveness_ro.ps1` (snapshots `_recon_scratch/*_p2_before.txt` / `*_p2_after.txt`).
+
+| Invariant | Before (15:00Z) | After (15:13Z) | Verdict |
+|---|---|---|---|
+| Arm rows / armed / latched / trigger | 31 / 31 / 0 / 0 | 31 / 31 / 0 / 0 | UNCHANGED |
+| PM schema head | 23 | 23 | UNCHANGED |
+| `trading-corp` PID / NRestarts | 370246 / 0 | 370246 / 0 | UNCHANGED (no restart) |
+| `prediction-markets-web` PID / NRestarts | 381803 / 0 | 381803 / 0 | UNCHANGED |
+| `sfp-card-watcher` PID / NRestarts | 656 / 0 | 656 / 0 | UNCHANGED |
+| Live PM heartbeats | 32, all `state=evaluated`, fresh | 32, all `state=evaluated`, fresh | HEALTHY |
+| Live PM open unsettled positions (jack/karen) | 202 / 149 | 202 / 149 | UNCHANGED (still holding) |
+| Live PM filled non-dry (jack/karen) | 391 / 283 | 391 / 283 | UNCHANGED |
+
+**Live PM is PLACING (not merely armed) — the 2026-09-04 failure-mode check passes** (fresh `state=evaluated` heartbeats + per-account cycles ~1–29s + 351 open live positions held). VERIFIED.
+
+### 14.2 ITEM 1 + ITEM 3 — CONFIG DISABLES (DONE + PROVEN)
+Runner `legpm_p2_disable.ps1/.sh` (box write, atomic, backed-up, parse+fence validated). **Backup:** `/home/azureuser/trading_corp/config/strategies.yaml.bak_phase2disable_20260913T150430Z` (104,516 B). **Restore command (all 5 flips):** `cp /home/azureuser/trading_corp/config/strategies.yaml.bak_phase2disable_20260913T150430Z /home/azureuser/trading_corp/config/strategies.yaml` (hot-reloads back; no restart).
+
+5 top-level `enabled: true → false` (comments preserved; YAML re-validated; asserted `pm_live_driver.enabled` stayed `true` BEFORE writing):
+
+| DIV | block | line | hot? | proof | VER |
+|---|---|---|---|---|---|
+| DIV-11 | `poly_kalshi_mlb` (Item 1) | L1786 | **NO — wire-gated** (main.py:1489; different class). Effective at next restart (prevents re-wire). Running loop still gated by the operator persist-halt. | halt row present + UNTOUCHED: `agent='strategy_state' key='poly_kalshi_mlb' {"halted":true,"halt_reason":"operator_disarm_2026-09-01"}` (read-only). Second independent stop added at the restart boundary. | V |
+| DIV-02 | `polymarket_copy_trader` (PCT farm) | L1759 | **YES** | empirical: whale_state froze at `15:03:39` across 96s window (loop stopped scanning within 1 cycle) | V |
+| DIV-03 | `kalshi_tail_price_arb` | L1402 | YES (same `enabled`→`_reload` mechanism) | code-verified (`enabled` property calls `_reload()`) + shares the proven pattern | V |
+| DIV-04 | `kalshi_temporal_bucket_arb` | L1442 | YES | same | V |
+| DIV-09 | `kalshi_sports_scout` | L1616 | YES | same | V |
+
+Already-`enabled:false` (recorded, NO action per charter): DIV-01 polymarket_arbitrage, DIV-07 kalshi_weather_arb, DIV-08 kalshi_crypto_arb, DIV-05 kalshi_sports_arb_observer.
+Left untouched per charter ("needs no action"), but see ANOMALY-P2-2: DIV-06 kalshi_llm_arbitrage + DIV-10 kalshi_copy_trader — **strategy-level `enabled:true`** in strategies.yaml (only the *division* is R7.e-disabled in divisions.yaml).
+
+### 14.3 ITEM 2 — LEGACY TIMERS (VERIFIED; execution BLOCKED-ON-PRIVILEGE → handed to Jack)
+Ownership + Apify + live-PM check (runner `legpm_p2_timers_probe_ro`): all 4 are legacy, **none serves the live PM division**; no cron re-triggers them.
+
+| DIV | timer | script | Apify? | serves live PM? | new status |
+|---|---|---|---|---|---|
+| DIV-15 | `trading-corp-watchlist-stats.timer` (daily 12:00Z) | `refresh_kalshi_watchlist_stats` | **YES (6 refs)** — billing driver | NO | still active/enabled — **STOP+DISABLE pending Jack** |
+| DIV-16 | `trading-corp-watchlist-deep.timer` (Sun 14:00Z) | `seed_kalshi_watchlist_deep` | **YES (11 refs)** — billing driver | NO | still active/enabled — **pending Jack** |
+| DIV-17 | `trading-corp-pm-watchlist-deep.timer` (Sun 13:00Z) | `seed_polymarket_watchlist_deep` | NO (polymarket free data-api) — writes agent_state `polymarket_copy_trader` (legacy PCT, **not** live PM) | NO | still active/enabled — **pending Jack** |
+| DIV-14 | `trading-corp-pct-pruner.timer` (daily 11:30Z) | `prune_stale_pct_entries` | NO (DB-only) | NO | still active/enabled — **pending Jack** |
+
+**Why blocked:** stopping root system units needs root. `sudo -n systemctl stop trading-corp-*.timer` → **"a password is required"** (rc=1) for all 4 (no-op; timers unchanged — `is-active=active`, `is-enabled=enabled` confirmed after). Passwordless sudo is unavailable ([[prod-sudo-constraint-no-password]]); the sudoers NOPASSWD `systemctl stop trading-corp*` entry is shadowed by a trailing `(ALL) ALL` rule (last-match-wins). Per this phase's "az-root read-only only" rule I did NOT perform the root *write* via `az vm run-command`.
+**HANDOFF (Jack, reserved):** run `powershell -ep bypass -f .\legpm_p2_timers_disable_JACK.ps1` (az-root `systemctl disable --now` the 4 timers = stop + reboot-persistent). **Rollback:** `legpm_p2_timers_reenable_JACK.ps1` (`enable --now`). This stops the Apify billing driver (DIV-15/16); DIV-14/17 are legacy non-billing but pointless now.
+
+### 14.4 ANOMALIES surfaced this session
+- **ANOMALY-P2-1 (privilege):** the box's `sudo` NOPASSWD allowlist for `systemctl {stop,start,restart} trading-corp*` is effectively dead — shadowed by a trailing `(ALL) ALL` rule → every sudo needs a password. Root writes must go through `az vm run-command` (as Jack's restart does). A later agent cannot stop/disable box system units over ssh.
+- **ANOMALY-P2-2 (division-vs-strategy enable):** the R7.e ruling set the *division* `enabled:false` (divisions.yaml) for kalshi_llm_arbitrage + kalshi_copy_trading, but their *strategy* blocks (strategies.yaml) are still `enabled:true`. The in-engine kalshi_copy loop last polled Apify 2026-09-11 (now dormant) and kalshi_copy still emits paper `would_have_placed` (last 2026-09-11). Left untouched per charter, but a later phase should flip these two strategy blocks `enabled:false` for a clean, belt-and-suspenders disable (recommend folding into Ph5/the code-removal phase). kalshi_copy_trader `auto_execute:true` remains latent (harmless while the division has no broker, but re-enabling the division would arm it live).
+
+### 14.5 RULINGS — still OPEN (unchanged) + Phase-2 pending Jack actions
+All §3/§11 rulings remain OPEN (kcv2 lab-DB + prod-tables disposition; Polymarket USDC drain **must GATE key removal, not follow it**; DB-backup-before-drops). New Jack action items from Phase 2: (a) run `legpm_p2_timers_disable_JACK.ps1` to complete Item 2 (Apify billing stops on execution); (b) if desired, fold the box `strategies.yaml` disables into git/prod-live (the box now diverges from prod-live for the 5 flags — intended, reversible via the timestamped backup; the branch commit records but does not itself deploy).
