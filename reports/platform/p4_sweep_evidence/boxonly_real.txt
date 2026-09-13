@@ -1,0 +1,5 @@
+.claude/scheduled_tasks.lock
+config/Lets start Phase 1 — Plumbing now.txt
+deploy/2026-07-08_pmcc_lifecycle_fix/backfilled_ids.txt
+.claude/settings.local.json
+config/strategies.yaml.block_bs

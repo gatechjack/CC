@@ -42,7 +42,8 @@
 | 2 | Disable-first (config `enabled:false`, hot-reload) for all still-scanning legacy loops + stop legacy systemd timers + reconcile prod-live | **DONE 2026-09-13 (sessions 2+3)** — **8 config flips** done+proven (5 P2 + 3 P3); **4 legacy timers stopped+disabled by Jack, VERIFIED reboot-persistent**; **Apify billing fully ceased** (timers + in-engine kalshi_copy loop both off); box↔prod-live **reconciled** (commit `fcbcd4a7`, clean FF, **push pending Jack**); kcv2-observer disable **deferred** (not in Phase-2/3 scope). See §14 + §15. | no (hot) | no | YES (backups + reenable runner) |
 | 3 | Archive-then-drop kcv2 data (lab DB + prod `kcv2_*` tables) — the ~3.15 GB win | NOT STARTED | no | no | archive=yes; drop=NO |
 | 4 | Cancel/park paid + legacy-only APIs (Apify, the-odds-api, Finnhub-dead) after their divisions are disabled | NOT STARTED | no | no | YES (re-provision KV) |
-| 5 | Code removal — LEGACY-ONLY files (strategies/data/brokers/scripts) + graft the shared `main.py` wiring block-by-block | NOT STARTED | **YES ×1** | **YES (poly_kalshi_mlb window only)** | git-revert |
+| 4.5 | **FULL-TREE DRIFT SWEEP** (pre-removal gate, read-only) | **DONE 2026-09-13 (session 4)** — box vs prod-live `fcbcd4a7`, both directions, byte-safe. **No unrelated runtime drift.** Only 2 known-benign non-runtime box-BEHIND files (test_pmcc_logic.py, BACKLOG.md — no action); 8 shared files IDENTICAL + baselined; 6 never-deployed KEPT files (2 survivor→owner); 1 unattributed scratch (`strategies.yaml.block_bs`). See §16. | no | no | n/a |
+| 5 | Code removal — LEGACY-ONLY files (strategies/data/brokers/scripts) + graft the shared `main.py` wiring block-by-block. **Baseline in §16.7; prove survivor counts unchanged.** | NOT STARTED (sweep-gated: CLEAR to proceed) | **YES ×1** | **YES (poly_kalshi_mlb window only)** | git-revert |
 | 6 | Shared-file surgical edits (`brokers/kalshi.py` discovery, `web/data.py`/`web/routes.py` PM sections, resolvers) | NOT STARTED | YES (fold into Ph5 window) | as Ph5 | git-revert |
 | 7 | Archive/branch/tag disposition of removed code + final DB shrink verification | NOT STARTED | no | no | n/a |
 
@@ -391,3 +392,64 @@ Jack ran `legpm_p2_timers_disable_JACK.ps1` (az-root). Verified (`legpm_p3_inves
 
 ### 15.6 RULINGS / PENDING
 Still OPEN (carried forward): kcv2 data disposition (3.15 GB prod `kcv2_*` + 407 MB lab DB — irreplaceable, not in git; **archive + verify readable BEFORE any drop**); Polymarket USDC drain (**must GATE key removal, not follow it**); DB backup before any drop; P2-1 (inert sudo allowlist — root writes via az only). Pending Jack: **FF-push `fcbcd4a7` to prod-live** (§15.3). kcv2 observer still RUNNING (deferred). poly_kalshi_mlb `auto_execute:true` residual (harmless) — clean up in Ph5.
+
+---
+
+## 16. PHASE 4 EXECUTION LOG — 2026-09-13 (session 4): FULL-TREE DRIFT SWEEP (READ-ONLY)
+
+Purpose: give the code-removal phase a proven starting picture so it never discovers unrelated drift mid-graft. Anchors re-verified: `origin/prod-live` = **`fcbcd4a7`** (Jack's reconcile landed), working branch pushed = `71251355`, PM schema head `23`. Method: byte-safe CR-stripped md5 manifests, box overlay vs prod-live, **both directions**. Runner `legpm_p4_boxmanifest_ro`; git-side manifest via git-bash; evidence under `reports/platform/p4_sweep_evidence/` (box_manifest, git_manifest, cmp_*). **Sweep validated** (it detected 2 real content drifts — see below — proving it can detect a difference).
+
+### 16.1 DO-NO-HARM (read-only phase; PASSED)
+Before (fcbcd4a7 baseline) / After identical: 31/31 armed, 0 latched, 0 trigger; schema 23; `trading-corp` 370246 / `pm-web` 381803 / `sfp-card-watcher` 656 all NRestarts 0; live PM placing, open jack 204 / karen 151 both reads. Nothing moved.
+
+### 16.2 SWEEP RESULT (counts): overlay 1264 box files vs 1530 git-tracked → 516 identical, **2 drift**, 741 box-only-backups + 5 box-only-benign, git-only = not-deployed dirs + non-overlay + 6 trading_corp files.
+
+### 16.3 DRIFT (content differs, present both sides) — direction established per file
+| file | division | runtime? | box md5 | prod-live md5 | direction | action |
+|---|---|---|---|---|---|---|
+| `tests/test_pmcc_logic.py` | PMCC (survivor) | NO (test) | `4be337b6` | `864dcc6a` | **box BEHIND** (box==git commit `2fe3805b` 2026-07-31; prod-live ahead) | NONE — prod-live correct; do NOT fold box→prod-live |
+| `BACKLOG.md` | n/a (doc) | NO | `5abc7ca6` | `0881d864` | **box BEHIND** (same July-31 snapshot) | NONE |
+Both are the **known-benign July snapshots** the charter said to confirm. Both **box-behind / prod-live-ahead** (NOT box-ahead) — the exact direction the 09-07 trap inverted. No runtime code drifted.
+
+### 16.4 PROD-LIVE-AHEAD (git-tracked, absent on box overlay)
+- **6 under `trading_corp/`** — all **never-imported by any `trading_corp/` module** (grep-verified; engine runs without them ⇒ not deployment-critical) = known-KEPT never-deployed dev/one-shot files:
+  - LEGACY: `scripts/kalshi_demo_validate.py`, `scripts/kalshi_demo_smoke.py` (kalshi_live DEMO smoke), `data/whale_screening.py` (PCT, never-imported).
+  - SURVIVOR (report-to-owner, do NOT fold): `agents/strategies/bitunix_confluence_gate.py`, `agents/strategies/_ta_helpers.py` (bitunix), `scripts/pmcc_paper_run_readiness.py` (PMCC dev). **Undeployed survivor code in git — finding for the bitunix/PMCC owner, not this effort.**
+- Bulk (expected, not-deployed dirs; prod-live is a deploy mirror, git tracks full dev tree): tests/261, reports/235, deploy/178, scripts/120, runbooks/58, tmp/30, planning/24, deploy_rh_auth/17, _gdxcap_deploy/12, infra/9, docs/9, cc/8, research/7, sfp_cockpit/2, plans/2, + top-level dev scripts. No action.
+- Non-overlay (mapped, present at their box locations — verified): `pead_earnings/*`→`/home/azureuser/pead_earnings/` (PEAD survivor), `card_assets/*`→`/home/azureuser/card_assets/` (sfp-card survivor), `infra/systemd/*`→`/etc/systemd/system/`.
+
+### 16.5 BOX-AHEAD / box-only untracked
+- **741 deploy backups** (`.pre-*`, `.bak-*`, `.bak_*`, `*_backup_*/`, `*_rollback_*.sh`, `requirements.*.pre-*`) — benign operational artifacts, incl. my P2/P3 config backups. Not code.
+- **5 non-backup**, all benign: `config/Lets start Phase 1 — Plumbing now.txt` (**documented exclusion**), `deploy/2026-07-08_pmcc_lifecycle_fix/backfilled_ids.txt` (**documented exclusion**), `.claude/scheduled_tasks.lock` + `.claude/settings.local.json` (local agent files, not deployed code), **`config/strategies.yaml.block_bs`** (stray scratch — see 16.8).
+- **No real untracked deployed code.**
+
+### 16.6 NON-OVERLAY / non-engine surface
+- **cron (azureuser): 6 entries, ALL survivor/live-PM** — `pm_cli.py` paper-poll/refresh/adjudicate/rollup (live PM), `replay_audit_event_write_failed.py`, `telegram_lifecycle_divergence_check.py`. **No legacy cron.**
+- **systemd units** (`/etc/systemd/system/`): the 4 legacy timers (`watchlist-stats/deep`, `pm-watchlist-deep`, `pct-pruner`) still **installed but disabled** (Ph3) — their unit FILES are Ph5 removal candidates (deletion reserved). `trading-corp-kcv2-observer.service` installed+active (md5 `bf001461`, matches Phase-1 record). `pead-earnings-watcher.service` box md5 **`b2157ffe` = the documented known-stale-benign copy** (systemd runs the `/etc` unit). Survivor units unchanged.
+
+### 16.7 SHARED-FILE BASELINE (Item 3 — removal phase MUST prove these unchanged afterward)
+All 8 **IDENTICAL box==prod-live** (CR-stripped md5), captured at prod-live `fcbcd4a7`:
+| shared file | md5 (box==prod-live) | LOC |
+|---|---|---|
+| `trading_corp/main.py` | `fcee5e813c8faa0904a0900bd41ed2bb` | 6209 |
+| `trading_corp/persistence/db.py` | `043f6033da089c776d219a269e98dc1f` | 891 |
+| `trading_corp/brokers/robinhood.py` | `2753939cd52526d11fb300cd982c43bf` | 1975 |
+| `trading_corp/brokers/base.py` | `bc8b6d76eec507ce0b190aa561a654f2` | 246 |
+| `trading_corp/agents/data_exec.py` | `8f7d2568603873e9548d22ed19db7263` | 1207 |
+| `trading_corp/brokers/kalshi_live.py` | `5c1a3551972bae923d03cddddcad03c7` | 430 |
+| `trading_corp/web/data.py` | `2643bfc485f9fba9de4b39c0365e2619` | 6717 |
+| `trading_corp/web/routes.py` | `49a785fa1e27800c15cf0cf383596c5b` | 5846 |
+
+**main.py wiring baseline (grep counts at `fcee5e81`; 47 total `asyncio.create_task(`):**
+- LEGACY loop-wirings to REMOVE (ref counts incl. def+import+call): polymarket_arb 3, polymarket_copy_trader 2, poly_kalshi 2, kalshi_arb(tail) 3, kalshi_tb 2, kalshi_llm 3, kalshi_weather 2, kalshi_crypto 2, kalshi_sports_scout 2, kalshi_sports_arb_observer 2, kalshi_copy 2; **LEGACY resolvers/marks** `start_kalshi_resolver_loop` 2 + `start_poly_kalshi_mark_loop` 2 (resolve legacy round-trips — also removed).
+- **SURVIVOR wirings that MUST remain after removal:** `scheduled_pm_live_loop` 2, `scheduled_shard_snapshot_loop` 1, `_scheduled_pmcc_scan_loop` 2, `_scheduled_pead_scan_loop` 2, `_scheduled_donchian_loop` 3; `pm_live_driver` refs 4; `bitunix` refs 196; `mace`/`MACE` refs 119. Removal phase re-runs these greps post-graft and proves the survivor counts are byte-for-byte unchanged.
+- **poly_kalshi_mlb wiring:** `if _pk_cfg.get("enabled")` gate at main.py:1489 (WIRE-GATED). Its `enabled:false` (P2) means the loop won't wire on next restart; the running loop is stopped by the operator persist-halt (`agent_state` agent='strategy_state' key='poly_kalshi_mlb' halt_reason `operator_disarm_2026-09-01`). **Confirmed present; NOT touched.**
+
+### 16.8 UNATTRIBUTED (the most important line — flagged, not filed under "probably fine")
+- **`config/strategies.yaml.block_bs`** — a box-only untracked file next to `strategies.yaml`, not in git, no matching deploy backup pattern, name suggests a "block"-edit scratch fragment. The engine reads `strategies.yaml` (not `.block_bs`), so it is inert — but I cannot attribute it to a specific deploy or owner. **FLAG for Jack: confirm deletable scratch; NOT touched this phase.** (Everything else in the sweep is attributed.)
+
+### 16.9 RECONCILIATION_EXCLUSIONS.md ACCURACY — CONFIRMED still accurate
+The two scratch/artifact exclusions were found exactly as documented (box-only); the `pead-earnings-watcher.service` known-stale md5 `b2157ffe` matches; `card_assets/out/`, `__pycache__`, `*.bak_*`, data/WAL all correctly classify. Minor gaps (not errors): the doc doesn't list `.claude/` local files or `config/strategies.yaml.block_bs` — both benign/local; suggest a one-line note if a future sweep wants zero-noise. **Verdict: usable as-is for the removal-phase sweep.**
+
+### 16.10 RULINGS / PENDING (carried forward, unchanged)
+kcv2 data disposition (archive+verify BEFORE drop); Polymarket USDC drain (**gates** key removal); DB backup before drop; P2-1 (sudo inert → az-root writes are Jack's). **Removal-phase readiness: shared files clean + baselined; no unrelated runtime drift; 2 known-benign non-runtime box-behind files (no action); 6 never-deployed KEPT files (2 survivor → owner's call).** New for owners: bitunix/PMCC undeployed dev files in git (16.4). Unattributed scratch: `strategies.yaml.block_bs` (16.8).
