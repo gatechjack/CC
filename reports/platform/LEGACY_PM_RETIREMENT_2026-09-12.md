@@ -39,7 +39,7 @@
 | Ph | Name | State | Restart? | Disarm? | Reversible |
 |---|---|---|---|---|---|
 | **1** | **Read-only investigation → this doc + plan** | **DONE (this session)** | no | no | n/a |
-| 2 | Disable-first (config `enabled:false`, hot-reload) for all still-scanning legacy loops + stop legacy systemd timers | **PARTLY DONE 2026-09-13 (session 2)** — config disables DONE+proven (5 flips); timers **BLOCKED-ON-PRIVILEGE → handed to Jack** (runner ready); kcv2-observer disable **deferred** (not in Jack's Phase-2 scope). See §14. | no (hot) | no | YES (restore backup/flags) |
+| 2 | Disable-first (config `enabled:false`, hot-reload) for all still-scanning legacy loops + stop legacy systemd timers + reconcile prod-live | **DONE 2026-09-13 (sessions 2+3)** — **8 config flips** done+proven (5 P2 + 3 P3); **4 legacy timers stopped+disabled by Jack, VERIFIED reboot-persistent**; **Apify billing fully ceased** (timers + in-engine kalshi_copy loop both off); box↔prod-live **reconciled** (commit `fcbcd4a7`, clean FF, **push pending Jack**); kcv2-observer disable **deferred** (not in Phase-2/3 scope). See §14 + §15. | no (hot) | no | YES (backups + reenable runner) |
 | 3 | Archive-then-drop kcv2 data (lab DB + prod `kcv2_*` tables) — the ~3.15 GB win | NOT STARTED | no | no | archive=yes; drop=NO |
 | 4 | Cancel/park paid + legacy-only APIs (Apify, the-odds-api, Finnhub-dead) after their divisions are disabled | NOT STARTED | no | no | YES (re-provision KV) |
 | 5 | Code removal — LEGACY-ONLY files (strategies/data/brokers/scripts) + graft the shared `main.py` wiring block-by-block | NOT STARTED | **YES ×1** | **YES (poly_kalshi_mlb window only)** | git-revert |
@@ -98,7 +98,7 @@ Read-only runners authored + executed this session (all `mode=ro`, no writes, no
 
 Type legend: code / config / table / cron / service / task(win) / state-row / api / worktree.
 
-> **This table is the Phase-1 BASELINE snapshot. For CURRENT status of any touched row, see the §14 Phase-2 delta table.** Phase-2 (2026-09-13) changed: DIV-02/03/04/09/11 → `enabled:false` (config, done); DIV-14/15/16/17 timers → stop+disable pending Jack (§14.3).
+> **This table is the Phase-1 BASELINE snapshot. For CURRENT status of any touched row, see the §14 (Phase 2) + §15 (Phase 3) delta tables.** Net as of 2026-09-13: DIV-02/03/04/09/11 → `enabled:false` (P2); DIV-06 kalshi_llm + DIV-10 kalshi_copy → `enabled:false` (+ kalshi_copy `auto_execute:false`) (P3, §15.2); DIV-14/15/16/17 timers → **stopped+disabled by Jack, verified** (§15.4); box↔prod-live reconciled via commit `fcbcd4a7` (FF push pending Jack, §15.3).
 
 | ID | Division / unit | Type | Scope | Status (verified) | Phase | Evidence | VER | Rev | Ruling? |
 |---|---|---|---|---|---|---|---|---|---|
@@ -341,4 +341,53 @@ Ownership + Apify + live-PM check (runner `legpm_p2_timers_probe_ro`): all 4 are
 - **ANOMALY-P2-2 (division-vs-strategy enable):** the R7.e ruling set the *division* `enabled:false` (divisions.yaml) for kalshi_llm_arbitrage + kalshi_copy_trading, but their *strategy* blocks (strategies.yaml) are still `enabled:true`. The in-engine kalshi_copy loop last polled Apify 2026-09-11 (now dormant) and kalshi_copy still emits paper `would_have_placed` (last 2026-09-11). Left untouched per charter, but a later phase should flip these two strategy blocks `enabled:false` for a clean, belt-and-suspenders disable (recommend folding into Ph5/the code-removal phase). kalshi_copy_trader `auto_execute:true` remains latent (harmless while the division has no broker, but re-enabling the division would arm it live).
 
 ### 14.5 RULINGS — still OPEN (unchanged) + Phase-2 pending Jack actions
-All §3/§11 rulings remain OPEN (kcv2 lab-DB + prod-tables disposition; Polymarket USDC drain **must GATE key removal, not follow it**; DB-backup-before-drops). New Jack action items from Phase 2: (a) run `legpm_p2_timers_disable_JACK.ps1` to complete Item 2 (Apify billing stops on execution); (b) if desired, fold the box `strategies.yaml` disables into git/prod-live (the box now diverges from prod-live for the 5 flags — intended, reversible via the timestamped backup; the branch commit records but does not itself deploy).
+All §3/§11 rulings remain OPEN (kcv2 lab-DB + prod-tables disposition; Polymarket USDC drain **must GATE key removal, not follow it**; DB-backup-before-drops). New Jack action items from Phase 2: (a) run `legpm_p2_timers_disable_JACK.ps1` to complete Item 2 (Apify billing stops on execution); (b) if desired, fold the box `strategies.yaml` disables into git/prod-live (the box now diverges from prod-live for the 5 flags — intended, reversible via the timestamped backup; the branch commit records but does not itself deploy). **[Both done in Phase 3 — see §15: Jack ran the timer runner; the reconcile commit `fcbcd4a7` is ready to FF-push prod-live.]**
+
+---
+
+## 15. PHASE 3 EXECUTION LOG — 2026-09-13 (session 3, hot & reversible only)
+
+Scope: Item 1 (close the P2-2 strategy-layer gap), Item 2 (reconcile box↔prod-live), Item 3 (verify timers + Apify cessation). No restart, no code, no deletion, no table touch, poly_kalshi_mlb persist-halt row NOT touched. Anchors re-verified: `origin/prod-live` still `5e03b7a2`, PM schema head `23`. Runners under `reports/platform/legacy_pm_ro_runners/legpm_p3_*`.
+
+### 15.1 DO-NO-HARM (before/after, PASSED)
+`_recon_scratch/*_p3_before.txt` / `*_p3_after.txt`.
+
+| Invariant | Before (15:33Z) | After (15:44Z) | Verdict |
+|---|---|---|---|
+| Arm rows / armed / latched / trigger | 31 / 31 / 0 / 0 | 31 / 31 / 0 / 0 | UNCHANGED |
+| PM schema head | 23 | 23 | UNCHANGED |
+| `trading-corp` / `pm-web` / `sfp-card-watcher` PID·NRestarts | 370246·0 / 381803·0 / 656·0 | same | UNCHANGED (no restart) |
+| Live PM open positions (jack/karen) | 203 / 151 | 204 / 151 | HEALTHY (ordinary trading; still PLACING) |
+
+### 15.2 ITEM 1 — P2-2 config gap CLOSED (done + proven)
+Runner `legpm_p3_disable.ps1/.sh` (box write, atomic, backup + parse + fence-validated). **Backup:** `/home/azureuser/trading_corp/config/strategies.yaml.bak_phase3disable_20260913T153724Z` (104,521 B). **Restore (reverts only the 3 P3 flips):** `cp` that backup back (hot). Flip time **2026-09-13T15:37:24Z**.
+
+| block.field | was | now | hot? | VER |
+|---|---|---|---|---|
+| `kalshi_llm_arbitrage.enabled` | true | **false** | HOT (`enabled` prop calls `_reload()`; loop checks per-cycle) | V |
+| `kalshi_copy_trader.enabled` | true | **false** | HOT | V |
+| `kalshi_copy_trader.auto_execute` | true | **false** | HOT | V |
+
+**What stopped each TODAY (established before flipping):**
+- `kalshi_llm_arbitrage`: division-disabled ⇒ no broker registered ⇒ loop no-ops at the broker check; idle since 2026-08-29 (whp last 08-29). Does NOT call any paid API. `enabled:false` = belt-and-suspenders. 0 unresolved RTs.
+- `kalshi_copy_trader`: **★ LIVE FINDING (reported before change):** strategy `enabled:true` ⇒ loop was RUNNING and **still calling Apify every ~10 min** (journal: "apify open_positions fetch failed HTTP 400 … 106 consecutive … FEED DOWN" at 15:23 + 15:33 today). It was NOT placing (0 unresolved RTs, no live placement since 2026-08-14, feed-down + division has no live broker) — running-but-not-placing. The earlier "dormant since 09-11" read was a **measurement trap**: `last_poll_ts` only updates on Apify *success*, masking the ongoing failed calls. `enabled:false` (hot) stopped the loop ⇒ Apify calls ceased (§15.4).
+
+**Same-shape sweep (VERIFIED full matrix, `legpm_p3_investigate_ro`):** after P2+P3 the only strategy blocks with a still-`true` arm flag are — `pm_live_driver.enabled=true` (**the SURVIVOR; correct, fenced**) and `poly_kalshi_mlb.auto_execute=true` (**residual; harmless — `enabled:false` is wire-gated so the loop won't re-wire at restart, and the running loop is operator-persist-halted; NOT in Item-1 scope → reported, not changed**). Every other legacy strategy block = `enabled:false, auto_execute:false`. Divisions.yaml keeps `enabled:true` on most legacy divisions (cosmetic "division-on / strategy-off" — registers the tile; not a live-money layer). No further dangerous strategy-on-while-believed-off found.
+
+### 15.3 ITEM 2 — box↔prod-live RECONCILE (commit ready; Jack FF-pushes)
+Built LOCALLY on a worktree off `origin/prod-live` (`cc-prodlive-p2p3-reconcile-wt`, branch `prodlive-config-reconcile-2026-09-13`). Applied the box's `strategies.yaml` (all 8 P2+P3 flips) → **commit `fcbcd4a7`**, parent `5e03b7a2` = current `origin/prod-live` ⇒ **clean fast-forward**.
+- **Proof git==box:** reconciled file CR-stripped md5 `98cbde83` == box `98cbde83`. `git diff` vs prod-live = **exactly the 8 flag lines** (7 `enabled` + 1 `auto_execute`, all `true→false`); nothing else; `pm_live_driver` untouched.
+- **No other drift:** byte-safe CR-stripped md5 of all 12 `config/*.yaml` — **11 SAME box==prod-live**, only `strategies.yaml` differs (the intended edits). (An initial all-12-differ result was a measurement bug — PowerShell mangling em-dashes when capturing `git show`; recomputed byte-safe from checked-out files.) A full `trading_corp/` code-tree drift sweep was NOT done (out of Phase-3 scope; recommend before Phase-5 code removal).
+- **Push command (Jack, FF; prod-live protected by ruleset 22485002 — FF allowed, force refused):** from `C:\Users\AA Incorporado\cc`: `git push origin prodlive-config-reconcile-2026-09-13:prod-live`
+
+### 15.4 ITEM 3 — timers + Apify cessation (VERIFIED)
+Jack ran `legpm_p2_timers_disable_JACK.ps1` (az-root). Verified (`legpm_p3_investigate_ro`):
+- All 4 timers `active=inactive`, `enabled=disabled`; `timers.target.wants` symlinks **removed** (reboot-persistent); none in the active-timers list. Services not running (watchlist-stats.service in `failed` = residue of its last pre-disable run; won't re-trigger).
+- **Apify CEASED (VERIFIED, `legpm_p3_apify_cease_ro`):** 0 kalshi_copy Apify lines since the 15:37 flip; last-ever failure `15:33:39` (pre-flip); the ~15:43 poll was skipped. Both Apify callers now off (timers + in-engine loop). No cron re-triggers (verified). ⇒ **Apify billing driver fully stopped.** (Subscription CANCEL is still Ph4/Jack — RULING-APIFY.)
+
+### 15.5 ANOMALIES (Phase 3)
+- **ANOMALY-P3-1 (measurement):** `kalshi_copy_trader.last_poll_ts`=09-11 falsely implied "dormant"; the journal showed it calling Apify every 10 min (failing). *last-success timestamps are not liveness.* Caught by reading the journal, not the state row.
+- **ANOMALY-P3-2 (measurement):** local md5 of `git show` output mangled non-ASCII (em-dashes) → false all-config-drift alarm; byte-safe recompute (checked-out files, `ReadAllBytes`, CR-strip) cleared it.
+
+### 15.6 RULINGS / PENDING
+Still OPEN (carried forward): kcv2 data disposition (3.15 GB prod `kcv2_*` + 407 MB lab DB — irreplaceable, not in git; **archive + verify readable BEFORE any drop**); Polymarket USDC drain (**must GATE key removal, not follow it**); DB backup before any drop; P2-1 (inert sudo allowlist — root writes via az only). Pending Jack: **FF-push `fcbcd4a7` to prod-live** (§15.3). kcv2 observer still RUNNING (deferred). poly_kalshi_mlb `auto_execute:true` residual (harmless) — clean up in Ph5.
