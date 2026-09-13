@@ -25,6 +25,33 @@ TIER_PROMOTE = "PROMOTE"                   # clears every honest bar AND is grou
 TIER_WATCH = "WATCH"                       # an edge with a material caveat, OR ungrounded-but-promising
 TIER_PASS = "PASS"                         # no honest edge
 
+# ── tier ranking for the Prospects DISPLAY sort (the "tier CAPS the number" ruling) ───────────────────────
+# A promotion-candidate list MUST sort by tier FIRST, then the number within a tier -- else a high-ROI
+# INSUFFICIENT_DATA whale (the loss-omission mirage: 88.5% ROI but 80% of losses dropped) floats above a lower-ROI
+# PROMOTE and inverts the judgement. Order: PROMOTE > WATCH > INSUFFICIENT_DATA > PASS (INSUFFICIENT is
+# "watch, not yet judgeable" -> above known-no-edge PASS; both above nothing). Un-analyzed (no pm_whale_score row)
+# -> rank 0 -> the display reads "not analyzed" and sorts to the bottom, NEVER as a 0/low score.
+TIER_RANK = {TIER_PROMOTE: 4, TIER_WATCH: 3, TIER_INSUFFICIENT: 2, TIER_PASS: 1}
+
+
+def tier_rank(tier) -> int:
+    """Promotion-priority rank of a tier (higher = more promotable). 0 for un-analyzed / unknown."""
+    return TIER_RANK.get(tier, 0)
+
+
+def score_sort_key(tier, sort_roi) -> float | None:
+    """Composite sort key so the TIER dominates and the number only orders WITHIN a tier band -- a PROMOTE at +5%
+    always sorts above an INSUFFICIENT_DATA at +200%. Returns None for an un-analyzed whale (rank 0); the caller
+    renders 'not analyzed' + a bottom sentinel rather than a 0 score. ROI is clamped to [-2, 5] so an extreme ROI
+    can never leak across a tier boundary (tier step is 100; the clamped ROI contributes at most [-20, 50])."""
+    r = tier_rank(tier)
+    if r == 0:
+        return None
+    roi = sort_roi if sort_roi is not None else -2.0
+    roi = max(-2.0, min(5.0, float(roi)))
+    return r * 100.0 + roi * 10.0
+
+
 # ── thresholds. ★★ ALL INVENTED (Jack 2026-09-12): reasonable STARTING values, NOT data-derived. Nobody has
 # evidence justifying 30 over 25 or 0.90 over 0.85. Recorded WITH provenance ON PURPOSE -- a threshold whose
 # rationale is written can be tuned; one without it calcifies into folklore (the _SETTLED_LOOKBACK_SEC=160-days

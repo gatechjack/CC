@@ -35,7 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..db import connect, pm_db_path
-from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot, heartbeat
+from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot, heartbeat, scoring
 from .. import sizing   # per-sub-division flat-contracts sizing from the UI (2026-09-12): reader + owner/admin-gated write + audit
 from . import authz   # M4: fail-closed identity/admin resolution + account-visibility scoping (reads headers+env only)
 from . import live_view, poller, ui_cache   # UI rewrite: game-card assembly + the 60s feed/marks poller + its cache
@@ -359,6 +359,53 @@ def _load_loss_grounding_map(conn, category: str) -> dict:
         "activity_truncated, grounded_ts FROM pm_loss_grounding_cache WHERE category=?", (category,)).fetchall()}
 
 
+# ── the stored promotion-judge SCORE on the list (migration 023 pm_whale_score) ───────────────────────────
+_SCORE_UNANALYZED_SORT = -1e12   # un-analyzed rows sort to the BOTTOM of the Score column without pretending to be
+                                 # a 0 score -- the cell reads "not analyzed", the number just groups them at the end.
+
+
+def _score_cell(row: dict | None, now_ts: int) -> dict:
+    """Render-ready pm_whale_score cell for a whale row. row=None (this whale was NEVER Analyzed) -> analyzed=False
+    -> the template shows 'not analyzed' + an [Analyze] control, NEVER a 0/low score (NULL is not zero -- the exact
+    display Jack flagged). `sort_value` carries the TIER-then-number composite (scoring.score_sort_key) so the tier
+    CAPS the number in a single-column client sort; un-analyzed gets a bottom sentinel. `flagged` marks a number that
+    is NOT a clean read (ungrounded, or grounded with dropped losses / sub-floor coverage) so the figure travels with
+    its caveat onto the row, not just into the Analyze narration."""
+    if not row:
+        return {"analyzed": False, "sort_value": _SCORE_UNANALYZED_SORT}
+    tier = row.get("tier")
+    sort_roi = row.get("sort_roi")
+    grounded = bool(row.get("grounded"))
+    cov = row.get("coverage_pct")
+    omis = row.get("omission_pct")
+    floor = bool(row.get("omission_floor")) or (grounded and cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)
+    ts = row.get("computed_ts") or 0
+    key = scoring.score_sort_key(tier, sort_roi)
+    return {
+        "analyzed": True, "tier": tier, "tier_rank": scoring.tier_rank(tier), "reason": row.get("reason"),
+        "sort_roi": sort_roi, "honest_roi": row.get("honest_roi"), "grounded": grounded,
+        "omission_pct": omis, "coverage_pct": cov, "floor": floor,
+        "dominance_net": row.get("dominance_net"), "two_sided_pct": row.get("two_sided_pct"),
+        "chalk": bool(row.get("chalk")), "copy_fills": row.get("copy_fills"),
+        "flagged": (not grounded) or (omis is not None and omis > 0) or floor,
+        "sort_value": key if key is not None else _SCORE_UNANALYZED_SORT,
+        "age_days": ((now_ts - ts) / 86400.0) if ts else None,
+    }
+
+
+def _load_whale_score_map(conn, category: str) -> dict:
+    """{wallet: <pm_whale_score row dict>} for every Analyzed whale in this category (migration 023). Absent wallets
+    stay absent -> _score_cell(None) = 'not analyzed'. One category-indexed scan; honest-empty if the table is absent
+    (pre-023) so the list never 500s."""
+    try:
+        return {r["wallet"]: dict(r) for r in conn.execute(
+            "SELECT wallet, tier, reason, sort_roi, honest_roi, grounded, omission_pct, coverage_pct, "
+            "omission_floor, dominance_net, two_sided_pct, chalk, copy_fills, computed_ts "
+            "FROM pm_whale_score WHERE category=?", (category,)).fetchall()}
+    except Exception:  # noqa: BLE001 -- absent table (pre-migration-023) -> honest-empty, never a 500
+        return {}
+
+
 def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grounding=None, honest=None) -> dict:
     """Run Analyze on ONE short-lived connection, OFF the event loop. WRITES the PM DB (cache + cost ledger);
     reads/writes ONLY prediction_markets.db (db._assert_not_legacy guards the path). Sync (analyze narrates
@@ -371,8 +418,12 @@ def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grou
             _upsert_loss_grounding(conn, wallet, category, loss_grounding, now_ts)   # Prospects LIST can show it beside win%
         day = analyze._utc_day(now_ts)
         spent, n_calls = analyze.daily_cost(conn, day)
+    # OOB row-update for the JUDGE column (the loop closing on the LIST): built from THIS run's stored score so the
+    # Prospects/Watchlist/roster cell for this whale flips 'not analyzed' -> the graded verdict in place. rep.score is
+    # the WhaleScore asdict (same keys _score_cell reads); None (nothing scoreable) -> stays 'not analyzed'.
     return {"report": rep, "flags": analyze.analysis_flags(rep),
-            "cost_today": spent, "cost_cap": analyze.PM_ANALYZE_DAILY_CAP_USD, "cost_day": day}
+            "cost_today": spent, "cost_cap": analyze.PM_ANALYZE_DAILY_CAP_USD, "cost_day": day,
+            "score_oob": _score_cell(getattr(rep, "score", None), now_ts)}
 
 
 def _analysis_is_cached(wallet: str, category: str) -> bool:
@@ -467,6 +518,7 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
         # The client-side column sort re-orders on demand; this only sets the LOAD order.
         prospects.sort(key=lambda r: (r.get("roi") is None, -(r.get("roi") or 0.0)))
         lg_map = _load_loss_grounding_map(conn, category)                               # per-whale omission cache (Analyze-fed)
+        score_map = _load_whale_score_map(conn, category)                               # per-whale stored score (Analyze-fed, mig 023)
         for r in prospects:
             r["flags"] = stats.scoreboard_flags(r)                                      # same tokens as CLI/scoreboard
             # THIN-SAMPLE (visible, not inferable): a candidate BELOW the N floor came in via the <10-qualifier
@@ -477,6 +529,11 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
             # ★ LOSS-OMISSION BESIDE win% (Stage 5): the caveat travels with the number it corrupts. UNKNOWN (not 0%)
             # for a whale never Analyzed -- the omission is COMPUTED ON ANALYZE and cached, not grounded on list render.
             r["loss_omission"] = _loss_omission_cell(lg_map.get(r["wallet"]), now_ts)
+            # ★ THE STORED PROMOTION-JUDGE SCORE (mig 023): tier + sort number + trust-flags on the row; the tier caps
+            # the sort. UN-analyzed -> 'not analyzed' (never a 0), distinct from an analyzed-and-PASS row.
+            r["score"] = _score_cell(score_map.get(r["wallet"]), now_ts)
+        for wr in watchlist:                                                            # keep the verdict visible after Promote-to-Watchlist
+            wr["score"] = _score_cell(score_map.get(wr["wallet"]), now_ts)
         refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
         # R6: the ACTIVE accounts = the promote-to-LIVE targets. Auto-create (ruling 1) makes the (account,
         # category) sub-division on demand, so a Watchlist row offers "promote to <account>", not a pre-existing
@@ -1233,6 +1290,12 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
         # THE WHALE ROSTER (2026-09-12): per-whale live-copy record, on-roster vs formerly-live, with current value.
         whale_records = subdivision.whale_live_records(conn, account_id, category, marks=marks, now_ts=now_ts,
                                                        today_start_ts=today_start_ts, thin_floor=floor)
+        # ★ keep the ANALYZE verdict visible on the LIVE roster too -- the score is keyed (wallet, category), so it
+        # persists past Promote-to-live and must not vanish on the surface that matters most. Read-only attach.
+        _score_map = _load_whale_score_map(conn, category)
+        for _grp in ("on_roster", "formerly_live"):
+            for _w in (whale_records.get(_grp) or []):
+                _w["score"] = _score_cell(_score_map.get(_w.get("wallet")), now_ts)
         # L3 DRIVER LIVENESS for THIS sub (read-only): the one matching row from the expected-set liveness read.
         liveness_present = heartbeat.table_present(conn)
         _live = [r for r in heartbeat.read_liveness(conn, now_ts=now_ts)

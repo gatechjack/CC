@@ -2,11 +2,14 @@
    THIS sub-division (journal-filtered, Ruling 1), grouped ON-ROSTER vs FORMERLY-LIVE, each with the attachment dates,
    dollars-first honest figures, a Detach control (owner-or-admin), and a click-to-filter-the-drawer drill-through
    (R4: JS-only; JS-off shows all). Rendered from `whale_records` + `can_detach` (see _load_live_subdivision). #}
+{% from "pm_macros.html" import score_badge %}
 {% macro whale_row(w, formerly) %}
   <div class="wr" data-whale="{{ w.wallet }}">
     <div class="wr-head">
       <button type="button" class="wname" data-whale="{{ w.wallet }}" title="Copied from {{ w.user_name or w.wallet }} ({{ w.wallet }}) &mdash; click to filter the trade drawer">{{ w.user_name or w.wallet }}</button>
       {% if not w.user_name %}<span class="dim wr-wo">wallet only</span>{% endif %}
+      {# ★ the stored ANALYZE verdict, kept visible on the live surface (the score persists past Promote-to-live). #}
+      <span class="wr-score">{{ score_badge(w.score) }}</span>
       {% if w.thin %}<span class="wr-thin" title="under {{ whale_records.thin_floor }} booked settlements &mdash; too few to read as a result">thin</span>{% endif %}
       <span class="wr-when">
         {% if formerly %}live {{ w.added_ts|etdate if w.added_ts else '?' }} &ndash; {{ w.removed_ts|etdate if w.removed_ts else '?' }}

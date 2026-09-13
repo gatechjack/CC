@@ -93,3 +93,46 @@
   {%- endif -%}
 </span>
 {%- endmacro %}
+
+{# ── score_cell(sc, wallet, category, oob=False) ───────────────────────────────────────────────────
+   The STORED promotion-judge verdict on the Prospects row (pm_whale_score, migration 023): the TIER badge +
+   the sort number carrying its TRUST-FLAGS. THREE states, and the un-analyzed one IS the action:
+   (a) not analyzed -> an [Analyze] control (NULL is NOT zero -- never a 0/bottom number that reads as
+   analyzed-and-low); (b) analyzed -> the tier badge + the cost-ROI, and when the number is not a clean read
+   (ungrounded, or grounded with dropped losses / sub-floor coverage) it renders pm-score-flagged with a caveat ON
+   the figure + the honest windowed ROI beside it. ★ The TIER CAPS the sort: the td's data-sort-value = sc.sort_value
+   (scoring.score_sort_key -> tier dominates, number orders within a band), so a high-ROI INSUFFICIENT_DATA whale can
+   never sort above a PROMOTE. oob=True lets an Analyze RESULT swap this cell in place (not-analyzed -> graded). #}
+{% macro score_cell(sc, wallet, category, oob=False) -%}
+<span id="pm-score-{{ wallet }}-{{ category }}" class="pm-score-wrap"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {%- if not sc.analyzed -%}
+    <button class="pm-score pm-score-unanalyzed pm-omit-analyze" type="button"
+       title="Not analyzed yet -- no stored score (NULL, not a low score). Click to ANALYZE (LLM call, ~$0.006, against the $20/day cap); the tier + score then show here."
+       hx-post="/farm/analyze/{{ wallet }}/{{ category }}" hx-target="#pm-analyze-panel" hx-swap="innerHTML"
+       hx-disabled-elt="this">not&nbsp;analyzed &middot; <span class="pm-omit-cta">Analyze</span></button>
+  {%- else -%}
+    <span class="pm-tier pm-tier-{{ sc.tier|lower|replace('_','-') }}"
+       title="{{ sc.reason }}{% if sc.grounded %} (grounded){% else %} (ungrounded -- omission UNKNOWN){% endif %}{% if sc.age_days is not none %}; scored {{ '%.0f'|format(sc.age_days) }}d ago{% endif %}">{{ 'INSUF DATA' if sc.tier == 'INSUFFICIENT_DATA' else sc.tier }}</span>
+    {%- if sc.sort_roi is not none -%}
+      <span class="pm-score-num{% if sc.flagged %} pm-score-flagged{% endif %} {% if sc.sort_roi >= 0 %}pm-gain{% else %}pm-loss{% endif %}"
+         title="Stored cost-ROI (the sort number).{% if not sc.grounded %} UNGROUNDED -- omission UNKNOWN, so this figure is unverified.{% elif sc.omission_pct is not none and sc.omission_pct > 0 %} Re-grounding found {{ '%.0f'|format(sc.omission_pct * 100) }}% of losses dropped{% if sc.coverage_pct is not none %} at {{ '%.0f'|format(sc.coverage_pct * 100) }}% coverage{% endif %}{% if sc.floor %} (a FLOOR){% endif %} -- treat as an upper bound.{% elif sc.floor %} Low coverage -- a floor, not a true read.{% endif %}">{{ '%+.1f'|format(sc.sort_roi * 100) }}%{% if sc.flagged %}<sup>*</sup>{% endif %}</span>
+    {%- endif -%}
+    {%- if sc.grounded and sc.honest_roi is not none -%}
+      <span class="pm-score-honest" title="Honest windowed cost-ROI after re-grounding the dropped losses back in.">honest&nbsp;{{ '%+.0f'|format(sc.honest_roi * 100) }}%{% if sc.coverage_pct is not none %}&nbsp;@{{ '%.0f'|format(sc.coverage_pct * 100) }}%cov{% endif %}</span>
+    {%- endif -%}
+  {%- endif -%}
+</span>
+{%- endmacro %}
+
+{# ── score_badge(sc) ──────────────────────────────────────────────────────────────────────────────
+   Compact READ-ONLY tier+score badge for surfaces that already carry their own Analyze control (Watchlist,
+   /live roster) -- so a whale keeps its judged verdict visible AFTER it is promoted off Prospects (the score is
+   keyed (wallet, category), it does not vanish). UN-analyzed -> a muted 'not analyzed' (never a 0), same idiom. #}
+{% macro score_badge(sc) -%}
+  {%- if not sc or not sc.analyzed -%}
+    <span class="pm-tier pm-tier-none" title="Not analyzed yet -- no stored score (use Analyze).">not&nbsp;analyzed</span>
+  {%- else -%}
+    <span class="pm-tier pm-tier-{{ sc.tier|lower|replace('_','-') }}"
+       title="{{ sc.reason }}{% if not sc.grounded %} (ungrounded -- omission UNKNOWN){% endif %}">{{ 'INSUF DATA' if sc.tier == 'INSUFFICIENT_DATA' else sc.tier }}</span>{% if sc.sort_roi is not none %} <span class="pm-score-num{% if sc.flagged %} pm-score-flagged{% endif %}">{{ '%+.0f'|format(sc.sort_roi * 100) }}%{% if sc.flagged %}<sup>*</sup>{% endif %}</span>{% endif %}
+  {%- endif -%}
+{%- endmacro %}

@@ -1,4 +1,4 @@
-{% from "pm_macros.html" import whale_label, flag_badges, omission_cell %}
+{% from "pm_macros.html" import whale_label, flag_badges, omission_cell, score_cell %}
 {# PROSPECTS rows -- COMPLETED basis (pm_category_stats via the F-4 repurposed query_scoreboard ranker, filtered
    to this category's candidates). DEFAULT ORDER cost-ROI desc; columns sortable (client-side, progressive
    enhancement -- JS-off keeps the default order). Every aggregate drills through to its rows via the EXISTING
@@ -24,6 +24,11 @@
   <thead>
     <tr>
       <th>whale</th>
+      {# ★ THE STORED ANALYZE VERDICT (migration 023 pm_whale_score): TIER + the sort number. Sorted TIER-FIRST,
+         then ROI within a tier -- a PROMOTE outranks an INSUFFICIENT_DATA whatever the number (the tier caps the
+         number). Un-analyzed sorts LAST and reads "not analyzed", never a 0. The td's data-sort-value is the
+         scoring.score_sort_key composite, so the single-column client sort honours the cap. #}
+      <th class="pm-sortable pm-judge-col" data-sort="num" title="The stored ANALYZE verdict: TIER + cost-ROI (the sort number). Sorted by TIER first, then the number within a tier -- a PROMOTE ranks above an INSUFFICIENT_DATA whatever the ROI (the tier CAPS the number). Un-analyzed sorts last and reads 'not analyzed', never a 0. Click to sort.">judge <span class="pm-th-sub">(tier &middot; score)</span></th>
       <th class="pm-num pm-sortable" data-sort="num" title="Scoreable resolved (completed) rows. Click to sort.">n</th>
       {# WIN% is NOT sortable (never the rank key -- ROI-denominator ruling) and the caveat rides ON THE HEADER,
          so it cannot be sorted-on to mislead. #}
@@ -43,6 +48,8 @@
   {% for r in prospects %}
     <tr>
       <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
+      {# JUDGE cell: data-sort-value = the tier-then-number composite (r.score.sort_value) so the tier caps the sort. #}
+      <td class="pm-judge-col" data-sort-value="{{ r.score.sort_value }}">{{ score_cell(r.score, r.wallet, r.category) }}</td>
       <td class="pm-num" data-sort-value="{{ r.n_resolved or 0 }}">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
       {# ★ win% + its per-whale F-1 omission caveat, IN THE SAME CELL (the caveat travels with the number). When the
          whale is UN-analyzed the caveat IS an [Analyze] control (omission_cell macro) -- the instruction is
@@ -86,5 +93,9 @@
 </div>
 <p class="pm-legend"><sup>*</sup> win% is a chalk indicator, <strong>not</strong> the rank key and not sortable
   &mdash; the ranked metric is <strong>cost-based ROI</strong>. Prospect stats are a rough <strong>screen</strong>
-  (completed-trade API, held losses under-reported); <strong>Analyze</strong> is the promotion judge.</p>
+  (completed-trade API, held losses under-reported); <strong>Analyze</strong> is the promotion judge.<br>
+  <strong>judge</strong> is the stored Analyze verdict: it sorts by <strong>tier first, then ROI within a tier</strong>
+  (a <span class="pm-tier pm-tier-promote">PROMOTE</span> outranks an <span class="pm-tier pm-tier-insufficient-data">INSUF DATA</span>
+  whatever the number &mdash; the tier caps the number); a flagged score (<sup>*</sup>) is ungrounded or grounded on
+  dropped losses / low coverage; <strong>not analyzed</strong> is distinct from a low score and sorts last.</p>
 {% endif %}

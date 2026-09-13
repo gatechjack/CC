@@ -513,3 +513,25 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .sizectl .sizgo:hover{background:#184060}
 .sizectl .sizhint{font-size:11px}
 .sizchg{font-family:var(--dmono);color:var(--dim)}
+
+/* ── ANALYZE promotion-judge SCORE on the whale lists (Prospects / Watchlist / live roster), 2026-09-13 ──
+   The stored pm_whale_score (migration 023) on the row: TIER badge + the sort number carrying its trust-flags.
+   The TIER caps the sort (the td's data-sort-value is the tier-then-number composite). Un-analyzed reads
+   "not analyzed" (an [Analyze] control), never a 0/low number. */
+.pm-judge-col{white-space:nowrap}
+.pm-score-wrap{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pm-tier{display:inline-block;font-family:var(--dmono);font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:1px 5px;border-radius:3px;border:1px solid transparent;white-space:nowrap}
+.pm-tier-promote{background:rgba(16,185,129,.15);color:var(--won);border-color:rgba(16,185,129,.5)}
+.pm-tier-watch{background:rgba(245,158,11,.15);color:var(--stale);border-color:#6b4a1c}
+.pm-tier-insufficient-data{background:rgba(244,63,94,.13);color:var(--lost);border-color:#6b2626;border-style:dashed}
+.pm-tier-pass{background:rgba(148,163,184,.14);color:var(--dim);border-color:var(--line)}
+.pm-tier-none{background:transparent;color:var(--dimmer);border:1px dashed var(--line);font-weight:400;text-transform:none;letter-spacing:0}
+.pm-score-num{font-family:var(--dmono);font-size:11px;font-weight:600;color:var(--text)}
+.pm-score-flagged{opacity:.7;border-bottom:1px dotted var(--stale)}
+.pm-score-flagged sup{color:var(--stale);font-weight:700;border:none}
+.pm-score-honest{font-family:var(--dmono);font-size:9px;color:var(--dim)}
+.pm-score-unanalyzed{font-family:var(--dmono);font-size:9px;font-weight:600;color:var(--dimmer);background:transparent;border:1px dashed var(--line);border-radius:3px;padding:1px 6px;cursor:pointer}
+.pm-score-unanalyzed:hover{color:var(--live);border-color:var(--live)}
+.pm-score-unanalyzed .pm-omit-cta{text-decoration:underline}
+.pm-th-sub{display:block;font-size:.62rem;font-weight:400;color:var(--dim);text-transform:none}
+.roster .wr-score{display:inline-flex;gap:5px;align-items:center}

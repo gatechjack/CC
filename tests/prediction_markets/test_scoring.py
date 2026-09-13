@@ -114,6 +114,31 @@ def test_invented_thresholds_are_the_ruled_starting_values():
     assert S.COVERAGE_FLOOR == 0.90 and S.TWO_SIDED_HIGH == 0.40
 
 
+# ── the DISPLAY sort: the TIER caps the number (the Prospects-list ruling) ──
+def test_tier_rank_order_promote_highest_unanalyzed_zero():
+    assert S.tier_rank(S.TIER_PROMOTE) > S.tier_rank(S.TIER_WATCH) > S.tier_rank(S.TIER_INSUFFICIENT) > S.tier_rank(S.TIER_PASS)
+    assert S.tier_rank(S.TIER_PASS) > 0
+    assert S.tier_rank(None) == 0 and S.tier_rank("nonsense") == 0     # un-analyzed / unknown -> bottom
+
+
+def test_score_sort_key_tier_caps_the_number():
+    # ★ THE ACCEPTANCE for the sort: the 0x684baa57c3 case -- an INSUFFICIENT_DATA whale at a huge +88.5% ROI must
+    # sort BELOW a PROMOTE at a modest +10%. The number can never lift a lesser tier above a higher one.
+    insufficient_high = S.score_sort_key(S.TIER_INSUFFICIENT, 0.885)
+    promote_low = S.score_sort_key(S.TIER_PROMOTE, 0.10)
+    assert promote_low > insufficient_high, (promote_low, insufficient_high)
+    # WATCH above INSUFFICIENT above PASS, whatever the ROI within
+    assert S.score_sort_key(S.TIER_WATCH, -0.5) > S.score_sort_key(S.TIER_INSUFFICIENT, 5.0)
+    assert S.score_sort_key(S.TIER_INSUFFICIENT, -0.5) > S.score_sort_key(S.TIER_PASS, 5.0)
+    # within a tier the number still orders
+    assert S.score_sort_key(S.TIER_PROMOTE, 0.5) > S.score_sort_key(S.TIER_PROMOTE, 0.2)
+
+
+def test_score_sort_key_unanalyzed_is_none():
+    assert S.score_sort_key(None, None) is None            # un-analyzed -> caller renders 'not analyzed' + bottom sentinel
+    assert S.score_sort_key("PROMOTE", None) is not None   # analyzed with no ROI still ranks by tier
+
+
 # ── Phase A: honest windowed ROI (the "did winning pay" number) ──
 class _Act:
     def __init__(self, cid, oi, side, size, usd):
