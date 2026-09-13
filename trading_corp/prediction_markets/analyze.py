@@ -33,7 +33,9 @@ Narration is SYNCHRONOUS here (chat.invoke, not ainvoke): pm_web runs every DB r
 narration RUNS live: is_llm_available() reads ANTHROPIC_API_KEY (now present in the pm_web process) and the
 Sonnet verdict fills in. A cache HIT still spends nothing. ★ Because the swap is live on deploy, the post-check
 must verify a REAL (non-cached) call returns model=claude-sonnet-4-6 -- a silent Haiku fallback would look
-identical from the output side. `llm_unavailable` now fires only on a genuine key/transport failure, not by design.
+identical from the OUTPUT side, so NarrationResult.model now carries the ACTUAL response model (_extract_model),
+NOT the config, and that value persists into the cached report for the post-check to read back. `llm_unavailable`
+now fires only on a genuine key/transport failure, not by design.
 
 Spec: reports/prediction_markets/P2_PLAN.md §7.4 (amended in this commit); CP3b-2 rulings 2026-08-25.
 """
@@ -215,7 +217,7 @@ class NarrationResult:
     cost_usd: float
     tokens_in: int
     tokens_out: int
-    model: str | None
+    model: str | None        # the ACTUAL response model (via _extract_model), NOT the config -- the deploy proof reads this
 
 
 # ── deterministic report (pm_closed_position ONLY; reuses the ONE predicate + stats formulas) ─────────
@@ -434,6 +436,21 @@ def _extract_usage(resp: object) -> dict:
     return um if isinstance(um, dict) else {}
 
 
+def _extract_model(resp: object) -> str | None:
+    """The ACTUAL model string off the Anthropic response (NOT the requested config). ★ This is what lets the deploy
+    post-check PROVE a real call ran Sonnet and did not silently fall back to Haiku -- returning PM_ANALYZE_MODEL here
+    would only echo the config Jack told us NOT to trust. langchain surfaces it as response_metadata.model /
+    model_name; some versions hang it on the message. None when the response omits it (caller falls back to config)."""
+    rm = getattr(resp, "response_metadata", None) or {}
+    if isinstance(rm, dict):
+        for k in ("model", "model_name"):
+            v = rm.get(k)
+            if isinstance(v, str) and v:
+                return v
+    v = getattr(resp, "model", None)
+    return v if isinstance(v, str) and v else None
+
+
 def _cost_for_usage(usage: dict) -> float:
     """Cost from a usage dict at the pinned _MODEL_PRICE (Sonnet $3/$15). Forked from
     agents/research/cost.cost_for_anthropic_usage (cache-read billed 10% of input, cache-creation 125%)."""
@@ -582,9 +599,10 @@ def narrate(rep: PMAnalysisReport, *, narrator_enabled: bool = True, chat: objec
         ti = int(usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0) or 0)
         to = int(usage.get("output_tokens", 0) or usage.get("completion_tokens", 0) or 0)
         cost = _cost_for_usage(usage)
+        model = _extract_model(resp) or PM_ANALYZE_MODEL  # the REAL response model (falls back to config only if absent)
         if not text:                                      # empty content -> treat as error (no blank verdict)
-            return NarrationResult(None, NULL_ERROR, cost, ti, to, PM_ANALYZE_MODEL)
-        return NarrationResult(text, None, cost, ti, to, PM_ANALYZE_MODEL)
+            return NarrationResult(None, NULL_ERROR, cost, ti, to, model)
+        return NarrationResult(text, None, cost, ti, to, model)
     except Exception as e:
         log.warning("pm analyze narration failed: %s", e)
         return NarrationResult(None, NULL_ERROR, 0.0, 0, 0, None)

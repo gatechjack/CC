@@ -52,6 +52,24 @@ def test_unanalyzed_whale_has_no_score_row(tmp_path):
     assert row is None
 
 
+class _Resp:
+    def __init__(self, meta=None, model=None):
+        self.response_metadata = meta or {}
+        if model is not None:
+            self.model = model
+
+
+def test_extract_model_reads_the_real_response_not_the_config():
+    # the deploy proof: a REAL Sonnet call surfaces claude-sonnet-4-6 from response_metadata (langchain uses either key)
+    assert analyze._extract_model(_Resp(meta={"model": "claude-sonnet-4-6"})) == "claude-sonnet-4-6"
+    assert analyze._extract_model(_Resp(meta={"model_name": "claude-sonnet-4-6"})) == "claude-sonnet-4-6"
+    # a SILENT fallback must be VISIBLE: if the API answered as Haiku, _extract_model reports Haiku (post-check catches it)
+    assert analyze._extract_model(_Resp(meta={"model": "claude-haiku-4-5-20251001"})) == "claude-haiku-4-5-20251001"
+    # response omits a model -> None, and narrate falls back to the config so display never blanks
+    assert analyze._extract_model(_Resp(meta={})) is None
+    assert analyze._extract_model(_Resp(model="claude-sonnet-4-6")) == "claude-sonnet-4-6"
+
+
 def test_user_content_carries_trust_flags_and_the_labelled_fiction():
     # a MIRAGE-shaped score dict (grounded, most losses dropped) -> the block flags it, not free prose
     rep = analyze.PMAnalysisReport(
