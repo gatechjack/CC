@@ -40,7 +40,7 @@
 |---|---|---|---|---|---|
 | **1** | **Read-only investigation → this doc + plan** | **DONE (this session)** | no | no | n/a |
 | 2 | Disable-first (config `enabled:false`, hot-reload) for all still-scanning legacy loops + stop legacy systemd timers + reconcile prod-live | **DONE 2026-09-13 (sessions 2+3)** — **8 config flips** done+proven (5 P2 + 3 P3); **4 legacy timers stopped+disabled by Jack, VERIFIED reboot-persistent**; **Apify billing fully ceased** (timers + in-engine kalshi_copy loop both off); box↔prod-live **reconciled** (commit `fcbcd4a7`, clean FF, **push pending Jack**); kcv2-observer disable **deferred** (not in Phase-2/3 scope). See §14 + §15. | no (hot) | no | YES (backups + reenable runner) |
-| 3 | Archive-then-drop kcv2 data (lab DB + prod `kcv2_*` tables) — the ~3.15 GB win | NOT STARTED | no | no | archive=yes; drop=NO |
+| 3 (=Jack's "Phase 5") | Archive kcv2 data (lab DB + prod `kcv2_*` tables) — the ~3.16 GB win; **drop deferred to Ph7** | **PREP DONE 2026-09-13 (session 5) — archive WRITE pending Jack's destination ruling (§17.5).** kcv2=4 tables+8 idx=3.16GB (observer STILL writing→moving target); lab DB 407MB DISJOINT; archive ~0.44 GB gz; dump/verify designed. See §17. | no | no | archive=yes; drop=NO (Ph7) |
 | 4 | Cancel/park paid + legacy-only APIs (Apify, the-odds-api, Finnhub-dead) after their divisions are disabled | NOT STARTED | no | no | YES (re-provision KV) |
 | 4.5 | **FULL-TREE DRIFT SWEEP** (pre-removal gate, read-only) | **DONE 2026-09-13 (session 4)** — box vs prod-live `fcbcd4a7`, both directions, byte-safe. **No unrelated runtime drift.** Only 2 known-benign non-runtime box-BEHIND files (test_pmcc_logic.py, BACKLOG.md — no action); 8 shared files IDENTICAL + baselined; 6 never-deployed KEPT files (2 survivor→owner); 1 unattributed scratch (`strategies.yaml.block_bs`). See §16. | no | no | n/a |
 | 5 | Code removal — LEGACY-ONLY files (strategies/data/brokers/scripts) + graft the shared `main.py` wiring block-by-block. **Baseline in §16.7; prove survivor counts unchanged.** | NOT STARTED (sweep-gated: CLEAR to proceed) | **YES ×1** | **YES (poly_kalshi_mlb window only)** | git-revert |
@@ -453,3 +453,56 @@ The two scratch/artifact exclusions were found exactly as documented (box-only);
 
 ### 16.10 RULINGS / PENDING (carried forward, unchanged)
 kcv2 data disposition (archive+verify BEFORE drop); Polymarket USDC drain (**gates** key removal); DB backup before drop; P2-1 (sudo inert → az-root writes are Jack's). **Removal-phase readiness: shared files clean + baselined; no unrelated runtime drift; 2 known-benign non-runtime box-behind files (no action); 6 never-deployed KEPT files (2 survivor → owner's call).** New for owners: bitunix/PMCC undeployed dev files in git (16.4). Unattributed scratch: `strategies.yaml.block_bs` (16.8).
+
+---
+
+## 17. PHASE 5 EXECUTION LOG — 2026-09-13 (session 5): kcv2 DATA ARCHIVE (non-destructive)
+
+Archive-then-verify; **drops are Phase 7**, gated on the verification here passing. Anchors re-verified: `origin/prod-live` `fcbcd4a7`, PM schema head `23`, engine 370246 / pm-web 381803 / sfp-card 656 NRestarts 0. **STATE: PREP COMPLETE — archive WRITES PENDING Jack's destination ruling (Item 0).**
+
+### 17.1 DO-NO-HARM (before + after-prep; PASSED)
+31/31 armed, 0 latched, schema 23, 3 PIDs NRestarts 0; live PM PLACING (open jack 207→209 / karen 154→156 across the prep — growing = healthy). Prep reads (dbstat scan, COUNTs, 300k sample) caused no harm; **`journal_mode=wal`** ⇒ `mode=ro` readers do not block the live writer.
+
+### 17.2 ITEM 1 — prod `kcv2_*` (schema-enumerated, VERIFIED)
+DB `data/trading_corp.db` = 5.28 GB (page_size 4096 × 1,288,990; freelist 0); WAL 113 MB; disk free 29 G. **4 tables + 8 indexes** (nothing name-guessed):
+| table | rows | rowid range | table bytes | (indexes) |
+|---|---|---|---|---|
+| kcv2_quotes | 12,010,016+ | [1..12,010,016] | 2130 MB | quotes_mkt 540 + quotes_ts 211 + quotes_cycle 153 MB |
+| kcv2_signals | 890,032+ | [1..…] | 45 MB | signals_asset_ts 19 + signals_ts 15 MB |
+| kcv2_index_ticks | 445,016+ | [1..…] | 26.5 MB | index_ticks_asset_ts 9.3 + index_ticks_ts 7.6 MB |
+| kcv2_heartbeat | 111,254+ | [1..…] | 3.5 MB | heartbeat_ts 1.9 MB |
+**kcv2 TOTAL = 3.16 GB** (tables ~2.2 GB + indexes ~0.96 GB). Archive stores **table rows only**; indexes regenerate from DDL on restore. rowids contiguous ⇒ clean rowid-range chunking.
+- **★ OBSERVER STILL WRITING (VERIFIED from rowid growth, not a success-timestamp):** `trading-corp-kcv2-observer.service` PID 679 appends ~130 quotes + 8 signals + 4 index_ticks + 1 heartbeat per **30 s** cycle (journal cycle 49120–49123; kcv2_quotes rowid +130 in 35 s). **kcv2_* is a MOVING TARGET.** Phase 5 archives a point-in-time **high-water rowid** snapshot; **Phase 7 must stop the observer FIRST** (az-root, Jack), then capture the delta > HWM, then drop. Do NOT stop the observer here.
+
+### 17.3 ITEM 2 — lab DB (local, VERIFIED)
+`C:\Users\AA Incorporado\cc-2026-08-02-wt\research\kalshi_crypto_v2\lab\kcv2_lab.db` = **426,762,240 B (407 MB)**, last write 2026-08-21 (unchanged — scheduled tasks broken, no new lab data). Tables: lab_bars_binance 397,512 · lab_bars_coinbase 397,477 · lab_coinalyze 3,093,856 · lab_kalshi_candles 416,953 · lab_kalshi_ladder_snap 62,948 · lab_kalshi_markets 26,104 · lab_coverage 24 · lab_features/labels/results 0.
+- **OVERLAP FINDING (answers "does the Phase-7 drop lose anything"):** lab tables are **ALL `lab_*`, DISJOINT** from prod `kcv2_*` — different sources/content (lab = historical Binance/Coinbase bars + Coinalyze flow + Kalshi candles/ladder/markets research corpus; prod kcv2_* = the live observer's forward-logger ticks/quotes/signals/heartbeat). **Neither is a subset.** ⇒ dropping prod `kcv2_*` (Phase 7) does NOT touch or lose lab data; the archive of prod `kcv2_*` preserves the only copy of the forward-logger corpus. Both must be archived; both are irreplaceable + not in git.
+- (git-bash `ls` first reported 197 KB — a spaced-Windows-path measurement artifact; native `Get-Item` = 407 MB. Suspect-the-measurement catch #19.)
+
+### 17.4 ARCHIVE SIZE (measured samples)
+| asset | raw | gzip | ratio | note |
+|---|---|---|---|---|
+| prod `kcv2_*` (table rows → SQL dump) | ~2.8 GB SQL | **~0.30 GB** | 10.7× | numeric quote text compresses well |
+| lab DB (binary sqlite) | 427 MB | **~0.14 GB** | 3.1× | |
+| **TOTAL archive** | ~3.2 GB | **~0.44 GB** | | small + cheap to store redundantly |
+
+### 17.5 ITEM 0 — DESTINATION OPTIONS (**AWAITING JACK'S RULING — no large write until then**)
+| opt | where | off-box? durable? | ~size | write time | restore | notes |
+|---|---|---|---|---|---|---|
+| **A** | Azure Blob (a storage acct/container Jack names) | YES / YES (Azure-redundant) | 0.44 GB gz | minutes (uplink) | `az storage blob download` → gunzip → sqlite3 | needs a storage acct + SAS/key (Jack); best durability; a data-plane az write (not az-root VM write) |
+| **B** | Jack's local machine (e.g. a backups folder) | YES (off the prod VM) / single-machine | 0.44 GB gz | minutes (scp/base64 pull) | local gunzip → sqlite3 | survives VM loss; not redundant unless Jack backs it up |
+| **C** | the box (`/home/azureuser/kcv2_archive/`) | NO / **NOT durable** | 0.44 GB gz | fast (local) | on-box | ONLY as staging; lost if VM lost, same disk as the DB being shrunk — **not an archive** |
+| **D** | **both A + B (redundant)** | YES / YES | 0.44 GB gz ×2 | minutes | either | **RECOMMENDED for irreplaceable, not-in-git data** |
+**Recommendation: D** (or at minimum an off-box durable option A/B). ~0.44 GB gz is small enough that redundancy is nearly free. C alone is disqualified (not durable; defeats the shrink).
+
+### 17.6 DUMP METHOD (designed; runs after ruling) — safe against the live-DB hazard
+Per kcv2 table: (1) short `mode=ro` conn → capture `HWM=MAX(rowid)`; (2) emit CREATE TABLE + CREATE INDEX DDL; (3) INSERT rows in **rowid-range chunks** (kcv2_quotes 500k/chunk), **each chunk a SEPARATE short `mode=ro` connection** (releases the read snapshot between chunks → lets WAL checkpoint; no long read lock); stream → gzip. **Between chunks: re-check PM heartbeat freshness + open-position count; if PM stale/collapses, ABORT the dump immediately** (a completed archive is worth less than a live division). Lab DB: byte-copy the file (never move/touch original) → gzip. Record per-table HWM in the archive manifest.
+
+### 17.7 VERIFICATION PLAN (Item 3; the point of the phase) → explicit PASS/FAIL
+(a) sha256 every artifact; (b) **actually restore** each into a scratch SQLite (NOT the live DB, NOT the box data dir) and confirm **row counts == source HWM counts** + schema matches; (c) spot-check rows at rowid extremes + middle of kcv2_quotes byte-for-byte vs source; (d) confirm readable **from where the archive will live** (Jack's destination). Result reported as unambiguous PASS or FAIL — Phase 7 authorization depends on it.
+
+### 17.8 ITEM 4 — PHASE-7 DROP PLAN (write-only; do NOT execute here)
+Pre-req: this phase's verification = PASS **and** Jack authorizes. Sequence (Phase 7, a restart-free DB window — but see VACUUM): (1) **Jack stops the observer** (`az vm run-command … systemctl stop --now trading-corp-kcv2-observer.service`; az-root) so kcv2_* is static; (2) archive the delta rows > Phase-5 HWM (small) + re-verify; (3) **full-DB backup** (`cp data/trading_corp.db data/trading_corp.db.bak_pre_kcv2drop_<ts>`, ~5.3 GB — needs the 29 G free, OK) — **must precede any DDL**; (4) `DROP TABLE kcv2_quotes; kcv2_signals; kcv2_index_ticks; kcv2_heartbeat;` (indexes drop with their tables) — az-root or a Jack-run DB write (**reserved**); expected DB 5.28 GB → **~2.1 GB** after; (5) space is only reclaimed by **`VACUUM`** — on a 5.28 GB live DB a full VACUUM **rewrites the whole file and takes an EXCLUSIVE lock** (blocks the live PM writer for the rewrite duration, potentially minutes) → **run only in a PM-disarmed or quiet window, Jack's call**, OR skip VACUUM and let the freed pages be reused (DB stays 5.28 GB on disk but has ~3 GB free internal space — no live-lock cost). (6) **PROVE the live arm rows untouched**: `agent_state` 31 arm rows + poly_kalshi persist-halt identical before/after (they share this DB); do-no-harm diff. Rollback: restore the `.bak_pre_kcv2drop` file (engine stopped) — a Jack action.
+
+### 17.9 RULINGS / PENDING
+**Item 0 destination = Jack's ruling (blocks the archive write).** Carried forward: Polymarket USDC drain (**gates** key removal); DB backup before any drop; P2-1 (sudo inert → az-root = Jack); poly_kalshi_mlb residual `auto_execute:true` (clean up Ph6); `strategies.yaml.block_bs` unattributed-retained. Observer-still-writing is now a Phase-7 pre-req (stop it first).
