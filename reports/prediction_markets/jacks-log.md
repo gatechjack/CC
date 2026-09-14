@@ -375,3 +375,73 @@ IF PROD-LIVE DIVERGES FROM THE BOX
 4. NEVER restart or touch the engine (trading-corp / MainPID 351422) to fix a pm_web divergence. pm_web is a
    separate, credential-free, read-only service; nothing about a pm_web file or the pm_web-owned audit table
    requires an engine bounce.
+
+
+2026-09-13/14 — LEGACY PM RETIREMENT, PHASE 6: ENGINE-SIDE CODE REMOVAL (★ this one DID restart the engine)
+----------------------------------------------------------------------------------------------------------
+★ DIFFERENT WORKSTREAM from the pm_web deploys above. This is the retirement of the RETIRED legacy PM
+divisions (poly_kalshi arb/copy, kalshi tail/tb/llm/weather/crypto/scout/observer/copy, resolvers) from the
+trading engine's own code — NOT a pm_web change. So unlike every entry above, the ENGINE WAS RESTARTED. The
+"engine never touched / MainPID 351422" standing fact at the top of this log does NOT apply to this entry.
+The full record is reports/platform/LEGACY_PM_RETIREMENT_2026-09-12.md §18 (branch legacy-pm-retire-2026-09-13).
+WHAT: removed the legacy strategy LOOP WIRING + loop/helper defs from trading_corp/main.py. NO file deletions,
+      NO web changes — those are a deferred "transitive closure" problem (see traps below). Jack ruled this
+      "Option 1": deploy the proven graft only.
+PROD-LIVE: fcbcd4a7  ->  8f35f254  (clean fast-forward, single commit).
+MAIN.PY: 6210 -> 3923 LOC, 2,284 lines removed, PURE DELETION (0 non-blank additions; git diff = deletions +
+      blank-collapse only). Survivor wiring counts UNCHANGED: bitunix 196, mace 119, pm_live_driver 4,
+      scheduled_pm_live_loop 2, shard_snapshot 1, pmcc 2, pead 2, donchian 3. New CR-stripped md5 c15b4de6.
+      Also config: poly_kalshi_mlb auto_execute true->false (belt-and-suspenders; the loop wiring is gone).
+DEPLOY: box is NOT a git repo -> scp file-graft, drift-gated (live == pre-graft fcee5e81 before write).
+      Box backups: /home/azureuser/trading_corp/{trading_corp/main.py,config/strategies.yaml}.bak_legpm_20260913T232311Z.
+ENGINE: RESTARTED via the canonical restart_tc.ps1 (az-root systemctl restart trading-corp). MainPID
+      370246 -> 397094, boot 2026-09-14 00:25:13Z, NRestarts 0. Post-restart gate PASSED (Jack's split-signal
+      rule): PM LIVE DRIVER WIRED for both accounts at 00:25:34 (the exact thing the 2026-09-04 failure had
+      deleted) + a real dry_run=0 order (id 820) placed 00:28:53Z. Siblings UNCHANGED: pm_web 381803,
+      sfp-card-watcher 656, kcv2 observer 679. Boot clean; NO more kalshi_copy Apify FEED DOWN (loop gone).
+TIMERS: the 4 legacy PM timer units (watchlist-stats/-deep, pm-watchlist-deep, pct-pruner) + their 4 companion
+      .service files removed (az-root). Backup /root/legpm_timer_unit_backup_20260914T010512Z. Survivor timers
+      pead-earnings-watcher / rh-relogin / tc-audit-reality untouched.
+EARLIER PHASES (2+3, 2026-09-13): 8 strategies.yaml enabled/auto flags flipped false (hot config disables) and
+      reconciled onto prod-live in the Phase-3 reconcile commit (fcbcd4a7 line). Apify billing fully ceased.
+REVIVAL: git checkout fcbcd4a7 -- trading_corp/main.py restores the loop wiring.
+
+
+2026-09-14 — LEGACY PM RETIREMENT, PHASE 7: kcv2 DB DROP — GATES RULED, STOPPED BEFORE THE DROP
+----------------------------------------------------------------------------------------------
+WHAT: the plan to DROP the four kcv2_* forward-logger tables (~3.15 GB) from data/trading_corp.db (5.31 GB) —
+      the SAME DB the live PM division reads arm state from. NOTHING WAS DROPPED. Two gates ruled, then Jack
+      stopped the session before any destructive step. Resume guide: reports/platform/PHASE7_RESUME_HANDOFF_2026-09-14.md
+      + tracking-doc §19.
+ENGINE/BOX: NOT TOUCHED this phase (all read-only + a local archive restore). Engine 397094, pm_web 381803,
+      sfp 656 unchanged; kcv2 observer 679 STILL RUNNING + writing (it stops FIRST when the phase resumes).
+GATE A (archive is single-copy): integrity PASS (files byte+SHA256 == Phase 5: prod a4eef50f / lab cff8a469)
+      AND restorability PASS (a FRESH restore today rebuilt all 4 tables — quotes 12,034,120 etc. — spot rows
+      byte-identical). Jack ruled an OFF-DEVICE verified copy is required before the drop. ★ BLOCKED: this
+      machine has ONE physical disk, so option (b) "second physical drive" has no target. Next session needs a
+      UNC path on another machine (preferred, no hardware) / a USB / or Azure blob (off-site, best long-term).
+GATE B: DROP ONLY, NO VACUUM. Measured: engine (397109) + sfp (656) hold the DB open, WAL, freelist_count=0,
+      auto_vacuum=0 -> a full VACUUM needs the ENGINE STOPPED, not merely PM-disarmed. ★ THE FILE STAYS ~5.31 GB
+      AFTER THE DROP (~3.15 GB free internal pages, reused later). THE DATA IS RETIRED REGARDLESS — do NOT read
+      the unchanged file size as a failed drop.
+ARM-COUNT TRUTH (a proof obligation that already confused a count): 31 agent_state arm rows in trading_corp.db
+      (the DROP TARGET; all armed / 0 latched) vs 44 pm_subdivision rows in prediction_markets.db (UNTOUCHED).
+      After the drop, prove THE 31 + the poly_kalshi persist-halt row byte-identical, in trading_corp.db.
+
+
+★ RETIREMENT TRAPS A GIT-TRUTH RECONCILER WILL WANT (for the 2026-09-13/14 entries above)
+-----------------------------------------------------------------------------------------
+  - THE TRANSITIVE CLOSURE OF FILE DELETIONS WAS NEVER COMPUTED. main.py imports 0 of the legacy modules at
+    module level, but the .py files remain (Phase 6 removed WIRING only). KEEPERS proven by import-graph:
+    _weather_math (survivor path_logger/logger.py:31 imports kalshi_quote_dollars from it) and
+    kalshi_crypto_v2_observer (while PID 679 runs). Plus 6 blocked shared files with live importers, ~25 legacy
+    tests/scripts, and the woven ~2,500 LOC web/data.py dashboard. Do NOT bulk-delete "legacy" files.
+  - The poly_kalshi_mlb persist-halt row (agent_state agent='strategy_state') is now REDUNDANT, not protective
+    (the loop wiring is gone) — but it is NOT to be removed.
+  - The box's NOPASSWD sudo allowlist is INERT (shadowed by a trailing (ALL) ALL) — `sudo -n systemctl` reports
+    nothing changed; every root write goes via `az vm run-command` and must verify actual state after.
+  - Arm state lives in data/trading_corp.db agent_state — column is `agent` NOT `actor`; read value_json.
+    `last_poll_ts` updates only on success, so a failing loop looks dormant — prove liveness from activity, not
+    a success timestamp.
+  - APIs: Apify was the real paid legacy driver (now stopped); Finnhub dead/free; Anthropic + Kalshi/Polymarket
+    keys are SHARED with live PM and MUST NOT be cancelled. The Polymarket USDC drain must GATE key removal.
