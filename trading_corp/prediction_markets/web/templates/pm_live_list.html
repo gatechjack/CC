@@ -42,7 +42,7 @@
       <div class="rec">
         {% if r.booked_closes %}<span>{{ r.booked_closes }} booked &middot; {{ r.wins }}&ndash;{{ r.losses }}</span>{% else %}<span>0 booked closes</span>{% endif %}
         {% if r.thin %}<span class="thin">THIN &lt;{{ meta.thin_threshold }}</span>{% endif %}
-        {% if r.unbooked %}<span class="unbk">{{ r.unbooked }} unbooked</span>{% endif %}
+        {% if r.unbooked %}<span class="unbk" title="closed by our own guard: opposed flatten + whale early-exit -- no settlement P&amp;L, by design; NOT a backlog">{{ r.unbooked }} flat/exit</span>{% endif %}
       </div></div>
   {%- endif -%}
 {%- endmacro %}
@@ -137,7 +137,7 @@
     <div class="sc">
       <div class="u">Realized today &middot; ET &middot; net of fees</div>
       <div class="big {{ r.today|pnlcls }}">{{ r.today|signed }}</div>
-      <div class="caveat" style="margin-top:5px">{{ r.booked }} booked closes all-time{% if r.booked < meta.thin_threshold %} &mdash; <span class="thin">THIN &lt;{{ meta.thin_threshold }}</span>{% endif %}{% if r.unbooked %} &middot; {{ r.unbooked }} closes unbooked (no P&amp;L computable){% endif %}</div>
+      <div class="caveat" style="margin-top:5px">{{ r.booked }} booked closes all-time{% if r.booked < meta.thin_threshold %} &mdash; <span class="thin">THIN &lt;{{ meta.thin_threshold }}</span>{% endif %}{% if r.unbooked %} &middot; {{ r.unbooked }} closes flattened/early-exit (no settlement P&amp;L){% endif %}</div>
       <div class="hist">
         <div><div class="k">WEEK</div><div class="v {{ r.week|pnlcls }}">{{ r.week|signed }}</div></div>
         <div><div class="k">MONTH</div><div class="v {{ r.month|pnlcls }}">{{ r.month|signed }}</div></div>

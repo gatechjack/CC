@@ -31,7 +31,7 @@
         <span class="dim">({{ w.n_priced }} of {{ w.n_total }} priced)</span></span>
       <span class="wr-fig"><span class="wr-k">record</span>
         {{ w.booked_closes }} booked ({{ w.settled_w }}&ndash;{{ w.settled_l }}) &middot;
-        {{ w.unbooked_closes }} unbooked<span class="dim"> (opposed/whale-exit &mdash; unknown, not zero)</span></span>
+        {{ w.unbooked_closes }} flattened/early-exit<span class="dim"> (opposed + whale-exit &mdash; no settlement P&amp;L, by design)</span></span>
     </div>
   </div>
 {% endmacro %}
