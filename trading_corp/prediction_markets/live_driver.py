@@ -202,18 +202,20 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     """Fetch OPEN + recent-SETTLED markets for the three MLB series and build the 3-dim MarketContext. Uses the
     SAME `client.get_markets(series_ticker=...)` the proven poly loop uses (main.py:5208)."""
     from pykalshi import MarketStatus
-    game_t, total_t, spread_t = [], [], []
+    game_t, total_t, spread_t, rfi_t = [], [], [], []
     markets: dict = {}
     dates: set = set()
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
-    per_series = {"KXMLBGAME": game_t, "KXMLBTOTAL": total_t, "KXMLBSPREAD": spread_t}
+    per_series = {"KXMLBGAME": game_t, "KXMLBTOTAL": total_t, "KXMLBSPREAD": spread_t, "KXMLBRFI": rfi_t}
+    _fetch_series = SERIES + ("KXMLBRFI",)   # RFI fetched alongside ml/total/spread so its index is READY; stays INERT
+                                             # (skip_market_type_excluded) until a sub enables 'first_inning_run'.
     # ★ OPEN pagination is UNIVERSAL (2026-09-11): every ctx builder here now fetches OPEN with fetch_all=True (was
     # single-page for all but the structural builder). Measured 2026-09-11 (pm_ctx_allscan_ro): ONLY cfb total(2008)/
     # spread(2541) exceed the 1000 cap today; MLB game/total/spread are 90/258/151, all others <=379 -> for every series
     # but cfb this is a proven NO-OP (single page, cursor empty -> break, byte-identical), so it only closes the same
     # latent truncation class before any series grows past 1000. (The MLB poly LOOP at main.py:5406 is the one remaining
     # same-class site left untouched: main.py is a shared-trio file + KXMLB* is 258 open -> filed for coordinated follow-up.)
-    for series in SERIES:
+    for series in _fetch_series:
         for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
             ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
                                           fetch_all=True, **extra)   # (2026-09-11) paginate OPEN too -- see fetch_structural_market_context
@@ -223,13 +225,14 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
                     continue
                 per_series[series].append(tk)
                 markets[tk.upper()] = _market_quote_dict(m)
-    await _merge_raw_market_fields(client, markets)   # ★ SDK object drops exchange_index + size fields -> merge from raw
+    await _merge_raw_market_fields(client, markets, series_list=_fetch_series)   # incl KXMLBRFI (gates 3/6b need shard+size)
     game_idx = M.build_kalshi_game_index(game_t)
     total_idx = M.build_kalshi_total_index(total_t)
     spread_idx = M.build_kalshi_spread_index(spread_t)
+    rfi_idx = M.build_kalshi_rfi_index(rfi_t)   # {stem: KXMLBRFI ticker}; joined via game.stem only when enabled
     for tk in game_t:               # the matcher's exact-strike gate is the real guard; carry the game tickers
         dates.add(tk)
-    return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets)
+    return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets, rfi_index=rfi_idx)
 
 
 async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketContext:
@@ -515,10 +518,11 @@ def snapshot_open_positions(rows) -> dict:
         cid = str(getattr(p, "condition_id", "") or "")
         oidx = paper.pos_outcome_index(p)
         key = (cid, oidx)
-        size, _slug, _out = snap.get(key, (0.0, "", ""))
+        size, _slug, _out, _ttl = snap.get(key, (0.0, "", "", ""))
         snap[key] = (size + float(getattr(p, "size", 0.0) or 0.0),
-                     str(getattr(p, "slug", "") or ""), str(getattr(p, "outcome", "") or ""))
-    return snap
+                     str(getattr(p, "slug", "") or ""), str(getattr(p, "outcome", "") or ""),
+                     str(getattr(p, "title", "") or ""))   # (2026-09-14) carry title so an RFI whale-EXIT re-parse
+    return snap                                            # can recover its title-gated leg (all other types ignore it)
 
 
 def detect_position_reductions(prior: dict, rows, wallet: str, now_ts: int) -> list:
@@ -532,12 +536,12 @@ def detect_position_reductions(prior: dict, rows, wallet: str, now_ts: int) -> l
     to distinguish it (the SELL is the authoritative discretionary-exit signal)."""
     cur = snapshot_open_positions(rows)
     out = []
-    for key, (prev_size, slug, outcome) in prior.items():
+    for key, (prev_size, slug, outcome, title) in prior.items():
         cid, oidx = key
-        now_size = cur.get(key, (0.0, "", ""))[0]
+        now_size = cur.get(key, (0.0, "", "", ""))[0]
         if now_size < float(prev_size) - _REDUCTION_EPS:
             out.append({"wallet": wallet, "condition_id": cid, "outcome_index": oidx,
-                        "ts": int(now_ts), "slug": slug, "outcome": outcome})
+                        "ts": int(now_ts), "slug": slug, "outcome": outcome, "title": title})
     return out
 
 
@@ -656,8 +660,10 @@ _AUDIT_SOCCER_CATS = frozenset({"epl", "lal", "fl1", "sea", "bun", "mls", "bra",
 _AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc"})
 
 
-def _audit_leg_independent(category, signal_outcome, ticker, leg):
-    """Return 'ok' | 'na' | 'unchecked' | 'REVIEW:<why>'. Independent of the matcher's leg choice."""
+def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=None, signal_title=None):
+    """Return 'ok' | 'na' | 'unchecked' | 'REVIEW:<why>'. Independent of the matcher's leg choice. signal_title (the
+    Poly resolution text) is read for KXMLBRFI so the polarity check derives from the resolution text -- NOT the
+    matcher's transform (Jack's rule: the check must not share the transform it is checking)."""
     import re, unicodedata
     def _fold(s):                                                 # accent-fold + lower (parity with the matcher guard)
         return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode("ascii").lower()
@@ -689,6 +695,20 @@ def _audit_leg_independent(category, signal_outcome, ticker, leg):
     if category in _AUDIT_SOCCER_CATS:                            # Yes->yes / No->no (a disagreeing leg = inversion)
         exp = "yes" if oc == "Yes" else "no" if oc == "No" else None
         return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:soccer_leg!=outcome:%s/%s" % (leg, oc))
+    if tk.startswith("KXMLBRFI-"):                                # first-inning-run: Kalshi YES = a run scored (hardcoded
+        # ticker semantics). Re-derive the whale's INTENT from the resolution TITLE + outcome, with SEPARATE code from
+        # the matcher's _rfi_leg. Affirmative title ("run scored in the 1st?") -> outcome yes=wants-run; a negative
+        # framing inverts. Kalshi RFI YES=run, so expected leg = yes iff wants-run. A disagreement = the inversion class.
+        ttl = (signal_title or "").lower(); o = oc.lower()
+        neg = ("no run" in ttl) or ("scoreless" in ttl) or ("not score" in ttl)   # NEG wins ("no run in the 1st"
+        aff = (not neg) and ("run scored in the first inning" in ttl or "run scored in the 1st inning" in ttl
+                             or "run in the first inning" in ttl or "run in the 1st inning" in ttl)  # contains "run in..")
+        yn = "yes" if o in ("yes", "yes run", "run") else "no" if o in ("no", "no run") else None
+        if yn is None or (not aff and not neg):                  # unknown outcome or unrecognised framing -> can't decide
+            return "unchecked"
+        wants_run = (yn == "yes") if aff else (yn == "no")       # negative framing inverts the outcome
+        exp = "yes" if wants_run else "no"
+        return "ok" if leg == exp else "REVIEW:rfi_leg!=intent:%s/%s/title=%r" % (leg, oc, (signal_title or "")[:30])
     if "TOTAL-" in tk:                                            # structural total: Over->yes / Under->no
         low = oc.lower(); exp = "yes" if low == "over" else "no" if low == "under" else None
         return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:total_leg!=outcome:%s/%s" % (leg, oc))
@@ -703,7 +723,8 @@ def _record_order(conn, sub, signal, decision, *, outcome_status, fill=None, err
     whale's SIGNAL-TIME outcome/slug (copy intent) + an INDEPENDENT leg-audit verdict (schema 021 columns)."""
     sig_out = getattr(signal, "outcome", None)
     sig_slug = getattr(signal, "slug", None)
-    leg_audit = _audit_leg_independent(sub.category, sig_out, decision.kalshi_ticker, decision.leg)
+    leg_audit = _audit_leg_independent(sub.category, sig_out, decision.kalshi_ticker, decision.leg,
+                                       signal_slug=sig_slug, signal_title=getattr(signal, "title", None))
     if isinstance(leg_audit, str) and leg_audit.startswith("REVIEW"):
         _LOG.warning("leg_audit REVIEW %s/%s coid=%s ticker=%s leg=%s outcome=%r :: %s",
                      sub.account_id, sub.category, decision.client_order_id, decision.kalshi_ticker,

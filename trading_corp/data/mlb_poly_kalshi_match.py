@@ -133,6 +133,30 @@ class ParsedPolyBet:
     anchor_side: str | None = None   # spread only: 'home'|'away' -- the -line ANCHOR team (the Kalshi market's team)
 
 
+# ── RFI / first-inning-run (2026-09-14) ─────────────────────────────────────
+# Poly slug `-nrfi`; Kalshi KXMLBRFI (one binary market per game, YES = "Over 0.5 runs in the 1st inning" = a run
+# scored). ★ THE SLUG NAME `nrfi` IS A FALSE FRIEND: the live Poly market is TITLED "Will there be a run scored in
+# the first inning?" (verified across 1577 rows 2026-09-14) -> YES = a run -> the mapping is DIRECT (Poly YES ->
+# Kalshi YES), NOT the inversion the slug name suggests. The leg is GATED on that affirmative resolution TITLE and
+# FAILS CLOSED (leg=None -> the matcher skips) on any negative / unknown framing, so a future Poly framing flip can
+# never silently copy the wrong side. The independent leg-audit re-derives the same from the title with separate code.
+def _rfi_leg(outcome: str, title: str) -> tuple:
+    """(leg, fail_reason). leg in {'yes','no'} (Kalshi KXMLBRFI: YES=a run scored) or None (fail-closed)."""
+    t = (title or "").lower()
+    affirmative = ("run scored in the first inning" in t or "run scored in the 1st inning" in t
+                   or "run in the first inning" in t or "run in the 1st inning" in t)
+    if ("no run" in t) or ("scoreless" in t) or ("not score" in t):
+        affirmative = False                                   # negative-framed title -> fail closed (never guess)
+    if not affirmative:
+        return None, "rfi_title_not_affirmative:%r" % ((title or "")[:48])
+    o = (outcome or "").strip().lower()
+    if o in ("yes", "yes run", "run"):                        # whale bet a run scored -> Kalshi RFI YES
+        return "yes", None
+    if o in ("no", "no run"):                                 # whale bet no run -> Kalshi RFI NO
+        return "no", None
+    return None, "rfi_outcome_unresolved:%r" % outcome
+
+
 def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str = "") -> ParsedPolyBet:
     """Parse one Poly activity row into a ParsedPolyBet.
 
@@ -189,6 +213,10 @@ def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str
             return ParsedPolyBet("spread", date_iso, away_code, home_code, away_name, home_name,
                                  out_side, (away_name if out_side == "away" else home_name),
                                  raw=raw, line=line, leg=leg, anchor_side=anchor_side)
+        if suffix == "-nrfi":                                  # first-inning-run (title-gated, DIRECT leg; see _rfi_leg)
+            leg, fr = _rfi_leg(outcome, title)
+            return ParsedPolyBet("first_inning_run", date_iso, away_code, home_code, away_name, home_name,
+                                 None, None, fail_reason=fr, raw=raw, leg=leg)
         # prop / unknown suffix -> labelled non-moneyline (NEVER silently moneyline).
         return ParsedPolyBet("prop", date_iso, away_code, home_code, away_name, home_name,
                              None, None, raw=raw)
@@ -422,7 +450,7 @@ def match_poly_to_kalshi(parsed: ParsedPolyBet, kalshi_index: dict,
 #   game -- so we resolve the game via the moneyline index (date+teams) and JOIN totals/spreads by stem.
 # ══════════════════════════════════════════════════════════════════════════════
 
-COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread")
+COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread", "first_inning_run")
 
 _KALSHI_TOTAL_RE  = re.compile(r"^KXMLBTOTAL-(?P<stem>[A-Z0-9]+)-(?P<n>\d+)$")
 _KALSHI_SPREAD_RE = re.compile(r"^KXMLBSPREAD-(?P<stem>[A-Z0-9]+)-(?P<team>[A-Z]+)(?P<n>\d+)$")
@@ -472,6 +500,27 @@ def build_kalshi_spread_index(spread_tickers) -> dict:
             continue
         stem, team, strike = p
         idx.setdefault(stem, {})[(team, strike)] = t
+    return idx
+
+
+# ── KXMLBRFI (first-inning run): ONE binary market per game, no strike/side suffix. Ticker = KXMLBRFI-{stem},
+# stem SHARED verbatim with KXMLBGAME/TOTAL/SPREAD -> joined via the moneyline index's game.stem (like total/spread).
+_KALSHI_RFI_RE = re.compile(r"^KXMLBRFI-(?P<stem>[A-Z0-9]+)$")
+
+
+def parse_kalshi_rfi_ticker(ticker: str):
+    """stem for a KXMLBRFI ticker, else None."""
+    m = _KALSHI_RFI_RE.match(ticker or "")
+    return m.group("stem") if m else None
+
+
+def build_kalshi_rfi_index(rfi_tickers) -> dict:
+    """{stem: ticker} for KXMLBRFI tickers (one per game)."""
+    idx: dict = {}
+    for t in rfi_tickers:
+        stem = parse_kalshi_rfi_ticker(t)
+        if stem is not None:
+            idx[stem] = t
     return idx
 
 
@@ -537,9 +586,27 @@ def _match_spread(parsed, moneyline_index, spread_index, kalshi_dates) -> MatchR
                        market_type="spread", reason="exact_spread_strike")
 
 
+def _match_rfi(parsed, moneyline_index, rfi_index, kalshi_dates) -> MatchResult:
+    """First-inning-run: resolve the GAME via the moneyline index (date+teams), join KXMLBRFI by the SHARED stem.
+    One binary market per game (no strike). leg is carried from the parse (title-gated, DIRECT: Poly YES=run ->
+    Kalshi YES). A fail-closed parse (leg None) never reaches a matched ticker -- it returns fail (a safe skip)."""
+    if parsed.leg is None:
+        return MatchResult("fail", 0.0, reason=parsed.fail_reason or "rfi_leg_missing",
+                           market_type="first_inning_run")
+    game, miss = _resolve_unique_game(parsed, moneyline_index, kalshi_dates)
+    if miss is not None:
+        return miss
+    ticker = rfi_index.get(game.stem)
+    if ticker is None:
+        return MatchResult("no_kalshi_contract", 0.0, reason="no_kxmlbrfi_for_game_stem:%s" % game.stem,
+                           market_type="first_inning_run")
+    return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg,
+                       market_type="first_inning_run", reason="rfi_game_stem_join")
+
+
 def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, spread_index: dict,
               kalshi_dates: frozenset,
-              allowed_market_types=COPYABLE_MARKET_TYPES) -> MatchResult:
+              allowed_market_types=COPYABLE_MARKET_TYPES, rfi_index=None) -> MatchResult:
     """Unified 3-dimension match. `allowed_market_types` = the sub-division's `market_types` (R1) -- a copyable
     type NOT in it is a LABELLED SKIP (`skip_market_type_excluded`), never an error; a non-copyable type
     (prop / futures / non-mlb) is `skip_non_ml` / `skip_non_game`. Moneyline DELEGATES to the unchanged
@@ -561,7 +628,11 @@ def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, s
         return replace(r, leg=leg, market_type="moneyline")
     if mt == "total":
         return _match_total(parsed, moneyline_index, total_index, kalshi_dates)
-    return _match_spread(parsed, moneyline_index, spread_index, kalshi_dates)
+    if mt == "spread":
+        return _match_spread(parsed, moneyline_index, spread_index, kalshi_dates)
+    if mt == "first_inning_run":
+        return _match_rfi(parsed, moneyline_index, rfi_index or {}, kalshi_dates)
+    return MatchResult("fail", 0.0, reason="unhandled_market_type:%s" % mt, market_type=mt)
 
 
 def liquidity_ok(market: dict, min_liquidity_usd: float = 20.0, max_spread_cents: int = 5) -> bool:

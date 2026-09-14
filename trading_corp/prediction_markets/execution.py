@@ -161,6 +161,10 @@ class MarketContext:
     # Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the fed ctx builder sets it and leaves the
     # rest empty. Read only by the fed adapter below.
     fed_index: dict | None = None
+    # RFI / first-inning-run (2026-09-14): the {stem: KXMLBRFI-ticker} index (one binary market per MLB game). Optional
+    # + defaulted so all prior constructions stay BYTE-IDENTICAL; the MLB ctx builder sets it. Read only by the MLB
+    # adapter, and only when a sub-division has 'first_inning_run' in its market_types (ships INERT until enabled).
+    rfi_index: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -227,7 +231,10 @@ def sub_config_from_row(row) -> SubConfig:
         v = _row_get(row, k)
         return v if v is not None else CONFIG_DEFAULTS[k]
     mt = str(_row_get(row, "market_types") or "").strip()
-    types = tuple(t for t in (s.strip() for s in mt.split(",")) if t) or M.COPYABLE_MARKET_TYPES
+    # A blank market_types falls back to the HISTORICAL default (ml/total/spread), NEVER the full COPYABLE set --
+    # so a newly-added copyable type (first_inning_run) is enabled ONLY by an explicit token, never by a blank row
+    # (keeps the inert-ship guarantee airtight; the column is NOT NULL DEFAULT 'moneyline,total,spread' anyway).
+    types = tuple(t for t in (s.strip() for s in mt.split(",")) if t) or ("moneyline", "total", "spread")
     return SubConfig(
         account_id=_row_get(row, "account_id"), category=_row_get(row, "category"),
         market_types=types, sizing_mode=(_row_get(row, "sizing_mode") or "fixed"),
@@ -406,12 +413,14 @@ class Journal:
 # ★ parse takes (slug, outcome, title): mlb/ufc IGNORE title (byte-identical -- same M./U. call as before); ONLY the
 # tennis parse reads it (pair-keying). The dispatch always passes signal.title (default "" for every non-tennis signal).
 def _mlb_parse(slug, outcome, title=None):
-    return M.parse_poly_mlb_bet(slug, outcome)
+    # title is now PASSED (2026-09-14): first_inning_run reads the resolution TITLE to gate the leg (fail-closed on a
+    # non-affirmative framing). moneyline/total/spread IGNORE title -> byte-identical to the pre-RFI call for those.
+    return M.parse_poly_mlb_bet(slug, outcome, title or "")
 
 
 def _mlb_match(parsed, ctx, allowed_market_types):
     return M.match_bet(parsed, ctx.moneyline_index, ctx.total_index, ctx.spread_index, ctx.kalshi_dates,
-                       allowed_market_types=allowed_market_types)
+                       allowed_market_types=allowed_market_types, rfi_index=ctx.rfi_index or {})
 
 
 def _ufc_parse(slug, outcome, title=None):
@@ -780,7 +789,7 @@ def detect_exit_signals(activity_sells, position_reductions, *, window_sec: int)
             wallet=a["wallet"], slug=conf.get("slug", ""), outcome=conf.get("outcome", ""),
             condition_id=a["condition_id"], outcome_index=a["outcome_index"],
             signal_id=stable_signal_id(a["wallet"], a["condition_id"], a["outcome_index"], a.get("tx_hash") or a["ts"]),
-            is_exit=True))
+            is_exit=True, title=conf.get("title", "")))   # (2026-09-14) carry title so the exit re-parse can re-derive an RFI leg
     return out
 
 
