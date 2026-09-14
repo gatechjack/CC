@@ -115,8 +115,99 @@ booked". The classification per item becomes:
 - **GENUINE DEFECT**: oversell (net-open < 0), double-close (a settlement AND a manual close on the same
   wallet/ticker/leg), or a phantom close (no held entry). Leads the report if found.
 
-Runner `pm_unbooked_ro.ps1` (read-only, mode=ro) pulls: the count reproduction (confirm 12/2/2), the
-close_source breakdown, the 16 rows in full, a per-(wallet,ticker,leg) oversell/double-close integrity check,
-attachments+attribution, and per-category coverage classified by the real matchers. Awaiting authorization.
+Runner `pm_unbooked_ro.ps1` executed READ-ONLY (mode=ro) 2026-09-14 16:21Z, exit 0. Box PM DB.
 
-*(§4 coverage table + §3 item table to be filled from the runner output.)*
+### 3a. Counts confirmed (S1) — the /live 12/2/2 reproduces exactly
+`kalshi_jack`: mlb booked=117 / **unbooked=12** / 129; ufc 7 / **2** / 9; nfl 15 / **2** / 17. (Also atp 19 / **3**
+/ 22 — same mechanism, outside the brief's three.) The 16 in scope = 12 mlb + 2 ufc + 2 nfl. Confirmed.
+
+### 3b. close_source breakdown (S2) — every one of the 16 is opposed or whale-exit
+| category | opposed (unbooked) | whale-exit / NULL (unbooked) | settlement (booked) |
+|---|---|---|---|
+| mlb | 10 | 2 | 117 |
+| nfl | 2  | 0 | 15  |
+| ufc | 1  | 1 | 7   |
+
+**Not a single unbooked close is a settlement.** Settlements always book a P&L (117/15/7 all booked). The 16
+split 13 opposed + 3 whale-exit — exactly the two by-design NULL-P&L close types.
+
+### 3c. Integrity (S4) — NO DEFECT
+Per-(wallet,ticker,leg) for every key with an unbooked close: **`flagged keys = 0`.** Every key has entered 5.0 =
+exited 5.0, **net-open 0.00**; no oversell (net never < 0), no MIXED (never a settlement AND a manual close on the
+same key), no MULTI_MANUAL_CLOSE. All 16 have `settled_ts=None` (closed by our guard before Kalshi settled — the
+reason no settlement P&L exists). **There is no reconciliation defect, no double-book, no phantom close.**
+
+### 3d. The 16, item by item (S3) — all reached "fill recorded (close FILLED)", stopped at "P&L booked"
+| # | cat | ticker | leg | type | close_source | wallet (whale) | net | classification |
+|---|---|---|---|---|---|---|---|---|
+| 1 | mlb | KXMLBGAME 26SEP01 SDCIN-SD | yes | moneyline | opposed | 0x16bb…8492 (SDTrading, now detached) | 0 | BY DESIGN (opposed) |
+| 2 | mlb | KXMLBGAME 26SEP01 SDCIN-CIN | yes | moneyline | opposed | 0x684b…8409 | 0 | BY DESIGN (opposed) — the disagreement pair with #1 (same cid, SD vs CIN) |
+| 3 | mlb | KXMLBGAME 26SEP02 MILCHC-MIL | yes | moneyline | opposed | 0x684b…8409 | 0 | BY DESIGN (opposed) |
+| 4 | mlb | KXMLBTOTAL 26SEP02 SEABOS-9 | no | total (Under) | opposed | 0x684b…8409 | 0 | BY DESIGN (opposed) |
+| 5 | mlb | KXMLBGAME 26SEP02 PHIAZ-AZ | yes | moneyline | opposed | 0x16bb…8492 | 0 | BY DESIGN (opposed) |
+| 6 | mlb | KXMLBGAME 26SEP06 MILCIN-CIN | yes | moneyline | **whale-exit** | 0x767a…8ac5 (detached) | 0 | BY DESIGN (whale exited) |
+| 7 | mlb | KXMLBGAME 26SEP07 STLSF-SF | yes | moneyline | opposed | 0x684b…8409 | 0 | BY DESIGN (opposed) |
+| 8 | mlb | KXMLBGAME 26SEP08 AZKC-KC | yes | moneyline | opposed | 0x684b…8409 | 0 | BY DESIGN (opposed) |
+| 9 | mlb | KXMLBGAME 26SEP09 WSHSD-WSH | yes | moneyline | opposed | 0x684b…8409 | 0 | BY DESIGN (opposed) |
+| 10 | mlb | KXMLBGAME 26SEP11 PHIATL-ATL | yes | moneyline | **whale-exit** | 0x767a…8ac5 | 0 | BY DESIGN (whale exited) |
+| 11 | mlb | KXMLBGAME 26SEP11 PHIATL-ATL | yes | moneyline | opposed | 0x684b…8409 | 0 | BY DESIGN (opposed) — same game as #10, different whale |
+| 12 | mlb | KXMLBGAME 26SEP13 LADMIA-MIA | yes | moneyline | opposed | 0x684b…8409 | 0 | BY DESIGN (opposed) |
+| 13 | nfl | KXNFLGAME 26SEP13 BUFHOU-HOU | yes | moneyline | opposed | 0x226b…cad6 | 0 | BY DESIGN (opposed) |
+| 14 | nfl | KXNFLGAME 26SEP13 DALNYG-NYG | yes | moneyline | opposed | 0x226b…cad6 | 0 | BY DESIGN (opposed) |
+| 15 | ufc | KXUFCFIGHT 26SEP12 MCMRAH-MCM | yes | moneyline | opposed | 0xe8c4…395d | 0 | BY DESIGN (opposed) |
+| 16 | ufc | KXUFCFIGHT 26SEP12 SILDEL-SIL | yes | moneyline | **whale-exit** | 0x99b1…196a | 0 | BY DESIGN (whale exited) |
+
+Every item's "verbatim reason from the chain": `close_source` = `opposed` (guard flatten on two-whale
+disagreement) or NULL (Option-D whale-exit); `realized_pnl` = NULL because the live order-write never sets it and
+`book_settlements` never ran on these (they closed pre-settlement). None is a SCOPE skip, a GATE refusal, or a
+no-match — those classifications belong to the *uncopied-signal* question, which is NOT what "unbooked" measures.
+**13 = correct opposed flattens; 3 = correct whale-exit closes; 0 = defects.**
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## 4. COVERAGE PER CATEGORY (S6) — separate axis from "unbooked"; classified by the real matchers
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+Fraction of each active whale's recent RESOLVED bets whose market TYPE our matcher can copy at all (last ≤500):
+
+- **mlb** — 0x2dc1…(xifutloong3) 221 bets **100%** (212 ml, 9 total); 0x684b…8409 213 **100%** (156 ml, 45 total,
+  12 spread); 0x5674…2ff4 88 **100%** (88 ml). **MLB whales bet essentially only ml/total/spread — no F5, no
+  props, no futures in recent history.** The brief's worry ("mlb whale bets heavily in an unsupported family") is
+  NOT borne out for these whales; F5 is a non-issue here because they don't bet it.
+- **ufc** — 0x99b1…196a 106 **100%**; 0x3dfb…abaf 56 **82%** (10 skipped = `totals-Npt5` rounds-O/U, a ruled-out
+  scope skip; the rest ml/gtd/method_victory); 0xdb85…152f 23 **100%**; 0xe8c4…395d 29 **97%** (1 rounds-O/U).
+  The only UFC gap is rounds-O/U — the deliberate 2:30-divergence scope skip.
+- **nfl** — 0x226b…cad6 142 **88%** (skips: 15 Super Bowl futures `non_sport` + 2 team-total `non_moneyline`);
+  0xb4f9…c9a7 10 **100%**; 0xd696…8a49 167 **87%** (skips: 20 `-2q-`/half-game `non_moneyline` + 1 future);
+  0x75e0…fe50 202 **100%**. NFL gaps = futures + half-game/quarter — known/filed scope skips.
+
+**No surprise uncopied family.** The uncopyable fraction, where it exists, is exactly the already-ruled scope
+skips (UFC rounds-O/U; NFL Super Bowl futures + half-game/quarter; MLB team-totals appear in NFL data but not in
+these MLB whales). And crucially — **coverage is a different axis from the unbooked count**; a low-coverage whale
+would produce uncopied *signals*, never *unbooked closes*.
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## 5. CONCLUSION + RECOMMENDATION
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+1. **"Unbooked" = closed positions with no settlement P&L (13 opposed flattens + 3 whale-exits), NOT uncopied
+   bets. All 16 are correct by-design; zero defects** (net-zero, no oversell, no double-book, no mislabeled
+   settlement). Nothing here requires disarm or fix for correctness.
+2. **The number is a useful signal, mislabeled.** It is dominated by OPPOSED closes — each marks an event where
+   two of the whales you copy in that category took opposite sides of the same market and the guard flattened
+   both. On mlb that happened 10 times (mostly against whale `0x684b…8409`); it is the running cost of copying
+   multiple, sometimes-disagreeing whales per category. Consider relabeling the /live chip from "unbooked" to
+   e.g. "N flattened/early-exit (no settle P&L)" so it doesn't read as a reconciliation backlog.
+3. **The one real (non-defect) gap: opposed + whale-exit closes book $0 realized P&L, so realized figures OMIT
+   their true cash result.** An opposed round-trip (buy a side, then sell it back on the flatten) loses roughly
+   the spread + ~4 fees; a whale-exit sells at bid for a real gain/loss. Both are computable from data already in
+   the journal (`fill_price`, `fill_count`, `fee`, plus entry cost basis). If Jack wants realized P&L to reflect
+   actual cash performance rather than settlement-only outcomes, the fix is to book a sale-based `realized_pnl`
+   on whale-exit and opposed closes. This is a DESIGN decision (recommend, do not build), not a bug — the current
+   convention is deliberate and documented.
+4. **F5 vs half-game (brief's question): same shape, two matchers.** MLB F5 would skip via the `prop` branch
+   (`skip_non_ml`); structural half-game skips via `non_moneyline` (`skip_non_moneyline`). One fix does not cover
+   both. Moot for the current MLB whales (they don't bet F5); relevant only if a future MLB whale does.
+
+**Read-only throughout: no writes, no deploys, no restarts, no arm changes. 30 sub-divisions remain armed and
+trading. Jack rules the scope.**
+
