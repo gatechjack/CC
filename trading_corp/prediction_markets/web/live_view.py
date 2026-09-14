@@ -34,8 +34,8 @@ from ...data.sports_structural_match import LEAGUES as _STRUCT_LEAGUES, parse_po
 from . import feed_mlb, marks as marks_mod, milestones as milestones_mod   # (stdlib-only) -> pm_web stays standalone
 from .. import leg_audit        # canonical leg-audit state constants (shared with the fill-watch runner -> no drift)
 
-KINDS = ("moneyline", "total", "spread")
-KIND_LABEL = {"moneyline": "ML", "total": "TOT", "spread": "SPR"}
+KINDS = ("moneyline", "total", "spread", "first_inning_run")
+KIND_LABEL = {"moneyline": "ML", "total": "TOT", "spread": "SPR", "first_inning_run": "RFI"}
 # Item 2: SPORT (Kalshi series prefix, after KX and before the market-type) -> the team-code map. The structural
 # matcher (data/sports_structural_match.py LEAGUES) is the source of these; we reuse the SAME data-side maps so
 # pm_web's label decode can never diverge from the matcher's. Longest prefix wins (WNBA before NBA).
@@ -101,6 +101,8 @@ def _kind(ticker: str) -> str:
         return "spread"
     if "TOTAL" in series:
         return "total"
+    if "RFI" in series:                       # KXMLBRFI -- first-inning-run binary (MLB only); rendered as a 4th slot
+        return "first_inning_run"
     if "GAME" in series or "MONEY" in series:
         return "moneyline"
     return series.lower()
@@ -145,6 +147,8 @@ def _short_label(ticker: str, kind: str, held_leg: str | None) -> str:
     parts = str(ticker or "").split("-")
     suffix = parts[2] if len(parts) > 2 else ""
     leg = str(held_leg).lower() if held_leg else None
+    if kind == "first_inning_run":            # binary, no strike: leg carries the side (Kalshi RFI YES = a run scored)
+        return "Run 1st" if leg == "yes" else "No Run 1st" if leg == "no" else "1st-inn run"
     if kind == "total":
         mt = re.match(r"^(\d+)$", suffix)
         if mt:

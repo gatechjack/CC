@@ -53,6 +53,8 @@
     {{ betline(card.slots_by_kind.ML, 'ML', idx) }}
     {{ betline(card.slots_by_kind.TOT, 'TOT', idx) }}
     {{ betline(card.slots_by_kind.SPR, 'SPR', idx) }}
+    {# RFI (first-inning-run) is MLB-only: render a 4th slot ONLY when present, so non-MLB cards are unaffected #}
+    {%- if card.slots_by_kind.RFI %}{{ betline(card.slots_by_kind.RFI, 'RFI', idx) }}{% endif -%}
   </div>
 {% endmacro %}
 
