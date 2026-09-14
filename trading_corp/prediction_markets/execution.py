@@ -165,6 +165,16 @@ class MarketContext:
     # + defaulted so all prior constructions stay BYTE-IDENTICAL; the MLB ctx builder sets it. Read only by the MLB
     # adapter, and only when a sub-division has 'first_inning_run' in its market_types (ships INERT until enabled).
     rfi_index: dict | None = None
+    # F5 (first-5-innings, 2026-09-14) + first-half (structural) sub-game indices. Optional + defaulted so every prior
+    # construction stays BYTE-IDENTICAL; the MLB ctx builder sets f5_*, the structural builder sets h1_*. Read ONLY by
+    # their own adapter, ONLY when the sub-division enables 'f5' / 'first_half' (ships INERT). Route-only: a sub-game
+    # bet's ticker comes ONLY from these, never the full-game moneyline/total/spread indices.
+    f5_win_index: dict | None = None
+    f5_total_index: dict | None = None
+    f5_spread_index: dict | None = None
+    h1_win_index: dict | None = None
+    h1_total_index: dict | None = None
+    h1_spread_index: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -420,7 +430,9 @@ def _mlb_parse(slug, outcome, title=None):
 
 def _mlb_match(parsed, ctx, allowed_market_types):
     return M.match_bet(parsed, ctx.moneyline_index, ctx.total_index, ctx.spread_index, ctx.kalshi_dates,
-                       allowed_market_types=allowed_market_types, rfi_index=ctx.rfi_index or {})
+                       allowed_market_types=allowed_market_types, rfi_index=ctx.rfi_index or {},
+                       f5_win_index=ctx.f5_win_index or {}, f5_total_index=ctx.f5_total_index or {},
+                       f5_spread_index=ctx.f5_spread_index or {})
 
 
 def _ufc_parse(slug, outcome, title=None):
@@ -504,7 +516,9 @@ def _structural_adapter(cfg):
         # (in SS.match_bet) still decides whether total/spread are copied at all for this sub-division.
         return SS.match_bet(parsed, ctx.structural_index or {}, ctx.kalshi_dates, cfg,
                             allowed_market_types=allowed_market_types,
-                            total_index=ctx.total_index, spread_index=ctx.spread_index)
+                            total_index=ctx.total_index, spread_index=ctx.spread_index,
+                            h1_win_index=ctx.h1_win_index or {}, h1_total_index=ctx.h1_total_index or {},
+                            h1_spread_index=ctx.h1_spread_index or {})
     return _parse, _match
 
 

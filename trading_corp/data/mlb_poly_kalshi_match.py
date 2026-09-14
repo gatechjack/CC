@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass, field, replace
 
 from trading_corp.data.sports_team_mapping import MLB_TEAMS
+from trading_corp.data import subgame_match as SG   # shared sub-game (F5 / first-half) route-only core (written once)
 
 # ── Poly slug parsing ──────────────────────────────────────────────────────
 # mlb-{away}-{home}-{YYYY-MM-DD}{optional suffix}. Team codes are lowercase
@@ -217,6 +218,50 @@ def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str
             leg, fr = _rfi_leg(outcome, title)
             return ParsedPolyBet("first_inning_run", date_iso, away_code, home_code, away_name, home_name,
                                  None, None, fail_reason=fr, raw=raw, leg=leg)
+        # ── F5 (first-five-innings): a SUB-GAME family routed ONLY to KXMLBF5*/never full-game (see _match_f5). ──
+        if suffix.startswith("-first-five-winner-"):           # per-side Yes/No: away|home|draw + Yes/No leg
+            side = suffix[len("-first-five-winner-"):]          # 'away' | 'home' | 'draw'
+            o = (outcome or "").strip().lower()
+            leg = "yes" if o == "yes" else "no" if o == "no" else None
+            fr = None if leg else f"f5_winner_outcome_not_yes_no:{outcome!r}"
+            if side == "draw":                                 # -> the TIE ticker ONLY (side_name None => TIE in _match_f5)
+                return ParsedPolyBet("f5_winner", date_iso, away_code, home_code, away_name, home_name,
+                                     "draw", None, fail_reason=fr, raw=raw, leg=leg)
+            if side not in ("away", "home"):
+                return ParsedPolyBet("f5_winner", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"f5_winner_bad_side:{side!r}", raw=raw)
+            return ParsedPolyBet("f5_winner", date_iso, away_code, home_code, away_name, home_name,
+                                 side, (away_name if side == "away" else home_name), fail_reason=fr, raw=raw, leg=leg)
+        if suffix.startswith("-f5-total") or suffix.startswith("-f5-spread"):
+            sub = suffix[3:]                                   # strip '-f5' -> reuse the full-game total/spread parsers
+            if sub.startswith("-total"):
+                tm = _POLY_TOTAL_RE.match(sub)
+                if tm is None:
+                    return ParsedPolyBet("f5_total", date_iso, away_code, home_code, away_name, home_name,
+                                         None, None, fail_reason=f"unparseable_f5_total_suffix:{suffix!r}", raw=raw)
+                line = _poly_line(tm.group("w"), tm.group("f")); o = (outcome or "").strip().lower()
+                leg = "yes" if o == "over" else "no" if o == "under" else None
+                fr = None if leg else f"f5_total_outcome_not_over_under:{outcome!r}"
+                return ParsedPolyBet("f5_total", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=fr, raw=raw, line=line, leg=leg)
+            sm = _POLY_SPREAD_RE.match(sub)
+            if sm is None:
+                return ParsedPolyBet("f5_spread", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"unparseable_f5_spread_suffix:{suffix!r}", raw=raw)
+            if away_name is None or home_name is None:
+                miss = [c for c, n in ((away_code, away_name), (home_code, home_name)) if n is None]
+                return ParsedPolyBet("f5_spread", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"unrecognized_team_code:{miss}", raw=raw)
+            line = _poly_line(sm.group("w"), sm.group("f")); anchor_side = sm.group("anchor")
+            out_side = resolve_side(outcome, away_name, home_name)
+            if out_side is None:
+                return ParsedPolyBet("f5_spread", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"f5_spread_outcome_unresolved:{outcome!r}",
+                                     raw=raw, line=line, anchor_side=anchor_side)
+            leg = "yes" if out_side == anchor_side else "no"
+            return ParsedPolyBet("f5_spread", date_iso, away_code, home_code, away_name, home_name,
+                                 out_side, (away_name if out_side == "away" else home_name),
+                                 raw=raw, line=line, leg=leg, anchor_side=anchor_side)
         # prop / unknown suffix -> labelled non-moneyline (NEVER silently moneyline).
         return ParsedPolyBet("prop", date_iso, away_code, home_code, away_name, home_name,
                              None, None, raw=raw)
@@ -450,7 +495,8 @@ def match_poly_to_kalshi(parsed: ParsedPolyBet, kalshi_index: dict,
 #   game -- so we resolve the game via the moneyline index (date+teams) and JOIN totals/spreads by stem.
 # ══════════════════════════════════════════════════════════════════════════════
 
-COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread", "first_inning_run")
+COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread", "first_inning_run", "f5_winner", "f5_total", "f5_spread")
+_F5_TYPES = ("f5_winner", "f5_total", "f5_spread")   # one enable token 'f5' gates all three (see match_bet)
 
 _KALSHI_TOTAL_RE  = re.compile(r"^KXMLBTOTAL-(?P<stem>[A-Z0-9]+)-(?P<n>\d+)$")
 _KALSHI_SPREAD_RE = re.compile(r"^KXMLBSPREAD-(?P<stem>[A-Z0-9]+)-(?P<team>[A-Z]+)(?P<n>\d+)$")
@@ -522,6 +568,12 @@ def build_kalshi_rfi_index(rfi_tickers) -> dict:
         if stem is not None:
             idx[stem] = t
     return idx
+
+
+# ── F5 (first-5-innings) index builders -- delegate to the SHARED sub-game core (KXMLBF5 winner / total / spread) ──
+def build_kalshi_f5_win_index(tickers) -> dict:    return SG.build_win_index(tickers, "KXMLBF5")
+def build_kalshi_f5_total_index(tickers) -> dict:  return SG.build_total_index(tickers, "KXMLBF5TOTAL")
+def build_kalshi_f5_spread_index(tickers) -> dict: return SG.build_spread_index(tickers, "KXMLBF5SPREAD")
 
 
 def _resolve_unique_game(parsed: ParsedPolyBet, moneyline_index: dict, kalshi_dates: frozenset):
@@ -604,9 +656,50 @@ def _match_rfi(parsed, moneyline_index, rfi_index, kalshi_dates) -> MatchResult:
                        market_type="first_inning_run", reason="rfi_game_stem_join")
 
 
+def _match_f5(parsed, moneyline_index, f5_win_index, f5_total_index, f5_spread_index, kalshi_dates) -> MatchResult:
+    """F5 (first-5-innings) sub-game: resolve the GAME via the moneyline index (date+teams, shared resolver), then
+    join the KXMLBF5* series by the SHARED stem. ★ ROUTE-ONLY: reads ONLY the F5 indices -- a full-game ticker is
+    UNREACHABLE (a full-game total is never in scope here). Winner is 3-way (away/home/TIE); a draw binds ONLY the
+    TIE ticker. Spread/total are EXACT-STRIKE. A fail-closed parse (leg None) never reaches a matched ticker."""
+    mt = parsed.market_type
+    if parsed.leg is None:
+        return MatchResult("fail", 0.0, reason=parsed.fail_reason or "f5_leg_missing", market_type=mt)
+    game, miss = _resolve_unique_game(parsed, moneyline_index, kalshi_dates)
+    if miss is not None:
+        return miss
+    if mt == "f5_winner":
+        if parsed.side == "draw":
+            side_key = SG.TIE_KEY
+        else:
+            side_key = next((code for code, name in ((game.team_a_code, game.team_a_name),
+                                                     (game.team_b_code, game.team_b_name)) if name == parsed.side_name), None)
+            if side_key is None:
+                return MatchResult("fail", 0.0, reason="f5_winner_side_not_in_game:%r" % parsed.side_name, market_type=mt)
+        ticker = SG.join_win(game.stem, side_key, f5_win_index)
+        if ticker is None:
+            return MatchResult("no_kalshi_contract", 0.0, reason="no_f5_winner_%s_%s" % (game.stem, side_key), market_type=mt)
+        return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, market_type=mt, reason="f5_winner_stem_join")
+    if mt == "f5_total":
+        ticker = SG.join_total(game.stem, parsed.line, f5_total_index)
+        if ticker is None:
+            return MatchResult("no_kalshi_strike", 0.0, reason="no_f5_total_strike_%s" % parsed.line, strike=parsed.line, market_type=mt)
+        return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line, market_type=mt, reason="f5_total_stem_join")
+    # f5_spread
+    anchor_name = parsed.away_name if parsed.anchor_side == "away" else parsed.home_name
+    anchor_code = next((code for code, name in ((game.team_a_code, game.team_a_name),
+                                               (game.team_b_code, game.team_b_name)) if name == anchor_name), None)
+    if anchor_code is None:
+        return MatchResult("fail", 0.0, reason="f5_spread_anchor_not_in_game:%r" % anchor_name, market_type=mt)
+    ticker = SG.join_spread(game.stem, anchor_code, parsed.line, f5_spread_index)
+    if ticker is None:
+        return MatchResult("no_kalshi_strike", 0.0, reason="no_f5_spread_strike_%s_%s" % (anchor_code, parsed.line), strike=parsed.line, market_type=mt)
+    return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line, market_type=mt, reason="f5_spread_stem_join")
+
+
 def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, spread_index: dict,
               kalshi_dates: frozenset,
-              allowed_market_types=COPYABLE_MARKET_TYPES, rfi_index=None) -> MatchResult:
+              allowed_market_types=COPYABLE_MARKET_TYPES, rfi_index=None,
+              f5_win_index=None, f5_total_index=None, f5_spread_index=None) -> MatchResult:
     """Unified 3-dimension match. `allowed_market_types` = the sub-division's `market_types` (R1) -- a copyable
     type NOT in it is a LABELLED SKIP (`skip_market_type_excluded`), never an error; a non-copyable type
     (prop / futures / non-mlb) is `skip_non_ml` / `skip_non_game`. Moneyline DELEGATES to the unchanged
@@ -616,9 +709,10 @@ def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, s
     if mt not in COPYABLE_MARKET_TYPES:
         return MatchResult("skip_non_ml" if mt == "prop" else "skip_non_game", 0.0,
                            reason=parsed.fail_reason or mt, market_type=mt)
-    if mt not in allowed_market_types:
+    enable_tok = "f5" if mt in _F5_TYPES else mt      # the 3 f5_* sub-types share ONE enable token 'f5'
+    if enable_tok not in allowed_market_types:
         return MatchResult("skip_market_type_excluded", 0.0,
-                           reason=f"{mt}_not_in_subdivision_market_types", market_type=mt)
+                           reason=f"{enable_tok}_not_in_subdivision_market_types", market_type=mt)
     if mt == "moneyline":
         # UNCHANGED legacy path (poly_kalshi consumes match_poly_to_kalshi directly -- kept BYTE-IDENTICAL).
         # A clean moneyline match BUYS YES on the bet team's KXMLBGAME ticker; stamp leg/market_type HERE so the
@@ -632,6 +726,8 @@ def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, s
         return _match_spread(parsed, moneyline_index, spread_index, kalshi_dates)
     if mt == "first_inning_run":
         return _match_rfi(parsed, moneyline_index, rfi_index or {}, kalshi_dates)
+    if mt in _F5_TYPES:
+        return _match_f5(parsed, moneyline_index, f5_win_index or {}, f5_total_index or {}, f5_spread_index or {}, kalshi_dates)
     return MatchResult("fail", 0.0, reason="unhandled_market_type:%s" % mt, market_type=mt)
 
 

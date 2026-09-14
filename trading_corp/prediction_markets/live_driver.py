@@ -203,12 +203,14 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     SAME `client.get_markets(series_ticker=...)` the proven poly loop uses (main.py:5208)."""
     from pykalshi import MarketStatus
     game_t, total_t, spread_t, rfi_t = [], [], [], []
+    f5w_t, f5t_t, f5s_t = [], [], []                      # F5 winner / total / spread ticker lists
     markets: dict = {}
     dates: set = set()
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
-    per_series = {"KXMLBGAME": game_t, "KXMLBTOTAL": total_t, "KXMLBSPREAD": spread_t, "KXMLBRFI": rfi_t}
-    _fetch_series = SERIES + ("KXMLBRFI",)   # RFI fetched alongside ml/total/spread so its index is READY; stays INERT
-                                             # (skip_market_type_excluded) until a sub enables 'first_inning_run'.
+    per_series = {"KXMLBGAME": game_t, "KXMLBTOTAL": total_t, "KXMLBSPREAD": spread_t, "KXMLBRFI": rfi_t,
+                  "KXMLBF5": f5w_t, "KXMLBF5TOTAL": f5t_t, "KXMLBF5SPREAD": f5s_t}
+    _fetch_series = SERIES + ("KXMLBRFI", "KXMLBF5", "KXMLBF5TOTAL", "KXMLBF5SPREAD")   # RFI + F5 fetched alongside so
+                                             # the indices are READY; both stay INERT until a sub enables the token.
     # ★ OPEN pagination is UNIVERSAL (2026-09-11): every ctx builder here now fetches OPEN with fetch_all=True (was
     # single-page for all but the structural builder). Measured 2026-09-11 (pm_ctx_allscan_ro): ONLY cfb total(2008)/
     # spread(2541) exceed the 1000 cap today; MLB game/total/spread are 90/258/151, all others <=379 -> for every series
@@ -230,9 +232,13 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     total_idx = M.build_kalshi_total_index(total_t)
     spread_idx = M.build_kalshi_spread_index(spread_t)
     rfi_idx = M.build_kalshi_rfi_index(rfi_t)   # {stem: KXMLBRFI ticker}; joined via game.stem only when enabled
+    f5w_idx = M.build_kalshi_f5_win_index(f5w_t)      # F5 sub-game indices (route-only: read only by _match_f5 when enabled)
+    f5t_idx = M.build_kalshi_f5_total_index(f5t_t)
+    f5s_idx = M.build_kalshi_f5_spread_index(f5s_t)
     for tk in game_t:               # the matcher's exact-strike gate is the real guard; carry the game tickers
         dates.add(tk)
-    return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets, rfi_index=rfi_idx)
+    return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets, rfi_index=rfi_idx,
+                                   f5_win_index=f5w_idx, f5_total_index=f5t_idx, f5_spread_index=f5s_idx)
 
 
 async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketContext:
@@ -318,12 +324,23 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
     game_t: list = []
     total_t: list = []
     spread_t: list = []
+    h1w_t: list = []
+    h1t_t: list = []
+    h1s_t: list = []
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     series_map = [(cfg.game_series, game_t)]
     if getattr(cfg, "total_series", None):
         series_map.append((cfg.total_series, total_t))
     if getattr(cfg, "spread_series", None):
         series_map.append((cfg.spread_series, spread_t))
+    # first-half sub-game series (fetched ALONGSIDE so the indices are READY; stay INERT until a sub enables the
+    # 'first_half' token). Only appended where cfg carries the series -> off-season/unbuilt cats fetch nothing (safe {}).
+    if getattr(cfg, "h1_win_series", None):
+        series_map.append((cfg.h1_win_series, h1w_t))
+    if getattr(cfg, "h1_total_series", None):
+        series_map.append((cfg.h1_total_series, h1t_t))
+    if getattr(cfg, "h1_spread_series", None):
+        series_map.append((cfg.h1_spread_series, h1s_t))
     for series, bucket in series_map:
         for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
             # ★ PAGINATE OPEN too (2026-09-11 fix): OPEN was fetch_all=False -> a single limit=1000 page, so a
@@ -344,8 +361,12 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
     game_idx = SS.build_game_index(game_t, cfg)
     total_idx = SS.build_total_index(total_t, cfg)      # {} when cfg has no total_series or the fetch was empty (safe)
     spread_idx = SS.build_spread_index(spread_t, cfg)
+    h1w_idx = SS.build_h1_win_index(h1w_t, cfg)         # first-half sub-game indices (route-only: read only by _match_first_half)
+    h1t_idx = SS.build_h1_total_index(h1t_t, cfg)
+    h1s_idx = SS.build_h1_spread_index(h1s_t, cfg)
     dates = frozenset(k[0] for k in game_idx)          # ISO dates FROM THE GAME INDEX (never occurrence_datetime)
-    return execution.MarketContext({}, total_idx, spread_idx, dates, markets, structural_index=game_idx)
+    return execution.MarketContext({}, total_idx, spread_idx, dates, markets, structural_index=game_idx,
+                                   h1_win_index=h1w_idx, h1_total_index=h1t_idx, h1_spread_index=h1s_idx)
 
 
 def _structural_ctx_builder(cfg):
@@ -709,6 +730,15 @@ def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=No
         wants_run = (yn == "yes") if aff else (yn == "no")       # negative framing inverts the outcome
         exp = "yes" if wants_run else "no"
         return "ok" if leg == exp else "REVIEW:rfi_leg!=intent:%s/%s/title=%r" % (leg, oc, (signal_title or "")[:30])
+    if tk.startswith("KXMLBF5-"):                                 # (2026-09-14) F5 (first-5-innings) WINNER: KXMLBF5-{stem}-
+        # {TEAM|TIE}, YES = that side wins the first 5. The whale's Poly outcome IS Yes/No ("will {side} win the first
+        # five?"), so the leg CAN invert -> re-derive expected leg from the outcome, SEPARATE from the matcher's Yes->yes/
+        # No->no transform (the SIDE/TIE bind is code-anchored via the slug parse + fill-watch read-back; this net checks
+        # the LEG polarity, closing the 'na' gap for F5 winner). startswith('KXMLBF5-') matches ONLY the winner series --
+        # the '-' after F5 disambiguates it from KXMLBF5TOTAL-/KXMLBF5SPREAD- (total falls to the TOTAL- branch; F5 spread
+        # stays 'na' like full-game spread).
+        low = oc.lower(); exp = "yes" if low == "yes" else "no" if low == "no" else None
+        return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:f5_winner_leg!=outcome:%s/%s" % (leg, oc))
     if "TOTAL-" in tk:                                            # structural total: Over->yes / Under->no
         low = oc.lower(); exp = "yes" if low == "over" else "no" if low == "under" else None
         return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:total_leg!=outcome:%s/%s" % (leg, oc))
