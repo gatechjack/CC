@@ -71,6 +71,9 @@ CATEGORY_ALLOWLIST: frozenset[str] = frozenset({
     # screen auto-derive from this allowlist (the 8-soccer-league precedent -- no separate UI code). Renders via
     # the non-MLB positions table like UFC. Poly slugs 'zuffa-'/'boxing-' both classify 'boxing' (category.py).
     "boxing",
+    # F1 (2026-09-14): KXF1RACE race-winner copy family (behind the race_winner token). Same auto-derived Farm
+    # tile + /live/{acct}/f1 page + prospects; renders via the non-MLB positions table. Classifies 'f1' (category.py).
+    "f1",
 })
 
 # ── ruled selection defaults (STAGE4 Q1/Q2). Overridable per run; recorded on pm_search_run.

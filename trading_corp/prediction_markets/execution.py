@@ -54,6 +54,7 @@ from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pai
 from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): soccer 3-way (win+draw->TIE), per-league
 from ..data import fed_poly_kalshi_match as FED   # rung 4 (2026-09-07): fed event+bucket matcher (FOMC rate decision)
 from ..data import boxing_poly_kalshi_match as BX   # boxing (2026-09-14): KXBOXING winner-only, surname-bind + code-anchor
+from ..data import f1_poly_kalshi_match as F1X   # F1 (2026-09-14): KXF1RACE per-driver race-winner, date-join
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 _LOG = logging.getLogger(__name__)
@@ -166,6 +167,10 @@ class MarketContext:
     # Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the boxing ctx builder sets it and leaves
     # the rest empty. Read only by the boxing adapter below.
     boxing_index: dict | None = None
+    # F1 (2026-09-14): the {date_iso: KalshiF1Race} KXF1RACE per-driver winner index (date-keyed, one race/day).
+    # Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the F1 ctx builder sets it and leaves the
+    # rest empty. Read only by the F1 adapter below.
+    f1_race_index: dict | None = None
     # RFI / first-inning-run (2026-09-14): the {stem: KXMLBRFI-ticker} index (one binary market per MLB game). Optional
     # + defaulted so all prior constructions stay BYTE-IDENTICAL; the MLB ctx builder sets it. Read only by the MLB
     # adapter, and only when a sub-division has 'first_inning_run' in its market_types (ships INERT until enabled).
@@ -506,6 +511,19 @@ def _boxing_match(parsed, ctx, allowed_market_types):
                         allowed_market_types=allowed_market_types)
 
 
+def _f1_parse(slug, outcome, title=None):
+    # F1 (2026-09-14): title IS read -- it supplies the driver FULL name ("Will {Driver} win the ... Grand Prix?")
+    # for the bind; the slug supplies the surname + date; the outcome (Yes/No) supplies the leg.
+    return F1X.parse_poly_f1_bet(slug, outcome, title)
+
+
+def _f1_match(parsed, ctx, allowed_market_types):
+    # F1 needs only the date-keyed KXF1RACE index + the ISO dates present. `f1_race_index or {}` fail-safes a
+    # non-F1 ctx to "no contract"; the registry routes f1 to the F1 ctx builder (category-keyed).
+    return F1X.match_bet(parsed, ctx.f1_race_index or {}, ctx.kalshi_dates,
+                         allowed_market_types=allowed_market_types)
+
+
 def _soccer_adapter(cfg):
     """(parse, match) for a soccer league `cfg` (epl/lal/fl1/sea/bun/mls/bra/mex/ucl/uel). 3-way: a team-win
     Yes/No -> "{team} wins" yes/no leg; a draw Yes/No -> the TIE market yes/no leg. Reads ctx.soccer_index
@@ -560,6 +578,10 @@ MATCHER_ADAPTERS["fed"] = (_fed_parse, _fed_match)
 # boxing (2026-09-14): KXBOXING winner-only. Ships INERT -- no boxing sub-division exists (the UFC-category
 # precedent); a blank/NULL market_types resolves to the legacy default and never auto-enables (sub_config_from_row).
 MATCHER_ADAPTERS["boxing"] = (_boxing_parse, _boxing_match)
+# F1 (2026-09-14): KXF1RACE per-driver race winner. Ships INERT behind the `race_winner` market_types token --
+# NOT in the legacy default, so even a blank/NULL market_types F1 sub never trades it until Jack adds the token
+# (the RFI/F5 token discipline). H2H is a separate board decision (KXF1H2H empty -> INCONCLUSIVE; not built).
+MATCHER_ADAPTERS["f1"] = (_f1_parse, _f1_match)
 
 
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,

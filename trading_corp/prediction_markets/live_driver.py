@@ -78,6 +78,8 @@ FED_SERIES = "KXFEDDECISION"   # rung 4 (2026-09-07): the single Kalshi FOMC rat
 BOXING_SERIES = ("KXBOXING",)   # boxing (2026-09-14): the single Kalshi boxing WINNER series (both YES tickers/bout).
 # Method (KXBOXINGMOV) / distance (KXBOXINGDISTANCE) exist on Kalshi but have NO Polymarket source to copy -> NOT
 # fetched (winner-only; probed 2026-09-14). exchange_index = 0 (shard 0), like UFC/MMA.
+F1_SERIES = ("KXF1RACE",)   # F1 (2026-09-14): per-driver race-WINNER series (~20 driver binaries/race). H2H
+# (KXF1H2H) is EMPTY on Kalshi + constructors (KXF1CONSTRUCTORS) are OUT -> only KXF1RACE fetched. exchange_index=0.
 # Kalshi SETTLED-market lookback for the ctx builders' `min_close_ts` filter. Bounds ONLY the
 # status=SETTLED fetch; the status=OPEN fetch is DATE-UNBOUNDED (extra={}) and is unaffected -- so
 # shrinking this can NEVER make a still-open game unreachable. 2 DAYS (was an uncommented 160 days;
@@ -492,6 +494,35 @@ async def fetch_boxing_market_context(client, now_ts: int) -> execution.MarketCo
     return execution.MarketContext({}, {}, {}, dates, markets, boxing_index=boxing_idx)
 
 
+async def fetch_f1_market_context(client, now_ts: int) -> execution.MarketContext:
+    """F1 (2026-09-14): fetch OPEN + recent-SETTLED KXF1RACE per-driver winner markets and build the date-keyed
+    race index. MIRRORS fetch_boxing_market_context -- SAME get_markets, _market_quote_dict, raw exchange_index
+    merge (F1 exchange_index = 0 = shard 0; probed 2026-09-14). The driver FULL name is on `yes_sub_title`
+    (getattr). ★ THE JOIN DATE is the race date = the market's `close_time` UTC date (getattr off the object --
+    close_time is a core field, not SDK-dropped like exchange_index; expected_expiration_time is a fallback). The
+    Kalshi event_ticker has no month/day, so close_time is where the race date comes from; F1 runs one race/day so
+    the date is a unique key. kalshi_dates is the index's dates. RACE-WINNER only (no sprint/pole/H2H/constructors)."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    f1_markets: list = []          # [{ticker, yes_sub_title, close_date_iso}] -> build_kalshi_f1_index
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+        ms = await client.get_markets(series_ticker="KXF1RACE", status=status, limit=1000,
+                                      fetch_all=True, **extra)   # paginate OPEN too -- see fetch_structural_market_context
+        for m in (ms or []):
+            tk = getattr(m, "ticker", "") or ""
+            if not tk:
+                continue
+            markets[tk.upper()] = _market_quote_dict(m)
+            ct = getattr(m, "close_time", None) or getattr(m, "expected_expiration_time", None) or ""
+            f1_markets.append({"ticker": tk, "yes_sub_title": getattr(m, "yes_sub_title", None),
+                               "close_date_iso": (str(ct)[:10] or None)})
+    await _merge_raw_market_fields(client, markets, series_list=F1_SERIES)   # exchange_index (SDK-dropped) from raw
+    f1_idx = F1X.build_kalshi_f1_index(f1_markets)
+    dates = frozenset(f1_idx.keys())                    # race dates (from close_time), one race/day -> unique keys
+    return execution.MarketContext({}, {}, {}, dates, markets, f1_race_index=f1_idx)
+
+
 # ── signal source: attached whales' /positions -> entry CopySignals (chokepoint dedups already-placed) ───
 def _stable_entry_key(condition_id: str, outcome_index) -> str:
     """A restart-STABLE entry key for a /positions row, which carries NO fill tx_hash/ts. The whale's holding of a
@@ -771,6 +802,13 @@ def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=No
         # stays 'na' like full-game spread).
         low = oc.lower(); exp = "yes" if low == "yes" else "no" if low == "no" else None
         return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:f5_winner_leg!=outcome:%s/%s" % (leg, oc))
+    if tk.startswith("KXF1RACE-"):                                # (2026-09-14) F1 race winner: KXF1RACE-{event}-{DRIVER},
+        # Kalshi YES = that driver finishes first. The whale's Poly outcome IS Yes/No ("Will {driver} win the GP?"), so
+        # the leg CAN invert -> re-derive expected leg from the outcome, SEPARATE from the matcher's Yes->yes/No->no
+        # transform (the DRIVER bind is code-anchored at match time via the ticker's own code + fill-watch read-back;
+        # this net checks the LEG polarity). A disagreeing leg = the inversion class.
+        low = oc.lower(); exp = "yes" if low == "yes" else "no" if low == "no" else None
+        return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:f1_winner_leg!=outcome:%s/%s" % (leg, oc))
     if "TOTAL-" in tk:                                            # structural total: Over->yes / Under->no
         low = oc.lower(); exp = "yes" if low == "over" else "no" if low == "under" else None
         return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:total_leg!=outcome:%s/%s" % (leg, oc))
@@ -992,6 +1030,9 @@ CATEGORY_CTX_BUILDERS["fed"] = fetch_fed_market_context
 # boxing (2026-09-14): single KXBOXING winner builder. INERT until a boxing sub-division is created + armed (the
 # UFC-category precedent); no builder change enables trading on its own.
 CATEGORY_CTX_BUILDERS["boxing"] = fetch_boxing_market_context
+# F1 (2026-09-14): single KXF1RACE per-driver winner builder (date-keyed). INERT: no F1 sub exists AND race_winner
+# is not in the legacy default market_types -> a builder change enables nothing on its own.
+CATEGORY_CTX_BUILDERS["f1"] = fetch_f1_market_context
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────

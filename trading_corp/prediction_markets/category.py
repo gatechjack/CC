@@ -46,6 +46,10 @@ SLUG_PREFIX_MAP: dict[str, str] = {
     # mapped -- a two-fighter matcher cannot copy them. WINNER-ONLY on Poly (no method/distance/draw to copy).
     "boxing": "boxing",
     "zuffa": "boxing",
+    # F1 (2026-09-14): the race-winner sub-market slug is `f1-{gp}-grand-prix-winner-{driver}-{YYYY-MM-DD}` (and F1
+    # props share the `f1-` prefix). Maps to 'f1' so the category is searchable/scored (see also the 'f1' gamma tag
+    # below, which catches the non-`f1-`-prefixed F1 props like `will-it-rain-...`). Only the race WINNER is copied.
+    "f1": "f1",
     # Fed rate markets appear under several event-slug shapes; all -> 'fed'.
     "fed-decision": "fed",
     "fed-interest-rates": "fed",
@@ -100,6 +104,11 @@ TAG_SLUG_TO_CATEGORY: dict[str, str] = {
     "tennis": "tennis",
     "cs2": "cs2",
     "csgo": "cs2",
+    # F1 (2026-09-14): the Polymarket gamma tag is 'f1' (alias 'formula1'; 'formula-1' is NOT used). Catches the
+    # F1 props whose slug does not start with 'f1-' (e.g. 'will-it-rain-during-the-...-grand-prix'); the race-winner
+    # slug is tier-1 'f1-' prefixed. Only the race winner is copied -- props surface for Farm context, not trading.
+    "f1": "f1",
+    "formula1": "f1",
 }
 
 
