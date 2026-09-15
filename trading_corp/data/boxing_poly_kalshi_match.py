@@ -118,10 +118,22 @@ def parse_poly_boxing_bet(slug: str, outcome: str, title: str = None) -> ParsedP
 # ── Fighter name matching (surname-tolerant) ─────────────────────────────────
 
 def _surname_tokens(name: str) -> list:
-    """Accent-folded tokens with any trailing generational suffix (jr/sr/ii/iii/iv/v) dropped, so a
-    surname compares against the real family name, not a suffix ('Sean Garcia Jr' -> ['sean','garcia'])."""
+    """Accent-folded tokens reduced so the LAST token is the real surname, tolerant of the TWO live Kalshi
+    yes_sub_title shapes on the same card (probed 2026-09-14):
+      - "First Last"  ("Sean Garcia")      -> ['sean','garcia'] (surname = last)
+      - "Surname Initial."  ("Cortes A.", "Ramirez J. C.", "Magsayo M.")  -> the surname LEADS and a trailing
+        single-letter initial follows; 7 of 300 KXBOXING markets use this. Strip the trailing initial(s) so the
+        surname (leading token) becomes the last remaining token -> a whale's "Cortes" then binds to "Cortes A.".
+    Also strips trailing generational suffixes ('Sean Garcia Jr' -> ['sean','garcia']). Only TRAILING single-letter
+    tokens are dropped (a leading initial like "J Smith" keeps 'smith' as the surname); a genuine surname is never
+    a single letter, so this cannot strip a real surname. The board-flagged risk (a looser parse mis-binding a
+    competitor) does NOT apply: this only RE-LOCATES which existing token is the surname; a different surname still
+    fails the last-token equality gate, and a same-surname bout is still caught by the collision guards (proven in
+    tests: the 4 Surname-Initial near-misses now bind, the Garcia collision STILL safe-misses, 0 wrong picks)."""
     toks = _norm(name).split()
-    while len(toks) > 1 and toks[-1] in _NAME_SUFFIXES:
+    while len(toks) > 1 and toks[-1] in _NAME_SUFFIXES:      # drop trailing generational suffixes (jr/sr/ii..)
+        toks = toks[:-1]
+    while len(toks) > 1 and len(toks[-1]) == 1:              # drop trailing single-letter INITIALS ("Cortes A." -> "Cortes")
         toks = toks[:-1]
     return toks
 

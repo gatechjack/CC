@@ -197,3 +197,74 @@ def test_inert_default_allowed_types_include_moneyline():
     p = BX.parse_poly_boxing_bet("zuffa-garci1-moral1-2026-09-12", "Garcia")
     r = BX.match_bet(p, idx, _dates(idx), allowed_market_types=("moneyline", "total", "spread"))
     assert r.status == "matched"
+
+
+# ── ★ "Surname Initial." Kalshi format fix (2026-09-14) + proof it did NOT weaken the bind ──
+# Live shape probed on the 09-12 main card: KXBOXING-26SEP12MA-M / -MA-A (2-char blob, 1-char code),
+# yes_sub_title "Magsayo M." / "Cortes A." -- surname LEADS, a trailing initial follows. 7 of 300 markets.
+_INITFMT = [
+    {"ticker": "KXBOXING-26SEP12MA-M", "title": "Magsayo M. wins", "yes_sub_title": "Magsayo M."},
+    {"ticker": "KXBOXING-26SEP12MA-A", "title": "Cortes A. wins", "yes_sub_title": "Cortes A."},
+]
+
+
+def test_surname_initial_format_binds():
+    # the near-miss the audit found: whale "Cortes" now binds to the "Cortes A." (initial-format) ticker.
+    idx = _idx(_INITFMT)
+    p = BX.parse_poly_boxing_bet("zuffa-magsa-corte-2026-09-12", "Cortes")
+    r = BX.match_bet(p, idx, _dates(idx))
+    assert r.status == "matched" and r.kalshi_ticker == "KXBOXING-26SEP12MA-A" and r.leg == "yes"
+    # and the other side binds to Magsayo (independent: the ticker code is M -> the Magsayo market)
+    p2 = BX.parse_poly_boxing_bet("zuffa-magsa-corte-2026-09-12", "Magsayo")
+    assert BX.match_bet(p2, idx, _dates(idx)).kalshi_ticker == "KXBOXING-26SEP12MA-M"
+
+
+def test_surname_initial_fix_does_not_break_first_last():
+    # regression: the fix must NOT change the normal "First Last" bind ("Sean Garcia" surname stays 'garcia').
+    idx = _idx()   # the standard First-Last fixture
+    p = BX.parse_poly_boxing_bet("zuffa-garci1-moral1-2026-09-12", "Garcia")
+    assert BX.match_bet(p, idx, _dates(idx)).kalshi_ticker == "KXBOXING-26SEP12GARCIAMORALE-GARCIA"
+
+
+def test_surname_initial_fix_did_NOT_weaken_collision_guard():
+    # ★ board requirement: prove the looser parse still SAFE-MISSES a same-card same-surname collision.
+    # Two 'Cortes' fighters on the card (one First-Last, one Initial-format) -> "Cortes" matches both -> safe miss.
+    mk = _INITFMT + [
+        {"ticker": "KXBOXING-26SEP12CORTESRUBIO-CORTES", "title": "Danny Cortes wins", "yes_sub_title": "Danny Cortes"},
+        {"ticker": "KXBOXING-26SEP12CORTESRUBIO-RUBIO", "title": "Pablo Rubio wins", "yes_sub_title": "Pablo Rubio"},
+    ]
+    idx = _idx(mk)
+    p = BX.parse_poly_boxing_bet("zuffa-x-corte-2026-09-12", "Cortes")
+    r = BX.match_bet(p, idx, _dates(idx))
+    assert r.status == "abbrev_collision_ambiguous" and r.kalshi_ticker is None
+
+
+# ── ★ Q5: END-TO-END through the DEPLOYED evaluate() (not the scratch matcher) ──
+def test_deployed_evaluate_e2e_boxing():
+    """One boxing signal through the REAL execution.evaluate() gate stack (arm/sizing/quote/liquidity/dedup/caps
+    + MATCHER_ADAPTERS dispatch + the ctx.boxing_index slot), asserting a dry_run_would_place with the
+    independently-expected ticker/leg. Closes the wiring blind spot the scratch-matcher dry-runs left."""
+    import os, tempfile, sqlite3
+    from trading_corp.prediction_markets import execution as E
+    from trading_corp.prediction_markets import db as DB
+    idx = _idx()
+    ticker = "KXBOXING-26SEP12GARCIAMORALE-GARCIA"        # independent expectation: outcome "Garcia" -> the GARCIA-code ticker, YES
+    ctx = E.MarketContext({}, {}, {}, _dates(idx), {ticker: {
+        "yes_ask_dollars": 0.50, "no_ask_dollars": 0.50, "yes_bid_dollars": 0.49, "no_bid_dollars": 0.49,
+        "liquidity_dollars": 0.0, "yes_ask_size_fp": 1000.0, "yes_bid_size_fp": 1000.0, "exchange_index": 0}},
+        boxing_index=idx)
+    sub = E.SubConfig(account_id="kalshi_test", category="boxing", market_types=("moneyline",),
+                      sizing_mode="contracts", fixed_stake_usd=0.0, per_order_usd_cap=100.0, daily_usd_cap=100.0,
+                      max_open_usd=100.0, max_orders_per_day=10, max_slippage_cents=5, liquidity_ratio=0.75, contracts=1)
+    sig = E.CopySignal(wallet="0xabc", slug="zuffa-garci1-moral1-2026-09-12", outcome="Garcia",
+                       condition_id="0xcond", outcome_index=0,
+                       signal_id="sigbox1", is_exit=False, title="Zuffa Boxing: Garcia vs. Morales")
+    d = tempfile.mkdtemp(); path = os.path.join(d, "pm.db"); DB.init_db(path)
+    conn = sqlite3.connect(path); conn.row_factory = sqlite3.Row
+    jrnl = E.Journal(conn, ["kalshi_test"], 1_800_000_000)
+    dec = E.evaluate(sig, sub, ctx, jrnl, conn, 1_800_000_000, shard_balances=None, venue_exposure=None,
+                     legacy_db_path=os.path.join(d, "nonexistent_legacy.db"))   # arm fail-safe False; dry-run still computes
+    conn.close()
+    assert dec.status == "dry_run_would_place", dec.status
+    assert dec.kalshi_ticker == ticker and dec.leg == "yes"
+    assert (dec.body or {}).get("ticker") == ticker
