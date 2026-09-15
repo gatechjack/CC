@@ -122,3 +122,22 @@ trading dependency).
   auto-derive from the allowlist on pm_web's next restart; a follow-on, not a trading dependency).
 - The draw hedge (Kalshi KXBOXINGMOV -DRAW synthetic) is explicitly OUT -- board ruled ACCEPT; reopens on evidence
   only if boxing is enabled and trades volume.
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## ★ UPDATE 2026-09-15 (post-build-review: board took the Surname-Initial fix)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+Boxing branch tip **2bcb62bf -> 2f63508d** (one commit: the Surname-Initial fix + the deployed evaluate() e2e
+test). The fix strips a trailing single-letter initial in `_surname_tokens` so a whale's "Cortes" binds to the
+Kalshi "Cortes A." (Surname-Initial) form (7/300 markets, the 09-12 main card). ONLY the boxing matcher file
+changed; the 4 shared files are byte-unchanged.
+- **Graft SHA delta:** boxing matcher target `40e31b77f119cb38 -> d7881be546b631ec` (updated in
+  `cc/pm_boxing_graft.sh` + `cc/pm_boxing_bootverify_ro.sh`). The 4 shared targets + all bases UNCHANGED.
+- **Re-proven on real data (`cc/pm_boxing_missaudit_ro.ps1` + `pm_boxing_boxtest.ps1`):** matched **21 -> 23**
+  (the Magsayo/Cortes/Opetaia near-misses now bind), winner_outcome_unresolved 7 -> 5 (the remaining 5 =
+  Hitchins-Salas / Hackett-Derevyanchenko, bouts NOT on KXBOXING = legitimate no-contract), **the Garcia
+  same-card collision STILL safe-misses (2 -> 2, guard intact), ZERO wrong (type/game/competitor/leg).** Two of
+  the 23 are `unverifiable_nameform` (the initial-format ticker code is a first-initial, not a surname prefix, so
+  the code-SUBSEQUENCE heuristic can't confirm them -- but the code-ANCHOR `labels_code_swapped` DID confirm the
+  bout assignment, so they are sound, not wrong). Unit tests 21 -> 25 (Surname-Initial binds, collision-still-
+  safe, First-Last-unchanged, + `test_deployed_evaluate_e2e_boxing`). Differential 0 new failures (374 passed).
+- **FF-push target: `git push origin pm-boxing-build-2026-09-14:prod-live`** (now @ 2f63508d).

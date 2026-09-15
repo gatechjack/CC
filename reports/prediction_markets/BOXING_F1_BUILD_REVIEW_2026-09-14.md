@@ -145,3 +145,19 @@ NameError lived inside a function), AND to the dry-run (scratch matcher, not the
   fails-closed to a miss, never a wrong pick. Your call: accept as a documented limitation, or a ~5-line
   pre-enable fix. It is not a correctness/safety defect.
 - The original gates proved the matcher; this review adds the wiring proof. Both remain INERT until you arm.
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## ★ ADDENDUM 2026-09-15 -- board ruling applied (fix taken, e2e tests added, Q5 recorded)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+- **Q2 fix TAKEN + proven:** the Surname-Initial bind fix landed (boxing 2f63508d). Real-corpus re-run: boxing
+  matched 21 -> 23 (the near-misses bind), the **Garcia same-card collision STILL safe-misses (unchanged), ZERO
+  wrong-competitor** -- the loosened parse did NOT weaken the guard (proven, not asserted).
+- **Q5 residual gap CLOSED:** added `test_deployed_evaluate_e2e_boxing` + `test_deployed_evaluate_e2e_f1` -- one
+  signal each through the REAL `execution.evaluate()` gate stack + `MATCHER_ADAPTERS` dispatch + the ctx slot ->
+  `dry_run_would_place` with the independently-expected ticker/leg. Combined with the dispatch-parity check
+  (0 mismatch on all 672 bets) and `test_ctx_builder_imports.py`, the deployed path is now exercised end-to-end,
+  not just the scratch matcher.
+- **The Q5 blind spot is now a STANDING FINDING** (memory `scratch-matcher-gate-blind-spot`): every category gate
+  BEFORE this one (ufc/tennis/soccer/cs2/fed/structural/RFI/F5/1H) proved the MATCHER via a scratch dry-run, NOT
+  the deployed wiring -- so an old manifest's "zero wrong" did not cover the adapter dispatch / ctx builder / the
+  matcher imports. The dispatch-parity + e2e-evaluate pattern is the go-forward close for every future category.

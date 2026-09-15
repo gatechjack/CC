@@ -108,3 +108,20 @@ scoping), so the copyable volume is real once the Kalshi side lists.
   nothing) -- boot-verify reports the f1 index/subs, and BEFORE enabling F1 confirm the live index is non-empty
   for an upcoming GP. The offline dry-run already proved the index logic against the raw API's close_time.
 - **NO migration** (schema 23). **H2H OUT** (decision #3 above). Constructors' championship OUT.
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+## ★ UPDATE 2026-09-15 (post-build-review: rebased onto the fixed boxing + per-category e2e test)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+F1 branch **REBASED onto the fixed boxing tip 2f63508d** (so F1 carries the Surname-Initial-fixed boxing
+matcher) + one commit adding a DEFENSIVE Surname-Initial parity to f1's `_surname_tokens` (a NO-OP on current F1
+data -- F1 yes_sub_titles are uniformly First-Last -- future-proofing only) and `test_deployed_evaluate_e2e_f1`.
+F1 tip now **bf46ee77** (docs commit on top for this update).
+- **Graft SHA deltas (updated in `cc/pm_f1_graft.sh` + `cc/pm_f1_bootverify_ro.ps1|sh`):** the PRECONDITION
+  boxing-matcher (must be present) `40e31b77f119cb38 -> d7881be546b631ec`; the F1 matcher target
+  `79c7ae0e56a4e859 -> 0ba763f880b48417`. The 4 shared base+target SHAs UNCHANGED (exec d12058b3.., live_driver
+  667a7b2b.., category f9d8a18e.., search 9c199967..; base = boxing-version 03a5c100../c5a83f2e../b8eae9e1../
+  afa2a9f5..). The F1 graft still asserts boxing deployed first (now against the fixed boxing matcher SHA).
+- **Re-proven on real data (`cc/pm_f1_boxtest.ps1`):** F1 UNCHANGED by the defensive fix -- **116 matched, ZERO
+  wrong**, 0 unverifiable; F1 tests 20 -> 21 (+ e2e); differential 0 new failures (397 passed). The Q3 date-join
+  window result is unchanged (9 Spanish-GP -1-offset matches; races >=7 days apart).
+- **FF-push target (AFTER boxing): `git push origin pm-f1-build-2026-09-14:prod-live`**.
