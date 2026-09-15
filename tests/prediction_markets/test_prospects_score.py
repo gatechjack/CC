@@ -16,6 +16,11 @@ _PROMOTE = {"tier": "PROMOTE", "sort_roi": 0.42, "honest_roi": 0.40, "grounded":
 _MIRAGE = {"tier": "INSUFFICIENT_DATA", "sort_roi": 0.885, "honest_roi": 0.472, "grounded": 1, "omission_pct": 0.80,
            "coverage_pct": 0.363, "omission_floor": 0, "dominance_net": 0.04, "two_sided_pct": 0.09,
            "chalk": 0, "copy_fills": 222, "computed_ts": 900}
+# item 1 (2026-09-15): an ANALYZED-but-UNGROUNDED score (grounding failed / no in-window activity) -> omission is
+# UNKNOWN, never 0. The compact badge must SAY so (not a silent 0 that reads as 'no omission').
+_UNGROUNDED = {"tier": "WATCH", "sort_roi": 0.30, "honest_roi": None, "grounded": 0, "omission_pct": None,
+               "coverage_pct": None, "omission_floor": 0, "dominance_net": 0.10, "two_sided_pct": 0.05,
+               "chalk": 0, "copy_fills": 5, "computed_ts": 900}
 
 
 # ── _score_cell builder ──
@@ -54,7 +59,27 @@ def _render(macro, call):
     env = Environment(loader=FileSystemLoader(tdir))
     tmpl = "{% from 'pm_macros.html' import " + macro + " %}" + call
     return env.from_string(tmpl).render(
-        sc_p=app._score_cell(_PROMOTE, 1000), sc_m=app._score_cell(_MIRAGE, 1000), sc_u=app._score_cell(None, 1000))
+        sc_p=app._score_cell(_PROMOTE, 1000), sc_m=app._score_cell(_MIRAGE, 1000), sc_u=app._score_cell(None, 1000),
+        sc_ug=app._score_cell(_UNGROUNDED, 1000))
+
+
+def _render_prospects_partial(rows):
+    """Render the pm_prospects_rows.html partial with a minimal context (bare Jinja, no TestClient -> off the
+    pre-existing UI-render failure surface). Jinja attribute access works on dicts, so rows are plain dicts."""
+    from jinja2 import Environment, FileSystemLoader
+    tdir = os.path.join(os.path.dirname(app.__file__), "templates")
+    env = Environment(loader=FileSystemLoader(tdir))
+    return env.get_template("partials/pm_prospects_rows.html").render(
+        prospects=rows, loss_omission_caveat="SCREEN-ONLY caveat", thin_sample_floor=50,
+        non_single_game_categories={"fed"}, refresh_notice=None)
+
+
+def _prospect_row(score, loss_omission):
+    return {"user_name": "Whale", "wallet": "0xabc", "category": "mlb", "score": score, "loss_omission": loss_omission,
+            "n_resolved": 40, "win_rate": 0.6, "roi": 0.2, "net_realized_pnl": 100.0, "n_condition_ids": 3,
+            "last_refresh": {"ts": 0, "band": "red", "note": "never", "age_days": None, "iso": None},
+            "thin_sample": False, "two_sided_pct": 0.10, "single_game_pct": 0.90, "avg_win_price": 0.60,
+            "chalk": False, "contested": True, "flags": []}
 
 
 def test_macro_mirage_renders_flagged_not_healthy():
@@ -95,3 +120,47 @@ def test_score_badge_oob_id_for_watchlist_live_update():
     assert 'id="pm-score-' not in html                                  # distinct from score_cell -> no collision
     # back-compat: no wallet -> no id wrapper (callers that don't need OOB)
     assert 'id="pm-scoreb' not in _render("score_badge", "{{ score_badge(sc_m) }}")
+
+
+# ── ITEM 1 (2026-09-15): the compact badge (Watchlist + /live roster) now surfaces loss-omission ──
+def test_score_badge_surfaces_omission_grounded_figure():
+    # grounded + 80% omission -> the FIGURE rides on the compact badge, not just the flagged asterisk.
+    html = _render("score_badge", "{{ score_badge(sc_m) }}")
+    assert "pm-omit-bad" in html and "80%" in html and "loss" in html          # -80% loss shown on Watchlist/roster
+    assert "36% coverage" in html                                              # the coverage bound travels with it
+
+
+def test_score_badge_ungrounded_reads_unknown_never_zero():
+    # ★ the load-bearing item-1 rule: ANALYZED-but-UNGROUNDED must read UNKNOWN, NEVER 0 (a 0 = 'nobody looked').
+    html = _render("score_badge", "{{ score_badge(sc_ug) }}")
+    assert "pm-omit-unknown" in html and "UNKNOWN" in html                     # explicit UNKNOWN
+    assert "pm-omit-bad" not in html and "pm-omit-ok" not in html              # NO figure, NO '0%' when ungrounded
+    assert "WATCH" in html                                                     # still shows the tier
+
+
+def test_score_badge_grounded_clean_reads_verified_zero():
+    html = _render("score_badge", "{{ score_badge(sc_p) }}")                   # grounded, 0 omission
+    assert "pm-omit-ok" in html                                                # 'omit 0%' verified (grounded clean)
+
+
+def test_score_badge_unanalyzed_has_no_omit_chip():
+    html = _render("score_badge", "{{ score_badge(sc_u) }}")                   # never analyzed
+    assert "pm-omit" not in html and "not" in html and "analyzed" in html      # reads 'not analyzed' (implicit unknown)
+
+
+# ── ITEM 6 (2026-09-15): the persistent Analyze button on the Prospects row ──
+def test_prospects_unanalyzed_row_has_action_analyze_button():
+    html = _render_prospects_partial([_prospect_row(app._score_cell(None, 1000), app._loss_omission_cell(None, 1000))])
+    # the ACTION cell button (pm-analyze-btn, like Watchlist) AND the score_cell un-analyzed control -> 2 hx-posts
+    assert "pm-analyze-btn" in html
+    assert html.count("/farm/analyze/0xabc/mlb") >= 2
+    # item 1 on Prospects: the omission cell rides beside win% and reads UNKNOWN (never 0) when un-analyzed
+    assert "omission" in html.lower() and "unknown" in html.lower()
+
+
+def test_prospects_analyzed_row_still_has_persistent_analyze_button():
+    # ★ THE item-6 GAP: once analyzed, score_cell shows the TIER (no [Analyze] there) -- but the ACTION-cell button
+    # must PERSIST so an already-graded whale can be re-analyzed (identical to Watchlist). Was missing on Prospects.
+    html = _render_prospects_partial([_prospect_row(app._score_cell(_PROMOTE, 1000), app._loss_omission_cell(None, 1000))])
+    assert "pm-analyze-btn" in html and "/farm/analyze/0xabc/mlb" in html      # the persistent button survives
+    assert "PROMOTE" in html                                                   # the JUDGE column stays (tier shown)

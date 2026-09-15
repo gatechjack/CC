@@ -36,6 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..db import connect, pm_db_path
 from .. import stats, positions, names, farm, farm_actions, analyze, subdivision, search, loss_grounding, arm, shard_snapshot, heartbeat, scoring
+from .. import tradable_categories   # item 3 (2026-09-15): dependency-free matcher-backed set; hides matcherless SUB-DIVISION tiles (orphans). No broker/pykalshi import (pm_web is credential-free).
 from .. import sizing   # per-sub-division flat-contracts sizing from the UI (2026-09-12): reader + owner/admin-gated write + audit
 from . import authz   # M4: fail-closed identity/admin resolution + account-visibility scoping (reads headers+env only)
 from . import live_view, poller, ui_cache   # UI rewrite: game-card assembly + the 60s feed/marks poller + its cache
@@ -682,6 +683,10 @@ def _load_account(account_id: str, identity: str | None = None, is_admin_flag: b
         agg["open_value"] = _account_open_value(conn, agg, marks)         # contracts x bid (cached marks)
         meta_by_cat = {s["category"]: s for s in subdivision.list_subdivisions(conn)
                        if s["account_id"] == account_id}                  # sub_label / market_types / whale+order counts
+        # item 3 (2026-09-15): hide MATCHERLESS sub-divisions from the account breakdown too (same rule as /live) --
+        # an orphan category can never trade, so it is not a real sub-division tile. Account totals are unaffected (an
+        # orphan has 0 orders / 0 P&L). A real tradable category with 0 whales still shows.
+        agg["subdivisions"] = [b for b in agg["subdivisions"] if tradable_categories.is_tradable_category(b["category"])]
         for b in agg["subdivisions"]:
             b["open_value"] = live_view.value_positions(
                 subdivision.live_positions(conn, b["account_id"], b["category"]), marks)
@@ -1239,7 +1244,11 @@ def _load_live_list(active_account: str | None = None, identity: str | None = No
         visible = authz.visible_account_ids(identity, is_admin_flag, accts.values())
         accounts_meta = [{"account_id": aid, "account_label": a.get("account_label") or aid, "venue": a.get("venue")}
                          for aid, a in accts.items() if aid in visible]
-        subs = [s for s in subdivision.tiles_all(conn) if s["account_id"] in visible]  # SCOPE the tile set first (R6)
+        # SCOPE the tile set first (R6), THEN hide MATCHERLESS sub-divisions (item 3, 2026-09-15): a category with no
+        # matcher (bare 'soccer'/'tennis', 'golf', etc.) can NEVER trade -> its tile is a mis-attach orphan, hidden. A
+        # real category with 0 whales still shows (it is in TRADABLE_CATEGORIES) so Jack notices an un-attached sub.
+        subs = [s for s in subdivision.tiles_all(conn)
+                if s["account_id"] in visible and tradable_categories.is_tradable_category(s["category"])]
         arm_all = arm.read_display_all([(s["account_id"], s["category"]) for s in subs])
         liveness_present = heartbeat.table_present(conn)
         liveness_by_sub = {(r.account_id, r.category): r

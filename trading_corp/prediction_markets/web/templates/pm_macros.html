@@ -139,10 +139,21 @@
 {% set _id = ('pm-scoreb-' ~ wallet) if wallet else '' %}
 <span{% if _id %} id="{{ _id }}"{% endif %} class="pm-scoreb-wrap"{% if oob %} hx-swap-oob="true"{% endif %}>
   {%- if not sc or not sc.analyzed -%}
-    <span class="pm-tier pm-tier-none" title="Not analyzed yet -- no stored score (use Analyze).">not&nbsp;analyzed</span>
+    <span class="pm-tier pm-tier-none" title="Not analyzed yet -- no stored score (use Analyze); loss-omission UNKNOWN until grounded, never 0.">not&nbsp;analyzed</span>
   {%- else -%}
     <span class="pm-tier pm-tier-{{ sc.tier|lower|replace('_','-') }}"
        title="{{ sc.reason }}{% if not sc.grounded %} (ungrounded -- omission UNKNOWN){% endif %}">{{ 'INSUF DATA' if sc.tier == 'INSUFFICIENT_DATA' else sc.tier }}</span>{% if sc.sort_roi is not none %} <span class="pm-score-num{% if sc.flagged %} pm-score-flagged{% endif %}">{{ '%+.0f'|format(sc.sort_roi * 100) }}%{% if sc.flagged %}<sup>*</sup>{% endif %}</span>{% endif %}
+    {# ★ ITEM 1 (2026-09-15): surface the loss-omission figure on the COMPACT badge too (Watchlist + /live roster,
+       not just Prospects). UNGROUNDED reads UNKNOWN, NEVER 0 (a 0 that means 'nobody looked' is the exact
+       mirage-hiding display Jack flagged). Data rides on the score dict already (_score_cell): sc.grounded /
+       sc.omission_pct / sc.coverage_pct / sc.floor. Reuses the pm-omit-* classes from omission_cell. #}
+    {%- if not sc.grounded -%}
+      <span class="pm-omit pm-omit-unknown" title="Loss-omission NOT grounded for this whale -- omission UNKNOWN (never 0). /closed-positions drops held-to-worthless losses wallet-dependently, so the tier/ROI win-rate may be badly over-stated. Run Analyze to ground it.">omit&nbsp;UNKNOWN</span>
+    {%- elif sc.omission_pct is not none and sc.omission_pct > 0 -%}
+      <span class="pm-omit pm-omit-bad" title="Re-grounded from /activity: {{ '%.0f'|format(sc.omission_pct * 100) }}% of this whale's losses were dropped by /closed-positions{% if sc.coverage_pct is not none %}, at {{ '%.0f'|format(sc.coverage_pct * 100) }}% coverage{% endif %}{% if sc.floor %} (a FLOOR -- window/coverage incomplete){% endif %}. Win-rate is OVER-STATED.">&minus;{{ '%.0f'|format(sc.omission_pct * 100) }}%&nbsp;loss{% if sc.floor %} <span class="pm-omit-floor">(floor)</span>{% endif %}</span>
+    {%- else -%}
+      <span class="pm-omit pm-omit-ok" title="Re-grounded from /activity: no held-to-worthless losses missing{% if sc.coverage_pct is not none %} at {{ '%.0f'|format(sc.coverage_pct * 100) }}% coverage{% endif %}; win-rate is not F-1-inflated.">omit&nbsp;0%</span>
+    {%- endif -%}
   {%- endif -%}
 </span>
 {%- endmacro %}

@@ -41,7 +41,7 @@
       <th class="pm-num" title="single-game rows / all rows. HEURISTIC; n/a for non-sports (fed) -- never 0%.">single-game%</th>
       <th class="pm-num" title="Average winning price. CHALK &ge; 0.85 (favorites); CONTESTED &lt; 0.70.">avg&nbsp;win&nbsp;px</th>
       <th title="Data-quality + status flags -- same tokens as the CLI report.">flags</th>
-      <th title="Promote to Watchlist (begin paper-trading) or Refresh (re-pull this whale's history on demand).">action</th>
+      <th title="Analyze (run the promotion judge), Promote to Watchlist (begin paper-trading), or Refresh (re-pull this whale's history on demand).">action</th>
     </tr>
   </thead>
   <tbody>
@@ -78,6 +78,15 @@
       <td class="pm-num">{% if r.avg_win_price is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=won">{{ '%.2f'|format(r.avg_win_price) }}</a>{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}&mdash;{% endif %}</td>
       <td class="pm-flags">{{ flag_badges(r.flags) }}</td>
       <td class="pm-actioncell">
+        {# ANALYZE (item 6, 2026-09-15): the persistent judge control -- IDENTICAL route/target to the Watchlist
+           button. score_cell shows [Analyze] only while a row is UN-analyzed; this makes Analyze available on
+           EVERY prospect row (re-analyze an already-graded whale too), and the JUDGE column stays as-is. The
+           result's OOB fragment (#pm-score-{w}-{c}, emitted by score_cell) swaps the JUDGE cell in place.
+           Uppercase category in the tooltip (F-3 casing), lowercase slug in the hx-post URL. #}
+        <button class="pm-btn pm-btn-sm pm-analyze-btn"
+           title="Analyze {{ r.category|upper }}: LLM narration over this whale's RESOLVED positions (the deterministic promotion-judge report always renders)."
+           hx-post="/farm/analyze/{{ r.wallet }}/{{ r.category }}" hx-target="#pm-analyze-panel" hx-swap="innerHTML"
+           hx-disabled-elt="this">Analyze</button>
         {# PROMOTE-TO-WATCHLIST (R6): candidate -> pinned. POST form (never GET -- a crawler must not promote);
            idempotent server-side; PRG 303 back to this page so the whale appears under Watchlist. Does NOT
            auto-paper-trade -- the poller seeds paper on pinned rows on its own cadence. #}
