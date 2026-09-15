@@ -5,7 +5,7 @@ WHY A HAND-MAINTAINED CONSTANT instead of importing the registries: the matcher 
 (``live_driver.CATEGORY_CTX_BUILDERS``) pulls pykalshi -- NEITHER can be imported into pm_web, a
 deliberately credential-free process that holds no broker. So the sub-division tile filter needs a
 plain literal set here (no imports), and a DRIFT-GUARD TEST -- ``tests/prediction_markets/
-test_tradable_categories_drift.py``, run in the FULL env / box-scratch where the registries import --
+test_tradable_categories.py`` (the ``test_drift_guard_*`` case), run in the FULL env / box-scratch where the registries import --
 asserts this set stays EXACTLY equal to ``set(MATCHER_ADAPTERS) == set(CATEGORY_CTX_BUILDERS)``.
 Adding a category => add its matcher + builder AND one line here, or the drift-guard fails loudly.
 
@@ -31,5 +31,6 @@ TRADABLE_CATEGORIES: frozenset[str] = frozenset({
 def is_tradable_category(category: str | None) -> bool:
     """True iff ``category`` has a live matcher + builder (can trade). Matcherless categories
     (bare 'soccer', bare 'tennis', 'golf', cbb/fifwc/nascar/unknown) return False -> their
-    SUB-DIVISION tile is hidden (they can never trade). Case-insensitive; None -> False."""
-    return (category or "").lower() in TRADABLE_CATEGORIES
+    SUB-DIVISION tile is hidden (they can never trade). Case-insensitive; None -> False. Normalized
+    .strip().lower() to match the DB category (category.derive_category_from_slug) and the farm-side gate."""
+    return (category or "").strip().lower() in TRADABLE_CATEGORIES

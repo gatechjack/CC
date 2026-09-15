@@ -164,3 +164,17 @@ def test_prospects_analyzed_row_still_has_persistent_analyze_button():
     html = _render_prospects_partial([_prospect_row(app._score_cell(_PROMOTE, 1000), app._loss_omission_cell(None, 1000))])
     assert "pm-analyze-btn" in html and "/farm/analyze/0xabc/mlb" in html      # the persistent button survives
     assert "PROMOTE" in html                                                   # the JUDGE column stays (tier shown)
+
+
+# ── ITEM 3 money-aware tile visibility (_tile_visible; adversarial-review fix 2026-09-15) ──
+def test_tile_visible_hides_inert_matcherless_but_never_money():
+    # matcherless + NO footprint -> HIDDEN (the kalshi_jack/soccer+tennis mis-attach orphans)
+    assert app._tile_visible("soccer", False) is False
+    assert app._tile_visible("tennis", False) is False
+    assert app._tile_visible("golf", False) is False
+    # ★ matcherless + a FOOTPRINT (whales / orders / open position) -> VISIBLE: never hide money at risk, and the
+    # account aggregate keeps reconciling (a hidden sub is footprint-free -> contributes 0 to the total).
+    assert app._tile_visible("soccer", True) is True
+    # tradable is ALWAYS visible, footprint or not (a real un-attached sub still shows so Jack notices it)
+    assert app._tile_visible("mlb", False) is True
+    assert app._tile_visible("epl", False) is True
