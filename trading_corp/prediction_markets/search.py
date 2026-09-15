@@ -67,6 +67,10 @@ CATEGORY_ALLOWLIST: frozenset[str] = frozenset({
     "epl", "ucl", "lal", "fl1", "uel", "mls", "sea", "bun", "bra", "mex",
     "atp", "wta", "tennis",
     "cs2", "golf", "ufc", "fed",
+    # boxing (2026-09-14): KXBOXING winner-only copy family. Farm tiles + /live/{acct}/boxing page + prospect
+    # screen auto-derive from this allowlist (the 8-soccer-league precedent -- no separate UI code). Renders via
+    # the non-MLB positions table like UFC. Poly slugs 'zuffa-'/'boxing-' both classify 'boxing' (category.py).
+    "boxing",
 })
 
 # ── ruled selection defaults (STAGE4 Q1/Q2). Overridable per run; recorded on pm_search_run.

@@ -59,6 +59,7 @@ from ..data import sports_structural_match as SS   # rung 1 (2026-09-06): struct
 from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pair-keyed match index builder for fetch_cs2_market_context
 from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): soccer 3-way game-index builder for fetch_soccer_market_context
 from ..data import fed_poly_kalshi_match as FED   # rung 4 (2026-09-07): fed bucket-index builder for fetch_fed_market_context
+from ..data import boxing_poly_kalshi_match as BX   # boxing (2026-09-14): KXBOXING winner bout-index builder for fetch_boxing_market_context
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
@@ -74,6 +75,9 @@ UFC_SERIES = ("KXUFCFIGHT", "KXUFCDISTANCE", "KXUFCMOF", "KXUFCMOV")  # winner +
 TENNIS_SERIES = {"atp": "KXATPMATCH", "wta": "KXWTAMATCH"}
 CS2_SERIES = "KXCS2GAME"   # rung 2 (2026-09-06): the single Kalshi cs2 match/series-winner series (both YES tickers/match)
 FED_SERIES = "KXFEDDECISION"   # rung 4 (2026-09-07): the single Kalshi FOMC rate-decision series (5 buckets/meeting)
+BOXING_SERIES = ("KXBOXING",)   # boxing (2026-09-14): the single Kalshi boxing WINNER series (both YES tickers/bout).
+# Method (KXBOXINGMOV) / distance (KXBOXINGDISTANCE) exist on Kalshi but have NO Polymarket source to copy -> NOT
+# fetched (winner-only; probed 2026-09-14). exchange_index = 0 (shard 0), like UFC/MMA.
 # Kalshi SETTLED-market lookback for the ctx builders' `min_close_ts` filter. Bounds ONLY the
 # status=SETTLED fetch; the status=OPEN fetch is DATE-UNBOUNDED (extra={}) and is unaffected -- so
 # shrinking this can NEVER make a still-open game unreachable. 2 DAYS (was an uncommented 160 days;
@@ -460,6 +464,34 @@ async def fetch_cs2_market_context(client, now_ts: int) -> execution.MarketConte
     return execution.MarketContext({}, {}, {}, dates, markets, cs2_index=cs2_idx)
 
 
+async def fetch_boxing_market_context(client, now_ts: int) -> execution.MarketContext:
+    """boxing (2026-09-14): fetch OPEN + recent-SETTLED KXBOXING winner markets and build the (date, fighter-pair)
+    bout index. MIRRORS fetch_ufc_market_context -- SAME `client.get_markets`, SAME `_market_quote_dict` quote fields,
+    SAME raw `exchange_index` merge (boxing exchange_index = 0 = shard 0, like UFC; probed 2026-09-14). The fighter
+    FULL name is on `yes_sub_title` (getattr, no raw merge -- like soccer/fed/cs2); build_kalshi_boxing_index prefers
+    it, else parses the title "{Name} wins". WINNER-ONLY -- Polymarket boxing carries no distance/method/draw market
+    to copy (0 of 100 events multi-market), so no distance/method series is fetched. The join date is the card-LOCAL
+    date in the ticker (never occurrence_datetime); kalshi_dates is derived from the bout index."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    boxing_markets: list = []      # [{ticker, title, yes_sub_title}] -> build_kalshi_boxing_index
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+        ms = await client.get_markets(series_ticker="KXBOXING", status=status, limit=1000,
+                                      fetch_all=True, **extra)   # paginate OPEN too -- see fetch_structural_market_context
+        for m in (ms or []):
+            tk = getattr(m, "ticker", "") or ""
+            if not tk:
+                continue
+            markets[tk.upper()] = _market_quote_dict(m)
+            boxing_markets.append({"ticker": tk, "title": getattr(m, "title", None),
+                                   "yes_sub_title": getattr(m, "yes_sub_title", None)})
+    await _merge_raw_market_fields(client, markets, series_list=BOXING_SERIES)   # exchange_index (SDK-dropped) from raw
+    boxing_idx = BX.build_kalshi_boxing_index(boxing_markets)
+    dates = frozenset(k[0] for k in boxing_idx)         # ISO dates FROM THE TICKER (card-local), never occurrence
+    return execution.MarketContext({}, {}, {}, dates, markets, boxing_index=boxing_idx)
+
+
 # ── signal source: attached whales' /positions -> entry CopySignals (chokepoint dedups already-placed) ───
 def _stable_entry_key(condition_id: str, outcome_index) -> str:
     """A restart-STABLE entry key for a /positions row, which carries NO fill tx_hash/ts. The whale's holding of a
@@ -678,7 +710,7 @@ def category_volume_order(conn, account_id: str, cats: list, *, now_ts: int, win
 # matcher guards already fail-closed at match time; this is defence-in-depth + the record that makes a
 # post-hoc "did we copy the whale's actual side?" audit possible (the 188-unverifiable bucket).
 _AUDIT_SOCCER_CATS = frozenset({"epl", "lal", "fl1", "sea", "bun", "mls", "bra", "mex", "ucl", "uel"})
-_AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc"})
+_AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc", "boxing"})   # boxing (2026-09-14): KXBOXING winner, surname/code subsequence audit (moneyline-only; code-anchored bind is the real guard)
 
 
 def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=None, signal_title=None):
@@ -957,6 +989,9 @@ for _soccat in SOC.LEAGUES:
     CATEGORY_CTX_BUILDERS[_soccat] = _soccer_ctx_builder(SOC.LEAGUES[_soccat])
 # rung 4 (2026-09-07): fed -- single KXFEDDECISION builder (event+bucket).
 CATEGORY_CTX_BUILDERS["fed"] = fetch_fed_market_context
+# boxing (2026-09-14): single KXBOXING winner builder. INERT until a boxing sub-division is created + armed (the
+# UFC-category precedent); no builder change enables trading on its own.
+CATEGORY_CTX_BUILDERS["boxing"] = fetch_boxing_market_context
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────

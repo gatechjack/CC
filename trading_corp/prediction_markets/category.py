@@ -39,6 +39,13 @@ SLUG_PREFIX_MAP: dict[str, str] = {
     "sea": "sea", "bun": "bun", "bra": "bra", "mex": "mex",
     "wnba": "wnba",
     "nascar": "nascar",
+    # boxing (2026-09-14): Polymarket lists two-fighter boxing under TWO prefixes -- 'zuffa-' (Zuffa Boxing
+    # promo, 63/100 events) and 'boxing-' (29/100) -- both shape {prefix}-{code1}-{code2}-{YYYY-MM-DD}. BOTH map
+    # to 'boxing' so the category can be searched/scored (an 'unknown' classification is invisible, the cfb gap).
+    # Novelty single-fighter/other-sport prefixes (mvp/brand/glory[kickboxing]/will-...) are intentionally NOT
+    # mapped -- a two-fighter matcher cannot copy them. WINNER-ONLY on Poly (no method/distance/draw to copy).
+    "boxing": "boxing",
+    "zuffa": "boxing",
     # Fed rate markets appear under several event-slug shapes; all -> 'fed'.
     "fed-decision": "fed",
     "fed-interest-rates": "fed",
