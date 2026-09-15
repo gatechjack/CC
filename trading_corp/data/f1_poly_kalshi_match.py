@@ -110,8 +110,15 @@ _KALSHI_F1_RE = re.compile(r"^KXF1RACE-(?P<event>[A-Z0-9]+)-(?P<driver>[A-Z0-9]+
 
 
 def _surname_tokens(name: str) -> list:
+    # strip trailing generational suffixes (jr/sr/ii..) AND trailing single-letter INITIALS, so the surname is
+    # the last remaining token for BOTH "First Last" (Max Verstappen -> 'verstappen') and a "Surname Initial."
+    # form (e.g. "Verstappen M." -> 'verstappen') should Kalshi ever list F1 drivers that way (it does NOT today
+    # -- F1 yes_sub_titles are uniformly First-Last -- so this is a no-op on current F1 data + a defensive parity
+    # with the boxing matcher, where the format IS live). A real surname is never one letter -> nothing real stripped.
     toks = _norm(name).split()
     while len(toks) > 1 and toks[-1] in _NAME_SUFFIXES:
+        toks = toks[:-1]
+    while len(toks) > 1 and len(toks[-1]) == 1:
         toks = toks[:-1]
     return toks
 

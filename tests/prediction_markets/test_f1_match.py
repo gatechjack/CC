@@ -173,3 +173,34 @@ def test_enabled_when_token_present():
     p = F1X.parse_poly_f1_bet("f1-italian-grand-prix-winner-gasly-2026-09-06", "Yes", "Will Pierre Gasly win the ... Grand Prix?")
     r = F1X.match_bet(p, idx, _dates(idx), allowed_market_types=("race_winner",))
     assert r.status == "matched"
+
+
+# ── ★ Q5: END-TO-END through the DEPLOYED evaluate() (not the scratch matcher) ──
+def test_deployed_evaluate_e2e_f1():
+    """One F1 signal through the REAL execution.evaluate() gate stack + MATCHER_ADAPTERS['f1'] dispatch + the
+    ctx.f1_race_index slot, asserting a dry_run_would_place with the independently-expected ticker/leg. The
+    race_winner token is enabled here (it is NOT in the legacy default -> INERT until Jack sets it)."""
+    import os, tempfile, sqlite3
+    from trading_corp.prediction_markets import execution as E
+    from trading_corp.prediction_markets import db as DB
+    idx = _idx()
+    ticker = "KXF1RACE-ITAGP26-GAS"                       # independent: outcome "Yes" on driver Gasly -> the GAS-code ticker, YES leg
+    ctx = E.MarketContext({}, {}, {}, _dates(idx), {ticker: {
+        "yes_ask_dollars": 0.20, "no_ask_dollars": 0.82, "yes_bid_dollars": 0.18, "no_bid_dollars": 0.80,
+        "liquidity_dollars": 0.0, "yes_ask_size_fp": 1000.0, "yes_bid_size_fp": 1000.0, "exchange_index": 0}},
+        f1_race_index=idx)
+    sub = E.SubConfig(account_id="kalshi_test", category="f1", market_types=("race_winner",),
+                      sizing_mode="contracts", fixed_stake_usd=0.0, per_order_usd_cap=100.0, daily_usd_cap=100.0,
+                      max_open_usd=100.0, max_orders_per_day=10, max_slippage_cents=5, liquidity_ratio=0.75, contracts=1)
+    sig = E.CopySignal(wallet="0xabc", slug="f1-italian-grand-prix-winner-gasly-2026-09-06", outcome="Yes",
+                       condition_id="0xcond", outcome_index=0, signal_id="sigf1a", is_exit=False,
+                       title="Will Pierre Gasly win the 2026 F1 Italian Grand Prix?")
+    d = tempfile.mkdtemp(); path = os.path.join(d, "pm.db"); DB.init_db(path)
+    conn = sqlite3.connect(path); conn.row_factory = sqlite3.Row
+    jrnl = E.Journal(conn, ["kalshi_test"], 1_800_000_000)
+    dec = E.evaluate(sig, sub, ctx, jrnl, conn, 1_800_000_000, shard_balances=None, venue_exposure=None,
+                     legacy_db_path=os.path.join(d, "nonexistent_legacy.db"))
+    conn.close()
+    assert dec.status == "dry_run_would_place", dec.status
+    assert dec.kalshi_ticker == ticker and dec.leg == "yes"
+    assert (dec.body or {}).get("ticker") == ticker
