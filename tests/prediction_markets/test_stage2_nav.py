@@ -187,3 +187,26 @@ def test_watchlist_and_prospects_read_separate_bases(tmp_path, monkeypatch):
     assert wl.group(1) == "paper" and wl.group(2) == "2"       # paper basis, 2 pinned pairs
     assert pr.group(1) == "completed" and pr.group(2) == "1"   # completed basis, 1 candidate pair
     assert wl.group(2) != pr.group(2)                          # distinct -> not one shared data path
+
+
+def test_thin_sample_candidate_shows_in_prospects(tmp_path, monkeypatch):
+    """REGRESSION (2026-09-15): a THIN candidate -- n_resolved BELOW query_scoreboard's default n>=10 ranker floor,
+    written via search.select_candidates' <10-qualifier top-10 fallback -- MUST still render in Prospects, flagged
+    THIN (Jack: 'a category ALWAYS shows its top 10, flagged thin; thin n is EXPECTED'). Before the
+    PROSPECTS_MIN_RESOLVED override the default floor SILENTLY DROPPED every sub-10 candidate: the boxing/f1
+    empty-Prospects bug (candidates written to pm_watchlist but invisible on the page). n=3 would rank as nothing
+    under the old default; here it must appear with count=1 and a THIN badge."""
+    client, p = _client(monkeypatch, tmp_path)
+    with db.connect(p) as conn:
+        _pin(conn, "0xthin", "boxing", status="candidate")          # a candidate, thin sample
+        conn.execute("INSERT INTO pm_category_stats (wallet, category, n_resolved, roi, win_rate, updated_ts) "
+                     "VALUES (?,?,?,?,?,?)", ("0xthin", "boxing", 3, 0.42, 0.60, NOW))   # n=3 < 10 default floor
+        conn.execute("INSERT INTO pm_whale (wallet, backfill_complete) VALUES ('0xthin', 1)")   # completeness gate
+    r = client.get("/farm/boxing")
+    assert r.status_code == 200
+    body = r.text
+    pr = re.search(r'id="pm-region-prospects"\s+data-basis="([^"]+)"\s+data-count="(\d+)"', body)
+    assert pr, "prospects region must render"
+    assert pr.group(2) == "1", "the thin (n=3) candidate must appear in Prospects, not be dropped by the n>=10 floor"
+    assert "0xthin" in body                                          # the candidate row rendered
+    assert "THIN" in body                                            # flagged thin, per the requirement

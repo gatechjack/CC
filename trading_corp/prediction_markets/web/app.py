@@ -496,6 +496,17 @@ def _load_farm_league() -> dict:
     return {"categories": farm.league_categories(), "search_status": search_status}
 
 
+# ★ PROSPECTS FLOOR (2026-09-15): the Prospects section must show the SELECTOR's thin-sample candidates. A
+# candidate below the N>=50 selector floor was written via search.select_candidates' <10-qualifier top-10
+# fallback -- it is THIN BY CONSTRUCTION, not disqualified (Jack: "a category ALWAYS shows its top 10, flagged
+# thin; thin n is EXPECTED"). query_scoreboard's DEFAULT min_resolved (=10, tuned for the general ranker) would
+# SILENTLY DROP every such candidate before the thin_sample tagging + THIN badge below ever run -- the display
+# gate that hid boxing/f1 (and ~565 thin candidates across 24 cats). This section OVERRIDES the floor to 1 so
+# every active candidate renders; the THIN badge + the SCREEN-ONLY win%-caveat carry the under-evidence. The
+# override is SCOPED to this call site -- every other query_scoreboard caller (report CLI, etc.) keeps the default.
+PROSPECTS_MIN_RESOLVED = 1
+
+
 def _load_farm_category(category: str, now_ts: int) -> dict | None:
     """Per-category read. Returns None when `category` is NOT a league category (not in the allowlist: deactivated
     / unknown / nonexistent) so the route can 404 -- a deactivated category must not be reachable by URL. Existence
@@ -515,8 +526,9 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
         watchlist = farm.farm_rows(conn, status=farm.PINNED, category=category)        # PAPER basis (pinned) -- [] when empty
         cand_wallets = {r["wallet"] for r in
                         farm.farm_rows(conn, status=farm.CANDIDATE, category=category)}   # candidate SET (active-gated)
-        board = stats.query_scoreboard(conn, category=category)                         # completed-basis ranker (F-4)
-        prospects = [r for r in board if r["wallet"] in cand_wallets]                   # ranked, candidates only
+        board = stats.query_scoreboard(conn, category=category,                         # completed-basis ranker (F-4)
+                                       min_resolved=PROSPECTS_MIN_RESOLVED)             # thin-inclusive (2026-09-15 floor override)
+        prospects = [r for r in board if r["wallet"] in cand_wallets]                   # ranked, candidates only (incl. thin)
         # R4 DEFAULT ORDER = cost-ROI DESCENDING (Jack ruled): the first view is what gets looked at most. The
         # ranker's own ORDER BY leads with score; here the SCREEN's default axis is cost-ROI (roi-None sorts last).
         # The client-side column sort re-orders on demand; this only sets the LOAD order.
