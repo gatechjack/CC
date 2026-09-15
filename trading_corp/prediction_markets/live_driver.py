@@ -60,6 +60,7 @@ from ..data import cs2_poly_kalshi_match as CS2   # rung 2 (2026-09-06): cs2 pai
 from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): soccer 3-way game-index builder for fetch_soccer_market_context
 from ..data import fed_poly_kalshi_match as FED   # rung 4 (2026-09-07): fed bucket-index builder for fetch_fed_market_context
 from ..data import boxing_poly_kalshi_match as BX   # boxing (2026-09-14): KXBOXING winner bout-index builder for fetch_boxing_market_context
+from ..data import f1_poly_kalshi_match as F1X   # F1 (2026-09-14): KXF1RACE per-driver race-winner index builder for fetch_f1_market_context
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
