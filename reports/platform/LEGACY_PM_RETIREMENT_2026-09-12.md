@@ -47,7 +47,7 @@
 | 5-6 (=Jack's "Phase 6") | Code removal — **Option 1 (deploy main.py graft ONLY; defer ALL file deletions + web surgery)** per Jack's ruling. Deploy = 3 things: main.py loop graft + poly_kalshi `auto_execute:false` + 4 timer units removed. NO file deletions / web routes / test removal — the ~30-file DELETE set is a TRANSITIVE CLOSURE (2 survivor-coupled keepers found: `_weather_math`←path_logger, `kalshi_crypto_v2_observer`←PID 679) deferred to the untangle pass. | **DEPLOYED LIVE 2026-09-14 — prod-live `8f35f254` (FF); box main.py `c15b4de6`/3923 + config `1657119b`; engine 370246->397094; GATE PASS (WIRED 00:25:34 + placement order 820 00:28:53Z); 4 legacy timer units removed; siblings 381803/656/679 unchanged; 44 armed. See §18.7.** Revival SHA `fcbcd4a7`. | **YES ×1 (Jack) — DONE** | PM PLACING confirmed post-restart (split-signal gate PASS) | forward-revert FF; box backups `.bak_legpm_20260913T232311Z` |
 | 6 | Shared-file surgical edits (`brokers/kalshi.py` discovery, `web/data.py`/`web/routes.py` PM sections, resolvers) | NOT STARTED | YES (fold into Ph5 window) | as Ph5 | git-revert |
 | 7 | Archive/branch/tag disposition of removed code + final DB shrink verification | NOT STARTED | no | no | n/a |
-| **8 (UNTANGLE)** | **Transitive-closure file deletion** (the §18.3 deferred work, finally computed) | **CLOSURE COMPUTED + TRANCHE-1 DEPLOYED LIVE 2026-09-16 (session 8).** AST import graph (query proven first); 785 .py analyzed. **Tranche 1 = 49 files pure-deleted, prod-live `3dd15c10 -> ed6d9b83` (FF) + box 28 files removed same session (NO restart), box==prod-live verified.** Observer STOPPED+disabled. 0 additions / 17,918 deletions, py_compile 736/0, import-clean 0, §16.7 byte-identical, survivor PIDs unchanged. ★ 1 root-owned file needed az-root rm (finding, resolved). Tranches 2/3 (13 shared-blocked keepers + 4 test-coupled + ~20 leaves + units/config + woven web dashboard) DEFERRED — need shared-file grafts. Full record **§20 / §20.9**. | **NO (pure deletion, no restart)** | no | forward-revert FF + box backup |
+| **8 (UNTANGLE)** | **Transitive-closure file deletion** (the §18.3 deferred work, finally computed) | **CLOSURE COMPUTED + TRANCHE-1 DEPLOYED LIVE 2026-09-16 (session 8).** AST import graph (query proven first); 785 .py analyzed. **Tranche 1 = 49 files pure-deleted, prod-live `3dd15c10 -> ed6d9b83` (FF) + box 28 files removed same session (NO restart), box==prod-live verified.** Observer STOPPED+disabled. 0 additions / 17,918 deletions, py_compile 736/0, import-clean 0, §16.7 byte-identical, survivor PIDs unchanged. ★ 1 root-owned file needed az-root rm (finding, resolved). Tranches 2/3 (13 shared-blocked keepers + 4 test-coupled + ~20 leaves + units/config + woven web dashboard) DEFERRED — need shared-file grafts. Full record **§20 / §20.9**. **★ TRANCHE 2a BUILT LOCAL 2026-09-16 (§21): web/routes.py legacy-route graft (frees 6 modules) + kcv2 observer + 18 files deleted; branch `legacy-pm-tranche2-2026-09-16` @ `ae1fef05`, off `ed6d9b83`, NOT pushed; py_compile 718/0, import-clean 0, §16.7 7-of-8 shared files byte-identical, survivor route-set identical. ★ DEPLOY NEEDS AN ENGINE RESTART (web is engine-served). 2b (web/data.py + main.py factory + kalshi.py) deferred.** | **NO for 2a-code (pure); YES for 2a-deploy = engine restart** | no | forward-revert FF + box backup |
 
 > The plan (§9) is a RECOMMENDATION; Jack rules scope + sequence. Phases are sized to one agent-session each and each ends in an indefinitely-safe state.
 
@@ -726,4 +726,75 @@ Worked `WINDOW_RUNBOOK_2026-09-16.md` in order; Jack ran all reserved actions, a
 - **OBSERVER STOP (Runner 3, az-root; Runner 3v RO re-verify):** `trading-corp-kcv2-observer.service` **inactive + disabled** (enablement symlink removed), **MainPID 0**; `kcv2_quotes` **STATIC 13,053,562** across two reads 35s apart (nothing else writing). PID 679 retired.
 - **DO-NO-HARM (before+after, PASSED):** arm **31 rows / 0 latched / 0 trigger** identical; schema head **24** unchanged; **engine `436052` / pm_web `436431` / sfp-card-watcher `656` PIDs + NRestarts UNCHANGED** (nothing restarted); driver actively cycling (task heartbeats 9-22s, 33 category heartbeats fresh `state=evaluated` 0 errors); 44 active subs (jack 23/karen 21). Placement is event-driven and quiet in this window: last `dry_run=0` order **16:31Z (~26 min BEFORE the window opened)**, 0 in last 1h, 1 in 3h, 38 in 24h -> the quiet period PRE-DATES the window; the engine was never restarted, so placement capability is untouched. This is NOT the 2026-09-04 dead-driver shape (there the driver was not cycling; here it is).
 - ★ **PHASE 7 NOW INHERITS:** the kcv2 observer is **STOPPED + DISABLED**, so its delta is **STATIC at 13,053,562 quotes** (+1,019,442 over the Phase-5 HWM 12,034,120; supersedes the 12,131,756 measured 2026-09-14). Ph7 step 1 (stop observer) is DONE. The delta-archive is now a fixed target. **The ONLY remaining gate before the DROP is Gate A** (an off-device verified archive copy still does not exist) + Gate B ruled (DROP-only, no VACUUM). Restart the observer only if Ph7 is abandoned: `systemctl start` + `enable` (az-root).
-- **Tranche 2 (deferred) unchanged:** 13 shared-blocked keepers + woven web/data.py dashboard + ~20 tranche-2 leaves + legacy config/systemd units still require the Jack-gated graft pass (§20.3-20.6).
+- **Tranche 2 (deferred) unchanged:** 13 shared-blocked keepers + woven web/data.py dashboard + ~20 tranche-2 leaves + legacy config/systemd units still require the Jack-gated graft pass (§20.3-20.6). **-> now partly addressed by §21 (tranche 2a built).**
+
+---
+
+## 21. PHASE 8 TRANCHE 2 — SHARED-FILE GRAFT PASS (session 9, 2026-09-16). ANALYSIS + LOCAL BUILD; DEPLOY NOTHING. ★ First pass that EDITS a shared file the engine depends on.
+
+Off origin/prod-live **`ed6d9b83`** (re-verified tip; schema head **24**). Worktree `legacy-pm-tranche2-2026-09-16`. AST graph re-run on the post-tranche-1 tree (736 .py, 0 parse errors; query proven via `path_logger->_weather_math`).
+
+### 21.1 RE-DERIVED SCOPE (not inherited) + two status changes since §20.4
+Reverse-import map on ed6d9b83 confirms the only RUNTIME importers keeping legacy alive are the shared files `web/routes.py`, `web/data.py`, `main.py`, `brokers/kalshi.py` (+ permanent `kalshi_whale_stats`/`path_logger`); everything else is tests, leaf scripts, or inert `deploy/*/staged/*` snapshots.
+- ★ **`kalshi_crypto_v2_observer.py` now has ZERO importers** (observer stopped+disabled §20.9) -> a free-leaf deletion (no restart, no graft).
+- ★ **`kalshi_apify_client` <- `kalshi_whale_stats.py:40` STILL HOLDS** -> the Jack "do-not-edit kalshi_whale_stats" ruling stands; `kalshi_apify_client` is a PERMANENT keeper regardless of other grafts. `_weather_math <- path_logger/logger.py:31` also permanent.
+
+### 21.2 ★ END-STATE OPTIONS for the woven web dashboard (charter question) — costs + recommendation
+The legacy dashboard is NOT cleanly separable: `_hydrate_pm_overview` (web/data.py:1053) is called from the SHARED home hydration (L812, try/except-guarded), and `build_prediction_market_view` + `_pm_*` live in the 6,717-LOC shared file with a **module-level** `kalshi_crypto_vol_v2` import at L19 (used at L3968 annotation + L6311 call). ★ **The whole `trading_corp/web` dashboard is served BY THE ENGINE** (`main.py:2848 create_app`), so ANY web edit needs an ENGINE restart and a web/data.py import error fails engine boot.
+| Option | Edit surface | Frees | Leaves behind |
+|---|---|---|---|
+| **A. Full** | `web/routes.py` (routes) + `web/data.py` (remove `_hydrate_pm_overview`+L812 call, `build_prediction_market_view`, `_pm_*`, L19 import + L3968/L6311 uses) | 6 route-coupled modules + `kalshi_crypto_vol_v2` | nothing (cleanest); largest edit to the 2 biggest shared files |
+| **B. Partial (RECOMMENDED)** | `web/routes.py` (routes) only; optionally later the L19 import to free kalshi_crypto_vol_v2 | 6 route-coupled modules | `build_prediction_market_view`/`_pm_*`/`_hydrate_pm_overview` as INERT dead code reading now-static legacy tables; `kalshi_crypto_vol_v2` (1 module) |
+| **C. Leave it** | none | nothing (only the free-leaf observer) | all 7 web-coupled modules + kalshi_crypto_vol_v2; dashboard degrades on its own |
+**Recommendation: B, staged.** Build the `web/routes.py` route excision now (frees 6 modules, HTTP-testable, does not touch the boot-critical `web/data.py` body); DEFER the `web/data.py` dashboard-body removal (frees only `kalshi_crypto_vol_v2` = 1 module) to tranche 2b, because it edits a 6,717-LOC engine-boot-critical shared file for low marginal value. Full removal (A) is the eventual clean end state but not worth bundling the boot-critical body edit into the first shared-file pass.
+
+### 21.3 TRANCHE 2a — BUILT + PROVEN LOCAL (branch `legacy-pm-tranche2-2026-09-16` @ **`ae1fef05`**, off `ed6d9b83`; **local, NOT pushed**)
+**GRAFT (1 shared file, pure removal):** `web/routes.py` -- excised the 9 legacy whale-management `@app` routes + the 1 legacy-only helper `_discovery_control_html`, **689 lines removed (5846 -> 5157), 0 additions.** Removed exactly: POST `/api/kalshi/watchlist/promote|discover`, GET `.../discover/status`, POST `/api/kalshi/whales/demote`, POST `/api/polymarket/watchlist/promote|analyze`, POST `/api/polymarket/whales/demote|promote-live|demote-live`. Shared helpers `_render_action_pill`/`_now_iso`/`_db_mod` (used by survivor PEAD/RH routes) PRESERVED. The `/prediction-markets` view routes (402/503) + analysis partials (611/702/790) KEPT (they call `data.py`, which is untouched).
+**DELETIONS (18 files):** 7 modules (kalshi_copy_trader, polymarket_copy_trader, roster_split, _whale_autopause, polymarket_whale_analyst, agents/research/polymarket_whale_audit_cache, **kalshi_crypto_v2_observer**) + 1 script (analyze_polymarket_whale.py) + 10 legacy tests (subjects all deleted; both `*_loop_wiring` tests verified legacy-only, assert NO survivor wiring).
+
+### 21.4 ★ §16.7 RE-PROOF (side by side; VERIFIED)
+| shared file | baseline md5 | post-graft md5 | verdict |
+|---|---|---|---|
+| main.py | c15b4de6 | **c15b4de6** | UNCHANGED (not touched) |
+| persistence/db.py | 043f6033 | **043f6033** | UNCHANGED |
+| brokers/robinhood.py | 2753939c | **2753939c** | UNCHANGED |
+| brokers/base.py | bc8b6d76 | **bc8b6d76** | UNCHANGED |
+| agents/data_exec.py | 8f7d2568 | **8f7d2568** | UNCHANGED |
+| brokers/kalshi_live.py | 5c1a3551 | **5c1a3551** | UNCHANGED |
+| web/data.py | 2643bfc4 | **2643bfc4** | UNCHANGED |
+| web/routes.py | 49a785fa | **656681f3** | CHANGED (the graft) |
+**web/routes.py survivor-route proof (counted):** 57 routes -> 48; the route SET diff = EXACTLY the 9 legacy paths removed, **0 added**, `after == before - {9 legacy}`. **main.py survivor wiring UNCHANGED:** bitunix 196, mace 119, pm_live_driver 4, scheduled_pm_live_loop 2, shard 1, pmcc/pead/donchian 2/2/3.
+
+### 21.5 IMPORT + COMPILE PROOFS (query validity demonstrated first)
+- AST query PROVEN before trusted: `path_logger/logger.py -> _weather_math` still detected on the post-graft tree.
+- **py_compile whole tree: 718/718 OK, 0 failures.**
+- **Import-clean (both directions): 0** kept non-staged files import any deleted module. 0 PROTECTED importers of the deletion set (no survivor depends on any deleted file).
+- 7 inert `deploy/*/staged/*` snapshots hold dangling refs (never imported/run/py_compiled-as-live) -- documented, benign.
+
+### 21.6 ★ DEPLOY PLAN (do NOT execute; Jack reviews then runs a window)
+★★ **RESTART REQUIRED = YES (engine).** Evidence: `trading_corp/web` is served in-process by the engine (`main.py:2848 from trading_corp.web.app import create_app`; `main.py:2882 app = create_app(deps)`; `web/app.py:188 routes.register(app)`). The running engine holds the OLD `web/routes.py`; the graft takes effect only on `systemctl restart trading-corp`. ★ A `web/routes.py` (or web/data.py) error would fail `create_app` at boot -> engine down -> ALL divisions down. This is UNLIKE tranche 1. **`main.py` is byte-identical**, so division WIRING cannot be lost (the 2026-09-04 failure mode is absent); the risk is boot-time import of the changed web module -> the post-restart gate + rollback cover it.
+**ROOT vs AZUREUSER (RO-verified 2026-09-16T17:47Z):**
+- **azureuser overwrite:** `web/routes.py` graft (dir `trading_corp/web` + file both `azureuser:azureuser`).
+- **azureuser rm (6):** `agents/polymarket_whale_analyst.py` (root-owned file but `agents/` dir is azureuser-writable -> rm ok) + the 5 `agents/strategies/` modules.
+- **az-root rm (2):** `agents/research/polymarket_whale_audit_cache.py` + `trading_corp/scripts/analyze_polymarket_whale.py` -- their parent dirs are owned `197609:197121` (non-azureuser, so azureuser rm is Permission-denied). ★ NEW box-hygiene finding: `trading_corp/agents/research/` is non-azureuser-writable, same class as `trading_corp/scripts/` (tranche-1).
+- **not on box (10 tests):** `tests/` is not deployed -> no box action.
+**ORDERED STEPS (each: command-class / expected / abort):**
+1. **DO-NO-HARM baseline** (RO recon_arm_read + recon_liveness): 31 arm/0 latched; engine/pm_web/sfp PIDs; PM last-placement ts. ABORT if latched/trigger or arm!=31.
+2. **PUSH** `git push origin legacy-pm-tranche2-2026-09-16:prod-live` (Jack, FF only, never force). Confirm `git ls-remote origin prod-live == ae1fef05`. ABORT on non-FF.
+3. **BOX GRAFT + DELETE, gated (Jack; NEEDS a same-session runner):** drift-gate `web/routes.py` box==ed6d9b83-before, back it up, scp the grafted file; back up + rm the 8 box-present legacy files (6 azureuser + 2 az-root). Verify box==prod-live on the touched surface (routes.py new md5 + 8 files absent). ABORT if any target file differs from prod-live-before.
+4. **ENGINE RESTART (Jack, az-root):** canonical `restart_tc.ps1`. ★ Restart DURING active sports play so the strong PM-placing gate is in force. ~3.5min boot.
+5. **POST-RESTART GATE (the whole safety net):**
+   - (a) **engine booted + create_app served:** main dashboard `GET /` HTTP 200; `GET /research` 200; `GET /prediction-markets/` 200 (degraded but renders); `GET /division/bitunix_futures` 200. ABORT->rollback if any 500/engine-down.
+   - (b) **removed routes gone:** `POST /api/kalshi/whales/demote/x` and `POST /api/polymarket/whales/demote/x` return **404/405** (were 200-family). Expected: gone.
+   - (c) **PM PLACING (not merely armed):** a real `pm_subdivision_order` with `dry_run=0` and `submitted_ts` > baseline within **20 minutes** (the max observed inter-arrival during active play). Fresh heartbeats + green arm rows are NOT proof (2026-09-04 = 28h armed-not-trading). Driver-dead (no `PM LIVE DRIVER WIRED` / no cycle in ~2min) = immediate rollback.
+6. **DO-NO-HARM after:** arm 31/0/0 identical; pm_web + sfp PIDs unchanged; engine PID changed (authorized); survivors returned.
+**ROLLBACK (per step, have ready before step 3):**
+- web/routes.py: restore box backup (or `git show ed6d9b83:trading_corp/web/routes.py`), restart engine.
+- deleted files: restore from the step-3 timestamped backup dir; the 2 root-owned via az-root cp.
+- git: forward-revert of `ae1fef05`, FF-pushed (never force).
+- If the post-restart PLACING gate fails on active play: roll back immediately, tell Jack FIRST, do not investigate live.
+
+### 21.7 DEFERRED (tranche 2b) + PERMANENT keepers
+- **2b (higher-risk shared-file body edits, separate reviewed window):** `web/data.py` dashboard removal (frees `kalshi_crypto_vol_v2`; boot-critical L19); `main.py` broker factory + config deregistration (frees `polymarket.py`/`polymarket_live.py`; division-registration = 2026-09-04 territory); `brokers/kalshi.py:402` discovery method (frees `kalshi_market_map`). Plus the ~7 remaining tranche-2 leaves that import those keepers (kalshi_apify scripts, polymarket broker tests) + legacy `infra/systemd` units + legacy config blocks.
+- **PERMANENT keepers (not removable without Jack reversing a ruling):** `_weather_math` (<- SURVIVOR path_logger/logger.py:31), `kalshi_apify_client` (<- kalshi_whale_stats.py:40, Jack-ruled not-to-edit).
+- **Tranche-1 test-coupled deferrals unchanged:** polymarket_whale_stats, seed_polymarket_watchlist_deep + 2 tests (need a small test edit).
