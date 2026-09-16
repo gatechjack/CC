@@ -177,17 +177,25 @@ def detach_from_live(conn, account_id: str, category: str, wallet: str, now_ts: 
     wallet = (wallet or "").lower()
     if not _table_exists(conn, "pm_subdivision_attachment"):
         return {"ok": False, "changed": False, "reason": "money_layer_not_migrated"}
-    cur = conn.execute(
-        "UPDATE pm_subdivision_attachment SET active=0, removed_ts=? "
-        "WHERE account_id=? AND category=? AND wallet=? AND active=1",
-        (now_ts, account_id, category, wallet))
-    # item 2 (2026-09-15): APPEND-ONLY span-history 'detach' event -- only on a REAL detach (rowcount>0), before the
-    # commit below so it lands atomically with the active=0 flip. A no-op detach (not attached) logs nothing.
-    if cur.rowcount and _table_exists(conn, "pm_subdivision_attachment_event"):
-        conn.execute(
-            "INSERT INTO pm_subdivision_attachment_event (account_id, category, wallet, action, source, actor, ts) "
-            "VALUES (?,?,?,'detach','detach_from_live',?,?)", (account_id, category, wallet, actor, now_ts))
-    _commit(conn)
+    # item 2 (2026-09-15): the active=0 flip AND the append-only 'detach' event MUST land ATOMICALLY -- the
+    # connection is autocommit (isolation_level=None), so bare statements would commit SEPARATELY and a crash
+    # between them could leave the log with an unpaired open span. Wrap BOTH in ONE BEGIN IMMEDIATE...COMMIT
+    # (mirrors promote_to_live), rollback + raise on any failure. Event logged only on a REAL detach (rowcount>0);
+    # a no-op detach (not attached) logs nothing. Guarded so it is a no-op pre-migration-024.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cur = conn.execute(
+            "UPDATE pm_subdivision_attachment SET active=0, removed_ts=? "
+            "WHERE account_id=? AND category=? AND wallet=? AND active=1",
+            (now_ts, account_id, category, wallet))
+        if cur.rowcount and _table_exists(conn, "pm_subdivision_attachment_event"):
+            conn.execute(
+                "INSERT INTO pm_subdivision_attachment_event (account_id, category, wallet, action, source, actor, ts) "
+                "VALUES (?,?,?,'detach','detach_from_live',?,?)", (account_id, category, wallet, actor, now_ts))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     return {"ok": True, "changed": bool(cur.rowcount), "reason": ("detached" if cur.rowcount else "not_attached"),
             "account_id": account_id, "category": category, "wallet": wallet}
 

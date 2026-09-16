@@ -92,6 +92,39 @@ def test_driver_roster_query_unaffected_by_event_table(tmp_path):
     assert len(active) == 1 and active[0]["wallet"] == W          # roster sees the attach; the event table is irrelevant to it
 
 
+class _RaiseOnDetachEvent:
+    """Proxy conn that raises when the DETACH event INSERT runs -- to prove the detach is ATOMIC (the active=0
+    flip must roll back with it). Delegates everything else to the real connection."""
+    def __init__(self, real):
+        object.__setattr__(self, "_r", real)
+
+    def execute(self, sql, *a):
+        if "pm_subdivision_attachment_event" in sql and "'detach'" in sql:
+            import sqlite3
+            raise sqlite3.OperationalError("injected detach-event failure")
+        return self._r.execute(sql, *a)
+
+    def __getattr__(self, n):
+        return getattr(object.__getattribute__(self, "_r"), n)
+
+
+def test_detach_is_atomic_event_failure_rolls_back_the_flip(tmp_path):
+    # ★ adversarial-review finding: a crash between the active=0 UPDATE and the 'detach' event INSERT must NOT leave
+    # the row detached with no event (an unpaired open span). With BEGIN IMMEDIATE the whole detach rolls back.
+    import pytest
+    p = _mk(tmp_path)
+    with db.connect(p) as conn:
+        farm_actions.promote_to_live(conn, "kalshi_jack", "mlb", W, 1000, actor="jack")
+    with db.connect(p) as conn:
+        with pytest.raises(Exception):
+            farm_actions.detach_from_live(_RaiseOnDetachEvent(conn), "kalshi_jack", "mlb", W, 2000, actor="jack")
+    with db.connect(p) as conn:
+        row = conn.execute("SELECT active, removed_ts FROM pm_subdivision_attachment WHERE wallet=?", (W,)).fetchone()
+        n_detach = conn.execute("SELECT COUNT(*) FROM pm_subdivision_attachment_event WHERE action='detach'").fetchone()[0]
+    assert row["active"] == 1 and row["removed_ts"] is None    # the flip ROLLED BACK -> still attached
+    assert n_detach == 0                                       # no orphan/unpaired detach event either
+
+
 def test_reader_all_whales_and_honest_empty(tmp_path):
     p = _mk(tmp_path)
     with db.connect(p) as conn:
