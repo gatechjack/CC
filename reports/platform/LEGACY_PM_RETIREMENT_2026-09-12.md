@@ -876,8 +876,11 @@ The two earlier standalone findings now cite this map: `trading_corp/scripts/` (
 ### BUILT BUT NOT DEPLOYED
 - **Tranche 2a (§21):** branch **`legacy-pm-tranche2-2026-09-16` @ `ae1fef05`**, off ed6d9b83, PROVEN local (py_compile 718/0, import-clean 0, §16.7 other-7 shared files byte-identical), **NOT pushed.** Graft = `web/routes.py` legacy-route excision (frees 6 modules) + 18 files deleted. ★ **Needs a reviewed ENGINE-RESTART window** -- `trading_corp/web` is served in-process (`main.py:2848 create_app`), so a bad graft **fails create_app -> engine down (all divisions)**. Deploy plan §21.6; box root/azureuser split §22.4 (graft + 6 rm = azureuser; 2 rm = az-root). Post-restart gate = **PM PLACING** (dry_run=0 order), NOT armed. ★ 2a leaves **main.py byte-identical at c15b4de6** -> the 2026-09-04 wiring-loss mode is STRUCTURALLY ABSENT.
 
+- **Tranche 2b (§24, added session 12):** BUILT + PROVEN LOCAL, branch **`legacy-pm-tranche2b-2026-09-16` @ `1b667406`** (parent `ae1fef05`). 3 surgical grafts (main.py polymarket factory branch / kalshi.py dead `list_markets` / web/data.py `kalshi_crypto_vol_v2` import) free 4 modules; 8 files deleted; py_compile 710/0; import-clean 0; **§16.7 main.py survivor wiring UNMOVED (counted side-by-side)** + other 5 shared files byte-identical. ★ Deploys in the SECOND restart window, AFTER 2a lands (2b is 0-ahead of ae1fef05 but 2-ahead of prod-live -- must NOT deploy if 2a doesn't). ★★ Yes, 2b puts main.py in the diff -- but it surgically removes ONLY the polymarket broker-factory branch (survivor wiring counted-unmoved), so the 2026-09-04 wiring-loss mode is proven-absent by the §16.7 side-by-side, not merely avoided.
+
 ### NOT BUILT (future work)
-- **Tranche 2b:** `web/data.py` dashboard removal (frees `kalshi_crypto_vol_v2`; boot-critical L19), `main.py` broker factory + config deregistration (frees `polymarket.py`/`polymarket_live.py`), `brokers/kalshi.py:402` discovery (frees `kalshi_market_map`), + remaining tranche-2 leaves/legacy `infra/systemd` units/config. ★★ **2b puts `main.py` BACK IN THE DIFF -- reinstating the 2026-09-04 failure mode that 2a structurally avoids.** Higher risk, lower value (frees ~3 modules). A dedicated reviewed window with a counted §16.7 main.py re-proof, NOT a fold-in.
+- **Tranche 2c:** the full ~2,500-LOC legacy DASHBOARD BODY in `web/data.py` (`build_prediction_market_view` + `build_poly_kalshi_live_view` + `_hydrate_pm_overview` + 15+ scattered `_pm_*`/`_query_pm_*` helpers) + the `/prediction-markets` view routes in `web/routes.py`. Scattered through a boot-critical shared file, frees NO module (kalshi_crypto_vol_v2 already freed by 2b) -> cosmetic, own reviewed pass (§24.5).
+- **Legacy `infra/systemd` units + legacy config blocks** (divisions.yaml polymarket slugs, strategies.yaml disabled blocks) -- inert; a config/units tidy pass.
 - **Tranche-1 test-coupled deferrals:** `polymarket_whale_stats`, `seed_polymarket_watchlist_deep` + 2 tests -- need a small test edit (a keeper test lazily imports the seed script). §20.5.
 
 ### BLOCKED / OPEN (with the blocker named)
@@ -893,3 +896,60 @@ The two earlier standalone findings now cite this map: `trading_corp/scripts/` (
 
 ### PENDING PUSH (this session, session 11)
 Doc-only commit on `legacy-pm-untangle-docs-2026-09-16` (see below for SHA). No code change, no box write. Tranche-2a code (`ae1fef05`) remains unpushed by design (it ships in its own engine-restart window, not a bare push).
+
+---
+
+## 24. PHASE 8 TRANCHE 2b — SHARED-FILE GRAFTS (main.py factory / kalshi.py / web/data.py) (session 12, 2026-09-16). BUILT + PROVEN LOCAL; DEPLOY NOTHING.
+### 24.1 ★ BASE (get this right): built ON `ae1fef05` (tranche 2a), NOT on prod-live
+Branch **`legacy-pm-tranche2b-2026-09-16` @ `1b667406`**, parent **`ae1fef05`**. 2a deploys FIRST tonight; 2b in a SECOND window only if 2a's post-restart gate passes (Jack's ruling -- two restarts, deliberately). **2b is 0-behind/1-ahead of `ae1fef05` (clean FF once 2a lands) but 2-ahead of current prod-live `ed6d9b83`** (it carries ae1fef05 + 1b667406). ★ **IF 2a does NOT deploy tonight, this 2b commit sits on an unlanded parent and MUST NOT be pushed/deployed** -- it would carry 2a's changes too. Re-verify `origin/prod-live == ae1fef05` before any 2b deploy.
+
+### 24.2 THE THREE SURGICAL GRAFTS (re-derived off ae1fef05; each frees a module)
+| shared file | edit | frees |
+|---|---|---|
+| `main.py` | removed the `if family == "polymarket":` broker-factory branch (L2664-2710); 3923->3875 LOC, pure removal | `brokers/polymarket.py` + `brokers/polymarket_live.py` |
+| `brokers/kalshi.py` | removed the DEAD `list_markets` discovery method (0 callers verified; live PM via kalshi_live never calls it); 501->462, pure removal | `data/kalshi_market_map.py` |
+| `web/data.py` | removed module-level `kalshi_crypto_vol_v2` import (L19) + its only use (`query_pm_vol_v2_block` call) + neutralized the dangling annotation; `vol_v2_block` now always None | `web/kalshi_crypto_vol_v2.py` |
+**Why the main.py removal is SAFE (not a live-wiring change):** the 2 polymarket divisions are `enabled:true, standby:true` in divisions.yaml, but the broker-build call site skips a None result -- `main.py:674 if broker is None: continue`. With the branch gone the factory returns None (fall-through, L2804) for `family=="polymarket"`, so those divisions register NO broker and are skipped -- **no crash**; they degrade to empty tiles (retirement end-state). No config edit needed.
+**DELETIONS (8 files):** the 4 freed modules + 4 legacy leaves (`scripts/backtest_polymarket_arbitrage.py`, `tests/test_polymarket_broker_quote.py`, `tests/test_polymarket_live_broker.py`, `tests/test_polymarket_live_broker_assembly.py`). 0 protected importers.
+
+### 24.3 ★ §16.7 SIDE-BY-SIDE RE-PROOF (VERIFIED) -- the strict obligation for a main.py edit
+| shared file | baseline md5 | post-2b | verdict |
+|---|---|---|---|
+| persistence/db.py | 043f6033 | **043f6033** | UNCHANGED |
+| brokers/robinhood.py | 2753939c | **2753939c** | UNCHANGED |
+| brokers/base.py | bc8b6d76 | **bc8b6d76** | UNCHANGED |
+| agents/data_exec.py | 8f7d2568 | **8f7d2568** | UNCHANGED |
+| brokers/kalshi_live.py | 5c1a3551 | **5c1a3551** | UNCHANGED |
+| main.py / kalshi.py / web/data.py | (2a values) | CHANGED | the 3 grafts |
+**★ main.py SURVIVOR WIRING COUNTS ALL UNMOVED (by count, side by side):** bitunix **196**, mace **119**, pm_live_driver **4**, scheduled_pm_live_loop **2**, shard **1**, pmcc **2**, pead **2**, donchian **3** -- identical to the §16.7 baseline. The removed polymarket branch is NOT survivor wiring. (main.py LOC 3923->3875; the -48 is the polymarket factory block only.)
+
+### 24.4 COMPILE + IMPORT PROOFS (query validated first)
+- AST query PROVEN before trusted: `prediction_markets/stats.py -> kalshi_whale_stats` still detected on the post-2b tree.
+- **py_compile whole tree: 710/710 OK, 0 failures.** import-clean: **0** kept non-staged files import any deleted module (both directions). **0 residual symbol refs** to `PolymarketBroker`/`PolymarketLiveBroker`/`kalshi_market_map`/`DiscoveryResult`/`list_markets`/`PMVolV2Block`/`query_pm_vol_v2_block` in the 3 grafted files (a py_compile-invisible NameError class). 6 inert deploy/staged danglers.
+
+### 24.5 ★ SCOPE NOTE -- the full legacy DASHBOARD BODY was DELIBERATELY NOT removed (deferred to a 2c pass)
+`web/data.py`'s legacy dashboard (`build_prediction_market_view`, `build_poly_kalshi_live_view`, `_hydrate_pm_overview` woven into shared home hydration at L812, and 15+ `_pm_*`/`_query_pm_*` helpers) is **scattered through the 6717-LOC boot-critical shared file, interleaved with survivor functions** -- NOT a surgical excision. ★ It imports only ONE legacy module (`kalshi_crypto_vol_v2`), which the 2-line edit in §24.2 already frees. So removing the whole dashboard body frees **NO additional module** -- it is cosmetic dead-code cleanup (the functions read now-empty legacy round-trip tables). Per "a smaller graft fully proven beats a complete one that is not," it is left as **tranche 2c** (its own reviewed pass) rather than forced into 2b. The `/prediction-markets` view routes in `web/routes.py` (kept in 2a) still call `build_prediction_market_view`, which still exists -> they keep rendering (degraded); 2c removes both together.
+
+### 24.6 ★ DEPLOY PLAN (do NOT execute; Jack reviews then runs the SECOND window, after 2a)
+★★ **RESTART REQUIRED = YES (engine).** `trading_corp/web` is served in-process (`main.py:2848 create_app`) AND main.py itself is edited -> the running engine must reload. A `web/data.py` boot error (module-level import) or a main.py error would fail `create_app`/startup -> **engine down (all divisions)** -> the post-restart gate + rollback cover it.
+**ROOT vs AZUREUSER (from §22.2/§22.4 -- do not rediscover):** all three grafted files (`main.py`, `brokers/kalshi.py`, `web/data.py`) are **azureuser:azureuser** in azureuser-writable dirs -> **graft as azureuser by any method**. Of the 8 deletions: `brokers/polymarket.py`, `brokers/polymarket_live.py`, `data/kalshi_market_map.py`, `web/kalshi_crypto_vol_v2.py` are in azureuser-writable dirs (brokers/, data/, web/) -> **azureuser rm**; the 4 tests/scripts are `tests/`+top-level `scripts/` = NOT deployed to the box -> no box action. ★ **None of 2b's files hit the `scripts/`/`agents/research/` non-writable dirs** (§22.4) -- so unlike tranche-1/2a there is NO az-root file op in 2b's box step.
+**ORDERED STEPS (each: expected / abort / rollback):**
+1. **DO-NO-HARM baseline** (RO recon_arm + recon_liveness): 31 arm/0 latched; engine/pm_web/sfp PIDs; PM last-placement ts. ABORT if latched or arm!=31.
+2. **CONFIRM 2a LANDED:** `git ls-remote origin prod-live` == `ae1fef05`. ★ If not ae1fef05, STOP -- 2b's parent is not on prod-live.
+3. **PUSH 2b:** `git push origin legacy-pm-tranche2b-2026-09-16:prod-live` (Jack, FF only; `ae1fef05..1b667406`). ABORT on non-FF.
+4. **BOX GRAFT + DELETE (Jack, azureuser, needs a same-session runner):** drift-gate the 3 grafted files box==ae1fef05-before, back them up, overwrite in place (all azureuser); back up + rm the 4 box-present module files (polymarket, polymarket_live, kalshi_market_map, kalshi_crypto_vol_v2 -- all azureuser dirs). Verify box==prod-live on the touched surface. ABORT if any target differs from ae1fef05-before.
+5. **ENGINE RESTART (Jack, az-root `restart_tc.ps1`).** ★ Restart during ACTIVE SPORTS so the PM-placing gate can fire (cadence is thin -- 38 orders/24h).
+6. **POST-RESTART GATE:**
+   - (a) **engine booted + create_app served:** `GET /` 200; `GET /research` 200; `GET /prediction-markets/` **200** (still renders -- dashboard body not removed in 2b, degraded); `GET /division/bitunix_futures` 200. ANY 500 / engine-down -> immediate rollback.
+   - (b) **removed routes** (from 2a, should already be 404): none new in 2b -- 2b removed no routes.
+   - (c) ★ **PM PLACING, not armed:** a real `pm_subdivision_order` with `dry_run=0`, `submitted_ts` > baseline, within **20 minutes** (the max observed active-play inter-arrival). Fresh heartbeats + green arm rows are NOT proof (2026-09-04 = 28h armed-not-trading). **Driver-dead at ~2-3 min (no `PM LIVE DRIVER WIRED` / no cycle) = immediate unconditional rollback;** a quiet placement window with the driver confirmed cycling = report-and-hold, not auto-rollback.
+7. **DO-NO-HARM after:** arm 31/0/0 identical; pm_web + sfp PIDs unchanged; engine PID changed (authorized); survivors returned.
+**ROLLBACK (have ready before step 4):** restore the 3 grafted files + 4 deleted modules from the step-4 backup (all azureuser cp, no root needed), restart engine; git = forward-revert of `1b667406`, FF-pushed (never force).
+
+### 24.7 ★ path_logger -- PLAIN-ENGLISH DESCRIPTION (Task 2; so Jack rules knowing what he is deleting)
+`path_logger/` is a **standalone read-only market-data research recorder for the Kalshi BTC prediction markets** -- NOT a trader, never places orders, never imports data_exec/risk/web. Run as `python -m trading_corp.path_logger`. What it does (from its module docstrings + logger.py):
+- Polls two Kalshi BTC series -- **KXBTC15M** (15-minute BTC markets) and **KXBTCD** (daily) -- over REST, recording the full quote ladder (yes/no bid+ask, last trade, implied probability) into a `market_ladder` table. Capture cadence is driven by a window state machine: 2s dense near open, 5s near close, 2s on a sharp BTC move, 60s heartbeat otherwise.
+- Runs a **Coinbase BTC/USD WebSocket** (ccxt.pro) and stamps the spot mid/bid/ask alongside each Kalshi capture (so the dataset lets you study prediction-market pricing vs the underlying), and uses it to trigger sharp-move dense capture.
+- Logs its own **timing jitter** (intended-vs-actual capture ms) + 60s heartbeats + 5-min jitter stats to `logger_jitter`; is NTP-strict (exits if clock unsynced; re-checks every 5 min).
+- Writes to a **separate `data/path_logger.db`** (never the engine DB); imports `kalshi_quote_dollars` from `_weather_math` (the sole reason `_weather_math` was ever a keeper).
+**In one line:** a BTC-prediction-market order-book / price-path microstructure data collector, cross-logged against Coinbase spot, for later research -- it does not trade. **VERIFIED DORMANT (§22.7): never deployed on this box** (no unit/cron/process; DB + PID never created). **Revival if ever deleted:** it is currently on prod-live `ed6d9b83`; `git checkout <pre-deletion-sha> -- trading_corp/path_logger trading_corp/agents/strategies/_weather_math.py`. ★ NOT in 2b's scope; NOT deleted; NO recommendation made -- Jack rules whether it is a research feed worth reviving or dead weight to remove (path_logger/ deletion = az-root, §22.2).
