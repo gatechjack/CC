@@ -721,7 +721,7 @@ Read-only local analysis + local git only. **NO box access** (task: box read-onl
 Worked `WINDOW_RUNBOOK_2026-09-16.md` in order; Jack ran all reserved actions, agent ran the RO checks and verified.
 - **PUSH (Jack, FF):** `origin/prod-live 3dd15c10 -> ed6d9b83` and `legacy-pm-retire-2026-09-13 34dab142 -> 6edf9900`, both clean fast-forward; `git ls-remote` re-confirmed prod-live == `ed6d9b83` before any box write.
 - **BOX DELETION (Runner 1, azureuser, NO restart):** Gate A OK, **differ=0** (all 28 box-present files matched prod-live-before, no drift); 21 of 49 self-classified ABSENT (dev-only tests/top-level scripts, never deployed). **28 files deleted** (27 azureuser-writable + 1 below). Backup: **`/home/azureuser/legpm_tranche1_delete_backup_20260916T170626Z`** (28 .py; restore = `cp -rp /home/azureuser/legpm_tranche1_delete_backup_20260916T170626Z/. /home/azureuser/trading_corp/`).
-- **★ FINDING (resolved):** `trading_corp/scripts/refresh_polymarket_whales.py` was `root:root` inside a **non-azureuser-writable dir** (`trading_corp/scripts/` owned `197609:197121`, mode 755) -> `rm` Permission denied, Runner 1 aborted (exit 6) after deleting the prior 27. Not a differ/drift; a privilege gap. Resolved via a single-line **az-root `rm`** (`runner1b_root_rm_refresh.ps1`, Jack-authorized) -> re-verified `still-present=0`. ★ Standing box-hygiene note: `trading_corp/scripts/` is not azureuser-writable and its files are root-owned, so a FUTURE graft/delete touching that dir (it also holds the live `pm_cli.py`, `pm_web.py`) needs root, not azureuser.
+- **★ FINDING (resolved):** `trading_corp/scripts/refresh_polymarket_whales.py` was `root:root` inside a **non-azureuser-writable dir** (`trading_corp/scripts/` owned `197609:197121`, mode 755) -> `rm` Permission denied, Runner 1 aborted (exit 6) after deleting the prior 27. Not a differ/drift; a privilege gap. Resolved via a single-line **az-root `rm`** (`runner1b_root_rm_refresh.ps1`, Jack-authorized) -> re-verified `still-present=0`. ★ Standing box-hygiene note: `trading_corp/scripts/` is not azureuser-writable (owner 197609:197121) -> a CREATE/DELETE there needs root; but `pm_cli.py`/`pm_web.py` are azureuser-owned so an IN-PLACE overwrite works. **Full ownership map + rules: §22 (this dir is 1 of only 4 non-azureuser-writable dirs).**
 - **VERIFY (Runner 2, RO):** git side all 49 absent from prod-live; box side **still-present=0 / absent-ok=49**; `trading_corp` .py 269 -> **268**. **box == prod-live on the deleted surface, both directions -> the git<->box divergence loop is CLOSED in-session** (the 09-07/09-12 drift trap avoided).
 - **OBSERVER STOP (Runner 3, az-root; Runner 3v RO re-verify):** `trading-corp-kcv2-observer.service` **inactive + disabled** (enablement symlink removed), **MainPID 0**; `kcv2_quotes` **STATIC 13,053,562** across two reads 35s apart (nothing else writing). PID 679 retired.
 - **DO-NO-HARM (before+after, PASSED):** arm **31 rows / 0 latched / 0 trigger** identical; schema head **24** unchanged; **engine `436052` / pm_web `436431` / sfp-card-watcher `656` PIDs + NRestarts UNCHANGED** (nothing restarted); driver actively cycling (task heartbeats 9-22s, 33 category heartbeats fresh `state=evaluated` 0 errors); 44 active subs (jack 23/karen 21). Placement is event-driven and quiet in this window: last `dry_run=0` order **16:31Z (~26 min BEFORE the window opened)**, 0 in last 1h, 1 in 3h, 38 in 24h -> the quiet period PRE-DATES the window; the engine was never restarted, so placement capability is untouched. This is NOT the 2026-09-04 dead-driver shape (there the driver was not cycling; here it is).
@@ -776,7 +776,7 @@ The legacy dashboard is NOT cleanly separable: `_hydrate_pm_overview` (web/data.
 **ROOT vs AZUREUSER (RO-verified 2026-09-16T17:47Z):**
 - **azureuser overwrite:** `web/routes.py` graft (dir `trading_corp/web` + file both `azureuser:azureuser`).
 - **azureuser rm (6):** `agents/polymarket_whale_analyst.py` (root-owned file but `agents/` dir is azureuser-writable -> rm ok) + the 5 `agents/strategies/` modules.
-- **az-root rm (2):** `agents/research/polymarket_whale_audit_cache.py` + `trading_corp/scripts/analyze_polymarket_whale.py` -- their parent dirs are owned `197609:197121` (non-azureuser, so azureuser rm is Permission-denied). ★ NEW box-hygiene finding: `trading_corp/agents/research/` is non-azureuser-writable, same class as `trading_corp/scripts/` (tranche-1).
+- **az-root rm (2):** `agents/research/polymarket_whale_audit_cache.py` + `trading_corp/scripts/analyze_polymarket_whale.py` -- their parent dirs are owned `197609:197121` (non-azureuser, so azureuser rm is Permission-denied). ★ box-hygiene finding: `trading_corp/agents/research/` is non-azureuser-writable (197609:197121), same class as `trading_corp/scripts/`. **Now fully mapped -- §22 (1 of 4 such dirs; the others are path_logger/ and backups/).**
 - **not on box (10 tests):** `tests/` is not deployed -> no box action.
 **ORDERED STEPS (each: command-class / expected / abort):**
 1. **DO-NO-HARM baseline** (RO recon_arm_read + recon_liveness): 31 arm/0 latched; engine/pm_web/sfp PIDs; PM last-placement ts. ABORT if latched/trigger or arm!=31.
@@ -796,5 +796,58 @@ The legacy dashboard is NOT cleanly separable: `_hydrate_pm_overview` (web/data.
 
 ### 21.7 DEFERRED (tranche 2b) + PERMANENT keepers
 - **2b (higher-risk shared-file body edits, separate reviewed window):** `web/data.py` dashboard removal (frees `kalshi_crypto_vol_v2`; boot-critical L19); `main.py` broker factory + config deregistration (frees `polymarket.py`/`polymarket_live.py`; division-registration = 2026-09-04 territory); `brokers/kalshi.py:402` discovery method (frees `kalshi_market_map`). Plus the ~7 remaining tranche-2 leaves that import those keepers (kalshi_apify scripts, polymarket broker tests) + legacy `infra/systemd` units + legacy config blocks.
-- **PERMANENT keepers (not removable without Jack reversing a ruling):** `_weather_math` (<- SURVIVOR path_logger/logger.py:31), `kalshi_apify_client` (<- kalshi_whale_stats.py:40, Jack-ruled not-to-edit).
+- **PERMANENT keepers (not removable without Jack reversing a ruling):** `_weather_math` (<- path_logger/logger.py:31 on disk; ★ but path_logger's RUN-STATE is now unconfirmed -- see §22.7 finding), `kalshi_apify_client` (<- kalshi_whale_stats.py:40, Jack-ruled not-to-edit).
 - **Tranche-1 test-coupled deferrals unchanged:** polymarket_whale_stats, seed_polymarket_watchlist_deep + 2 tests (need a small test edit).
+
+---
+
+## 22. BOX OWNERSHIP & WRITABILITY MAP (session 10, 2026-09-16, READ-ONLY survey). ★ Cite this in every deploy plan so a graft never discovers a permission gap by aborting on it.
+Off prod-live **`ed6d9b83`** (re-verified); PM schema head **24** (re-verified, next free 025). Runner `cc/box_ownership_survey.ps1` (RO: `id`/`getent`/`stat`/`find -printf`/`systemctl`; NO probe writes -- writability DERIVED from ownership+mode+group). **`azureuser` = uid 1000, gid 1000(azureuser); groups adm/sudo/... but NOT in gid 197121.** VERIFIED 2026-09-16T18:01Z.
+
+### 22.1 DERIVATION RULES (azureuser, uid 1000)
+- **CREATE / DELETE a file in dir D** -> needs WRITE on **D** (not the file). azureuser has it iff D is owned `azureuser` (dirs are 775/755 -> owner-write) . No sticky bits seen.
+- **OVERWRITE-IN-PLACE a file F** (cp/scp over, keeps inode) -> needs WRITE on **F**. azureuser has it iff F owned `azureuser` with u+w (all shared files are 644/664 -> yes).
+- **OVERWRITE-VIA-RM-THEN-CP** -> needs DIR write (= CREATE/DELETE rule), regardless of file owner. ★ So a root-owned file in an azureuser dir: in-place-overwrite NO, rm-then-cp YES; an azureuser file in a non-azureuser dir (pm_cli.py): in-place-overwrite YES, rm-then-cp NO.
+
+### 22.2 PER-DIRECTORY MAP (the exceptions are what matters; everything else is uniform)
+| directory | owner:group | mode | azureuser create | delete | overwrite-in-dir |
+|---|---|---|---|---|---|
+| **ALL overlay dirs incl. `venv/` (2597 dirs), `trading_corp/**`, `data/`, `config/`, `logs/`, `deploy/`, out-of-tree** | `azureuser:azureuser` | 775 / 755 | **YES** | **YES** | YES |
+| `trading_corp/trading_corp/scripts` | **`197609:197121`** | 755 | **NO** | **NO** | in-place only |
+| `trading_corp/trading_corp/agents/research` | **`197609:197121`** | 755 | **NO** | **NO** | in-place only |
+| `trading_corp/trading_corp/path_logger` | **`root:root`** | 755 | **NO** | **NO** | in-place only |
+| `trading_corp/backups` | **`root:root`** | 755 | **NO** | **NO** | in-place only |
+**Only FOUR directories in the entire overlay are not azureuser-writable** (the two `197609` + two `root`). Anything a deploy CREATEs or DELETEs in them needs **root** (az run-command). Everything else -- including the whole `venv/` (25,823 entries all `azureuser:azureuser`) and every `trading_corp/` package subdir except the two above -- azureuser can create/delete/overwrite freely.
+
+### 22.3 ANOMALOUS OWNERSHIP (whole overlay, files+dirs) -- VERIFIED counts
+| owner:group | count | what it is |
+|---|---|---|
+| `azureuser:azureuser` | **27,557** | normal |
+| `root:root` | **249** | ~mostly `.bak_*`/`.pre-*` deploy backups + `__pycache__/*.pyc` (some cpython-310, stale) + a few live files (`agents/divisions/tasty_options.py`, `agents/research/cost.py`, `agents/polymarket_whale_analyst.py`, `agents/strategies/_weather_math.py`, the `path_logger/` + `backups/` dirs) |
+| **`197609:197121`** | **exactly 4** | `agents/research` (dir), `scripts` (dir), `data/earnings_provider.py`, `data/rh_bars.py` -- uid/gid have **NO local passwd/group entry** |
+
+### 22.4 SHARED / LIVE FILES (drive every deploy) -- all VERIFIED `azureuser`-owned
+| file | owner:group | mode | overwrite-in-place | rm-then-cp | note |
+|---|---|---|---|---|---|
+| main.py, persistence/db.py, brokers/robinhood.py, brokers/base.py, agents/data_exec.py, brokers/kalshi_live.py, web/data.py, web/routes.py | azureuser:azureuser | 644/664 | **YES (azureuser)** | **YES** | dirs are azureuser -> any graft method works |
+| **`trading_corp/scripts/pm_cli.py`** (live cron) | azureuser:azureuser | 644 | **YES (azureuser)** | **NO** | ★ scripts/ dir is 197609 -> a graft MUST overwrite in place, NOT rm-then-cp |
+| **`trading_corp/scripts/pm_web.py`** (pm_web launcher) | azureuser:azureuser | 644 | **YES (azureuser)** | **NO** | ★ same -- in-place only |
+⇒ The tranche-2a `web/routes.py` graft (and any main.py/db.py/web.py graft) can be applied as **azureuser** by either method. Updating `pm_cli.py`/`pm_web.py` must be **in-place overwrite** (azureuser) or root; NEVER rm-then-cp.
+
+### 22.5 OUT-OF-TREE + SERVICE UNITS -- VERIFIED
+- `/home/azureuser/pead_earnings/` and `/home/azureuser/card_assets/`: **entirely `azureuser:azureuser`** (dirs 775, files 644/664) -> azureuser full control. The dir-copy `.service`/`.timer` files there are azureuser (per RECONCILIATION_EXCLUSIONS the INSTALLED units are the `/etc` copies).
+- `/etc/systemd/system/*.service`: all **`root:root` 644** -> editing/installing a unit needs **root** (expected; az-root).
+- **Service units (all run as `User=azureuser`):** trading-corp (436052, enabled/active, `/etc/systemd/system/trading-corp.service`), prediction-markets-web (436431, enabled/active), sfp-card-watcher (656, active), kcv2-observer (**inactive/disabled** -- stopped in §20.9).
+
+### 22.6 ★ SERVICE = azureuser, and EVERY file is world-readable -> the ownership is NOT a runtime RISK
+The engine + pm_web + sfp all run as **azureuser**. Every file in the overlay is mode `o+r` (644/664) and every dir is `o+rx` (755/775), so **azureuser can READ and TRAVERSE everything it doesn't own** -- incl. the root-owned `_weather_math.py`/`pm_cli.py`/`path_logger/` and the 197609 `scripts/`/`agents/research/`. So the ownership drift does NOT stop the service from importing/executing any file. **No live runtime file is unreadable by the service; no dir the engine WRITES to (`data/`, `logs/`) is non-azureuser.** ⇒ ownership drift is a **DEPLOY-TIME inconvenience, not a runtime risk.**
+
+### 22.7 ★ DELIBERATE-OR-DRIFT ASSESSMENT (+ findings)
+**Evidence points to DRIFT, not deliberate design:**
+- The `197609:197121` owner is a **Windows-numeric uid/gid with no local passwd/group entry** (`getent` empty) -- the classic signature of files transferred from a Windows/WSL context that preserved the origin uid. It is on **exactly 4 scattered paths**, not a coherent permission scope. A deliberate scheme would use a named principal and be systematic.
+- `root:root` (249) is dominated by `.bak_*`/`.pre-*` deploy backups + `__pycache__` `.pyc` (some compiled by an old cpython-310) + a handful of live files -- the residue of mixed-privilege deploys (some azureuser, some az-root) over months.
+- Neither pattern is consistent enough to be intentional. **Verdict: DRIFT (transfer + mixed-privilege-deploy artifacts).** What would SETTLE it definitively (for Jack, before any normalise): the mtime/provenance of the 4 `197609` paths and whether any deploy runbook intentionally chowns. Absent that, normalising `197609`+`root` -> `azureuser:azureuser` on the code tree would be safe and would remove the deploy-time gaps -- **Jack's decision with this map in front of him; not recommended from a hunch.**
+- ★ **FINDING (path_logger unit): the tracking-doc claim that path_logger has "its own systemd unit `trading-corp-path-logger.service`" is NOT confirmed on the box.** VERIFIED 2026-09-16T18:04Z: no systemd unit matching path/logger (only OS `*.path` units), no azureuser cron, no running path_logger process. Nothing in the engine imports path_logger (standalone `python -m trading_corp.path_logger`). **UNVERIFIED:** a *root* crontab (unreadable as azureuser) could invoke it. ⇒ `_weather_math`'s keeper status still rests on the real on-disk import (`path_logger/logger.py:31`), but "path_logger is a running survivor" is unconfirmed -- **Jack: is path_logger meant to be running? If it is genuinely dormant, path_logger/ + _weather_math become a FUTURE deletion candidate (Jack's call).**
+
+### 22.8 REPOINTED FINDINGS
+The two earlier standalone findings now cite this map: `trading_corp/scripts/` (tranche-1 abort, §20.9) and `trading_corp/agents/research/` (tranche-2 plan, §21.6) are **two of the four** non-azureuser-writable dirs enumerated in §22.2 -- plus `path_logger/` and `backups/` (both root:root). A deploy plan reads §22.2/§22.4 instead of rediscovering by abort.
