@@ -33,7 +33,7 @@ def test_migration_021_adds_columns_and_is_idempotent(tmp_path):
     ver = con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     cols = [r[1] for r in con.execute("PRAGMA table_info(pm_subdivision_order)")]
     con.close()
-    assert ver == db.SCHEMA_HEAD, ver   # init_db migrates to the head (now 22); the 021 columns still present below
+    assert ver == db.SCHEMA_HEAD, ver   # init_db migrates to the head (now 24); the 021 columns still present below
     for c in ("signal_outcome", "signal_slug", "leg_audit"):
         assert c in cols, (c, cols)
 
