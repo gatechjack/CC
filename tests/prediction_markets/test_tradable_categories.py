@@ -1,7 +1,7 @@
 """Item 3 (2026-09-15): the matcher-presence SUB-DIVISION tile filter + its dependency-free constant.
 
 - is_tradable_category: matcherless categories (bare soccer/tennis, golf, cbb/fifwc/nascar/unknown) are NOT
-  tradable -> their sub-division tile is hidden; the 23 real categories ARE.
+  tradable -> their sub-division tile is hidden; the 24 real categories ARE (23 + itf, 2026-09-16).
 - ★ GOLF SCOPE GUARD (Jack, load-bearing): golf + tennis are REAL farm leagues with NO matcher. They MUST stay
   on the FARM side (search.CATEGORY_ALLOWLIST) while being hidden from SUB-DIVISION tiles (TRADABLE_CATEGORIES).
   Two DIFFERENT gates. If the filter were ever pointed at farm categories, golf's farm page would vanish -> these

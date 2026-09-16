@@ -15,7 +15,7 @@ trade under ANY configuration (e.g. the kalshi_jack/soccer + kalshi_jack/tennis 
 ★ SCOPE (load-bearing): this gates SUB-DIVISION tiles ONLY. It must NEVER gate FARM categories.
 ``golf`` (no matcher, but a REAL farm league with prospects + a watchlist) and the coarse ``tennis``
 farm bucket stay on the Farm side, which is gated by ``search.CATEGORY_ALLOWLIST`` -- NOT by this set.
-Verified 2026-09-15 against the box registries: 23 categories, MATCHER == BUILDER exactly.
+Verified 2026-09-15 against the box registries: 23 categories, MATCHER == BUILDER exactly (24 with itf, 2026-09-16).
 """
 
 TRADABLE_CATEGORIES: frozenset[str] = frozenset({

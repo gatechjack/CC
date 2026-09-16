@@ -167,6 +167,55 @@ def test_out_of_window():
     assert r.status == "out_of_window", r
 
 
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# ★ BLOCKER regression (skeptic 2026-09-16): men (KXITFMATCH) + women (KXITFWMATCH) sharing date+blob+side-codes
+#   must NOT clobber. Combined M/W event: a men's Rossi/Conti AND a women's Rossi/Conti, SAME date, SAME blob
+#   ROSCON, SAME side codes ROS/CON ("Andrea" is a men's name in Italy, a women's elsewhere -> namesake).
+# ══════════════════════════════════════════════════════════════════════════════════════════
+_MW_COLLIDE = [
+    {"ticker": "KXITFMATCH-26SEP16ROSCON-ROS", "title": "Andrea Rossi wins"},      # man
+    {"ticker": "KXITFMATCH-26SEP16ROSCON-CON", "title": "Marco Conti wins"},       # man
+    {"ticker": "KXITFWMATCH-26SEP16ROSCON-ROS", "title": "Andrea Rossi wins"},     # woman (same name -> cross-gender)
+    {"ticker": "KXITFWMATCH-26SEP16ROSCON-CON", "title": "Sara Conti wins"},       # woman
+]
+
+
+def test_mw_same_blob_both_matches_survive():
+    # the two series must NOT clobber -> BOTH matches present on the date (pre-fix: women overwrote men)
+    day = ITF.build_kalshi_itf_index(_MW_COLLIDE)["2026-09-16"]
+    assert len(day) == 2, day
+    assert {km.series for km in day} == {"ITFMATCH", "ITFWMATCH"}
+
+
+def test_mens_bet_binds_mens_ticker_not_womens():
+    # a MEN's bet (title pins Marco Conti, a man) must bind the MEN's ticker -- never the women's clobber
+    r = _match(_MW_COLLIDE, "itf-rossi-conti-2026-09-16", "Andrea Rossi", "ITF: Andrea Rossi vs Marco Conti")
+    assert r.status == "matched" and r.kalshi_ticker == "KXITFMATCH-26SEP16ROSCON-ROS", r
+
+
+def test_cross_gender_namesake_no_title_is_safe_miss():
+    # same-name cross-gender, NO title -> the name is in TWO matches -> abbrev_collision_ambiguous (safe miss)
+    r = _match(_MW_COLLIDE, "itf-rossi-conti-2026-09-16", "Andrea Rossi", None)
+    assert r.status == "abbrev_collision_ambiguous" and r.kalshi_ticker is None, r
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# ★ HIGH regression (skeptic 2026-09-16): a dated tournament-outright slug (3+ code tokens) must be a SAFE MISS
+#   even when its outcome player DOES have a same-day singles match -- the single-player fallback is gated to
+#   match-shaped itf-{a}-{b}-{date} slugs only.
+# ══════════════════════════════════════════════════════════════════════════════════════════
+def test_futures_three_token_slug_safe_miss_even_if_player_plays():
+    # Marco Tosetti IS in MEN (KXITFMATCH-26SEP16WENTOS-TOS) that day; an OUTRIGHT bet on him must NOT bind it
+    r = _match(MEN, "itf-madrid-w75-final-2026-09-16", "Marco Tosetti", "ITF Madrid W75: Tournament Winner")
+    assert r.status == "skip_non_match_shape" and r.kalshi_ticker is None, r
+
+
+def test_match_shaped_slug_no_title_still_uses_single_fallback():
+    # a genuine 2-token match slug with NO title must STILL bind via the single fallback (coverage preserved)
+    r = _match(MEN, "itf-wendler-tosetti-2026-09-16", "Marco Tosetti", None)
+    assert r.status == "matched" and r.kalshi_ticker == "KXITFMATCH-26SEP16WENTOS-TOS", r
+
+
 # ── ★ INERT: itf_moneyline token gate (NOT in the legacy default) ─────────────────
 def test_inert_itf_moneyline_not_in_legacy_default():
     # the legacy default a blank/NULL market_types resolves to does NOT include itf_moneyline -> ITF stays OFF

@@ -35,7 +35,7 @@ WINDOW_DAYS = 1   # +/- date tolerance (matches the tennis Poly/Kalshi +/-1 day 
 # Poly slug: itf-{codes}-YYYY-MM-DD[suffix].  A trailing suffix = a prop (out of scope).
 _POLY_RE = re.compile(r"^itf-(?P<codes>.+?)-(?P<date>\d{4}-\d{2}-\d{2})(?P<suffix>.*)$")
 # Kalshi ticker: KX(ITFMATCH|ITFWMATCH)-{YYMONDD}{BLOB6}-{CODE}. Anchored -> atp/wta (and table-tennis) can NEVER match.
-_K_RE = re.compile(r"^KX(?:ITFMATCH|ITFWMATCH)-(?P<date>\d{2}[A-Z]{3}\d{2})(?P<blob>[A-Z0-9]{6})-(?P<code>[A-Z0-9]+)$")
+_K_RE = re.compile(r"^KX(?P<series>ITFMATCH|ITFWMATCH)-(?P<date>\d{2}[A-Z]{3}\d{2})(?P<blob>[A-Z0-9]{6})-(?P<code>[A-Z0-9]+)$")
 
 # ★ INERT-SHIP TOKEN (2026-09-16): the ITF match-winner is SEMANTICALLY a moneyline, but its copyable token is the
 # DISTINCT `itf_moneyline`, NOT plain `moneyline`. Plain `moneyline` is in the legacy default (moneyline,total,spread)
@@ -52,15 +52,20 @@ class ParsedItfBet:
     outcome_name: str | None    # the player the whale bet (may be SURNAME-ONLY)
     player_a: str | None        # from the title "A vs B" (full names)
     player_b: str | None
+    is_match_shaped: bool = False  # slug codes are EXACTLY two player tokens (itf-{a}-{b}-{date}) -- gates the single fallback
     fail_reason: str | None = None
     raw: dict = field(default_factory=dict)
 
 
 def parse_poly_itf_bet(slug: str, outcome: str, title: str | None = None) -> ParsedItfBet:
     """slug `itf-{codes}-YYYY-MM-DD`; outcome = player name (full OR surname-only); title `... : A vs B`
-    supplies the pair (both full names). No title -> pair is None (falls back to single-player match, which
-    safely MISSES surname-only outcomes). A non-`itf-` slug is `non_itf` (an atp-/wta- slug never reaches
-    the ITF index -- separation by construction)."""
+    supplies the pair (both full names). No title -> pair is None (falls back to single-player match, but ONLY
+    for a MATCH-SHAPED slug -- see is_match_shaped). A non-`itf-` slug is `non_itf` (an atp-/wta- slug never
+    reaches the ITF index -- separation by construction).
+    ★ is_match_shaped (2026-09-16, skeptic HIGH fix): True iff the codes segment is EXACTLY two non-empty player
+    tokens (itf-{a}-{b}-{date}). A tournament/outright slug (itf-{tournament}-{round}-{date}, 3+ tokens) is
+    NOT match-shaped -> match_bet refuses the single-player fallback for it, so a futures bet whose outcome
+    player also has a same-day singles match is a SAFE MISS, not a wrong-market bind."""
     raw = {"slug": slug, "outcome": outcome, "title": title}
     s = (slug or "")
     if not s.startswith("itf-"):
@@ -77,11 +82,13 @@ def parse_poly_itf_bet(slug: str, outcome: str, title: str | None = None) -> Par
         if len(parts) == 2:
             pa, pb = parts[0].strip(), parts[1].strip()
     oc = (outcome or "").strip()
-    return ParsedItfBet("itf_moneyline", m.group("date"), oc or None, pa, pb, raw=raw)
+    ms = len([t for t in m.group("codes").split("-") if t]) == 2   # exactly two player tokens -> a real match slug
+    return ParsedItfBet("itf_moneyline", m.group("date"), oc or None, pa, pb, is_match_shaped=ms, raw=raw)
 
 
 @dataclass(frozen=True)
 class KalshiItfMatch:
+    series: str                 # 'ITFMATCH' (men) | 'ITFWMATCH' (women) -- part of the match identity so the two never merge
     date_iso: str
     p_a_name: str
     p_b_name: str
@@ -90,11 +97,16 @@ class KalshiItfMatch:
 
 
 def build_kalshi_itf_index(markets: list[dict]) -> dict:
-    """{date_iso: [KalshiItfMatch, ...]} from KX(ITFMATCH|ITFWMATCH) markets (men AND women merged). Each
-    match = the 2 YES-side tickers sharing a (date, blob). Malformed / non-ITF-MATCH tickers are skipped --
-    so a KXATPMATCH / KXWTAMATCH / table-tennis ticker CANNOT enter (the regex is anchored). A blob with
-    != 2 sides is skipped. Merging the two series is safe: a (date, blob) is unique per Kalshi match, so a
-    men's and a women's match never collide on the same key."""
+    """{date_iso: [KalshiItfMatch, ...]} from KX(ITFMATCH|ITFWMATCH) markets (men AND women merged into ONE
+    date-keyed index). Each match = the 2 YES-side tickers sharing a (series, date, blob). Malformed /
+    non-ITF-MATCH tickers are skipped -- so a KXATPMATCH / KXWTAMATCH / table-tennis ticker CANNOT enter (the
+    regex is anchored). A group with != 2 sides is skipped.
+    ★ THE KEY INCLUDES THE SERIES (2026-09-16, skeptic BLOCKER fix): ITF runs COMBINED men+women events at one
+    venue/week, so a men's (KXITFMATCH) and a women's (KXITFWMATCH) match CAN share a (date, blob) -- keying on
+    (date, blob) ALONE would clobber one (last-write-wins) and bind a men's bet to a women's ticker at
+    confidence 1.0. Keying on (series, date, blob) keeps both as DISTINCT matches on the same date; match_bet's
+    pair-uniqueness then binds the correct one (the title pair pins it) or safe-misses a genuine cross-series
+    same-name collision (abbrev_collision_ambiguous). This is what the earlier docstring wrongly ASSUMED."""
     by: dict = {}
     for mk in markets:
         tk = (mk.get("ticker") or "").strip()
@@ -105,16 +117,16 @@ def build_kalshi_itf_index(markets: list[dict]) -> dict:
         nm = ti[:-len(" wins")].strip()
         if not nm:
             continue
-        by.setdefault((m.group("date"), m.group("blob")), {})[m.group("code")] = (nm, tk)
+        by.setdefault((m.group("series"), m.group("date"), m.group("blob")), {})[m.group("code")] = (nm, tk)
     idx: dict = {}
-    for (ds, _bl), sides in by.items():
+    for (series, ds, _bl), sides in by.items():
         if len(sides) != 2:
             continue
         (na, ta), (nb, tb) = list(sides.values())
         d = kalshi_to_iso_date(ds)
         if not d:
             continue
-        idx.setdefault(d, []).append(KalshiItfMatch(d, na, nb, ta, tb))
+        idx.setdefault(d, []).append(KalshiItfMatch(series, d, na, nb, ta, tb))
     return idx
 
 
@@ -202,7 +214,15 @@ def match_bet(parsed: ParsedItfBet, match_index: dict, kalshi_dates, allowed_mar
             return MatchResult("winner_outcome_unresolved", 0.0, reason="outcome_not_either_player_or_same_surname", market_type=mt)
         if len(uniq) > 1:
             return MatchResult("abbrev_collision_ambiguous", 0.5, reason="pair_matches_multiple_in_window", market_type=mt)
-        # pair given but not found -> fall through to single-player (no surname recovery -> safe)
+        # pair given but not found -> fall through to single-player (only if match-shaped; see the gate below)
+
+    # ★ SINGLE-PLAYER FALLBACK GATE (2026-09-16, skeptic HIGH fix): reached when there is no pinned pair (no
+    # "A vs B" title) or the pair was not found. Bind a LONE player name ONLY for a MATCH-SHAPED slug
+    # (itf-{a}-{b}-{date}). A tournament/outright slug (itf-{tournament}-{round}-{date}, 3+ code tokens) is
+    # NOT match-shaped -> refuse -> a futures bet whose outcome player also plays a same-day singles match is a
+    # SAFE MISS, never a wrong-market bind. ITF's large futures population makes this the load-bearing guard.
+    if not parsed.is_match_shaped:
+        return MatchResult("skip_non_match_shape", 0.0, reason="slug_not_two_player_match_shape", market_type=mt)
 
     hits = [km for km in cand if match_fighter_name(parsed.outcome_name, km.p_a_name)
             or match_fighter_name(parsed.outcome_name, km.p_b_name)]
