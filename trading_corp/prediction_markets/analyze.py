@@ -58,9 +58,17 @@ PM_ANALYZE_MODEL = "claude-sonnet-4-6"           # ANALYZE UPGRADE 2026-09-12 (H
                                                  # wired in prod (Jack 2026-09-12) -> this runs LIVE on deploy; POST-
                                                  # DEPLOY verify a REAL (non-cached) call returns model=claude-sonnet-4-6
                                                  # (a silent Haiku fallback looks identical from the output side).
-PM_ANALYZE_MAX_OUTPUT_TOKENS = 160               # ANALYZE UPGRADE: the verdict is ONE sentence over the score -> tighter
+PM_ANALYZE_MAX_OUTPUT_TOKENS = 220               # item 7 (2026-09-15): 160 -> 220. INSUFFICIENT_DATA now gets TWO
+                                                 # sentences (caveat + shape read); ★ a TRUNCATED second sentence reads
+                                                 # as a broken answer, WORSE than none, so give headroom (2 short
+                                                 # sentences ~50 tok, well under 220). The prompt still enforces the
+                                                 # sentence COUNT; this cap is only a backstop. (One-sentence tiers unaffected.)
 PM_ANALYZE_DAILY_CAP_USD = 20.00                 # Jack ruling 2026-08-25 (legacy code=$1.00; §7.4 doc said $2)
-PM_ANALYZE_SKILL_VERSION = "4"                   # bump on ANY prompt/model/report-shape change -> cache miss.
+PM_ANALYZE_SKILL_VERSION = "5"                   # bump on ANY prompt/model/report-shape change -> cache miss.
+#   "4"->"5" (2026-09-15, Group 3 items 5+7): item 7 = INSUFFICIENT_DATA narration keeps the caveat AND adds a second
+#     "shape read" sentence (a watchlist is built by pinning low-N traders that LOOK worth watching); item 5 = the
+#     stats.py ranking metrics are fed to the narrator (clean set) + shown flagged (inverting set). Bumped so the first
+#     click on an already-analyzed whale recomputes to the new-form verdict.
 #   "3"->"4" (2026-09-12, ANALYZE UPGRADE): Haiku->Sonnet + the deterministic scoring.WhaleScore (tier + trust-flagged
 #     dimensions) drives a ONE-sentence verdict template. Bumped so the first click on an already-analyzed whale
 #     recomputes instead of serving the old Haiku verdict (the standing skill-version-invalidation ruling).
@@ -467,26 +475,32 @@ def _cost_for_usage(usage: dict) -> float:
 
 _SYSTEM_PROMPT = """You are a promotion judge for a Polymarket-copy desk. You are handed a whale's DETERMINISTIC \
 score for ONE category: a TIER that is ALREADY DECIDED, plus the numbers that decided it -- each carrying its own \
-TRUST-FLAG. Write exactly ONE sentence for a busy operator: name the SINGLE decisive factor for this tier.
+TRUST-FLAG. Write a verdict for a busy operator.
 
-You do NOT recompute, re-rank, or override the tier or any number -- they are final. You only choose which ONE \
-factor to lead with and state it plainly.
+You do NOT recompute, re-rank, or override the tier or any number -- they are final. You only choose which factor(s) \
+to lead with and state them plainly.
 
-HARD RULES (this is the brevity mechanism -- do not break it):
-- EXACTLY ONE sentence. No second sentence. No semicolon-stacked clauses. No list.
+LENGTH -- TIER-DEPENDENT (this is the brevity mechanism -- do not break it):
+- PROMOTE / WATCH / PASS: EXACTLY ONE sentence -- name the SINGLE decisive factor for the tier. No second sentence.
+- INSUFFICIENT_DATA: EXACTLY TWO sentences. Sentence 1 = what is MISSING (too few honest positions / a one-position \
+record / low grounding coverage) -- the caveat, KEPT. Sentence 2 = the READ on the short record the operator is \
+deciding whether to WATCH: on the evidence there IS, does this look like a decent trader worth following or a poor \
+one -- cite the honest ROI, diversification, chalk, or hedger flag as the shape warrants. NO third sentence; do NOT \
+restate the caveat in other words; do NOT hedge into a paragraph. "Thin, but the shape is good" is the target -- one \
+extra sentence, not a paragraph.
+
+HARD RULES:
 - DO NOT perform arithmetic. Every number you cite must appear VERBATIM in the input.
-- Cite the decisive number ONCE. Each number already carries its flag; do NOT restate the others.
-- Name the SINGLE most decision-relevant factor for THIS tier -- not a summary of all of them.
-- Never soften a flag. If the decisive number is flagged MIRAGE / UNKNOWN / concentrated / chalk / hedger, say it \
-in those terms.
+- Cite a decisive number ONCE. Each number already carries its flag; do NOT restate the others.
+- Never soften a flag. If a cited number is flagged MIRAGE / UNKNOWN / concentrated / chalk / hedger, say it in those terms.
 
 What decides each tier -- lead with it:
 - PROMOTE: the honest edge that survived grounding (honest ROI + diversification).
 - WATCH: the ONE thing holding it back -- ungrounded (say "run grounding"), concentration, hedger upper-bound, or chalk.
 - PASS: why there is no honest edge -- a mirage win-rate, chalk with no return, or the edge vanishing under grounding.
-- INSUFFICIENT_DATA: what is missing -- too few honest positions, a one-position record, or low grounding coverage.
+- INSUFFICIENT_DATA: sentence 1 = what is missing; sentence 2 = whether the short record's shape looks good or poor.
 
-Output: exactly ONE sentence. No markdown, no preamble, no restated caveats."""
+Output: plain text, no markdown, no preamble, no restated caveats. ONE sentence for PROMOTE/WATCH/PASS; TWO for INSUFFICIENT_DATA."""
 
 
 def _fmt_pct_signed(x) -> str:
@@ -561,7 +575,13 @@ def _build_user_content(rep: PMAnalysisReport) -> str:
         % (_fmt_usd(s.get("dd_tell")), s.get("dd_wins"), s.get("dd_losses")),
         "  our real copy fills = %s  [display only, never a gate]" % s.get("copy_fills"),
         "",
-        "Write EXACTLY ONE sentence naming the single decisive factor for the %s tier." % s.get("tier"),
+        # item 7 (2026-09-15): INSUFFICIENT_DATA keeps the caveat AND adds the shape-read (a watchlist is built by
+        # pinning low-N traders that LOOK worth watching -- a bare refusal gives nothing to decide on). All other
+        # tiers stay ONE sentence (the brevity mechanism).
+        (("Write EXACTLY TWO sentences: (1) what is MISSING (the caveat, kept); (2) the READ -- is this short record's "
+          "shape good or poor (cite honest ROI / diversification / chalk as it warrants). No third sentence, no restated caveat.")
+         if s.get("tier") == "INSUFFICIENT_DATA"
+         else "Write EXACTLY ONE sentence naming the single decisive factor for the %s tier." % s.get("tier")),
     ]
     return "\n".join(lines)
 
