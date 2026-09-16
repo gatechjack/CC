@@ -97,15 +97,19 @@ Runner: `cc/recon_liveness_ro.ps1` (heartbeats + orders-by-dry_run + active subs
   `a4eef50f…`, `kcv2_lab.db.gz` 110,760,320 B `cff8a469…`. Fresh-restore scratch `cc/_p7_verify_scratch.db`.
 
 ## EVERYTHING STILL OPEN BEYOND PHASE 7
-- **The deferred file-deletion closure problem — ★ THE TRANSITIVE CLOSURE WAS NEVER COMPUTED.** Keepers
-  found by import-proof: `_weather_math` (survivor `path_logger/logger.py:31` imports `kalshi_quote_dollars`
-  from it) and `kalshi_crypto_v2_observer` (while PID 679 runs). Plus the 6 blocked shared files + their
-  live importers, ~25 legacy tests/scripts, and the web/routes.py legacy routes. See §18.3.
+- **The deferred file-deletion closure problem — ✅ COMPUTED 2026-09-16 (session 8). See tracking-doc §20.**
+  Tranche 1 = 49 files pure-deleted, BUILT + PROVEN LOCAL (branch `legacy-pm-untangle-2026-09-16` @ `ed6d9b83`,
+  off prod-live `3dd15c10`, NOT pushed; py_compile 736/0, import-clean 0, §16.7 shared files byte-identical).
+  Keepers confirmed (`_weather_math` ← `path_logger/logger.py:31`; `kalshi_crypto_v2_observer` ← PID 679) PLUS
+  a closure surfaced **new** web/routes.py couplings (kalshi_copy_trader/polymarket_copy_trader/roster_split/
+  polymarket_whale_analyst/polymarket_whale_audit_cache, all lazy in-handler → 500 at request time). The 13
+  shared-blocked keepers + woven web/data.py dashboard need a Jack-gated graft pass (§20.4/§20.6). Deploy of
+  tranche 1 = FF `git push origin legacy-pm-untangle-2026-09-16:prod-live` (after 16:00 ET; pure deletion, no restart).
 - **The woven ~2,500 LOC `web/data.py` legacy PM dashboard** + its routes (deferred; legacy-data-only).
 - **API cancellations:** Apify is the real paid one (legacy-only, was still billing until the timers +
   loop were disabled); Finnhub is a dead/free win; **Anthropic and Kalshi/Polymarket keys are SHARED —
   NEVER cancel them.**
-- **The Polymarket USDC drain — it must GATE key removal, not follow it.**
+- ~~**The Polymarket USDC drain — it must GATE key removal.**~~ **VOID 2026-09-16 (Jack): the Polymarket credentials TRANSFER to the live PM division → funds never stranded, no drain, keys are NEVER-CANCEL alongside Anthropic + Kalshi. See tracking-doc §3/§9/§10.**
 - **The off-SITE blob copy** (Gate A's stronger long-term form).
 - The redundant poly_kalshi persist-halt row (leave it) and the `strategies.yaml.block_bs` scratch (leave it).
 

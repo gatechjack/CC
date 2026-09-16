@@ -15,7 +15,8 @@
 
 | Anchor | Value (VERIFIED 2026-09-13T14:23–14:30Z) | How verified |
 |---|---|---|
-| **origin/prod-live tip** | `5e03b7a27de4ca4ebdc5339d7721b5dbb9bbae62` | `git rev-parse origin/prod-live` |
+| **origin/prod-live tip** | ~~`5e03b7a2…`~~ → **`3dd15c1016279750be6faada68c6b558f5016b7a`** (session 8, 2026-09-16; advanced through Ph6 `8f35f254` + later PM/ITF deploys) | `git fetch; git rev-parse origin/prod-live` |
+| **UNTANGLE PASS (session 8) branch** | `legacy-pm-untangle-2026-09-16` @ **`ed6d9b83`** (off prod-live `3dd15c10`; tranche-1 pure deletion of 49 files; **local, NOT pushed**). FF push = `git push origin legacy-pm-untangle-2026-09-16:prod-live`. Closure record = **§20**. | this session |
 | Engine service | `trading-corp.service` PID **370246**, active, NRestarts=**0**, up since 2026-09-12 21:00:28Z | `systemctl show` |
 | PM schema head | **23** (next free migration = **024**) | `schema_version MAX(version)=23` in `data/prediction_markets.db` |
 | Arm baseline (do-no-harm) | **31 arm rows** = `arm:global` + 30 subs (kalshi_jack + kalshi_karen), **armed=31, latched=0, trigger=0** | `recon_arm_read` / `legpm_inventory_ro` |
@@ -46,6 +47,7 @@
 | 5-6 (=Jack's "Phase 6") | Code removal — **Option 1 (deploy main.py graft ONLY; defer ALL file deletions + web surgery)** per Jack's ruling. Deploy = 3 things: main.py loop graft + poly_kalshi `auto_execute:false` + 4 timer units removed. NO file deletions / web routes / test removal — the ~30-file DELETE set is a TRANSITIVE CLOSURE (2 survivor-coupled keepers found: `_weather_math`←path_logger, `kalshi_crypto_v2_observer`←PID 679) deferred to the untangle pass. | **DEPLOYED LIVE 2026-09-14 — prod-live `8f35f254` (FF); box main.py `c15b4de6`/3923 + config `1657119b`; engine 370246->397094; GATE PASS (WIRED 00:25:34 + placement order 820 00:28:53Z); 4 legacy timer units removed; siblings 381803/656/679 unchanged; 44 armed. See §18.7.** Revival SHA `fcbcd4a7`. | **YES ×1 (Jack) — DONE** | PM PLACING confirmed post-restart (split-signal gate PASS) | forward-revert FF; box backups `.bak_legpm_20260913T232311Z` |
 | 6 | Shared-file surgical edits (`brokers/kalshi.py` discovery, `web/data.py`/`web/routes.py` PM sections, resolvers) | NOT STARTED | YES (fold into Ph5 window) | as Ph5 | git-revert |
 | 7 | Archive/branch/tag disposition of removed code + final DB shrink verification | NOT STARTED | no | no | n/a |
+| **8 (UNTANGLE)** | **Transitive-closure file deletion** (the §18.3 deferred work, finally computed) | **CLOSURE COMPUTED + TRANCHE-1 BUILT LOCAL 2026-09-16 (session 8).** AST import graph (query proven to detect known imports first); 785 .py analyzed. **Tranche 1 = 49 files pure-deleted** (branch `legacy-pm-untangle-2026-09-16` @ `ed6d9b83`, off prod-live `3dd15c10`, **local/NOT pushed**): 0 additions / 17,918 deletions, py_compile 736/0, import-clean 0 violations, §16.7 shared files byte-identical. Tranches 2/3 (13 shared-blocked keepers + 4 test-coupled + ~20 tranche-2 leaves + units/config + woven web dashboard) DEFERRED — need shared-file grafts. Full record **§20**. | **no (pure deletion; deploy = FF push, Jack, after 16:00 ET)** | no | forward-revert FF |
 
 > The plan (§9) is a RECOMMENDATION; Jack rules scope + sequence. Phases are sized to one agent-session each and each ends in an indefinitely-safe state.
 
@@ -72,7 +74,7 @@
 |---|---|---|
 | RULING-KCV2LAB | Disposition of the **407 MB local lab DB** (`cc-2026-08-02-wt/.../kcv2_lab.db`) — irreplaceable, NOT in git | Archive (copy to durable store) before any worktree prune; retain read-only |
 | RULING-KCV2PROD | Disposition of the **~3.15 GB `kcv2_*` tables** in the shared prod engine DB (forward-logger corpus, still growing) | Dump-to-archive then DROP → reclaims ~60% of the 5.27 GB DB |
-| RULING-POLYWALLET | **Polymarket wallets hold real USDC** (arb wallet + copy wallet). Code retirement does NOT drain them | Drain via `swap_pol_to_usdc.py` (separate op) BEFORE removing wallet keys; keys+funds are legacy-only |
+| ~~RULING-POLYWALLET~~ **VOID (Jack, 2026-09-16)** | ~~Polymarket wallets hold real USDC; code retirement does not drain them~~ | **CLOSED — NO WALLET ACTION NEEDED.** Jack confirmed the **Polymarket credentials TRANSFER TO THE LIVE PM DIVISION** (shared with a survivor) → funds are never stranded, no drain, no key removal. Polymarket wallet keys are now **NEVER-CANCEL** alongside Anthropic + Kalshi (see §9 API-04, §10). The old "drain gates key removal" constraint no longer exists — do not plan around it. |
 | RULING-PKMLB | poly_kalshi_mlb is config-armed + wired-live but persist-halted. It shares the KAREN Kalshi account with live PM | Explicitly `enabled:false` (disable-first) so a halt-clear can't resume placement; retire its OWN files; KEEP shared kalshi_live/kalshi/kalshi_whale_stats |
 | RULING-DB | Every legacy table drop touches the DB the live division reads arm from | Do drops in the Ph5/6 restart window only, on a backed-up DB, arm rows untouched; VACUUM is Jack's action |
 | RULING-APIFY | Apify (~$160–200/mo) is legacy-only but STILL being called by systemd timers today | Stop `watchlist-stats`/`watchlist-deep` timers (Ph2) → then cancel Apify subscription (Ph4) |
@@ -217,7 +219,7 @@ The reverse-import sweep was run with explicit patterns per module and cross-che
 | API-01 | **Anthropic** | SHARED-ALL | `ANTHROPIC_API_KEY` | YES (assert_live_ready) | RiskAgent (all), PMCC, MACE, pm_analyze (live PM), research, kalshi_llm | **NEVER CANCEL** | V |
 | API-02 | **Kalshi** (jack + karen keypairs) | SHARED-LIVE-PM | `KALSHI_API_KEY_ID`/`_PRIVATE_KEY_PEM`, `KALSHI_KAREN_*` | YES | Live PM driver (jack+karen subs), pm_web marks/milestones | **NEVER CANCEL** | V |
 | API-03 | **Polymarket data-api** (keyless) | SHARED-LIVE-PM | none | n/a | Live PM whale positions/search; poly_copy; poly_kalshi | KEEP | V |
-| API-04 | **Polymarket wallets** (arb + copy) + Polygon RPC | LEGACY-ONLY | `POLYMARKET_PRIVATE_KEY`/`_FUNDER_ADDRESS`, `POLYMARKET_COPY_PRIVATE_KEY`/`_FUNDER_ADDRESS`, `POLYGON_RPC_URL` (embedded Alchemy key) | YES | Only polymarket_arbitrage / polymarket_copy_trading order brokers (both legacy). Live PM never places on Polymarket | **Drain funds first (RULING-POLYWALLET), then remove keys in Ph4** | V |
+| API-04 | **Polymarket wallets** (arb + copy) + Polygon RPC | ~~LEGACY-ONLY~~ **→ SHARED-LIVE-PM (Jack ruling 2026-09-16)** | `POLYMARKET_PRIVATE_KEY`/`_FUNDER_ADDRESS`, `POLYMARKET_COPY_PRIVATE_KEY`/`_FUNDER_ADDRESS`, `POLYGON_RPC_URL` (embedded Alchemy key) | YES | ~~Only legacy order brokers~~ **Credentials TRANSFER to the live PM division (Jack) — funds never stranded** | **NEVER CANCEL** (RULING-POLYWALLET VOID; no drain) | V(ruling) |
 | API-05 | **Apify** (saswave scrapers) | LEGACY-ONLY | `APIFY_API_TOKEN` | YES | Only kalshi_copy_trading (+watchlist timers) | **PAID ~$160–200/mo → CANCEL Ph4** (stop timers Ph2 first) | V |
 | API-06 | **the-odds-api.com** | LEGACY-ONLY | `ODDS_API_KEY` | YES | Only kalshi_sports_scout + kalshi_sports_arb_observer | Free tier (500/mo); remove key Ph4, no $ saving | V |
 | API-07 | **Finnhub** | DEAD | `FINNHUB_API_KEY` | YES (loaded, never read) | Nothing — superseded by EODHD; zero code reads it | **CANCEL + remove KV (free win)** | V |
@@ -237,7 +239,7 @@ The reverse-import sweep was run with explicit patterns per module and cross-che
 - poly_kalshi_mlb: `poly_kalshi_mark_live`=0; 64 RTs, 0 unresolved; all entries `blocked_halt`. Shares KAREN Kalshi with live PM. **U:** a KAREN `get_positions` venue read (authenticated, service-env) would be authoritative but returns BOTH poly_kalshi AND live-PM karen positions — persisted `mark_live=0` is the cleaner poly_kalshi-specific signal. Recommend a ticker-filtered venue confirm in the Ph5 disarm window.
 - kalshi_copy_trading: 3,765 RTs, 0 unresolved; 89 live placements last 2026-08-14, all settled. No open positions.
 - All other kalshi/polymarket legacy divisions: paper (would_have_placed only) or resolved RTs (kalshi 9,610 / polymarket 16,025 — all resolved).
-- **Real money that EXISTS (not a position):** Polymarket wallets hold USDC (arb + copy) — RULING-POLYWALLET. Drain is a separate op from code retirement.
+- **Real money that EXISTS (not a position):** Polymarket wallets hold USDC (arb + copy). ~~RULING-POLYWALLET drain~~ **VOID (Jack, 2026-09-16): the Polymarket credentials transfer to the live PM division → funds are never stranded, no drain needed, keys are NEVER-CANCEL (§9 API-04, §3).**
 
 ---
 
@@ -247,7 +249,7 @@ The reverse-import sweep was run with explicit patterns per module and cross-che
 |---|---|---|---|
 | RULING-KCV2LAB | 407 MB local lab DB, irreplaceable, not in git | (a) archive to durable store then retain read-only; (b) retain in place, exclude from worktree prune; (c) delete | **(a).** git preserves code, NOT this data. Deleting loses 26,104 markets + 34k→63k ladder snaps + 3.1 M flow rows permanently. Do NOT fold into a general "remove kcv2" step. |
 | RULING-KCV2PROD | ~3.15 GB `kcv2_*` in shared prod DB, still growing | (a) stop observer + dump-to-archive + DROP tables (VACUUM by Jack) → reclaim ~60%; (b) stop observer, keep tables; (c) keep writing | **(a)** for the performance win, but archive the forward corpus first (it complements the lab DB). DROP is irreversible → Jack rules. |
-| RULING-POLYWALLET | Polymarket arb + copy wallets hold USDC | (a) drain via swap_pol_to_usdc.py before key removal; (b) leave funds, remove code only | **(a).** Removing keys without draining strands funds. Legacy-only keys → safe to remove after drain. |
+| ~~RULING-POLYWALLET~~ **CLOSED/VOID (Jack 2026-09-16)** | Polymarket arb + copy wallets hold USDC | ~~(a) drain before key removal~~ | **VOID — credentials transfer to the live PM division; no drain, keys NEVER-CANCEL. The "drain gates key removal" constraint no longer exists.** |
 | RULING-PKMLB | poly_kalshi_mlb config-armed+wired-live but halt-blocked; shares KAREN acct + 3 shared files | (a) enabled:false (disable-first) then retire own files, keep shared; (b) leave as-is | **(a).** Its OWN files (poly_kalshi_copy_trader/executor/marks, roster_split) are retirable; kalshi_live/kalshi/kalshi_whale_stats/mlb_poly_kalshi_match/sports_team_mapping STAY (live PM). |
 | RULING-DB | Every legacy table drop touches the DB the live division reads arm from | (a) drops only in Ph5/6 restart window on a backed-up DB, arm rows untouched; (b) defer all drops | **(a).** Back up DB first; never touch `agent_state` arm rows; VACUUM is Jack's action. |
 | RULING-APIFY | Apify paid, legacy-only, still called by timers | (a) stop watchlist-stats/deep timers (Ph2) → cancel subscription (Ph4); (b) cancel now (timers then error) | **(a).** Stop the callers first so the cancel is clean. |
@@ -452,7 +454,7 @@ All 8 **IDENTICAL box==prod-live** (CR-stripped md5), captured at prod-live `fcb
 The two scratch/artifact exclusions were found exactly as documented (box-only); the `pead-earnings-watcher.service` known-stale md5 `b2157ffe` matches; `card_assets/out/`, `__pycache__`, `*.bak_*`, data/WAL all correctly classify. Minor gaps (not errors): the doc doesn't list `.claude/` local files or `config/strategies.yaml.block_bs` — both benign/local; suggest a one-line note if a future sweep wants zero-noise. **Verdict: usable as-is for the removal-phase sweep.**
 
 ### 16.10 RULINGS / PENDING (carried forward, unchanged)
-kcv2 data disposition (archive+verify BEFORE drop); Polymarket USDC drain (**gates** key removal); DB backup before drop; P2-1 (sudo inert → az-root writes are Jack's). **Removal-phase readiness: shared files clean + baselined; no unrelated runtime drift; 2 known-benign non-runtime box-behind files (no action); 6 never-deployed KEPT files (2 survivor → owner's call).** New for owners: bitunix/PMCC undeployed dev files in git (16.4). Unattributed scratch: `strategies.yaml.block_bs` (16.8).
+kcv2 data disposition (archive+verify BEFORE drop); ~~Polymarket USDC drain (gates key removal)~~ **VOID 2026-09-16 — creds transfer to live PM, NEVER-CANCEL (§3/§9/§10)**; DB backup before drop; P2-1 (sudo inert → az-root writes are Jack's). **Removal-phase readiness: shared files clean + baselined; no unrelated runtime drift; 2 known-benign non-runtime box-behind files (no action); 6 never-deployed KEPT files (2 survivor → owner's call).** New for owners: bitunix/PMCC undeployed dev files in git (16.4). Unattributed scratch: `strategies.yaml.block_bs` (16.8).
 
 ---
 
@@ -505,7 +507,7 @@ Per kcv2 table: (1) short `mode=ro` conn → capture `HWM=MAX(rowid)`; (2) emit 
 Pre-req: this phase's verification = PASS **and** Jack authorizes. Sequence (Phase 7, a restart-free DB window — but see VACUUM): (1) **Jack stops the observer** (`az vm run-command … systemctl stop --now trading-corp-kcv2-observer.service`; az-root) so kcv2_* is static; (2) archive the delta rows > Phase-5 HWM (small) + re-verify; (3) **full-DB backup** (`cp data/trading_corp.db data/trading_corp.db.bak_pre_kcv2drop_<ts>`, ~5.3 GB — needs the 29 G free, OK) — **must precede any DDL**; (4) `DROP TABLE kcv2_quotes; kcv2_signals; kcv2_index_ticks; kcv2_heartbeat;` (indexes drop with their tables) — az-root or a Jack-run DB write (**reserved**); expected DB 5.28 GB → **~2.1 GB** after; (5) space is only reclaimed by **`VACUUM`** — on a 5.28 GB live DB a full VACUUM **rewrites the whole file and takes an EXCLUSIVE lock** (blocks the live PM writer for the rewrite duration, potentially minutes) → **run only in a PM-disarmed or quiet window, Jack's call**, OR skip VACUUM and let the freed pages be reused (DB stays 5.28 GB on disk but has ~3 GB free internal space — no live-lock cost). (6) **PROVE the live arm rows untouched**: `agent_state` 31 arm rows + poly_kalshi persist-halt identical before/after (they share this DB); do-no-harm diff. Rollback: restore the `.bak_pre_kcv2drop` file (engine stopped) — a Jack action.
 
 ### 17.9 RULINGS / PENDING
-Carried forward: Polymarket USDC drain (**gates** key removal); DB backup before any drop; P2-1 (sudo inert → az-root = Jack); poly_kalshi_mlb residual `auto_execute:true` (clean up Ph6); `strategies.yaml.block_bs` unattributed-retained. Observer-still-writing is now a Phase-7 pre-req (stop it first).
+Carried forward: ~~Polymarket USDC drain (gates key removal)~~ **VOID 2026-09-16 — creds transfer to live PM, NEVER-CANCEL**; DB backup before any drop; P2-1 (sudo inert → az-root = Jack); poly_kalshi_mlb residual `auto_execute:true` (clean up Ph6); `strategies.yaml.block_bs` unattributed-retained. Observer-still-writing is now a Phase-7 pre-req (stop it first).
 
 ### 17.10 EXECUTION — Jack ruled destination = **D (both blob + local)**. LOCAL archive WRITTEN + VERIFIED; BLOB pending a storage account.
 Dump ran chunked with **live PM healthy every chunk** (`PM_ok=True`, hb_age ≤4 s, open≈367 constant across all 28 chunks — the per-chunk check served as the continuous mid-dump do-no-harm; do-no-harm before/after also 31/31 armed, PIDs NRestarts 0).
@@ -558,6 +560,7 @@ Last prod-live commit containing EVERY removed legacy division. Revival = `git c
 Live-PM `prediction_markets/stats.py` imports ONLY pure primitives from it (`_edge_factor`, `time_weighted_outcomes`, `wilson_lcb_95`, `wilson_lcb_95_weighted`; calls `score_net_roi/recency_weighted/snapshot`). The `kalshi_apify_client` types are used ONLY as legacy-function param annotations (L234/236/328) live-PM never calls. Removal is *possible* but edits the live-PM-imported file (annotations eval at def-time). Per ADDITION 2 → **STOP: do not edit; keep `kalshi_apify_client`.** ⇒ cascades to deferring ALL 6 blocked-file deletions.
 
 ### 18.3 ★ THE TRANSITIVE CLOSURE PROBLEM (the deferred work is a CLOSURE, not a leftover list — the untangle pass must NOT restart by rediscovering this)
+> **✅ RESOLVED 2026-09-16 (session 8) — CLOSURE COMPUTED IN FULL. See §20.** This section stated the problem; §20 is the answer. Key correction to the text below: §18.3 called the `web/routes.py` PM routes "do NOT import deleted modules" — TRUE for the `/prediction-markets/` render routes, but the closure surfaced **6 additional lazy imports in `web/routes.py`** (whale force-close/promote/demote/analyst routes) pulling `kalshi_copy_trader`, `polymarket_copy_trader`, `roster_split`, `polymarket_whale_analyst`, `polymarket_whale_audit_cache` — the "other couplings" §18.3 warned might exist. Those are now KEEPERS pending a web graft (§20).
 Option 2 assumed ~30 files were "cleanly orphaned." Proving imports before deleting (query validated first) broke that assumption **twice**, both times because the deletion boundary was drawn from the wrong map:
 - ★ **`_weather_math.py` is a KEEPER.** `trading_corp/path_logger/logger.py:31` does `from trading_corp.agents.strategies._weather_math import kalshi_quote_dollars` (used L300), and **path_logger is a SURVIVOR with its own systemd unit `trading-corp-path-logger.service`**. An earlier check "path_logger not in tree" looked at the **repo-root** instead of `trading_corp/path_logger/` and returned a confident WRONG "safe to delete." Corrected only by grepping the right prefix. Keeping `_weather_math` transitively keeps whatever IT imports (verify: possibly `residual_logic`) — NOT yet computed.
 - ★ **`kalshi_crypto_v2_observer.py` is a KEEPER.** kcv2 observer **PID 679** runs `python -m trading_corp.agents.strategies.kalshi_crypto_v2_observer` (confirmed live at baseline, up ~17d). Deleting the .py does not crash the running process but breaks its next restart — and Phase 7 restarts/retires that unit. Stays until Phase 7 formally stops the unit.
@@ -645,3 +648,71 @@ Post-restart confirm: survivors returned (bitunix, MACE, PMCC, PEAD, donchian, c
 - **VACUUM:** preserves data; rollback only if it corrupts (restore backup). No data-loss risk.
 
 ### 19.6 STATUS: gates presented; **DROP NOTHING until Jack rules Gate A (blob vs local-only) + Gate B (VACUUM option).** Observer stop / delta-archive / backup / DROP / VACUUM all reserved for Jack; agent does RO + local archive verify + builds+presents the runners. Out of scope unchanged: no code removal, no API cancels, no USDC drain, no archive/lab deletion; `strategies.yaml.block_bs` left.
+
+---
+
+## 20. PHASE 8 — UNTANGLE PASS: THE TRANSITIVE CLOSURE, COMPUTED (session 8, 2026-09-16). ANALYSIS + LOCAL BUILD ONLY; nothing reached the box.
+
+Answers the §18.3 deferred problem. Off `origin/prod-live` **`3dd15c10`** (verified tip — advanced through Ph6 `8f35f254` + later PM/ITF deploys; the charter's `8f35f254` was Ph6-era). Build worktree `legacy-pm-untangle-2026-09-16`. **Market open → deploy/restart held for after 16:00 ET; box read-only; nothing here needs either.**
+
+### 20.1 METHOD — AST import graph, query PROVEN before trusted
+Stdlib `ast` walk of **all 785 tracked `.py`** (repo-wide, not just expected paths): maps files↔dotted-modules, extracts EVERY `import`/`from` node (module-level AND function-level/lazy — AST sees them anywhere), resolves relative imports, and scans `importlib.import_module`/`__import__` string args (a real AST blind spot). **0 parse errors / 785.**
+- **★ QUERY-VALIDATION FIRST (the §"prove your query works" mandate):** before believing any "no importers", the analyzer was shown to detect three known imports — `path_logger/logger.py → _weather_math`, `prediction_markets/stats.py → kalshi_whale_stats`, `kalshi_live.py → kalshi.py`. All three present ⇒ the graph is not silently empty.
+- **Dynamic-import blind spot cleared:** the only literal `import_module`/`__import__` args in the tree are stdlib (`time`/`json`/`datetime`/`decimal`); the one non-literal is a test reflecting over `main.py`'s own imports that swallows import errors. **No survivor dynamically pulls a legacy module.**
+- **String-refs ≠ imports (confirmed live):** `web/routes.py` has ~30 `"kalshi_copy_trader"` occurrences that are `agent_state` KEY STRINGS, not imports; a textual sweep also flagged `whale_screening.py:15` and `routes.py:705` — both DOCSTRINGS. AST correctly excluded all of them.
+
+### 20.2 CLASSIFICATION — PROTECTED forward-closure from survivor roots
+**PROTECTED = forward-reachable from every survivor runtime root** (engine `__main__.py`/`main.py`; whole `prediction_markets/**` = live PM + pm_web; `path_logger/**`; `mace/**`; kcv2 observer entry; crons `pm_cli.py`/`replay_audit_event_write_failed.py`/`telegram_lifecycle_divergence_check.py`; out-of-tree `card_assets/**` + `pead_earnings/**` per RECONCILIATION_EXCLUSIONS). **= 254 files.** A candidate is a KEEPER iff it lands in PROTECTED (a survivor reaches it); DELETABLE iff no survivor reaches it. **Authoritative invariant proven: 0 PROTECTED files import any of the 27 core deletable modules** (so the keepers, incl. the web-blocked ones, do not depend on the deletables).
+
+### 20.3 ★ THE SPLIT (the closure is messier than §18.3's "6 blocked files" — reported honestly, per charter)
+| Group | What | Count | Disposition |
+|---|---|---|---|
+| **TRANCHE 1** | Pure-deletable NOW (reverse-closed; no kept file imports them; no edits) | **49** | **BUILT + PROVEN (§20.5); deploy = FF push, Jack, after 16:00 ET** |
+| **KEEPERS (shared-blocked)** | Legacy files a SHARED file imports → need a graft to remove | **13** | DEFER to a shared-file graft pass (§20.4) |
+| **KEEPERS (permanent / Ph7)** | `_weather_math` (survivor), `kalshi_crypto_v2_observer` (kcv2) | 2 | `_weather_math` PERMANENT; observer until Ph7 |
+| **DEFERRED (test-coupled)** | 2 legacy modules + 2 keeper tests kept valid by a small test edit | 4 | DEFER (§20.4) |
+| **TRANCHE-2 leaves** | ~20 legacy scripts/tests importing the shared-blocked keepers | ~20 | DEFER — delete WITH their keeper in the graft pass |
+| **Non-.py** | 8 infra/systemd legacy unit files (already off-box), legacy config blocks, woven web dashboard | — | DEFER (grafts / separate concern) |
+
+### 20.4 KEEPERS — every one with its surviving importer NAMED + LINE-NUMBERED (VERIFIED in the 3dd15c10 tree)
+| Keeper file | Kept because (importer : line) | Unblock = |
+|---|---|---|
+| `agents/strategies/_weather_math.py` | **SURVIVOR** `path_logger/logger.py:31` (`import kalshi_quote_dollars`, used L300) | PERMANENT — never delete unless path_logger stops using it |
+| `agents/strategies/kalshi_crypto_v2_observer.py` | kcv2 observer **PID 679** (`python -m …kalshi_crypto_v2_observer`) | Phase 7 stops the observer first |
+| `brokers/polymarket_live.py` | `main.py:2685` (broker factory, lazy) | main.py graft: deregister polymarket divisions + drop factory branch |
+| `brokers/polymarket.py` | `main.py:2706` (factory) + `polymarket_live.py` | same main.py graft |
+| `data/kalshi_market_map.py` | `brokers/kalshi.py:402` (lazy discovery import) | kalshi.py graft (RULING-KALSHIMAP) — shared → live-PM transitive |
+| `data/kalshi_apify_client.py` | `data/kalshi_whale_stats.py:40` (module-level) + `kalshi_copy_trader` | Jack ruled kalshi_whale_stats NOT edited (§18.2) → PERMANENT unless reversed |
+| `web/kalshi_crypto_vol_v2.py` | `web/data.py:19` (**MODULE-LEVEL** — fails at BOOT if deleted) | web/data.py graft |
+| `agents/strategies/kalshi_copy_trader.py` | `web/routes.py:2756` (lazy, force-close route) | web/routes.py graft |
+| `agents/strategies/polymarket_copy_trader.py` | `web/routes.py:3076` (lazy) + `roster_split` | web/routes.py graft |
+| `agents/strategies/roster_split.py` | `web/routes.py:3159,3185` (lazy promote/demote) + `polymarket_copy_trader` | web/routes.py graft |
+| `agents/polymarket_whale_analyst.py` | `web/routes.py:3233` (lazy) | web/routes.py graft |
+| `agents/research/polymarket_whale_audit_cache.py` | `web/routes.py:3234` (lazy) | web/routes.py graft |
+| `agents/strategies/_whale_autopause.py` | `kalshi_copy_trader` + `polymarket_copy_trader` (transitive) | falls when both copy-traders fall |
+| `data/polymarket_whale_stats.py` (DEFERRED) | `scripts/seed_polymarket_watchlist_deep.py` + `tests/test_polymarket_copy_trader.py` | web graft + test edit |
+| `scripts/seed_polymarket_watchlist_deep.py` (DEFERRED) | keeper test `tests/test_polymarket_data_api_client_retry.py:213+` (lazy) — the test covers the **live-PM shared** `polymarket_data_api_client` | small test edit (drop the seed-script test fns) |
+
+### 20.5 TRANCHE 1 — the 49-file pure-deletion, BUILT + PROVEN LOCAL (branch `legacy-pm-untangle-2026-09-16` @ **`ed6d9b83`**)
+**Contents:** 22 `trading_corp/` modules (retired strategies polymarket_arbitrage / kalshi_tail_price_arb / kalshi_temporal_bucket_arb / kalshi_llm_arbitrage / kalshi_weather_arb / kalshi_crypto_arb / kalshi_sports_scout / kalshi_sports_arb_observer / poly_kalshi_copy_trader / poly_kalshi_executor + helpers _polymarket_prompts / _sports_math; data crypto_spot/vol_provider, iem_cli/metar/nbm/open_meteo/odds_api clients, kalshi_matchable, residual_logic, weather_forecast/stations; agents kalshi_resolver / polymarket_resolver / poly_kalshi_marks) + 1 script (refresh_polymarket_whales) + 7 top-level scripts (backfill/ingest/replay/retro) + 15 legacy tests. **Full list = `git show ed6d9b83 --stat`.**
+**PROOFS (all VERIFIED this session):**
+- `git show`: **49 files, 0 additions, 17,918 deletions** — pure deletion, touches none of the 8 shared files.
+- **py_compile whole tree: 736/736 OK, 0 failures.**
+- **Import-clean (AST): 0 kept non-staged files import any deleted module.** Dangling textual sweep = 2 hits, both DOCSTRINGS (not imports).
+- **§16.7 RE-PROOF:** 8 shared files CR-stripped md5 byte-identical (main.py `c15b4de6`, db `043f6033`, robinhood `2753939c`, base `bc8b6d76`, data_exec `8f7d2568`, kalshi_live `5c1a3551`, web/data `2643bfc4`, web/routes `49a785fa`); main.py survivor wiring UNCHANGED (bitunix **196**, mace **119**, pm_live_driver **4**, sched_pm_live **2**, shard **1**, pmcc/pead/donchian **2/2/3**). **This commit changes zero shared files** — the 2026-09-04 "silent main.py wiring loss" failure mode is structurally impossible here (main.py not in the diff).
+- **Clean FF onto prod-live:** 0 behind / 1 ahead; merge-base == `3dd15c10`.
+- ★ **6 inert danglers (documented, harmless):** `deploy/*/staged/*/main.py` (June bitunix/sfp survivor-deploy snapshots) hold 10 legacy refs each — frozen historical archives, never imported/run/py_compiled-as-live, NOT legacy-PM source (they predate Ph6). Left in place (survivor deploy provenance; out of scope). A later import-graph sweep will see these 6 — they are known-and-benign.
+
+### 20.6 WEB-SURFACE SEPARABILITY (charter: "say honestly how separable")
+**NOT cleanly separable by deletion — both are SHARED files needing in-file grafts:**
+- `web/data.py` (6,717 LOC): legacy PM dashboard = `build_prediction_market_view` (L6190) + `_pm_venue`/`_pm_divisions_all`/`_pm_equity_at`/`_pm_summary` helpers + `_hydrate_pm_overview` (L1053) **WOVEN into the shared home hydration** (`_hydrate_pm_overview(...)` called at L812 inside the shared dashboard build, try/except-guarded → degrades to empty tiles, does not crash). Plus a **module-level** `from ...kalshi_crypto_vol_v2 import …` at **L19** → web/data.py won't even import without that legacy file. Removing the legacy dashboard = an in-file graft (delete the funcs + the L812 call + the L19 import), not a file deletion.
+- `web/routes.py` (5,846 LOC): legacy whale-management routes lazily import 5 legacy modules (§20.4). Because the imports are **in-handler/lazy**, they pass py_compile and boot clean, then **500 at request time** if the modules are deleted — so they cannot be pure-deleted; the routes must be grafted out first.
+- ⇒ **The whole web surface + its 13 shared-blocked keepers form ONE graft unit** (main.py factory + kalshi.py + web/data.py + web/routes.py), Jack-gated, restart-free for web (pm_web is separate) but a real code review. NOT attempted this pass.
+
+### 20.7 RECOMMENDATION (Jack rules)
+1. **Deploy Tranche 1** (FF `git push origin legacy-pm-untangle-2026-09-16:prod-live`) after 16:00 ET — pure deletion of dead code, no restart, no runtime effect (engine imports 0 at module level since Ph6). Lowest-risk, largest single safe reduction.
+2. **Graft pass (deferred):** the 13 shared-blocked keepers + web dashboard + ~20 tranche-2 leaves + 8 systemd units + legacy config blocks — one deliberate code-review change editing main.py factory / brokers/kalshi.py / web/data.py / web/routes.py + trimming 2 tests. NOT in a restart window with live money unless the web edits are proven inert (pm_web is separate from the engine).
+3. `_weather_math` + `kalshi_apify_client` are effectively PERMANENT keepers (survivor path_logger; Jack-ruled kalshi_whale_stats untouched). `kalshi_crypto_v2_observer` falls with Phase 7.
+
+### 20.8 SESSION-8 CHANNEL / SCOPE NOTES
+Read-only local analysis + local git only. **NO box access** (task: box read-only today; nothing here needed it). Analysis scratch under `cc/_untangle_scratch/` (graph.json, split.json, analyzers) is local-only, NOT committed. Nothing armed/disarmed/deployed/restarted/pushed. Tranche-1 commit is LOCAL and awaits Jack's FF push.
