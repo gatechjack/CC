@@ -16,7 +16,6 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from trading_corp.persistence import db
-from trading_corp.web.kalshi_crypto_vol_v2 import PMVolV2Block, query_pm_vol_v2_block
 from trading_corp.utils.time import format_et_full, format_et_hm, format_et_short
 from trading_corp.utils.divisions import (
     Division, InvestmentGroup, group_by_investment_type, load_divisions,
@@ -3961,11 +3960,10 @@ class PMDashboardView:
     # The filter itself is applied inside each PM query helper; this field
     # is just the UI signal that an epoch is active.
     pm_metrics_epoch: str | None = None
-    # Set only when the selected division is 'kalshi_crypto'. None
-    # on every other division and on the All Prediction Markets view.
-    # Owns the vol-v2 paper-validation cards; see
-    # `web/kalshi_crypto_vol_v2.py` for the module.
-    vol_v2_block: "PMVolV2Block | None" = None
+    # Retired (tranche 2b): the vol-v2 paper-validation cards + their module
+    # `web/kalshi_crypto_vol_v2.py` are gone. Field kept as an always-None
+    # placeholder so PMDashboardView's shape is unchanged for the template.
+    vol_v2_block: "object | None" = None
     # Paper/Live/All stats toggle state — kalshi_copy_trading only. `wr_mode`
     # is the active slice ('live' default; 'paper'|'all'); `wr_live_epoch` is
     # the go-live ISO boundary used for the "since <date>" label. On every
@@ -6306,9 +6304,9 @@ async def build_prediction_market_view(
             100.0 * n_win_m / decisive_m if decisive_m > 0 else None
         )
 
+    # vol-v2 paper-validation cards retired with kalshi_crypto_vol_v2 (tranche 2b);
+    # the module is deleted, so the block is always absent now.
     vol_v2_block = None
-    if division == "kalshi_crypto":
-        vol_v2_block = await asyncio.to_thread(query_pm_vol_v2_block, db_url)
 
     return PMDashboardView(
         selected=division,

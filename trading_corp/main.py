@@ -2661,54 +2661,6 @@ def _build_broker_for_division(
         paper = PaperBroker(account=f"paper_{division.slug}", starting_equity=0.0)
         return PaperExecutionBroker(bx, paper)
 
-    if family == "polymarket":
-        # PolymarketBroker (read-only, ReadOnlyBroker) for PAPER/non-selected;
-        # PolymarketLiveBroker (Broker, placement-legal) when LIVE + selected
-        # (--brokers polymarket). Per-division wallet (item 6): resolve the EOA
-        # by slug (RPC shared; unmapped/partial wallet → None creds → stub).
-        #
-        # ANTI-HALF-FLIP (E1·6): the live branch is REQUIRED. Without it a
-        # LIVE+selected polymarket division would silently resolve the READ-ONLY
-        # adapter and never place — the Bitunix-half-flip failure mode. PCT goes
-        # live via divisions.yaml `broker: paper→polymarket` + mode LIVE +
-        # `--brokers polymarket`. No PaperExecutionBroker wrap on the read-only
-        # path (no order surface to simulate); the live broker places for real.
-        wallet = secrets.polymarket_wallets.get(division.slug)
-        if wallet is None:
-            log.info(
-                "Polymarket division %s has no mapped wallet — broker will stub",
-                division.slug,
-            )
-        pk = wallet.private_key if wallet else None
-        funder = wallet.funder_address if wallet else None
-        if is_live_division:
-            from trading_corp.brokers.polymarket_live import PolymarketLiveBroker
-            # E5a — execution discipline sourced from THIS division's config
-            # (config/divisions.yaml). Omit each kwarg when unset so the broker
-            # ctor default applies → an unconfigured division is byte-identical to
-            # pre-E5a. exit_chase forwards the same way once E5b adds the ctor param.
-            exec_kwargs = {}
-            _ot = getattr(division, "order_type", None)
-            if _ot is not None:
-                exec_kwargs["order_type"] = _ot
-            _fps = getattr(division, "fak_poll_seconds", None)
-            if _fps is not None:
-                exec_kwargs["fak_poll_seconds"] = _fps
-            # E5b — exit_chase pass-through dict (None when unset → kwarg omitted →
-            # ctor default None → chase OFF → byte-identical to pre-E5b).
-            _ec = getattr(division, "exit_chase", None)
-            if _ec is not None:
-                exec_kwargs["exit_chase"] = _ec
-            return PolymarketLiveBroker(
-                private_key=pk, funder_address=funder,
-                polygon_rpc_url=secrets.polygon_rpc_url, **exec_kwargs,
-            )
-        from trading_corp.brokers.polymarket import PolymarketBroker
-        return PolymarketBroker(
-            private_key=pk, funder_address=funder,
-            polygon_rpc_url=secrets.polygon_rpc_url,
-        )
-
     if family == "kalshi":
         # Phase K1 read-only KalshiBroker (ReadOnlyBroker) for PAPER/non-selected;
         # K5 KalshiLiveBroker (Broker, placement-legal) when LIVE + selected

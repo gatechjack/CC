@@ -376,45 +376,6 @@ class KalshiBroker(ReadOnlyBroker):
                 "expiration_time": exp_time}
 
 
-    async def list_markets(
-        self,
-        *,
-        categories: tuple[str, ...] | None = None,
-        max_series_per_category: int = 30,
-        max_markets_per_series: int = 50,
-        series_filter: tuple[str, ...] | frozenset[str] | None = None,
-    ):
-        """Discovery: category -> series -> markets, classified by structural type.
-
-        Returns a `DiscoveryResult` from `kalshi_market_map`. This is the
-        broker-level abstraction that strategies (Phase K2.1+) consume —
-        same role as `PolymarketBroker.list_markets()` in the polymarket
-        pattern. Strategies don't talk to pykalshi directly.
-
-        `series_filter` constrains discovery to an exact-match set of
-        series tickers within the requested category(ies). See
-        `discover_by_categories` for the rationale.
-
-        Empty result in stub mode (no credentials).
-        """
-        # Imported here to avoid load-time dependency on kalshi_market_map
-        # in environments where this broker is stub-only (e.g. local tests).
-        from trading_corp.data.kalshi_market_map import (
-            discover_by_categories, DEFAULT_DISCOVERY_CATEGORIES, DiscoveryResult,
-        )
-        if self._stub or self._client is None:
-            return DiscoveryResult(
-                events=[], n_markets_total=0, n_markets_filtered_collection=0,
-                n_events_total=0, by_type={},
-            )
-        return await discover_by_categories(
-            self._client,
-            categories=categories or DEFAULT_DISCOVERY_CATEGORIES,
-            max_series_per_category=max_series_per_category,
-            max_markets_per_series=max_markets_per_series,
-            series_filter=series_filter,
-        )
-
 
     async def get_market_trades(
         self,
