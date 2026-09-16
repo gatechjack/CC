@@ -519,6 +519,43 @@ def _fmt_usd(x) -> str:
     return "n/a" if x is None else "%+.2f" % x
 
 
+def ranking_metrics(rep: PMAnalysisReport) -> dict:
+    """Item 5 (2026-09-15): the stats.py FARM-RANKING metrics for this (wallet, category), each tagged CLEAN vs
+    INVERTING-by-loss-omission. Pure derivation from the report (roi + wins/losses + samples + counts) using the
+    SAME stats primitives the scoreboard ranks with -- no new query. ★ RULED disposition (Jack): the CLEAN set
+    (cost-basis / sample-size -- honest) is SHOWN normally AND fed to the Sonnet narrator; the INVERTING set is
+    SHOWN on the panel behind a 'inverted by loss-omission: a whale hiding losses scores HIGHER' flag and goes
+    NOWHERE near the narrator or the deterministic tier. wilson_lcb is a 95%% LCB on a win-rate from the
+    loss-OMITTING /closed-positions feed -> a hider gets a HIGHER bound (the drawdown-family inversion); the
+    composite score + recency-weighted score inherit it; roi_notional misranks longshots ~50x. edge_factor +
+    net_roi are cost-basis (safe); n_eff is a sample-SIZE statement (safe)."""
+    roi = rep.roi
+    n_dec = (rep.wins or 0) + (rep.losses or 0)
+    score, wilson, edge = stats.score_net_roi(rep.wins or 0, n_dec, roi)
+    rw_score = None
+    n_eff = None
+    scoreable_samples = [(s.won, s.resolved_ts) for s in (rep.samples or ()) if not s.pnl_suspect]
+    if scoreable_samples:
+        rw_score, _rw_w, _rw_e, _wr, n_eff = stats.score_recency_weighted(
+            scoreable_samples, now_ts=float(rep.generated_ts or 0), roi=roi)
+    clean = [
+        ("net ROI (cost-basis)", _fmt_pct_signed(roi)),
+        ("edge factor (1 + clipped cost-ROI)", "%.2f" % edge),
+        ("n resolved (scoreable)", str(rep.n_resolved)),
+        ("effective n (recency-weighted)", "n/a" if n_eff is None else "%.1f" % n_eff),
+        ("n excluded (quarantined)", str(rep.n_excluded)),
+        ("min resolved (rank floor)", str(rep.min_resolved)),
+    ]
+    inverting = [
+        ("composite score (wilson_lcb x edge)", "%.3f" % score),
+        ("wilson_lcb (95% win-rate lower bound)", "%.3f" % wilson),
+        ("recency-weighted score", "n/a" if rw_score is None else "%.3f" % rw_score),
+        ("ROI (notional, net / total_bought)", _fmt_pct_signed(rep.roi_notional)),
+    ]
+    return {"clean": clean, "inverting": inverting,
+            "invert_flag": "inverted by loss-omission -- a whale hiding losses scores HIGHER, so a GOOD number here is a suspicion"}
+
+
 def _build_user_content(rep: PMAnalysisReport) -> str:
     """The flagged-number block the narrator reasons over. ★ THE BREVITY MECHANISM: every number carries its
     TRUST-FLAG right here (MIRAGE / UNKNOWN / ONE-POSITION / hedger / chalk / LABELLED FICTION), so a caveat is
@@ -574,15 +611,20 @@ def _build_user_content(rep: PMAnalysisReport) -> str:
         "  drawdown-tell = %s over %sW/%sL  [LABELLED FICTION -- NOT a risk figure; near-$0 over many wins = losses hidden]"
         % (_fmt_usd(s.get("dd_tell")), s.get("dd_wins"), s.get("dd_losses")),
         "  our real copy fills = %s  [display only, never a gate]" % s.get("copy_fills"),
-        "",
-        # item 7 (2026-09-15): INSUFFICIENT_DATA keeps the caveat AND adds the shape-read (a watchlist is built by
-        # pinning low-N traders that LOOK worth watching -- a bare refusal gives nothing to decide on). All other
-        # tiers stay ONE sentence (the brevity mechanism).
-        (("Write EXACTLY TWO sentences: (1) what is MISSING (the caveat, kept); (2) the READ -- is this short record's "
-          "shape good or poor (cite honest ROI / diversification / chalk as it warrants). No third sentence, no restated caveat.")
-         if s.get("tier") == "INSUFFICIENT_DATA"
-         else "Write EXACTLY ONE sentence naming the single decisive factor for the %s tier." % s.get("tier")),
     ]
+    # item 5 (2026-09-15): the CLEAN farm-ranking metrics (cost-basis + sample-size) go to the narrator too; the
+    # loss-omission-INVERTING ones (wilson_lcb / composite score / recency-weighted score / roi_notional) are
+    # WITHHELD -- they invert (a hider scores HIGHER), so they never touch the verdict or the tier.
+    lines += ["", "Farm-ranking metrics -- CLEAN set only (the loss-omission-inverting ones are withheld from you on purpose):"]
+    lines += ["  %s = %s" % (label, val) for (label, val) in ranking_metrics(rep)["clean"]]
+    # item 7 (2026-09-15): INSUFFICIENT_DATA keeps the caveat AND adds the shape-read (a watchlist is built by
+    # pinning low-N traders that LOOK worth watching -- a bare refusal gives nothing to decide on). Other tiers = ONE.
+    lines += ["",
+              (("Write EXACTLY TWO sentences: (1) what is MISSING (the caveat, kept); (2) the READ -- is this short "
+                "record's shape good or poor (cite honest ROI / diversification / chalk as it warrants). No third "
+                "sentence, no restated caveat.")
+               if s.get("tier") == "INSUFFICIENT_DATA"
+               else "Write EXACTLY ONE sentence naming the single decisive factor for the %s tier." % s.get("tier"))]
     return "\n".join(lines)
 
 
