@@ -987,6 +987,26 @@ MIGRATION_023: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_whale_score_cat ON pm_whale_score(category, tier, sort_roi DESC)",
 ]
 
+# ATTACHMENT SPAN HISTORY (item 2, 2026-09-15): pm_subdivision_attachment holds ONE row per (account,category,
+# wallet), so a re-attach reactivates that row (preserves added_ts, clears removed_ts) and the EARLIER span's
+# dates are lost. This APPEND-ONLY event log records every attach/detach so the full span history is recoverable
+# (the journal already has the trades across spans; only the DATES were lossy). pm_web/pm_cli-OWNED: written by
+# farm_actions.promote_to_live/detach_from_live; the DRIVER never reads it -- its roster query keys
+# pm_subdivision_attachment WHERE active=1, UNAFFECTED (same additive/engine-neutral pattern as mig 022/023).
+MIGRATION_024: list[str] = [
+    "CREATE TABLE IF NOT EXISTS pm_subdivision_attachment_event ("
+    "  id          INTEGER PRIMARY KEY,"             # rowid alias; append-only
+    "  account_id  TEXT    NOT NULL,"
+    "  category    TEXT    NOT NULL,"
+    "  wallet      TEXT    NOT NULL,"
+    "  action      TEXT    NOT NULL,"                # 'attach' | 'detach'
+    "  source      TEXT,"                            # provenance (promote_to_live | detach_from_live)
+    "  actor       TEXT,"                            # owner_identity that performed it (pm_web); NULL/'cli' otherwise
+    "  ts          INTEGER NOT NULL"                 # event time (== the attach added_ts / detach removed_ts)
+    ")",
+    "CREATE INDEX IF NOT EXISTS ix_pm_subattach_event ON pm_subdivision_attachment_event(account_id, category, wallet, ts)",
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -1017,6 +1037,10 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     (23, MIGRATION_023),   # ANALYZE UPGRADE: pm_whale_score (the stored, sortable promotion-judge score; pm_web-owned).
                            # ★ DEPLOY GATE: drift-check box head == 22 before applying; renumber to box-head+1 (024) on a
                            # collision (Item B also claims 023). Self-renumber-at-apply is now the DEFAULT for every PM migration.
+    (24, MIGRATION_024),   # ATTACHMENT SPAN HISTORY: pm_subdivision_attachment_event (append-only; pm_web/pm_cli-owned;
+                           # engine never reads it). ★ DEPLOY GATE: drift-check box head == 23 before applying; renumber to
+                           # box-head+1 on collision. ★ PM migrations SELF-APPLY via db.init_db from the pm_cli crons, so
+                           # expect the cron to apply this before any manual step -- the STOP-if-head!=23 drift-check is what keeps that safe.
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"
