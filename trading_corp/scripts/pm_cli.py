@@ -363,7 +363,7 @@ def _cmd_live_attach(args) -> int:
     pm_web is down. Writes ONLY the PM DB attachment table; never an order."""
     db.init_db(args.db)
     with db.connect(args.db) as conn:
-        res = farm_actions.promote_to_live(conn, args.account, args.category, args.wallet, _now())
+        res = farm_actions.promote_to_live(conn, args.account, args.category, args.wallet, _now(), actor="cli")
     print(json.dumps(res, indent=2, default=str))
     return 0 if res.get("ok") else 1
 
@@ -374,7 +374,7 @@ def _cmd_live_detach(args) -> int:
     pm_web is down. Writes ONLY the PM DB attachment table."""
     db.init_db(args.db)
     with db.connect(args.db) as conn:
-        res = farm_actions.detach_from_live(conn, args.account, args.category, args.wallet, _now())
+        res = farm_actions.detach_from_live(conn, args.account, args.category, args.wallet, _now(), actor="cli")
     print(json.dumps(res, indent=2, default=str))
     return 0 if res.get("ok") else 1
 

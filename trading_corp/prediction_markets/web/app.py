@@ -815,9 +815,9 @@ def _demote_prospect(wallet: str, category: str, now_ts: int) -> dict:
         return farm_actions.demote_to_prospect(conn, wallet, category, now_ts)
 
 
-def _promote_live(account_id: str, category: str, wallet: str, now_ts: int) -> dict:
+def _promote_live(account_id: str, category: str, wallet: str, now_ts: int, actor: str | None = None) -> dict:
     with connect() as conn:
-        return farm_actions.promote_to_live(conn, account_id, category, wallet, now_ts)
+        return farm_actions.promote_to_live(conn, account_id, category, wallet, now_ts, actor=actor)
 
 
 @app.post("/farm/{category}/promote/{wallet}")
@@ -893,9 +893,9 @@ def _detach_confirm_ctx(account_id: str, category: str, wallet: str, now_ts: int
     return {"account_id": account_id, "category": category, "wallet": wallet, "rec": rec, "now_ts": now_ts}
 
 
-def _detach_live(account_id: str, category: str, wallet: str, now_ts: int) -> dict:
+def _detach_live(account_id: str, category: str, wallet: str, now_ts: int, actor: str | None = None) -> dict:
     with connect() as conn:
-        return farm_actions.detach_from_live(conn, account_id, category, wallet, now_ts)
+        return farm_actions.detach_from_live(conn, account_id, category, wallet, now_ts, actor=actor)
 
 
 @app.get("/live/{account_id}/{category}/detach/{wallet}", response_class=HTMLResponse)
@@ -921,7 +921,7 @@ async def detach_action(request: Request, account_id: str, category: str, wallet
     denied = _owner_or_admin_gate(request, account_id)
     if denied is not None:
         return denied
-    await asyncio.to_thread(_detach_live, account_id, category, wallet, int(time.time()))
+    await asyncio.to_thread(_detach_live, account_id, category, wallet, int(time.time()), authz.current_identity(request))
     return RedirectResponse("/live/%s/%s" % (account_id, category), status_code=303)
 
 
@@ -1185,7 +1185,7 @@ async def promote_to_live_action(request: Request, account_id: str, category: st
     # account_id simply misses -> honest no_such_subdivision no-op (never a wrong write).
     account_id = (account_id or "").strip()
     category = (category or "").strip().lower()
-    result = await asyncio.to_thread(_promote_live, account_id, category, (wallet or "").lower(), int(time.time()))
+    result = await asyncio.to_thread(_promote_live, account_id, category, (wallet or "").lower(), int(time.time()), authz.current_identity(request))
     # GUARD (2026-09-11): promote_to_live is idempotent (PK (account,category,wallet) + UPSERT -> never a second
     # row), but a repeat attach used to redirect silently as if it did something. Refuse it LOUD: 409 with a plain
     # message. The UI already hides Promote for an attached account (the "Live Whale" badge), so this backstops a
