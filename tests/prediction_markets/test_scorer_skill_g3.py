@@ -28,11 +28,13 @@ def test_ranking_metrics_split_clean_vs_inverting():
     rm = analyze.ranking_metrics(_rep("WATCH"))
     clean, inv = dict(rm["clean"]), dict(rm["inverting"])
     for lab in ("net ROI (cost-basis)", "edge factor (1 + clipped cost-ROI)", "n resolved (scoreable)",
-                "effective n (recency-weighted)", "n excluded (quarantined)", "min resolved (rank floor)"):
+                "n excluded (quarantined)", "min resolved (rank floor)"):
         assert lab in clean, lab
     for lab in ("composite score (wilson_lcb x edge)", "wilson_lcb (95% win-rate lower bound)",
-                "recency-weighted score", "ROI (notional, net / total_bought)"):
+                "ROI (notional, net / total_bought)"):
         assert lab in inv, lab
+    # recency-weighted n_eff/score are NOT surfaced (rep.samples is the top-5 illustrative rows, not a valid input)
+    assert "effective n (recency-weighted)" not in clean and "recency-weighted score" not in inv
     assert "HIGHER" in rm["invert_flag"]          # ★ the flag says WHICH WAY it inverts (the mirage tell)
 
 
@@ -40,7 +42,7 @@ def test_ranking_metrics_split_clean_vs_inverting():
 def test_prompt_feeds_clean_metrics_and_withholds_inverting():
     txt = analyze._build_user_content(_rep("WATCH"))
     assert "CLEAN set only" in txt
-    assert "net ROI (cost-basis)" in txt and "edge factor" in txt and "effective n" in txt
+    assert "net ROI (cost-basis)" in txt and "edge factor" in txt and "n resolved (scoreable)" in txt
     low = txt.lower()
     assert "wilson_lcb" not in low                # ★ the inverting metrics are ABSENT from the narrator input
     assert "composite score" not in low

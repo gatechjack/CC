@@ -527,29 +527,24 @@ def ranking_metrics(rep: PMAnalysisReport) -> dict:
     SHOWN on the panel behind a 'inverted by loss-omission: a whale hiding losses scores HIGHER' flag and goes
     NOWHERE near the narrator or the deterministic tier. wilson_lcb is a 95%% LCB on a win-rate from the
     loss-OMITTING /closed-positions feed -> a hider gets a HIGHER bound (the drawdown-family inversion); the
-    composite score + recency-weighted score inherit it; roi_notional misranks longshots ~50x. edge_factor +
-    net_roi are cost-basis (safe); n_eff is a sample-SIZE statement (safe)."""
+    composite score inherits it; roi_notional misranks longshots ~50x. edge_factor + net_roi are cost-basis (safe).
+    ★ RECENCY-WEIGHTED n_eff / score are NOT surfaced here: rep.samples is only the top-5 rows by |pnl| (illustrative,
+    'never a rank'), so a recency computation over them would be a wrong ~5 next to the true n_resolved and would be
+    FED to the narrator as clean (adversarial-review 2026-09-15). n_resolved already conveys sample size honestly;
+    the scoreboard's recency-weighted routine ranks over the FULL history elsewhere (stats.compute_scores)."""
     roi = rep.roi
     n_dec = (rep.wins or 0) + (rep.losses or 0)
-    score, wilson, edge = stats.score_net_roi(rep.wins or 0, n_dec, roi)
-    rw_score = None
-    n_eff = None
-    scoreable_samples = [(s.won, s.resolved_ts) for s in (rep.samples or ()) if not s.pnl_suspect]
-    if scoreable_samples:
-        rw_score, _rw_w, _rw_e, _wr, n_eff = stats.score_recency_weighted(
-            scoreable_samples, now_ts=float(rep.generated_ts or 0), roi=roi)
+    score, wilson, edge = stats.score_net_roi(rep.wins or 0, n_dec, roi)   # over the FULL wins/losses (not samples)
     clean = [
         ("net ROI (cost-basis)", _fmt_pct_signed(roi)),
-        ("edge factor (1 + clipped cost-ROI)", "%.2f" % edge),
+        ("edge factor (1 + clipped cost-ROI)", "n/a" if roi is None else "%.2f" % edge),
         ("n resolved (scoreable)", str(rep.n_resolved)),
-        ("effective n (recency-weighted)", "n/a" if n_eff is None else "%.1f" % n_eff),
         ("n excluded (quarantined)", str(rep.n_excluded)),
         ("min resolved (rank floor)", str(rep.min_resolved)),
     ]
     inverting = [
         ("composite score (wilson_lcb x edge)", "%.3f" % score),
         ("wilson_lcb (95% win-rate lower bound)", "%.3f" % wilson),
-        ("recency-weighted score", "n/a" if rw_score is None else "%.3f" % rw_score),
         ("ROI (notional, net / total_bought)", _fmt_pct_signed(rep.roi_notional)),
     ]
     return {"clean": clean, "inverting": inverting,
