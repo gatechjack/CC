@@ -669,7 +669,7 @@ Stdlib `ast` walk of **all 785 tracked `.py`** (repo-wide, not just expected pat
 |---|---|---|---|
 | **TRANCHE 1** | Pure-deletable NOW (reverse-closed; no kept file imports them; no edits) | **49** | **BUILT + PROVEN (§20.5); deploy = FF push, Jack, after 16:00 ET** |
 | **KEEPERS (shared-blocked)** | Legacy files a SHARED file imports → need a graft to remove | **13** | DEFER to a shared-file graft pass (§20.4) |
-| **KEEPERS (permanent / Ph7)** | `_weather_math` (survivor), `kalshi_crypto_v2_observer` (kcv2) | 2 | `_weather_math` PERMANENT; observer until Ph7 |
+| **KEEPERS (permanent / Ph7)** | `_weather_math`, `kalshi_crypto_v2_observer` (kcv2) | 2 | ~~`_weather_math` PERMANENT~~ -> DELETION CANDIDATE (path_logger dormant, §22.7); observer freed once stopped (done §20.9) |
 | **DEFERRED (test-coupled)** | 2 legacy modules + 2 keeper tests kept valid by a small test edit | 4 | DEFER (§20.4) |
 | **TRANCHE-2 leaves** | ~20 legacy scripts/tests importing the shared-blocked keepers | ~20 | DEFER — delete WITH their keeper in the graft pass |
 | **Non-.py** | 8 infra/systemd legacy unit files (already off-box), legacy config blocks, woven web dashboard | — | DEFER (grafts / separate concern) |
@@ -677,7 +677,7 @@ Stdlib `ast` walk of **all 785 tracked `.py`** (repo-wide, not just expected pat
 ### 20.4 KEEPERS — every one with its surviving importer NAMED + LINE-NUMBERED (VERIFIED in the 3dd15c10 tree)
 | Keeper file | Kept because (importer : line) | Unblock = |
 |---|---|---|
-| `agents/strategies/_weather_math.py` | **SURVIVOR** `path_logger/logger.py:31` (`import kalshi_quote_dollars`, used L300) | PERMANENT — never delete unless path_logger stops using it |
+| `agents/strategies/_weather_math.py` | `path_logger/logger.py:31` (on disk) — ★ but path_logger is DORMANT (§22.7) | ~~PERMANENT~~ **DELETION CANDIDATE (Jack ruling): no live importer; path_logger never deployed** |
 | `agents/strategies/kalshi_crypto_v2_observer.py` | kcv2 observer **PID 679** (`python -m …kalshi_crypto_v2_observer`) | Phase 7 stops the observer first |
 | `brokers/polymarket_live.py` | `main.py:2685` (broker factory, lazy) | main.py graft: deregister polymarket divisions + drop factory branch |
 | `brokers/polymarket.py` | `main.py:2706` (factory) + `polymarket_live.py` | same main.py graft |
@@ -712,7 +712,7 @@ Stdlib `ast` walk of **all 785 tracked `.py`** (repo-wide, not just expected pat
 ### 20.7 RECOMMENDATION (Jack rules)
 1. **Deploy Tranche 1** (FF `git push origin legacy-pm-untangle-2026-09-16:prod-live`) after 16:00 ET — pure deletion of dead code, no restart, no runtime effect (engine imports 0 at module level since Ph6). Lowest-risk, largest single safe reduction.
 2. **Graft pass (deferred):** the 13 shared-blocked keepers + web dashboard + ~20 tranche-2 leaves + 8 systemd units + legacy config blocks — one deliberate code-review change editing main.py factory / brokers/kalshi.py / web/data.py / web/routes.py + trimming 2 tests. NOT in a restart window with live money unless the web edits are proven inert (pm_web is separate from the engine).
-3. `_weather_math` + `kalshi_apify_client` are effectively PERMANENT keepers (survivor path_logger; Jack-ruled kalshi_whale_stats untouched). `kalshi_crypto_v2_observer` falls with Phase 7.
+3. `kalshi_apify_client` is a PERMANENT keeper (Jack-ruled kalshi_whale_stats untouched). ~~`_weather_math` permanent (survivor path_logger)~~ -> **CORRECTED §22.7: path_logger is dormant, `_weather_math` is a deletion candidate pending Jack.** `kalshi_crypto_v2_observer` freed once observer stopped (done §20.9).
 
 ### 20.8 SESSION-8 CHANNEL / SCOPE NOTES
 Read-only local analysis + local git only. **NO box access** (task: box read-only today; nothing here needed it). Analysis scratch under `cc/_untangle_scratch/` (graph.json, split.json, analyzers) is local-only, NOT committed. Nothing armed/disarmed/deployed/restarted/pushed. Tranche-1 commit is LOCAL and awaits Jack's FF push.
@@ -737,7 +737,7 @@ Off origin/prod-live **`ed6d9b83`** (re-verified tip; schema head **24**). Workt
 ### 21.1 RE-DERIVED SCOPE (not inherited) + two status changes since §20.4
 Reverse-import map on ed6d9b83 confirms the only RUNTIME importers keeping legacy alive are the shared files `web/routes.py`, `web/data.py`, `main.py`, `brokers/kalshi.py` (+ permanent `kalshi_whale_stats`/`path_logger`); everything else is tests, leaf scripts, or inert `deploy/*/staged/*` snapshots.
 - ★ **`kalshi_crypto_v2_observer.py` now has ZERO importers** (observer stopped+disabled §20.9) -> a free-leaf deletion (no restart, no graft).
-- ★ **`kalshi_apify_client` <- `kalshi_whale_stats.py:40` STILL HOLDS** -> the Jack "do-not-edit kalshi_whale_stats" ruling stands; `kalshi_apify_client` is a PERMANENT keeper regardless of other grafts. `_weather_math <- path_logger/logger.py:31` also permanent.
+- ★ **`kalshi_apify_client` <- `kalshi_whale_stats.py:40` STILL HOLDS** -> the Jack "do-not-edit kalshi_whale_stats" ruling stands; `kalshi_apify_client` is a PERMANENT keeper regardless of other grafts. `_weather_math <- path_logger/logger.py:31` **was called permanent here; CORRECTED by §22.7 -- path_logger is dormant, so _weather_math is a deletion candidate, not a live keeper.**
 
 ### 21.2 ★ END-STATE OPTIONS for the woven web dashboard (charter question) — costs + recommendation
 The legacy dashboard is NOT cleanly separable: `_hydrate_pm_overview` (web/data.py:1053) is called from the SHARED home hydration (L812, try/except-guarded), and `build_prediction_market_view` + `_pm_*` live in the 6,717-LOC shared file with a **module-level** `kalshi_crypto_vol_v2` import at L19 (used at L3968 annotation + L6311 call). ★ **The whole `trading_corp/web` dashboard is served BY THE ENGINE** (`main.py:2848 create_app`), so ANY web edit needs an ENGINE restart and a web/data.py import error fails engine boot.
@@ -796,7 +796,7 @@ The legacy dashboard is NOT cleanly separable: `_hydrate_pm_overview` (web/data.
 
 ### 21.7 DEFERRED (tranche 2b) + PERMANENT keepers
 - **2b (higher-risk shared-file body edits, separate reviewed window):** `web/data.py` dashboard removal (frees `kalshi_crypto_vol_v2`; boot-critical L19); `main.py` broker factory + config deregistration (frees `polymarket.py`/`polymarket_live.py`; division-registration = 2026-09-04 territory); `brokers/kalshi.py:402` discovery method (frees `kalshi_market_map`). Plus the ~7 remaining tranche-2 leaves that import those keepers (kalshi_apify scripts, polymarket broker tests) + legacy `infra/systemd` units + legacy config blocks.
-- **PERMANENT keepers (not removable without Jack reversing a ruling):** `_weather_math` (<- path_logger/logger.py:31 on disk; ★ but path_logger's RUN-STATE is now unconfirmed -- see §22.7 finding), `kalshi_apify_client` (<- kalshi_whale_stats.py:40, Jack-ruled not-to-edit).
+- **Keepers -- CORRECTED by the §22.7 path_logger verdict (2026-09-16):** `kalshi_apify_client` is a genuine PERMANENT keeper (<- kalshi_whale_stats.py:40, live-PM-imported, Jack-ruled not-to-edit). ~~`_weather_math` PERMANENT~~ -> **`_weather_math` is NO LONGER a live-survivor keeper**: its only runtime importer path_logger is DORMANT (never deployed; §22.7) -> path_logger/ + `_weather_math` are DELETION CANDIDATES pending Jack's ruling (path_logger/ deletion = az-root).
 - **Tranche-1 test-coupled deferrals unchanged:** polymarket_whale_stats, seed_polymarket_watchlist_deep + 2 tests (need a small test edit).
 
 ---
@@ -847,7 +847,49 @@ The engine + pm_web + sfp all run as **azureuser**. Every file in the overlay is
 - The `197609:197121` owner is a **Windows-numeric uid/gid with no local passwd/group entry** (`getent` empty) -- the classic signature of files transferred from a Windows/WSL context that preserved the origin uid. It is on **exactly 4 scattered paths**, not a coherent permission scope. A deliberate scheme would use a named principal and be systematic.
 - `root:root` (249) is dominated by `.bak_*`/`.pre-*` deploy backups + `__pycache__` `.pyc` (some compiled by an old cpython-310) + a handful of live files -- the residue of mixed-privilege deploys (some azureuser, some az-root) over months.
 - Neither pattern is consistent enough to be intentional. **Verdict: DRIFT (transfer + mixed-privilege-deploy artifacts).** What would SETTLE it definitively (for Jack, before any normalise): the mtime/provenance of the 4 `197609` paths and whether any deploy runbook intentionally chowns. Absent that, normalising `197609`+`root` -> `azureuser:azureuser` on the code tree would be safe and would remove the deploy-time gaps -- **Jack's decision with this map in front of him; not recommended from a hunch.**
-- ★ **FINDING (path_logger unit): the tracking-doc claim that path_logger has "its own systemd unit `trading-corp-path-logger.service`" is NOT confirmed on the box.** VERIFIED 2026-09-16T18:04Z: no systemd unit matching path/logger (only OS `*.path` units), no azureuser cron, no running path_logger process. Nothing in the engine imports path_logger (standalone `python -m trading_corp.path_logger`). **UNVERIFIED:** a *root* crontab (unreadable as azureuser) could invoke it. ⇒ `_weather_math`'s keeper status still rests on the real on-disk import (`path_logger/logger.py:31`), but "path_logger is a running survivor" is unconfirmed -- **Jack: is path_logger meant to be running? If it is genuinely dormant, path_logger/ + _weather_math become a FUTURE deletion candidate (Jack's call).**
+- ★★ **FINDING (path_logger is DORMANT -- VERDICT (c), the "own systemd unit" doc claim is FALSE): RESOLVED 2026-09-16 (session 11).** The tracking-doc claim that path_logger "has its own systemd unit `trading-corp-path-logger.service`" is **WRONG -- no such unit exists on the box, and nothing else runs path_logger either.** SIX independent read-only signals, all VERIFIED:
+  1. No systemd unit matching path/logger (only OS `*.path` units) -- `systemctl list-unit-files`/`list-units` 18:04Z.
+  2. No azureuser crontab entry -- `crontab -l` 18:04Z.
+  3. **No ROOT cron / no `/etc` reference** -- az-root `grep -rIl path_logger /etc /var/spool/cron` 18:19Z returned ZERO matches (stdout=`CRON_CHECK_DONE` only; az ran, sentinel proves it).
+  4. No running process -- `ps` 18:04Z + 18:17Z.
+  5. **`data/path_logger.db` ABSENT** -- path_logger has NEVER written its output DB (`market_ladder`/`logger_jitter`); no stray `path_logger.db` in /home or /root either (az-root `find`).
+  6. **`data/path_logger.pid` ABSENT** -- it has never even acquired its lock.
+  ⇒ **path_logger was never fully deployed / is dormant on this box** (possibility (c), not (a) root-cron-alive or (b) meant-to-run-but-stopped). Nothing in the engine imports it (standalone `python -m trading_corp.path_logger`).
+  ⇒ ★ **`_weather_math` is therefore NOT "a permanent keeper protecting a live survivor."** The on-disk import (`path_logger/logger.py:31 -> _weather_math`) is real, but path_logger is dormant and has **no live importer** (its only other importers are legacy weather scripts/tests). So path_logger/ + `_weather_math` are **DELETION CANDIDATES pending Jack's ruling** -- NOT proposed here. ★ path_logger/ is one of §22.2's four root-owned dirs, so any future deletion there is an **az-root** operation.
+  ⇒ **The residual UNVERIFIED edge** (a manual run from a non-standard CWD writing the DB outside /home+/root) has no scheduler to cause it and is not worth chasing; the /home+/root find + the total absence of any scheduler settle (c).
+  ⇒ **OPEN QUESTION FOR JACK (not a retirement decision):** was path_logger EVER meant to run? It is a Kalshi-BTC order-book path-logging sidecar (`data/path_logger.db`); if it was intended as a live research feed, its total non-deployment is itself worth knowing independent of this retirement.
 
 ### 22.8 REPOINTED FINDINGS
 The two earlier standalone findings now cite this map: `trading_corp/scripts/` (tranche-1 abort, §20.9) and `trading_corp/agents/research/` (tranche-2 plan, §21.6) are **two of the four** non-azureuser-writable dirs enumerated in §22.2 -- plus `path_logger/` and `backups/` (both root:root). A deploy plan reads §22.2/§22.4 instead of rediscovering by abort.
+
+---
+
+## 23. ★ CURRENT STATE OF THE WHOLE RETIREMENT (session 11, 2026-09-16). Read this to pick up without the conversation history.
+**Live anchors (VERIFIED 2026-09-16):** origin/prod-live **`ed6d9b83`**; docs branch `legacy-pm-retire-2026-09-13` **`75a7d618`** (origin==local); PM schema head **24** (next free 025). Engine `trading-corp` PID **436052** (User=azureuser), pm_web **436431**, sfp-card-watcher **656** -- all active. kcv2 observer **stopped+disabled**. **Live PM trading real money: 31 agent_state arm rows (trading_corp.db) / 44 pm_subdivision rows (prediction_markets.db) -- different things, both correct.** Ownership: §22 (only 4 non-azureuser-writable dirs; drift not design).
+
+### DONE (deployed / on prod-live)
+- **Phases 1-6:** all legacy PM LOOP WIRING removed from `main.py` (6210->3923 LOC); config disables; timers removed; Apify billing ceased. prod-live carried it (8f35f254 -> ... -> ed6d9b83). main.py = **`c15b4de6`** (byte-identical since).
+- **Tranche 1 (untangle, §20.9):** 49 orphaned legacy `.py` PURE-DELETED, prod-live `3dd15c10->ed6d9b83` + 28 box files removed same session, NO restart, box==prod-live verified. Backup `/home/azureuser/legpm_tranche1_delete_backup_20260916T170626Z`.
+- **Phase 7 step 1 (§20.9):** kcv2 observer STOPPED+DISABLED; corpus FROZEN at **13,053,562** quotes.
+- **Ownership map (§22)** + **path_logger dormancy verdict (§22.7).**
+
+### BUILT BUT NOT DEPLOYED
+- **Tranche 2a (§21):** branch **`legacy-pm-tranche2-2026-09-16` @ `ae1fef05`**, off ed6d9b83, PROVEN local (py_compile 718/0, import-clean 0, §16.7 other-7 shared files byte-identical), **NOT pushed.** Graft = `web/routes.py` legacy-route excision (frees 6 modules) + 18 files deleted. ★ **Needs a reviewed ENGINE-RESTART window** -- `trading_corp/web` is served in-process (`main.py:2848 create_app`), so a bad graft **fails create_app -> engine down (all divisions)**. Deploy plan §21.6; box root/azureuser split §22.4 (graft + 6 rm = azureuser; 2 rm = az-root). Post-restart gate = **PM PLACING** (dry_run=0 order), NOT armed. ★ 2a leaves **main.py byte-identical at c15b4de6** -> the 2026-09-04 wiring-loss mode is STRUCTURALLY ABSENT.
+
+### NOT BUILT (future work)
+- **Tranche 2b:** `web/data.py` dashboard removal (frees `kalshi_crypto_vol_v2`; boot-critical L19), `main.py` broker factory + config deregistration (frees `polymarket.py`/`polymarket_live.py`), `brokers/kalshi.py:402` discovery (frees `kalshi_market_map`), + remaining tranche-2 leaves/legacy `infra/systemd` units/config. ★★ **2b puts `main.py` BACK IN THE DIFF -- reinstating the 2026-09-04 failure mode that 2a structurally avoids.** Higher risk, lower value (frees ~3 modules). A dedicated reviewed window with a counted §16.7 main.py re-proof, NOT a fold-in.
+- **Tranche-1 test-coupled deferrals:** `polymarket_whale_stats`, `seed_polymarket_watchlist_deep` + 2 tests -- need a small test edit (a keeper test lazily imports the seed script). §20.5.
+
+### BLOCKED / OPEN (with the blocker named)
+- **Phase 7 kcv2 DROP:** observer stopped, corpus frozen 13,053,562, **Gate B RULED DROP-only/no-VACUUM** (§19.3). ★ **Gate A is OPEN and is the sole blocker:** no off-device verified archive copy exists, and the box has ONE physical disk (§19.2 / handoff). **Cheapest target = a UNC path on another machine** (no hardware). DROP cannot proceed until Gate A is satisfied. Rollback needs an engine stop (§19.5).
+- **API cancellations:** **Apify** is the only API with money attached, and its **billing already stopped** when the timers + in-engine loop were removed (Phase 2/3/6) -> cancelling the subscription ends the ACCOUNT, not the spend (already ~$0). **Anthropic + Kalshi + Polymarket keys are SHARED with live PM -- NEVER CANCEL** (Polymarket confirmed transfers to live PM, §3/§9 -- USDC-drain ruling VOID). Finnhub = dead/free (safe win). the-odds-api = free. Coinalyze/CoinGecko = verify sidecar owner before cancel (§11 RULING-COINALYZE).
+- **path_logger + `_weather_math` (§22.7):** path_logger is DORMANT (never deployed) -> both are deletion candidates awaiting **Jack's ruling** (delete, or revive path_logger). path_logger/ deletion = az-root (§22.2). Independent question: was path_logger ever meant to run?
+- **Ownership normalisation (§22.7):** `197609:197121` (4 paths) + `root:root` (249, mostly backups) are DRIFT; Jack may choose to normalise to azureuser -- decision with §22 in front of him.
+
+### KEEPERS (current, corrected)
+- **PERMANENT:** `kalshi_apify_client` (<- `kalshi_whale_stats.py:40`, live-PM-imported, Jack-ruled do-not-edit).
+- **BLOCKED until tranche 2b grafts land:** `polymarket.py`/`polymarket_live.py` (main.py factory), `kalshi_market_map` (kalshi.py:402), `kalshi_crypto_vol_v2` (web/data.py:19).
+- **NO LONGER keepers:** `kalshi_crypto_v2_observer` (observer stopped -> deleted in tranche 2a); `_weather_math` (path_logger dormant -> deletion candidate, §22.7).
+
+### PENDING PUSH (this session, session 11)
+Doc-only commit on `legacy-pm-untangle-docs-2026-09-16` (see below for SHA). No code change, no box write. Tranche-2a code (`ae1fef05`) remains unpushed by design (it ships in its own engine-restart window, not a bare push).
