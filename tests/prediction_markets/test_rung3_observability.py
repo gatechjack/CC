@@ -16,12 +16,13 @@ from trading_corp.prediction_markets.live_driver import _audit_leg_independent
 
 
 # ── migration 021 ──────────────────────────────────────────────────────────────────────────
-def test_schema_head_is_23_and_contiguous():
-    # head moved 22 -> 23 with migration 023 (pm_whale_score; the ANALYZE-upgrade stored score). Contiguity is the
-    # invariant this test guards (a migration that skips a number is the clobber hazard); the pin bumps with each one.
+def test_schema_head_is_24_and_contiguous():
+    # head moved 23 -> 24 with migration 024 (pm_subdivision_attachment_event; item-2 attachment span history).
+    # Contiguity is the invariant this test guards (a migration that skips a number is the clobber hazard); the pin
+    # bumps with each one.
     vers = sorted(v for v, _ in db.MIGRATIONS)
     assert vers == list(range(1, db.SCHEMA_HEAD + 1)), vers
-    assert db.SCHEMA_HEAD == 23, db.SCHEMA_HEAD
+    assert db.SCHEMA_HEAD == 24, db.SCHEMA_HEAD
 
 
 def test_migration_021_adds_columns_and_is_idempotent(tmp_path):
@@ -32,7 +33,7 @@ def test_migration_021_adds_columns_and_is_idempotent(tmp_path):
     ver = con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     cols = [r[1] for r in con.execute("PRAGMA table_info(pm_subdivision_order)")]
     con.close()
-    assert ver == db.SCHEMA_HEAD, ver   # init_db migrates to the head (now 22); the 021 columns still present below
+    assert ver == db.SCHEMA_HEAD, ver   # init_db migrates to the head (now 24); the 021 columns still present below
     for c in ("signal_outcome", "signal_slug", "leg_audit"):
         assert c in cols, (c, cols)
 

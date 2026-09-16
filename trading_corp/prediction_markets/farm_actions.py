@@ -110,7 +110,7 @@ def demote_to_prospect(conn, wallet: str, category: str, now_ts: int) -> dict:
 
 
 # ── live-attachment mutations (pm_subdivision_attachment) -- promote-to-live + its inverse ────────────
-def promote_to_live(conn, account_id: str, category: str, wallet: str, now_ts: int) -> dict:
+def promote_to_live(conn, account_id: str, category: str, wallet: str, now_ts: int, actor: str | None = None) -> dict:
     """Attach a PINNED (wallet, category) to the (account_id, category) sub-division -- the farm->money bridge.
     Creates the ATTACHMENT and, if the sub-division does not exist yet, AUTO-CREATES it -- ATOMICALLY, in ONE
     transaction (Jack ruling 1), so a failure never leaves an orphan sub-division with nothing attached. Creates
@@ -154,6 +154,14 @@ def promote_to_live(conn, account_id: str, category: str, wallet: str, now_ts: i
             "VALUES (?,?,?,1,'promote_to_live',?,NULL) "
             "ON CONFLICT(account_id, category, wallet) DO UPDATE SET active=1, removed_ts=NULL",
             (account_id, category, wallet, now_ts))
+        # item 2 (2026-09-15): APPEND-ONLY span-history event, IN THIS SAME transaction (atomic with the attach).
+        # Logged only when this actually (re)activates -> `not already`: a brand-new attach OR a re-attach-after-
+        # detach (which opens a NEW span, the exact span the single UPSERT row would otherwise lose). An idempotent
+        # repeat (already active) changes nothing -> no event. Guarded so it is a no-op pre-migration-024.
+        if not already and _table_exists(conn, "pm_subdivision_attachment_event"):
+            conn.execute(
+                "INSERT INTO pm_subdivision_attachment_event (account_id, category, wallet, action, source, actor, ts) "
+                "VALUES (?,?,?,'attach','promote_to_live',?,?)", (account_id, category, wallet, actor, now_ts))
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -162,17 +170,50 @@ def promote_to_live(conn, account_id: str, category: str, wallet: str, now_ts: i
             "created_subdivision": created, **base}
 
 
-def detach_from_live(conn, account_id: str, category: str, wallet: str, now_ts: int) -> dict:
+def detach_from_live(conn, account_id: str, category: str, wallet: str, now_ts: int, actor: str | None = None) -> dict:
     """PROMOTE-TO-LIVE's inverse: detach a whale from a sub-division. REVERSIBLE (active=0 + removed_ts; the row
     survives so a later re-attach restores it). Idempotent: not-attached -> a no-op with a reason. This is the
     back-out for a wrong promote-to-live click; it is exposed via the CLI (works when pm_web is down)."""
     wallet = (wallet or "").lower()
     if not _table_exists(conn, "pm_subdivision_attachment"):
         return {"ok": False, "changed": False, "reason": "money_layer_not_migrated"}
-    cur = conn.execute(
-        "UPDATE pm_subdivision_attachment SET active=0, removed_ts=? "
-        "WHERE account_id=? AND category=? AND wallet=? AND active=1",
-        (now_ts, account_id, category, wallet))
-    _commit(conn)
+    # item 2 (2026-09-15): the active=0 flip AND the append-only 'detach' event MUST land ATOMICALLY -- the
+    # connection is autocommit (isolation_level=None), so bare statements would commit SEPARATELY and a crash
+    # between them could leave the log with an unpaired open span. Wrap BOTH in ONE BEGIN IMMEDIATE...COMMIT
+    # (mirrors promote_to_live), rollback + raise on any failure. Event logged only on a REAL detach (rowcount>0);
+    # a no-op detach (not attached) logs nothing. Guarded so it is a no-op pre-migration-024.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cur = conn.execute(
+            "UPDATE pm_subdivision_attachment SET active=0, removed_ts=? "
+            "WHERE account_id=? AND category=? AND wallet=? AND active=1",
+            (now_ts, account_id, category, wallet))
+        if cur.rowcount and _table_exists(conn, "pm_subdivision_attachment_event"):
+            conn.execute(
+                "INSERT INTO pm_subdivision_attachment_event (account_id, category, wallet, action, source, actor, ts) "
+                "VALUES (?,?,?,'detach','detach_from_live',?,?)", (account_id, category, wallet, actor, now_ts))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     return {"ok": True, "changed": bool(cur.rowcount), "reason": ("detached" if cur.rowcount else "not_attached"),
             "account_id": account_id, "category": category, "wallet": wallet}
+
+
+def read_attachment_events(conn, account_id: str, category: str, wallet: str | None = None) -> list[dict]:
+    """The APPEND-ONLY attach/detach event log for a sub-division (item 2, span history). Ordered oldest->newest.
+    Reconstruct SPANS by pairing each 'attach' with the next 'detach' (a trailing unpaired 'attach' = the CURRENT
+    open span). wallet=None -> every whale on the (account, category). Honest-empty ([]) when mig-024 is absent, so
+    a reader never 500s pre-migration. Read-only."""
+    if not _table_exists(conn, "pm_subdivision_attachment_event"):
+        return []
+    if wallet:
+        rows = conn.execute(
+            "SELECT id, account_id, category, wallet, action, source, actor, ts FROM pm_subdivision_attachment_event "
+            "WHERE account_id=? AND category=? AND wallet=? ORDER BY ts, id",
+            (account_id, category, (wallet or "").lower())).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, account_id, category, wallet, action, source, actor, ts FROM pm_subdivision_attachment_event "
+            "WHERE account_id=? AND category=? ORDER BY ts, id", (account_id, category)).fetchall()
+    return [dict(r) for r in rows]
