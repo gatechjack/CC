@@ -437,7 +437,9 @@ def _run_analyze(wallet: str, category: str, force: bool, now_ts: int, loss_grou
     # the WhaleScore asdict (same keys _score_cell reads); None (nothing scoreable) -> stays 'not analyzed'.
     return {"report": rep, "flags": analyze.analysis_flags(rep),
             "cost_today": spent, "cost_cap": analyze.PM_ANALYZE_DAILY_CAP_USD, "cost_day": day,
-            "score_oob": _score_cell(getattr(rep, "score", None), now_ts)}
+            "score_oob": _score_cell(getattr(rep, "score", None), now_ts),
+            # item 5 (2026-09-15): the stats.py farm-ranking metrics for the panel (clean shown + fed; inverting shown flagged).
+            "ranking_metrics": analyze.ranking_metrics(rep)}
 
 
 def _analysis_is_cached(wallet: str, category: str) -> bool:

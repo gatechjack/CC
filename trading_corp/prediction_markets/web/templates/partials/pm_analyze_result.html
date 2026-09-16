@@ -147,6 +147,30 @@
 
   {% if flags %}<div class="pm-flags pm-analyze-flags">{{ flag_badges(flags) }}</div>{% endif %}
 
+  {# ── item 5 (2026-09-15): the stats.py FARM-RANKING metrics, split by trust. The CLEAN set (cost-basis +
+     sample-size -- honest) renders normally AND is fed to the narrator. The INVERTED set is shown behind a flag
+     and is WITHHELD from the verdict + the tier: wilson_lcb is a 95% LCB on a win-rate from the loss-OMITTING
+     feed, so a whale HIDING losses scores HIGHER on it (the drawdown-family inversion) -- the pairing of a strong
+     wilson_lcb beside a high omission% is the mirage tell, which only works if the flag says WHICH WAY it inverts.
+     Reuses the existing pm-stat / pm-stat-bad / pm-omit-bad classes (no new CSS, no cache-bust). #}
+  {% if ranking_metrics %}
+  <p class="pm-muted pm-rankmetrics-head" data-rankmetrics="1">Farm-ranking metrics &mdash; the <strong>clean</strong>
+    set (cost-basis / sample-size) is fed to the verdict; the <strong>inverted</strong> set is
+    <em>inverted by loss-omission &mdash; a whale hiding losses scores HIGHER</em>, shown for the mirage tell only
+    and <strong>NOT</strong> used by the verdict or the tier.</p>
+  <div class="pm-profile pm-analyze-profile">
+    {% for label, val in ranking_metrics.clean %}
+    <div class="pm-stat"><div class="pm-stat-label">{{ label }}</div>
+      <div class="pm-stat-val">{{ val }}</div><div class="pm-stat-hint">clean &middot; fed to the verdict</div></div>
+    {% endfor %}
+    {% for label, val in ranking_metrics.inverting %}
+    <div class="pm-stat pm-stat-bad" data-inverted="1"><div class="pm-stat-label">{{ label }}&nbsp;&#8595;</div>
+      <div class="pm-stat-val pm-winpct-caveated" title="{{ ranking_metrics.invert_flag }}">{{ val }}</div>
+      <div class="pm-stat-hint pm-omit pm-omit-bad">inverted &mdash; a whale hiding losses scores HIGHER; withheld from the verdict/tier</div></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {# ── LOSS COMPLETENESS (Stage 5, F-1) -- re-grounds the loss SET from /activity (held-to-resolution) because
        /closed-positions systematically under-reports held-to-worthless losses, wallet-dependently. The CORE
        numbers above stay /closed-positions-based (rollup + scoreboard parity); this block is the honest read of
