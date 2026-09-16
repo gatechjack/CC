@@ -65,6 +65,26 @@ def test_f1_ctx_builder_resolves_imports_and_builds():
     assert ctx.boxing_index is None and ctx.match_index is None and ctx.fight_index is None
 
 
+def test_itf_ctx_builder_resolves_imports_and_builds():
+    from trading_corp.prediction_markets import live_driver as LD
+    client = _FakeClient({
+        "KXITFMATCH": [
+            _FakeMarket("KXITFMATCH-26SEP16WENTOS-WEN", None, title="Jefferson Wendler Filho wins"),
+            _FakeMarket("KXITFMATCH-26SEP16WENTOS-TOS", None, title="Marco Tosetti wins"),
+        ],
+        "KXITFWMATCH": [
+            _FakeMarket("KXITFWMATCH-26SEP16ZELPRE-ZEL", None, title="Darja Zeltina wins"),
+            _FakeMarket("KXITFWMATCH-26SEP16ZELPRE-PRE", None, title="Amarni Pree wins"),
+        ],
+    })
+    ctx = _with_stub_pykalshi(lambda: asyncio.run(LD.fetch_itf_market_context(client, 1_800_000_000)))
+    assert ctx.itf_index and "2026-09-16" in ctx.itf_index          # ITF import resolved + BOTH series merged
+    tickers = {t for km in ctx.itf_index["2026-09-16"] for t in (km.ticker_a, km.ticker_b)}
+    assert "KXITFMATCH-26SEP16WENTOS-WEN" in tickers and "KXITFWMATCH-26SEP16ZELPRE-ZEL" in tickers  # men+women merged
+    # every OTHER slot stays default -- crucially the atp/wta match_index is None (ITF has its OWN itf_index slot)
+    assert ctx.match_index is None and ctx.boxing_index is None and ctx.f1_race_index is None
+
+
 def test_boxing_ctx_builder_resolves_imports_and_builds():
     from trading_corp.prediction_markets import live_driver as LD
     client = _FakeClient({"KXBOXING": [

@@ -926,6 +926,7 @@ SPORTS = {
     "cs2": "Esports", "epl": "Soccer", "ucl": "Soccer", "uel": "Soccer", "lal": "Soccer",
     "fl1": "Soccer", "sea": "Soccer", "bun": "Soccer", "mls": "Soccer", "bra": "Soccer",
     "mex": "Soccer", "fed": "Rate decisions",
+    "itf": "Tennis",   # ITF (2026-09-16): same Tennis family as atp/wta (date-only, no ticker HHMM/feed -> milestone start)
 }
 # Categories whose Kalshi ticker CAN carry an HHMM start right after the date -- parse_ticker_start tries this
 # source FIRST for all of them. mlb + cs2 carry it RELIABLY (mlb also has a game feed); the STRUCTURAL sports
@@ -951,7 +952,7 @@ _HHMM_AUTHORITATIVE = frozenset({"mlb", "cs2"})
 # NEITHER list -> no start state. Derived from SPORTS + LIVE_CAPABLE so a new soccer league (in SPORTS) or a new
 # structural sport (in LIVE_CAPABLE) is covered automatically -- see the INTERDEPENDENCE note on LIVE_CAPABLE above.
 MILESTONE_START_CATEGORIES = frozenset(
-    {"atp", "wta", "ufc"} | {c for c, v in SPORTS.items() if v == "Soccer"} | (LIVE_CAPABLE - _HHMM_AUTHORITATIVE))
+    {"atp", "wta", "itf", "ufc"} | {c for c, v in SPORTS.items() if v == "Soccer"} | (LIVE_CAPABLE - _HHMM_AUTHORITATIVE))
 # Coarse categories retired for finer ones (R7): a sub on one can never trade -> the dashed orphan tile.
 RETIRED_CATEGORIES = frozenset({"soccer"})
 _ARM_DISPLAY = {"armed": "ARMED", "disarmed": "DISARMED", "absent": "NEVER ARMED", "unavailable": "STATE UNAVAILABLE"}

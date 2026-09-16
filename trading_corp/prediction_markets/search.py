@@ -74,6 +74,11 @@ CATEGORY_ALLOWLIST: frozenset[str] = frozenset({
     # F1 (2026-09-14): KXF1RACE race-winner copy family (behind the race_winner token). Same auto-derived Farm
     # tile + /live/{acct}/f1 page + prospects; renders via the non-MLB positions table. Classifies 'f1' (category.py).
     "f1",
+    # ITF (2026-09-16): KX(ITFMATCH|ITFWMATCH) pair-keyed match-winner (men+women, one category). Own matcher+builder
+    # -> a TRADABLE category; in the allowlist so its Farm tile / prospect screen / scoring auto-derive (the
+    # atp/wta/boxing precedent). Splits real copyable ITF matches out of the coarse 'tennis' farm bucket, which STAYS
+    # (item-4 STOP: it is the discovery surface for the grand-slam-slug leak). Classifies 'itf' (category.py).
+    "itf",
 })
 
 # ── ruled selection defaults (STAGE4 Q1/Q2). Overridable per run; recorded on pm_search_run.

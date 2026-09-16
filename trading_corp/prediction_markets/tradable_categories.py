@@ -21,6 +21,8 @@ Verified 2026-09-15 against the box registries: 23 categories, MATCHER == BUILDE
 TRADABLE_CATEGORIES: frozenset[str] = frozenset({
     # singletons (own matcher + builder)
     "mlb", "ufc", "atp", "wta", "cs2", "fed", "boxing", "f1",
+    "itf",   # ITF (2026-09-16): own KX(ITFMATCH|ITFWMATCH) matcher+builder (men+women, one category). Tradable -> a
+             # sub-division tile CAN render; ships INERT behind the itf_moneyline token until Jack arms + enables it.
     # structural (shared structural matcher/builder) -- moneyline only
     "nfl", "nba", "nhl", "wnba", "cfb",
     # soccer per-league (SOC.LEAGUES) -- 3-way win/draw->TIE

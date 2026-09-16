@@ -26,7 +26,7 @@ except Exception:  # noqa: BLE001 -- ImportError locally (no data/ matchers); th
 
 
 _MATCHERLESS = ("soccer", "tennis", "golf", "cbb", "fifwc", "nascar", "unknown", "", None)
-_TRADABLE = ("mlb", "ufc", "atp", "wta", "cs2", "fed", "boxing", "f1",
+_TRADABLE = ("mlb", "ufc", "atp", "wta", "cs2", "fed", "boxing", "f1", "itf",
              "nfl", "nba", "nhl", "wnba", "cfb",
              "epl", "ucl", "uel", "lal", "fl1", "mls", "sea", "bun", "bra", "mex")
 

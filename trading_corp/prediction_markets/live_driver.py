@@ -61,6 +61,7 @@ from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): socc
 from ..data import fed_poly_kalshi_match as FED   # rung 4 (2026-09-07): fed bucket-index builder for fetch_fed_market_context
 from ..data import boxing_poly_kalshi_match as BX   # boxing (2026-09-14): KXBOXING winner bout-index builder for fetch_boxing_market_context
 from ..data import f1_poly_kalshi_match as F1X   # F1 (2026-09-14): KXF1RACE per-driver race-winner index builder for fetch_f1_market_context
+from ..data import itf_poly_kalshi_match as ITF   # ITF (2026-09-16): KX(ITFMATCH|ITFWMATCH) match index builder for fetch_itf_market_context
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
@@ -81,6 +82,9 @@ BOXING_SERIES = ("KXBOXING",)   # boxing (2026-09-14): the single Kalshi boxing 
 # fetched (winner-only; probed 2026-09-14). exchange_index = 0 (shard 0), like UFC/MMA.
 F1_SERIES = ("KXF1RACE",)   # F1 (2026-09-14): per-driver race-WINNER series (~20 driver binaries/race). H2H
 # (KXF1H2H) is EMPTY on Kalshi + constructors (KXF1CONSTRUCTORS) are OUT -> only KXF1RACE fetched. exchange_index=0.
+ITF_SERIES = ("KXITFMATCH", "KXITFWMATCH")   # ITF (2026-09-16): BOTH the men's (KXITFMATCH) and women's (KXITFWMATCH)
+# match-winner series are fetched into ONE MarketContext -- Polymarket slugs both under a single `itf-` prefix, so ITF
+# is ONE category. Both on shard 3 (exchange_index=3, like atp/wta; raw-merged, not hard-coded).
 # Kalshi SETTLED-market lookback for the ctx builders' `min_close_ts` filter. Bounds ONLY the
 # status=SETTLED fetch; the status=OPEN fetch is DATE-UNBOUNDED (extra={}) and is unaffected -- so
 # shrinking this can NEVER make a still-open game unreachable. 2 DAYS (was an uncommented 160 days;
@@ -524,6 +528,35 @@ async def fetch_f1_market_context(client, now_ts: int) -> execution.MarketContex
     return execution.MarketContext({}, {}, {}, dates, markets, f1_race_index=f1_idx)
 
 
+async def fetch_itf_market_context(client, now_ts: int) -> execution.MarketContext:
+    """ITF (2026-09-16): fetch OPEN + recent-SETTLED markets for BOTH ITF match series -- KXITFMATCH (men) and
+    KXITFWMATCH (women) -- and build ONE ITF MarketContext. MIRRORS fetch_tennis_market_context (SAME get_markets,
+    SAME `_market_quote_dict` quote fields, SAME raw `exchange_index` merge; ITF matches are exchange_index=3 = shard 3
+    like atp/wta). ONE category `itf` covers BOTH series because Polymarket slugs men+women under a single `itf-`
+    prefix; the pair-keyed index (KalshiItfMatch by (date, blob)) keeps a men's and a women's match on DISTINCT keys,
+    and the pair-uniqueness makes a cross-series same-surname collision a SAFE MISS. The `title` ("{Player} wins") IS
+    on the SDK MarketModel object (getattr, no raw merge); `exchange_index` is SDK-dropped and MUST be raw-merged. The
+    join date is the card-LOCAL date in the ticker (never occurrence_datetime). Match-winner only."""
+    from pykalshi import MarketStatus
+    markets: dict = {}
+    match_markets: list = []       # [{ticker, title}] -> build_kalshi_itf_index (title carries the player full name)
+    min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
+    for series in ITF_SERIES:
+        for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
+            ms = await client.get_markets(series_ticker=series, status=status, limit=1000,
+                                          fetch_all=True, **extra)   # paginate OPEN too -- see fetch_structural_market_context
+            for m in (ms or []):
+                tk = getattr(m, "ticker", "") or ""
+                if not tk:
+                    continue
+                markets[tk.upper()] = _market_quote_dict(m)
+                match_markets.append({"ticker": tk, "title": getattr(m, "title", None)})
+    await _merge_raw_market_fields(client, markets, series_list=ITF_SERIES)   # exchange_index (SDK-dropped) from raw, both series
+    match_idx = ITF.build_kalshi_itf_index(match_markets)
+    dates = frozenset(match_idx.keys())                 # ISO dates FROM THE TICKER (card-local), never occurrence
+    return execution.MarketContext({}, {}, {}, dates, markets, itf_index=match_idx)
+
+
 # ── signal source: attached whales' /positions -> entry CopySignals (chokepoint dedups already-placed) ───
 def _stable_entry_key(condition_id: str, outcome_index) -> str:
     """A restart-STABLE entry key for a /positions row, which carries NO fill tx_hash/ts. The whale's holding of a
@@ -742,7 +775,7 @@ def category_volume_order(conn, account_id: str, cats: list, *, now_ts: int, win
 # matcher guards already fail-closed at match time; this is defence-in-depth + the record that makes a
 # post-hoc "did we copy the whale's actual side?" audit possible (the 188-unverifiable bucket).
 _AUDIT_SOCCER_CATS = frozenset({"epl", "lal", "fl1", "sea", "bun", "mls", "bra", "mex", "ucl", "uel"})
-_AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc", "boxing"})   # boxing (2026-09-14): KXBOXING winner, surname/code subsequence audit (moneyline-only; code-anchored bind is the real guard)
+_AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc", "boxing", "itf"})   # itf (2026-09-16): KX(ITFMATCH|ITFWMATCH) winner, surname/code subsequence audit -- ITF names are accent/transliteration-prone, so the code-anchored bind + this net matter most here
 
 
 def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=None, signal_title=None):
@@ -1034,6 +1067,9 @@ CATEGORY_CTX_BUILDERS["boxing"] = fetch_boxing_market_context
 # F1 (2026-09-14): single KXF1RACE per-driver winner builder (date-keyed). INERT: no F1 sub exists AND race_winner
 # is not in the legacy default market_types -> a builder change enables nothing on its own.
 CATEGORY_CTX_BUILDERS["f1"] = fetch_f1_market_context
+# ITF (2026-09-16): single builder fetching BOTH KXITFMATCH + KXITFWMATCH (men+women, one category). INERT: no ITF
+# sub exists AND `itf_moneyline` is not in the legacy default market_types -> a builder change enables nothing on its own.
+CATEGORY_CTX_BUILDERS["itf"] = fetch_itf_market_context
 
 
 # ── the engine task (mirrors main.py:_scheduled_poly_kalshi_loop) ──────────────────────────────────────

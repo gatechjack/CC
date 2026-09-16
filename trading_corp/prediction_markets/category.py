@@ -26,6 +26,12 @@ SLUG_PREFIX_MAP: dict[str, str] = {
     "cs2": "cs2",
     "atp": "atp",
     "wta": "wta",
+    # ITF (2026-09-16): the year-round lower tier. Polymarket slugs BOTH men's and women's ITF singles under a
+    # single `itf-{p1}-{p2}-{YYYY-MM-DD}` prefix -> ONE category 'itf' (Kalshi splits them KXITFMATCH/KXITFWMATCH, but
+    # the matcher/ctx builder covers both). Tier-1 keyed so ITF matches stop hiding in the coarse 'tennis' gamma tag
+    # -- a category that classifies 'unknown' cannot be searched/scored (the cfb/boxing/f1 invisibility gap). ITF
+    # futures/props that are NOT `itf-{a}-{b}-{date}`-shaped stay classifiable but are a SAFE MISS at the matcher.
+    "itf": "itf",
     "cbb": "cbb",
     "cfb": "cfb",          # college football (US NCAA); per-game 'cfb-<away>-<home>-DATE' slugs. Was 'unknown'.
     "fifwc": "fifwc",

@@ -55,6 +55,7 @@ from ..data import soccer_poly_kalshi_match as SOC   # rung 3 (2026-09-07): socc
 from ..data import fed_poly_kalshi_match as FED   # rung 4 (2026-09-07): fed event+bucket matcher (FOMC rate decision)
 from ..data import boxing_poly_kalshi_match as BX   # boxing (2026-09-14): KXBOXING winner-only, surname-bind + code-anchor
 from ..data import f1_poly_kalshi_match as F1X   # F1 (2026-09-14): KXF1RACE per-driver race-winner, date-join
+from ..data import itf_poly_kalshi_match as ITF   # ITF (2026-09-16): KX(ITFMATCH|ITFWMATCH) pair-keyed matcher (men+women, one category); tennis clone
 from . import arm   # R5 arm/kill control plane -- stdlib-only at import (its engine writer is lazy)
 
 _LOG = logging.getLogger(__name__)
@@ -171,6 +172,10 @@ class MarketContext:
     # Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the F1 ctx builder sets it and leaves the
     # rest empty. Read only by the F1 adapter below.
     f1_race_index: dict | None = None
+    # ITF (2026-09-16): the {date_iso: [KalshiItfMatch]} index (pair-keyed like tennis; KXITFMATCH men + KXITFWMATCH
+    # women MERGED into one index). OWN slot (not match_index) so atp/wta and itf share NO ctx field -- separation by
+    # construction. Optional + defaulted so all prior constructions stay BYTE-IDENTICAL; the ITF ctx builder sets it.
+    itf_index: dict | None = None
     # RFI / first-inning-run (2026-09-14): the {stem: KXMLBRFI-ticker} index (one binary market per MLB game). Optional
     # + defaulted so all prior constructions stay BYTE-IDENTICAL; the MLB ctx builder sets it. Read only by the MLB
     # adapter, and only when a sub-division has 'first_inning_run' in its market_types (ships INERT until enabled).
@@ -524,6 +529,21 @@ def _f1_match(parsed, ctx, allowed_market_types):
                          allowed_market_types=allowed_market_types)
 
 
+def _itf_parse(slug, outcome, title=None):
+    # ITF (2026-09-16): pair-keyed like tennis. The title "A vs B" supplies both players (date tolerance + safe
+    # surname recovery). A None/empty title degrades to single-player matching (surname-only outcomes safely MISS).
+    # An atp-/wta- slug returns non_itf here -> never reaches the ITF index (separation by construction).
+    return ITF.parse_poly_itf_bet(slug, outcome, title)
+
+
+def _itf_match(parsed, ctx, allowed_market_types):
+    # ITF needs only its OWN {date:[KalshiItfMatch]} index (men+women merged) + the ISO dates present. `itf_index or {}`
+    # fail-safes a non-ITF ctx to "no contract" (a tennis ctx has itf_index=None -> {} -> safe miss); the registry
+    # routes itf to the ITF ctx builder (category-keyed). Reads ctx.itf_index, NOT ctx.match_index (atp/wta's slot).
+    return ITF.match_bet(parsed, ctx.itf_index or {}, ctx.kalshi_dates,
+                         allowed_market_types=allowed_market_types)
+
+
 def _soccer_adapter(cfg):
     """(parse, match) for a soccer league `cfg` (epl/lal/fl1/sea/bun/mls/bra/mex/ucl/uel). 3-way: a team-win
     Yes/No -> "{team} wins" yes/no leg; a draw Yes/No -> the TIE market yes/no leg. Reads ctx.soccer_index
@@ -582,6 +602,11 @@ MATCHER_ADAPTERS["boxing"] = (_boxing_parse, _boxing_match)
 # NOT in the legacy default, so even a blank/NULL market_types F1 sub never trades it until Jack adds the token
 # (the RFI/F5 token discipline). H2H is a separate board decision (KXF1H2H empty -> INCONCLUSIVE; not built).
 MATCHER_ADAPTERS["f1"] = (_f1_parse, _f1_match)
+# ITF (2026-09-16): KX(ITFMATCH|ITFWMATCH) pair-keyed match-winner (men + women in ONE category/matcher/ctx builder).
+# Ships INERT behind the `itf_moneyline` market_types token -- NOT in the legacy default, so even a blank/NULL
+# market_types ITF sub never trades it until Jack adds the token per sub-division (the RFI/F5/race_winner discipline).
+# SEPARATION FROM atp/wta by construction: itf-slug + KX(ITFMATCH|ITFWMATCH)-ticker anchors + its OWN ctx.itf_index.
+MATCHER_ADAPTERS["itf"] = (_itf_parse, _itf_match)
 
 
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,
