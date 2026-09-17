@@ -16,7 +16,9 @@ Confirmed via `cc/pm_legaudit_classifier_parity_ro.*` (RO, live DB, box venv, 20
 `live_driver.py` is an ENGINE file (writer); `leg_audit.py` is a PM_WEB file (classifier). **pm_web template needs NO change** — `ok:code_alias` is CLEAN, so it is never surfaced; no new label to render.
 
 ---
-## AUTHORIZATION 1 — pm_web (graft `leg_audit.py` + restart `prediction-markets-web`)
+## AUTHORIZATION 1 — pm_web (graft `leg_audit.py` + restart `prediction-markets-web`)  ✅ DONE + VERIFIED 2026-09-17
+**Graft applied** (box leg_audit.py = target 61cfe84b) and **pm_web restarted CONFIRMED by PID+timestamp**: PID 436431 → **463223**, ActiveEnterTimestamp **2026-09-17 19:36:44Z** (postdates the graft 19:28:27Z). Engine 458566 unchanged (31 subs traded through). Served /live strip: 2 code_review LG rows still "code review", 0 could-not-check, 0 inversion. **NOTE: the FIRST restart attempt silently did not run (PID/timestamp unmoved, az returned provisioning-success + empty stdout); the re-run took. A restart is confirmed ONLY by PID change + ActiveEnterTimestamp, never by the command's exit code.**
+
 Bounces pm_web ONLY; engine + 31 armed subs keep trading. Safe any time.
 1. Graft (azureuser, drift-gated base d9468361; rolls back on mismatch):
    `powershell -ep bypass -f "C:\Users\AA Incorporado\cc\pm_legaudit_graft_pmweb.ps1"`
@@ -29,7 +31,7 @@ At this point you may sit indefinitely; nothing writes `ok:code_alias` until Aut
 ---
 ## AUTHORIZATION 2 — engine (graft `live_driver.py` + restart `trading-corp`)
 The expensive one: `restart_tc.ps1` **bounces ALL divisions** (MACE, PEAD, bitunix, coinbase, PM jack+karen…), ~3.5 min boot. **Time it clear of the 9:30 ET equity open** (PEAD co-tenant).
-1. Graft (azureuser, drift-gated; **PRECONDITION: aborts unless leg_audit.py on box == target, i.e. Authorization 1 landed**):
+1. Graft (azureuser, drift-gated; **TWO preconditions, both must pass or it aborts 0-changes**): (a) `leg_audit.py` on box == target (Auth-1 grafted); (b) **PROCESS-FRESHNESS — pm_web `ActiveEnterTimestamp` postdates `leg_audit.py` mtime**, i.e. pm_web is actually RUNNING the new classifier, not merely that the file is on disk (closes the file-at-target-vs-process-running gap):
    `powershell -ep bypass -f "C:\Users\AA Incorporado\cc\pm_legaudit_graft_engine.ps1"`
 2. Restart engine:
    `powershell -ep bypass -f "C:\Users\AA Incorporado\Desktop\restart_tc.ps1"`
@@ -38,7 +40,8 @@ The expensive one: `restart_tc.ps1` **bounces ALL divisions** (MACE, PEAD, bitun
 
 ---
 ## STOP CONDITIONS (do not infer — act on these)
-- **Phase-2 graft aborts "PM_WEB HALF NOT DEPLOYED":** Authorization 1 was not applied. HOLD. Complete Authorization 1 (graft + restart_pmweb + verify) first. Do not force the engine graft.
+- **Phase-2 graft aborts "PM_WEB HALF NOT DEPLOYED":** Authorization 1's file was not applied. HOLD. Complete Authorization 1 first. Do not force the engine graft.
+- **Phase-2 graft aborts "pm_web is NOT running the deployed leg_audit.py" (process-freshness, exit 8):** the file is at target but pm_web did NOT restart onto it (ActiveEnter <= mtime) — the silent-restart failure. HOLD. Restart pm_web, confirm PID change + ActiveEnter postdating the graft, then retry. A restart is confirmed ONLY by PID+timestamp, NEVER by the az/systemctl exit code (empty stdout is ambiguous — a successful restart also prints nothing).
 - **Phase-2 graft LANDED but pm_web is NOT confirmed on the new classifier:** HOLD — **do NOT run `restart_tc.ps1`.** Restore `live_driver.py` from `~/pm_legaudit_engine_backup_<TS>` (the engine has not restarted, so it never loaded the new file; the box returns to base = prod-live d9468361, no divergence). Then either fix/verify Authorization 1 or stand down.
 - **Either graft aborts "BOX != BASE":** prod-live advanced past d9468361. Rebase the branch onto the new prod-live, recompute md5s, rebuild the `_legaudit_new_*.b64`, re-run. Do NOT graft onto a drifted base.
 - **Any post-copy/py_compile failure:** the runner auto-rolls-back that file from its backup and aborts non-zero. Box is left consistent at base; do not restart.

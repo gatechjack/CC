@@ -15,6 +15,19 @@ echo "engine PID: $(systemctl show -p MainPID --value trading-corp 2>/dev/null) 
 la=$(m "$ROOT/$LA")
 echo "  PRECONDITION pm_web-half: box leg_audit.py=$la  need=$LA_TGT"
 [ "$la" = "$LA_TGT" ] || { echo "  ** STOP: PM_WEB HALF NOT DEPLOYED (leg_audit.py != target). HOLD -- do NOT graft or restart the engine until Phase 1 is grafted+restarted+verified. ABORT (0 changes)"; exit 3; }
+# PROCESS-FRESHNESS (the gap: file-at-target is NOT proof pm_web is RUNNING that file). The pm_web
+# restart must have happened AFTER leg_audit.py was written. Restart is confirmed ONLY by
+# ActiveEnterTimestamp + PID, NEVER by an az/systemctl exit code (empty stdout is ambiguous -- a
+# successful restart also prints nothing).
+la_mtime=$(stat -c %Y "$ROOT/$LA" 2>/dev/null)
+wpid=$(systemctl show -p MainPID --value prediction-markets-web 2>/dev/null)
+wactive=$(systemctl show -p ActiveEnterTimestamp --value prediction-markets-web 2>/dev/null)
+wepoch=$(date -d "$wactive" +%s 2>/dev/null)
+echo "  PROCESS-FRESHNESS pm_web: PID=$wpid ActiveEnter=$wactive (epoch=${wepoch:-PARSE_FAIL}) vs leg_audit.py mtime=$la_mtime"
+if [ -z "${wepoch:-}" ] || [ "$wepoch" -le "${la_mtime:-0}" ]; then
+  echo "  ** STOP: pm_web is NOT running the deployed leg_audit.py (ActiveEnter <= file mtime => the classifier restart did not take). HOLD -- restart pm_web onto the new classifier first and confirm by PID change + ActiveEnter postdating the graft. ABORT (0 changes)"; exit 8
+fi
+echo "  -> process-freshness OK: pm_web restarted AFTER leg_audit.py was deployed (running the new classifier)"
 bx=$(m "$ROOT/$LD"); st=$(m "$NEW")
 echo "  gate LD: box=$bx base=$LD_BASE staged=$st tgt=$LD_TGT"
 [ "$bx" = "$LD_BASE" ] || { echo "  ** BOX != BASE (live_driver.py drifted from d9468361) -- ABORT (0 changes)"; exit 4; }
