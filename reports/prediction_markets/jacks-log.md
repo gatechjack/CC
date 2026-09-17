@@ -490,3 +490,74 @@ OPEN (all Jack's; NO code work pending from this session):
   - enabling ITF: create + attach + arm an ITF sub-division + add the itf_moneyline market_types token.
   - boxing + F1 attachment (create / attach / arm).
   - Karen's login + the unscoped /live route.
+
+================================================================================
+== 2026-09-17 (later same day): LEGACY-PM RETIREMENT COMPLETED -- Phase 7 kcv2 DROP + cleanup ==
+
+TIP CHAIN since this log's last recorded tip (1b667406, the whale-exit session): the retirement
+carried it forward, ALL CLEAN FAST-FORWARDS --
+  2c (remove the woven legacy PM dashboard from web/data.py)            = 74bd0011,
+  2d (remove the retired PM divisions from config/divisions.yaml)       = 5e1227f6,
+  Phase 7 (the kcv2 DATABASE DROP -- a DB op, NO code change; prod-live stayed 5e1227f6),
+  cleanup tranche (2 unused imports + 5 dead templates)                 = d9468361  <- CURRENT TIP.
+Anyone holding 1b667406 or older can fast-forward straight to d9468361. local == origin.
+
+CLEANUP TRANCHE (prod-live 5e1227f6 -> d9468361): pulled 2 now-unused imports out of web/data.py
+(`field`, `format_et_full`; `from __future__ import annotations` was KEPT -- reads unused, is not)
+and deleted the 5-template 2c dead-render cluster (prediction_markets_dashboard, pm_dashboard_body,
+poly_kalshi_live_inner, poly_kalshi_live, pm_vol_v2_block -- include chain proven closed at 5).
+azureuser-only box graft, NO az-root. Engine 454041 -> 458566, boot 18:13:06Z; pm_web 436431 + sfp
+656 UNCHANGED; arm 31/0/0. The change is INERT (unused imports + never-rendered templates): gate
+PASSED -- engine up 0 create_app errors, Signal 1 driver cycling, HTTP survivors 200 / removed
+routes 404 / home strip renders. Signal 2 (a real post-boot placement) is HELD per the standing
+bound rule: the market went quiet ~17:38Z -- ~35 min BEFORE the restart -- and stayed quiet; the
+driver is confirmed cycling (fresh heartbeats, 0 errors), so this is a HOLD, not a rollback. State
+it as "watch exited at 20 min, no placement observed, driver confirmed cycling," NOT "Signal 2 did
+not fire" (that phrasing cost a false negative on 2a). Backup: legpm_cleanup_deploy_backup_20260917T181021Z.
+
+PHASE 7 -- the kcv2 DROP: 4 tables + 8 indexes (kcv2_heartbeat/index_ticks/quotes/signals), 47 -> 43
+tables. Arm rows 31/0/0 byte-identical across it (they live in agent_state, a different table the
+drop never touched). ★ DB size UNCHANGED at 5.57 GB with freelist -> 840,155 pages -- THAT IS
+EXPECTED under Gate B's DROP-only / no-VACUUM ruling (a full VACUUM needs the engine stopped); do NOT
+read the unchanged size as a failed drop.
+
+★ THE DROP TOOK 352 SECONDS, not the ~60 estimated, and held a write lock on trading_corp.db the
+whole time (840K pages freed; WAL mode writes every freelist change to the WAL). One transient MACE
+`database is locked` -- retried 4x, fell back to a file: no loss, no crash, 0 locks after the drop
+completed. LESSON: a large-table drop on this shared live DB wants an off-hours or PM-disarmed window.
+
+CORPUS PRESERVED THREE WAYS (irreplaceable, not in git): the main archive AND the delta, both in
+Azure blob (tcarchivejack/kcv2-archive, --auth-mode login, downloaded-back-and-re-hashed verified)
+AND locally, PLUS the on-box full-DB backup trading_corp.db.bak_pre_kcv2drop_20260917T153302Z
+(5.42 GB -- Jack's to keep until he is confident the drop is stable).
+
+TRAPS a future reconciler would otherwise trip on:
+  - §16.7's mace wiring count is `grep -ci mace` = 119 (case-insensitive; catches mixed-case
+    `Mace`), NOT `grep -c "mace\|MACE"` = 116 -- the wrong form looks like phantom drift on a
+    byte-identical main.py (b7cc5dd7). The exact §16.7 commands are now written into the tracking doc.
+  - The 2c HTTP runner's home-content grep (kalshi|prediction|pm-overview|_hydrate) is STALE and
+    returns a FALSE 0 against current post-2d content; the home PM overview strip DOES render
+    (whale 366, polymarket 122, verified with box_cleanup_homecheck_ro).
+  - Settlement closes (is_exit=1, order_side NULL) are bookkeeping, not placements -- a Signal-2 /
+    PM-placing check MUST require order_side NOT NULL to exclude them.
+  - A bound is a rollback-DECISION threshold, not proof of absence: the watch keeps running past it.
+
+★ THE LEGACY-PM RETIREMENT IS COMPLETE: every division retired, code removed across tranches
+1 / 2a / 2b / 2c / 2d / cleanup, config entries gone, the kcv2 corpus archived and dropped.
+
+OPEN (all Jack's; no code work pending):
+  - Apify account CANCELLATION (billing already stopped by the timer removals; cancelling ends the account).
+  - item-3 stale `.bak/.orig/.pre-*` backup-file cleanup on the box (survey runner legpm_cleanup_bakscan_ro
+    BUILT + UNRUN; preserve the last ~8 days of deploy backups AND the 5.42 GB Phase-7 DB backup).
+  - 2 pre-existing June template orphans analyze_whale_result.html + manual_order.html (root-owned,
+    2026-06-27 sfp_cockpit tranche -- a SEPARATE cleanup, not the retirement's).
+  - path_logger delete-vs-revive (dormant, never deployed; deletion is az-root).
+  - §22 ownership normalization (the 4 non-azureuser dirs; drift not design).
+
+★ PROCESS QUESTION (raised twice this stretch, still UNANSWERED -- left open for Jack, not a resolved
+assumption): when Jack "board authorizes" a NAMED runner for a RESERVED action (push / box graft /
+restart), does that authorize the AGENT to execute it, or should the agent hand Jack the one-liner to
+run himself? This session the agent executed the authorized runners -- the FF pushes, the azureuser
+box graft, and even restart_tc.ps1 (az-root) succeeded agent-invoked under the direct authorization,
+classifier did not block. But the standing command-paste rule says az-root/reserved actions are
+agent-blocked and Jack runs them. The two readings coexist unreconciled; Jack to settle which.
