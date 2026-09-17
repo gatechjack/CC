@@ -777,6 +777,34 @@ def category_volume_order(conn, account_id: str, cats: list, *, now_ts: int, win
 _AUDIT_SOCCER_CATS = frozenset({"epl", "lal", "fl1", "sea", "bun", "mls", "bra", "mex", "ucl", "uel"})
 _AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc", "boxing", "itf"})   # itf (2026-09-16): KX(ITFMATCH|ITFWMATCH) winner, surname/code subsequence audit -- ITF names are accent/transliteration-prone, so the code-anchored bind + this net matter most here
 
+# -- venue-verified leg-audit code aliases (name-family cats) ----------------------------------
+# Known-good Kalshi ticker CODES that legitimately abbreviate the org by DROPPING a letter the
+# shortened Poly outcome omits, so they FAIL the ordered-subsequence corroboration in
+# _audit_leg_independent yet are CORRECT. Keyed folded-code -> folded-outcome (both stripped to
+# [a-z0-9], matching `c`/`n` in that function). A hit yields the verdict 'ok:code_alias' -- a
+# VISIBLE auto-clear, NOT a silent 'ok': the string is persisted so rows cleared by alias stay
+# queryable (SELECT ... WHERE leg_audit='ok:code_alias'); if an alias is ever wrong, the fills it
+# cleared are findable.
+#
+# ENTRY BAR -- DO NOT RELAX, and do not batch "obvious" ones: every alias requires a VENUE
+# CONFIRMATION like reports/prediction_markets/CS2_LEGAUDIT_LG_LUMINOSITY_2026-09-17.md -- the
+# Kalshi title AND yes_sub_title, the Polymarket outcome, AND a condition_id tying both to the
+# SAME market. An abbreviation that merely looks right is not enough. (The comment in
+# _audit_leg_independent names Team Liquid->TL and McNally->MCC as plausible legit codes; NEITHER
+# is venue-confirmed, so neither is seeded -- adding them on the strength of a docstring is exactly
+# the shortcut this bar exists to stop.)
+#
+# WHY NOT the tempting shortcut -- clear when canon(yes_sub_title)==canon(outcome)? That is EXACTLY
+# the equality the matcher already uses to BIND the leg, so the audit would re-derive the matcher's
+# own answer and rubber-stamp the thing it audits -- the tautological-dry-run-gate failure (a check
+# whose expected value comes from the code under check). The audit's INDEPENDENCE is the product; a
+# flag that never fires because it echoes the matcher is worse than no flag. The ticker CODE is
+# INDEPENDENT evidence (Kalshi sets it; Polymarket sets the outcome); this table records only
+# human-verified exceptions, one venue-checked entry at a time.
+_LEG_AUDIT_CODE_ALIASES = {
+    "lg": "luminosity",   # KXCS2GAME -LG = Luminosity (Gaming); venue-confirmed 2026-09-17, cond 0x8824..9341
+}
+
 
 def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=None, signal_title=None):
     """Return 'ok' | 'na' | 'unchecked' | 'REVIEW:<why>'. Independent of the matcher's leg choice. signal_title (the
@@ -809,7 +837,11 @@ def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=No
         # 'code_review' (soft, persisted, NOT WARN-logged): a legit non-subsequence code exists (Team
         # Liquid->TL, McNally->MCC), so this is an audit trail, not an alarm. The matcher already
         # code-anchors name-family at match time; only unambiguous leg inversions (below) raise REVIEW.
-        return "ok" if (c and i == len(c)) else "code_review:code_not_in_outcome:%s!<%s" % (code, oc[:24])
+        if c and i == len(c):
+            return "ok"                                          # code IS an ordered subsequence of the outcome
+        if _LEG_AUDIT_CODE_ALIASES.get(c) == n:                  # venue-verified legit abbreviation -> VISIBLE auto-clear
+            return "ok:code_alias"
+        return "code_review:code_not_in_outcome:%s!<%s" % (code, oc[:24])
     if category in _AUDIT_SOCCER_CATS:                            # Yes->yes / No->no (a disagreeing leg = inversion)
         exp = "yes" if oc == "Yes" else "no" if oc == "No" else None
         return "unchecked" if exp is None else ("ok" if leg == exp else "REVIEW:soccer_leg!=outcome:%s/%s" % (leg, oc))

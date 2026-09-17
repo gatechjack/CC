@@ -26,6 +26,7 @@ def test_classify_five_states_distinct():
     assert LA.classify_leg_audit("unchecked") == LA.STATE_UNEVALUATED
     assert LA.classify_leg_audit("ok") == LA.STATE_CLEAN
     assert LA.classify_leg_audit("na") == LA.STATE_CLEAN
+    assert LA.classify_leg_audit("ok:code_alias") == LA.STATE_CLEAN   # venue-verified code alias -> clean, NOT surfaced
     assert LA.classify_leg_audit(None) == LA.STATE_LEGACY
     assert LA.classify_leg_audit("") == LA.STATE_UNEVALUATED   # non-null blank == unreadable -> surfaced, not dropped
 
@@ -55,12 +56,44 @@ def test_read_side_agrees_with_writer():
         (("nfl", "Over", T_TOT, "yes"), LA.STATE_CLEAN),      # total correct
         (("cs2", "magic", "KXCS2GAME-26SEP082300FAZEMGC-FAZE", "yes"), LA.STATE_SOFT),  # name code mismatch
         (("cs2", "magic", "KXCS2GAME-26SEP082300FAZEMGC-MGC", "yes"), LA.STATE_CLEAN),  # name code ok
+        (("cs2", "Luminosity", "KXCS2GAME-26SEP171100NIPLG-LG", "yes"), LA.STATE_CLEAN),  # LG!<Luminosity but venue-verified alias -> clean
+        (("cs2", "NIP", "KXCS2GAME-26SEP171100NIPLG-LG", "yes"), LA.STATE_SOFT),          # ANTI: LG code + NIP outcome must NOT clear (alias is value-specific)
+        (("cs2", "NIP", "KXCS2GAME-26SEP171100NIPLG-NIP", "yes"), LA.STATE_CLEAN),        # NIP is a true subsequence of NIP -> ok
         (("nfl", "New Orleans Saints", "KXNFLGAME-26SEP13NODET-NO", "yes"), LA.STATE_CLEAN),  # structural moneyline -> na
         (("cs2", "", "KXCS2GAME-26SEP082300FAZEMGC-MGC", "yes"), LA.STATE_UNEVALUATED),       # empty outcome -> unchecked
     ]
     for args, expected in cases:
         verdict = _audit_leg_independent(*args)
         assert LA.classify_leg_audit(verdict) == expected, (args, verdict, expected)
+
+
+def test_code_alias_exact_verdict_and_anticase():
+    """Pin the DISTINCT verdict string (not just its state) and the value-specific guard: the
+    venue-verified LG->Luminosity alias yields 'ok:code_alias'; the SAME code with a different
+    outcome (LG + 'NIP') must NOT clear -- the alias keys the folded OUTCOME, not the code alone,
+    so it can never blanket-pass a code onto the wrong side (the wrong-fill class this exists to fight)."""
+    T = "KXCS2GAME-26SEP171100NIPLG-LG"
+    assert _audit_leg_independent("cs2", "Luminosity", T, "yes") == "ok:code_alias"
+    assert _audit_leg_independent("cs2", "NIP", T, "yes").startswith("code_review:code_not_in_outcome:")
+    # a code that is genuinely a subsequence still returns plain 'ok' (alias path not taken)
+    assert _audit_leg_independent("cs2", "NIP", "KXCS2GAME-26SEP171100NIPLG-NIP", "yes") == "ok"
+
+
+def test_reader_code_alias_not_surfaced_but_queryable(tmp_path):
+    """'ok:code_alias' is CLEAN -> it must NOT appear in the review strip, yet the DISTINCT verdict
+    stays persisted so alias-cleared fills are findable (SELECT ... WHERE leg_audit='ok:code_alias')."""
+    p = str(tmp_path / "pm.db"); db.init_db(p); conn = _conn(p)
+    _seed(conn, [
+        ("kalshi_jack", "cs2", "KXCS2GAME-26SEP171100NIPLG-LG", "yes", "Luminosity", "ok:code_alias", 0),
+        ("kalshi_karen", "cs2", "KXCS2GAME-X-FAZE", "yes", "magic", "code_review:code_not_in_outcome:FAZE!<magic", 0),
+    ])
+    s = LA.read_leg_audit_reviews(conn)
+    assert s["counts"][LA.STATE_SOFT] == 1          # only the genuine code_review surfaces
+    assert s["total_surfaced"] == 1                 # ok:code_alias NOT surfaced
+    assert all(r["leg_audit"] != "ok:code_alias" for r in s["rows"])
+    # but the row is still there and queryable by its distinct verdict
+    n = conn.execute("SELECT COUNT(*) FROM pm_subdivision_order WHERE leg_audit='ok:code_alias'").fetchone()[0]
+    assert n == 1
 
 
 # ── (3) reader: surfaces REVIEW, no false alarm on clean/legacy, honest-empty pre-migration ──
