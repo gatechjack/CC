@@ -839,8 +839,8 @@ def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=No
         # code-anchors name-family at match time; only unambiguous leg inversions (below) raise REVIEW.
         if c and i == len(c):
             return "ok"                                          # code IS an ordered subsequence of the outcome
-        if _LEG_AUDIT_CODE_ALIASES.get(c) == n:                  # venue-verified legit abbreviation -> VISIBLE auto-clear
-            return "ok:code_alias"
+        if c and _LEG_AUDIT_CODE_ALIASES.get(c) == n:            # venue-verified legit abbreviation -> VISIBLE auto-clear
+            return "ok:code_alias"                               # (the `c and` guards an empty code from ever hitting the table)
         return "code_review:code_not_in_outcome:%s!<%s" % (code, oc[:24])
     if category in _AUDIT_SOCCER_CATS:                            # Yes->yes / No->no (a disagreeing leg = inversion)
         exp = "yes" if oc == "Yes" else "no" if oc == "No" else None
