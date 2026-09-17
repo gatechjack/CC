@@ -11,12 +11,12 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from trading_corp.persistence import db
-from trading_corp.utils.time import format_et_full, format_et_hm, format_et_short
+from trading_corp.utils.time import format_et_hm, format_et_short
 from trading_corp.utils.divisions import (
     Division, InvestmentGroup, group_by_investment_type, load_divisions,
 )
