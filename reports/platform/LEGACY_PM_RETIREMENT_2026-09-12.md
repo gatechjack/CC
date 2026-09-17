@@ -1084,3 +1084,51 @@ Worked the §26.4 plan in order; Jack ran push/box-write/restart, agent built ru
 - **★ MEASUREMENT LESSON + HONEST FINDING:** the first http-check run reported "removed slugs 0" -- a **FALSE ZERO** from a `grep -c ... || echo 0` arithmetic bug (a `bash: 0\n0 syntax error` aborted the accumulation). Suspecting the measurement, I fixed the runner and re-ran -> found **`polymarket_copy_trading` x76 in the home body**. Inspected via byte-offset context (`box_2d_homectx_ro`): the 76 are **HTML-escaped JSON audit records** (`"division":"polymarket_copy_trading","copy_size_usdc":..,"entry_ts":..`) in the home page's **activity/trade-flow feed**, which `build_command_center` builds from an `audit_event` query (web/data.py:3939 `a.actor IN ('polymarket_arbitrage','polymarket_copy_trader')`). This is **DB-sourced, NOT the divisions.yaml PM tile section** (which is gone), and is **byte-identical pre/post-2d** (2d changed only config; build_command_center + the DB are untouched). ⇒ NOT a 2d regression, NOT a deploy failure; the section is gone as intended. The activity-feed historical remnant is **out of 2d's scope** -- removing it is a code/DB change (a future activity-feed / Phase-7 data pass), not a divisions.yaml edit.
 - **DO-NO-HARM (before/after): PASS** -- arm **31/0/0** identical, schema head **24** unchanged; **pm_web 436431 + sfp 656 PIDs + NRestarts UNCHANGED**; only the engine PID changed (authorized restart). PM stayed ARMED through the restart.
 - **★ WHAT REMAINS:** Phase-7 DROP of the 3 frozen legacy tables (blocked on Gate A -- no off-device archive copy); the API cancellations (Apify billing already stopped); Jack's open rulings -- path_logger delete-vs-revive (dormant, §24.7), §22 ownership normalization, the 639 stale `*.py.{orig,bak*,pre-*}` backup copies, the inert 2c leftovers (2 unused imports + 3 dead templates) and 2d leftover (the home activity-feed's historical polymarket_copy_trader JSON island). **The whole Phase-8 code+config removal arc (tranches 1 + 2a + 2b + 2c + 2d) is now DEPLOYED LIVE.** Runners cc/box_2d_{deploy,verify,restart_JACK,bootverify_ro,http_ro,realwatch,homectx_ro}.
+
+---
+
+## 27. PHASE 7 EXECUTION LOG -- kcv2 DATABASE DROP (session 18, 2026-09-17). ★ THE IRREVERSIBLE PHASE, RESUMING from step 2 (Gate A already PASSED). Worktree `legacy-pm-phase7-drop-2026-09-17` off doc tip `d0312874`. NO RESTART this phase.
+
+### 27.0 ★ ANCHORS RE-VERIFIED (agent, 2026-09-17T14:46Z) -- all VERIFIED against the live box
+- **origin/prod-live = `5e1227f6`** (`git ls-remote origin prod-live`); doc tip origin/legacy-pm-retire-2026-09-13 = `d0312874`.
+- **engine trading-corp MainPID `454041`** (NRestarts 0, boot 2026-09-17 11:30:22Z = tranche-2d boot); **pm_web `436431`**; **sfp-card-watcher `656`** -- all active, NRestarts 0 (unchanged since 2d). ★ These MUST stay put through Phase 7 (no restart).
+- **PM schema head `24`** (`schema_version MAX(version)=24`). **Arm = 31 rows / armed 31 / latched 0 / trigger 0**, actor `pm_live` only (per-row `updated_ts` captured as the Step-6 baseline). 44 active pm_subdivision (jack 23 / karen 21). Driver cycling (33 heartbeats state=evaluated, 0 errors). 975 orders all `dry_run=0`.
+- **GATE A CONFIRMED still intact:** blob `tcarchivejack/kcv2-archive` lists exactly the 2 Gate-A artifacts at their exact bytes: `kcv2_prod_tables.sql.gz` 278,591,317 + `kcv2_lab.db.gz` 110,760,320. Local copies verified byte-perfect in the charter. **GATE B ruled: DROP-only, NO VACUUM.**
+
+### 27.1 STEP A -- DO-NO-HARM BASELINE (RO; PASS). Runners cc/recon_arm_read_ro + cc/recon_liveness_ro.
+Arm 31/0/0 (actor pm_live only); engine 454041 / pm_web 436431 / sfp 656 all NRestarts 0; driver cycling (task heartbeats 7-10s, 33 category heartbeats state=evaluated 0 errors); 44 active subs; orders D1 filled-non-dry jack 509 / karen 399, D2 open-unsettled jack 261 / karen 205, D3 all `dry_run=0` (975). Healthy pre-archive baseline.
+
+### 27.2 STEP B -- KCV2 STATIC-CHECK (RO; PASS). Runner cc/legpm_p7_static_ro.
+- **Observer `trading-corp-kcv2-observer.service`: ActiveState=inactive, SubState=dead, UnitFileState=disabled, MainPID=0** (stopped+disabled since §20.9). PID 679 retired.
+- **All 4 tables STATIC across two reads 25s apart** AND **CONTIGUOUS (COUNT==MAX rowid** -> rowid-range chunking is lossless). `kcv2_quotes` = 13,053,562 (matches §20.9 exactly -- corpus frozen since 2026-09-16).
+- **Delta = rowid > Phase-5 HWM** (lossless-coverage invariant `phase5_hwm + delta == current == max_rowid` holds for every table):
+
+| table | Phase-5 HWM | current max | delta rows |
+|---|---|---|---|
+| kcv2_heartbeat | 111,439 | 119,952 | 8,513 |
+| kcv2_index_ticks | 445,756 | 479,808 | 34,052 |
+| kcv2_signals | 891,520 | 959,616 | 68,096 |
+| kcv2_quotes | 12,034,120 | 13,053,562 | 1,019,442 |
+
+### 27.3 STEP 2 -- DELTA-ARCHIVE + VERIFY + BLOB (agent-permitted: RO read + new-scratch write + blob). DONE + PASS.
+- **Dump (cc/legpm_p7_delta_dump.ps1 -> cc/dump_kcv2_delta.py, chunked, PM-health-gated every chunk):** `/home/azureuser/kcv2_archive_stage/kcv2_prod_delta.sql.gz`, **23,785,829 B, sha256 `b244acc1ecfac19ee97ab519429b3166ce15b11b320420029101bd16a07d90ac`**. `rows_written == delta_count` all 4 tables (8,513 / 34,052 / 68,096 / 1,019,442 = 1,130,103 rows). PM healthy every chunk (open=466, hb_age 0-3s).
+- **Transfer (cc/legpm_p7_delta_pull.ps1, scp box->local):** local 23,785,829 B, sha256 == box `b244acc1...` -> byte-identical.
+- **Local restore-verify (cc/restore_delta.py into `_p7_scratch/_delta_verify.db`):** all 4 tables restored at exact rowid ranges (min==HWM+1, max==current, count==delta); 4 tables + 8 indexes rebuilt clean. `DELTA_STRUCT_VERIFY=PASS`.
+- **★ CONTENT byte-identical to LIVE SOURCE (cc/delta_content_hash.py run BOTH on the restored scratch AND on the live DB mode=ro, rowid>HWM):** per-table `content_sha256` MATCH on all 4 tables -- heartbeat `de7b9e25`, index_ticks `27b64059`, signals `a6d182f5`, quotes `55c55dc0` (identical local==source; counts, min/max rowid, first/last rows identical). ⇒ the delta archive is proven byte-identical to exactly the rows that will be dropped (stronger than the Gate-A 3-spot-row method -- full hash over 1.13M rows).
+- **★ OFF-DEVICE (cc/legpm_p7_delta_blob.ps1, `--auth-mode login`, `--overwrite false`):** uploaded `kcv2_prod_delta.sql.gz` (23,785,829 B) to `tcarchivejack/kcv2-archive`; **read-back download from the blob re-hashed `b244acc1...` == expected -> `BLOB_READBACK_VERIFY=PASS`**. Gate A + delta together now durably cover the complete frozen corpus `[1..13,053,562]` in blob + local, no gaps/overlaps.
+
+### 27.4 ★ ROLLBACK PLAN (written BEFORE the reserved/destructive steps 3-4; supersedes §19.5 with measured Phase-5/7 durations)
+★ **Recovery is NOT hot** -- it needs an ENGINE STOP (a maintenance window), not a live fix. Tell Jack FIRST if rolling back, then act.
+- **Step 3 (backup) rollback:** the backup is additive (a new file); "rollback" = just delete the backup file. No live effect.
+- **Step 4 (DROP) rollback, in order of preference:**
+  1. **Restore the full-DB backup** `data/trading_corp.db.bak_pre_kcv2drop_<ts>` (Step 3) over `data/trading_corp.db` -- **ENGINE STOPPED**, ~minutes for 5.31 GB. Fast route. Requires the canonical restart afterward.
+  2. **If the backup is lost:** re-restore kcv2_* from the archives -- **ENGINE STOPPED** -- (a) `gunzip -c kcv2_prod_tables.sql.gz | sqlite3` (main archive [1..HWM], ~13 min measured Phase-5/§19.2) THEN (b) apply the delta `kcv2_prod_delta.sql.gz` ([HWM+1..current]). Both archives are in blob + local.
+- **After the DROP, the frozen corpus exists ONLY in: the Step-3 full-DB backup + the main archive + the delta archive** (all blob+local for the archives; the backup is on-box). Gate A + the delta blob copies make single-device loss non-fatal.
+- Anything that restores the DB requires the canonical `restart_tc.ps1` (Jack) to bring the engine back on the restored file.
+
+### 27.5 ★ REMAINING (reserved for Jack; agent builds+presents+waits, do-no-harm between every step)
+- **Step 3 -- FULL-DB BACKUP** (Jack): safe online backup of the live WAL DB (NOT a raw cp -- a raw cp of a live WAL DB can capture a torn/checkpoint-interleaved state); duration stated; PM health checked during; verify the backup is RESTORABLE (open + integrity + content), not merely present.
+- **Step 4 -- THE DROP** (Jack): 4 tables + 8 indexes, **ENUMERATED FROM THE LIVE SCHEMA** (NOT trusted from a list) -- ★ note the §26.6 "3 frozen tables" was a slip; it is **4** (kcv2_heartbeat, kcv2_index_ticks, kcv2_quotes, kcv2_signals). Brief engine-write block (sec-min).
+- **Step 5 -- NO VACUUM** (Gate B): file stays ~5.31 GB, ~3.15 GB freed as internal pages, reused by future growth. ★ UNCHANGED FILE SIZE IS EXPECTED -- not a failed drop.
+- **Step 6 -- PROVE:** 31 arm rows byte-identical (same rows/values/updated_ts); poly_kalshi persist-halt row present; all 47->43 tables (enumerate before/after); PM STILL PLACING (a real pm_subdivision_order, dry_run=0, order_side NOT NULL, EXCLUDING settlement closes is_exit=1/order_side NULL); DB size before/after.
+- **STATUS: Steps A/B/2 DONE. Steps 3-6 PENDING Jack.** No restart, no code removal, no API cancels this phase.
