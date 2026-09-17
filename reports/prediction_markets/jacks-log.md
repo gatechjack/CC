@@ -561,3 +561,72 @@ run himself? This session the agent executed the authorized runners -- the FF pu
 box graft, and even restart_tc.ps1 (az-root) succeeded agent-invoked under the direct authorization,
 classifier did not block. But the standing command-paste rule says az-root/reserved actions are
 agent-blocked and Jack runs them. The two readings coexist unreconciled; Jack to settle which.
+
+
+LEG-AUDIT CODE-ALIAS (ok:code_alias) — TWO-PHASE DEPLOY, 2026-09-17
+------------------------------------------------------------------
+What it is: the /live "LEG AUDITS TO REVIEW" strip fired a soft "code review" flag on a CORRECT cs2
+fill — KXCS2GAME-26SEP171100NIPLG-LG, both accounts, whale outcome "Luminosity". The flag is an
+ordered-subsequence check: the ticker's side code (LG) is not a subsequence of the outcome
+("Luminosity" has no 'g'). Venue-confirmed CORRECT (Kalshi -LG yes_sub_title="Luminosity"; Poly
+"Luminosity vs NIP" with a matching condition_id; LG = Luminosity Gaming). So it was noise on a
+right fill — the exact failure a monitor exists to avoid (train you to ignore it).
+
+The fix: a venue-verified code-alias table in live_driver.py ({"lg":"luminosity"}) consulted ONLY
+when the subsequence check fails; a hit emits a DISTINCT verdict `ok:code_alias` (a VISIBLE
+auto-clear — persisted + queryable, not a silent "ok"), which leg_audit.py's classifier maps to
+CLEAN so it leaves the strip. Rejected the tempting shortcut (clear when
+canon(yes_sub_title)==canon(outcome)) because that IS the matcher's own bind equality — the audit
+would rubber-stamp the thing it audits (a tautological gate; independence is the product). Seeded
+LG->luminosity ONLY; every future alias needs a venue confirmation like this one.
+
+Landed prod-live d9468361 -> 546151ea (clean FF, tag pm-legaudit-alias-deploy-2026-09-17). Code is
+at 9419c2d8; the tip (546151ea) only adds the manifest + runners. NO shared-trio
+(main.py/db.py/kalshi_live.py untouched). NO migration (no db.py). box == prod-live CR-stripped.
+
+TWO SEPARATE authorizations / restart scopes, pm_web FIRST then engine (the engine writes
+ok:code_alias and pm_web must classify it CLEAN first, or new rows fall to "could-not-check" = a
+WORSE alert than the one replaced):
+  Phase 1 — pm_web: grafted leg_audit.py (classifier); restarted prediction-markets-web ONLY
+    (436431 -> 463223). Engine + 31 armed subs untouched.
+  Phase 2 — engine: grafted live_driver.py (the writer); restarted trading-corp (458566 -> 463884)
+    at 16:00 ET / 20:00 UTC (Jack timed it for the equity close, clear of the open; bounces every
+    division ~3.5 min). Boot-verify GREEN: 0 import errors, every division back
+    (MACE/PMCC/PEAD/bitunix/coinbase/Robinhood) 0 degraded, PM driver cycling, pm_web 463223
+    untouched by the engine bounce, arm 31/0/0 with an unchanged snapshot md5, 4 ERRORs = the
+    chronic EODHD/yfinance BTC-earnings noise. Backups pm_legaudit_{pmweb,engine}_backup_<TS>.
+  The Phase-2 graft carries a precondition: it aborts unless leg_audit.py is already at target on
+  the box AND pm_web's ActiveEnter postdates leg_audit.py's mtime (process freshness) — pm_web-first
+  is enforced structurally, not just documented.
+
+★ DATA OPERATION, NO GIT ARTIFACT (a box-vs-git compare will NOT see this — DELIBERATE, not drift):
+after the deploy the strip STILL showed the 2 old rows, because a code deploy changes what is
+WRITTEN FROM NOW ON, not what is already STORED. Those 2 rows (id 999 jack, id 1000 karen, ticker
+KXCS2GAME-26SEP171100NIPLG-LG) predated the fix and still carried the old
+`code_review:code_not_in_outcome:LG!<Luminosity` verdict. A guarded UPDATE (board-authorized,
+2026-09-17 20:12 UTC, agent-run) reclassified exactly those 2 to `ok:code_alias` — the identical
+value a fresh fill gets now — with a JSON backup pm_legaudit_clear_lg_backup_20260917T201246Z.json.
+Guarded on ticker + old-verdict; aborts unless exactly 2 match; NO restart (pm_web re-reads the DB
+on render). ★ Restoring that backup would put the 2 rows BACK to code_review and RE-RAISE the strip
+— do NOT restore it to "recover" anything.
+
+Three traps this deploy taught (now in the standing rules too):
+  - A RESTART is confirmed ONLY by a PID change + ActiveEnterTimestamp, NEVER by the exit code. The
+    first pm_web restart SILENTLY did not run (PID/timestamp unmoved) yet az returned
+    provisioning-success with EMPTY stdout — and the SUCCESSFUL re-run was equally silent. Empty
+    stdout is AMBIGUOUS, not a failure signature. (Twice this week.)
+  - FILE-AT-TARGET and PROCESS-RUNNING-THAT-FILE are different facts (the Phase-2 gate hole above).
+  - A DEPLOY CHANGES WHAT IS WRITTEN FROM NOW ON, NOT WHAT IS STORED (the 2 lingering rows).
+
+STILL UNEXERCISED (and why it matters): the READ side is proven on REAL rows — the 2 ok:code_alias
+rows exist and pm_web correctly does NOT surface them, yet they stay queryable. But the ENGINE has
+never written ok:code_alias itself; those 2 were set by the UPDATE. That half lands with the next
+live Luminosity fill and needs NO watcher — the verdict persists and is queryable at any check-in
+(SELECT ... WHERE leg_audit='ok:code_alias').
+
+Runners (cc; read-only unless noted): pm_cs2_legaudit_diag_ro (venue confirm),
+pm_legaudit_alias_scratch (box-scratch differential), pm_legaudit_classifier_parity_ro,
+pm_legaudit_graft_pmweb + pm_legaudit_graft_engine (the two grafts, azureuser),
+pm_legaudit_phase1_verify_ro, pm_legaudit_prerestart_snap_ro, pm_legaudit_engine_bootverify_ro,
+pm_legaudit_clear_lg_rows (the guarded DB op). Full manifest on prod-live:
+reports/prediction_markets/LEGAUDIT_ALIAS_DEPLOY_2026-09-17.md.
