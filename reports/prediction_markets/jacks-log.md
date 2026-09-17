@@ -445,3 +445,48 @@ ARM-COUNT TRUTH (a proof obligation that already confused a count): 31 agent_sta
     a success timestamp.
   - APIs: Apify was the real paid legacy driver (now stopped); Finnhub dead/free; Anthropic + Kalshi/Polymarket
     keys are SHARED with live PM and MUST NOT be cancelled. The Polymarket USDC drain must GATE key removal.
+
+
+2026-09-17 — READ-ONLY INVESTIGATION (whale-exit value) — NOTHING DEPLOYED
+--------------------------------------------------------------------------
+WHAT MOVED ON PROD-LIVE THIS SESSION: nothing. Zero commits, zero branches, no box write, no restart.
+prod-live stayed at 1b667406 the whole session. There is NO fold to find dated 2026-09-17 — don't hunt for one.
+
+TWO STALE-STATE CORRECTIONS a reconciler would otherwise trip over:
+  1. prod-live had already MOVED before this session, from workstreams this session did NOT run. The chain from
+     this log's last recorded tip to now: the ITF tennis category deploy landed 3dd15c10 (tag
+     pm-itf-deploy-2026-09-16), then THREE legacy-PM RETIREMENT tranches took it forward —
+     tranche 1 (pure deletion of 49 orphaned legacy .py, transitive-closure proven) = ed6d9b83,
+     tranche 2a (web/routes.py legacy-route graft, +7 modules) = ae1fef05,
+     tranche 2b (shared-file grafts: main.py factory / kalshi.py / web/data.py, +4 modules) = 1b667406.
+     ALL CLEAN FAST-FORWARDS. **CURRENT TIP = 1b667406.** Anyone holding 3dd15c10 or older is on a stale base
+     and can fast-forward straight to 1b667406.
+  2. A local branch literally named `prod-live` existed at 7220e32f (worktree cc-prodlive-cp7-wt), nine-plus
+     deploys behind origin's 1b667406 — strictly BEHIND, not diverged (0 commits ahead), NOT tagged, just stale
+     lag. It was DELIBERATELY REMOVED this session (worktree + local branch both gone), because a local
+     prod-live sitting far behind READS AS DRIFT — and this platform already burned a full session on a
+     phantom-drift alarm that was only a CRLF artefact; a real stale ref looks exactly like that false alarm.
+     It was cleared on purpose, not lost. There is now NO local prod-live ref; origin/prod-live @ 1b667406 is
+     the sole source of truth. local == origin.
+
+WHAT THE INVESTIGATION FOUND (recorded so it isn't re-measured from scratch):
+  - Whale-exit copying (Option D) is LIVE, and has been since ~2026-09-04. The backlog's "designed, ruled,
+    never built" was WRONG and is corrected at source (prediction-markets-backlog memory). detect_exit_signals
+    is wired into the live loop (live_driver.py:1366): a /positions size-reduction confirmed by an /activity
+    SELL fires a reduce_only exit.
+  - CAUGHT 8 of 450 filled positions (~1.8%), net +$2.00, behaving as INSURANCE (loss-cuts outweigh small
+    win-forfeits). MISS-RATE 9 of 390 held-to-settlement (2.3%) at 100% reconstruction coverage (zero
+    unknowns); catching all 9 would have been worth ~+$7.40, 7:2 for loss-cuts. Small at current 3-10 contract
+    sizing over 2.5 weeks.
+  - RULED: LEAVE THE TRIGGER. Revisit condition is SIZING GROWTH, not time (the loss-cut value scales linearly
+    with per-copy size). Watch whale 0xb4eea1c8 — 4 of the 9 misses are his.
+
+LESSON (2nd instance this week): THE BACKLOG IS A RECORD OF DECISIONS, NOT A RECORD OF STATE. "Never built"
+aged badly and nothing updated it until someone checked against the box. (1st instance: the M5 app.py hazard —
+a warning repeated in every deploy prompt for a week that turned out to be a regex artefact.) VERIFY A BACKLOG
+CLAIM AGAINST THE RUNNING CODE BEFORE BUILDING ON IT.
+
+OPEN (all Jack's; NO code work pending from this session):
+  - enabling ITF: create + attach + arm an ITF sub-division + add the itf_moneyline market_types token.
+  - boxing + F1 attachment (create / attach / arm).
+  - Karen's login + the unscoped /live route.
