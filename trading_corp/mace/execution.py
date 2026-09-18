@@ -773,17 +773,25 @@ class MaceExecutor:
     # -- EXIT: cancel PT first, then the emulated-market debit ladder ---------
     async def close_rung(self, rung: RungState, reason: str, *,
                          pricing: str = "marketable",
-                         defer_on_unfilled: bool = False) -> ExitOutcome:
+                         defer_on_unfilled: bool = False,
+                         trigger_mid: Optional[float] = None) -> ExitOutcome:
         """Close a whole condor for a management reason (stop/time/exdiv/gap/pt).
         FIRST cancel-and-confirm the resting PT; if the PT filled in that race,
         book the PT exit and stop. Then walk a DEBIT ladder:
           pricing="marketable" (stop/exdiv/gap/time<=floor): start at NATURAL
               (cross-the-spread), walk UP by tick to the width cap -- a loser/deadline
               MUST fill. exhaustion/unconfirmed/error -> CLOSING + URGENT.
-          pricing="winner" (time-exit>floor / PT -- GDX P1 2026-09-11): start at MID and
-              cap the debit at mid + exit_winner_band -- never cross the whole spread on a
-              profitable close. A CLEAN no-fill with defer_on_unfilled -> DEFER (rung stays
-              OPEN, retries next tick); error/unconfirmed still -> CLOSING + URGENT.
+          pricing="winner" (time-exit>floor / PT -- GDX P1 2026-09-11): price at the fresh
+              MID and cap the debit at `trigger_mid + exit_winner_band`, where trigger_mid is
+              the mid at the MOMENT the exit fired (the manager's decision mark, passed in;
+              falls back to the first priceable mid this call). The cap is FIXED for the whole
+              ladder -- it does NOT re-anchor to the current mid on later attempts, so an
+              adverse re-inflation during the ~2-min walk cannot chase the ceiling up (the
+              2026-09-18 fix: pre-fix a PT triggered at ~51% profit could fill at ~22% because
+              mid+band rose with the market). Never crosses to natural. A CLEAN no-fill with
+              defer_on_unfilled -> DEFER (rung stays OPEN, retries next tick; the trigger
+              re-evaluates fresh next cycle and re-anchors to the NEW trigger_mid);
+              error/unconfirmed still -> CLOSING + URGENT.
         Never books on error/partial."""
         spec, contracts, rung_id = rung.spec, rung.contracts, rung.rung_id
 
@@ -821,6 +829,9 @@ class MaceExecutor:
         winner = (pricing == "winner") and not rung.pt_order_id
         band = m.exit_winner_band
         winner_step = band / max(1, x.exit_max_attempts - 1)
+        # WINNER cap anchor = the TRIGGER mid (mid at the moment the exit fired), held FIXED
+        # for the whole ladder (2026-09-18). None -> captured on the first priceable attempt.
+        winner_anchor = trigger_mid if winner else None
         ceiling = spec.width_dollars * x.exit_hard_ceiling_mult_of_width
         # mark CLOSING (crash-recoverable) ONLY on the committed marketable path; a
         # winner-defer stays OPEN so the next manage tick re-evaluates it.
@@ -828,18 +839,22 @@ class MaceExecutor:
             self.store.mark_closing(rung_id)
         self._audit("mace_exit_start", rung_id=rung_id, reason=reason, symbol=spec.symbol,
                     pricing=("winner" if winner else "marketable"),
+                    trigger_mid=(round(winner_anchor, 4) if winner_anchor is not None else None),
                     line=exit_disposition_line(spec, reason, phase="start"))
 
         for k in range(1, x.exit_max_attempts + 1):
             quotes = await self._fresh_quotes(spec)
             if winner:
-                # WINNER: price at MID, walk toward mid+band across the attempts, HARD-CAP at
-                # mid+band (never cross to natural). mid None -> can't price -> skip attempt.
+                # WINNER: price at the fresh MID, walk toward the FIXED trigger-anchored cap
+                # across the attempts, HARD-CAP at winner_anchor+band -- NEVER re-anchor the
+                # cap to the current mid (2026-09-18), NEVER cross to natural. mid None -> skip.
                 mid = self._credit_mid(quotes)
                 if mid is None:
                     self._audit("mace_exit_unpriceable", rung_id=rung_id, attempt=k, pricing="winner")
                     continue
-                raw = min(mid + (k - 1) * winner_step, mid + band)
+                if winner_anchor is None:
+                    winner_anchor = mid          # fallback: first priceable mid this call
+                raw = min(mid + (k - 1) * winner_step, winner_anchor + band)
                 limit = round_to_tick(raw, x.entry_tick_usd, mode="up")
             else:
                 # MARKETABLE: natural (cross-the-spread), walk UP by tick. natural None -> skip.

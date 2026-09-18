@@ -447,8 +447,13 @@ class MaceManager:
                     line=exit_disposition_line(rung.spec, decision.exit_reason,
                                                phase="decision"))
         pricing, defer = self._close_pricing(decision.exit_reason, rung, now)
+        # trigger_mid = the mid the exit decision was made on (this tick's mark). The winner
+        # ladder anchors its mid+band cap to THIS value and holds it fixed for the whole walk
+        # (2026-09-18), so an adverse re-inflation during the ~2-min close cannot chase the
+        # cap up. None (unpriceable TIME mark) -> close_rung falls back to its first mid.
         return await self.executor.close_rung(
-            rung, decision.exit_reason, pricing=pricing, defer_on_unfilled=defer)
+            rung, decision.exit_reason, pricing=pricing, defer_on_unfilled=defer,
+            trigger_mid=mark)
 
     def _close_pricing(self, reason: str, rung: RungState,
                        now: datetime) -> "tuple[str, bool]":
