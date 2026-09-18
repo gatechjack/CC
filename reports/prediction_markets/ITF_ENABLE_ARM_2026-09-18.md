@@ -37,7 +37,15 @@ INERT 2026-09-16 (`ITF_DEPLOY_MANIFEST_2026-09-16.md`); this ledger records the 
   karen/atp contracts/1; **jack/tennis = fixed/$5** (precedent for fixed on a tennis-family sub).
 - Cap interaction: notional ~= $5 (fixed) or <= 5*$0.99 ~= $4.95 (contracts/5) << $25 cap -> clears, wide headroom,
   no pre-submit-reject risk.
-- **DECISION PENDING (Jack): keep 'fixed'/$5, or normalize to 'contracts'/5 for flat, price-independent sizing.**
+- **DECISION (Jack 2026-09-18): NORMALIZE to 'contracts'/5.** DONE (guarded UPDATE, rowcount=2): both ITF subs
+  now resolve sizing_mode='contracts', contracts=5; 44 non-itf subs byte-unchanged (md5 0a5f52d5124efa1cb48c1988972e7809
+  PRE==POST); backup `~/pm_itf_sizing_backup_1789737375.json`; no restart. Runner cc/pm_itf_sizing_normalize.{ps1,py}.
+
+## ENABLE token -- CONFIRMED exact
+- Gate: itf matcher `match_bet(..., allowed_market_types=<sub resolved market_types>)` skips unless the resolved
+  tuple CONTAINS the literal `itf_moneyline` (COPYABLE_MARKET_TYPES=("itf_moneyline",); skip reason
+  `itf_moneyline_not_in_subdivision_market_types`). Appending `,itf_moneyline` -> resolved
+  ('moneyline','total','spread','itf_moneyline') -> token present -> matcher fires. APPEND, never replace.
 
 ## STEP 3 -- ARM PRE-baseline (byte-unchanged proof anchor)
 - Exactly **31 armed / 0 latched** pm_live arm:* rows; `arm:global` armed (by r8_arm, 2026-08-31).
