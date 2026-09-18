@@ -60,6 +60,20 @@ ten per-league soccer matchers in Sept, dormant + unattached since). Same four g
 - REMAINING (gated on Jack): (3) RESTART timed -> (4) boot-verify RO -> (5) ARM UEL -> (6) fill-watch.
   Runners pre-built: cc/pm_uel_bootverify_ro.*, cc/pm_uel_arm.* (self-baselining, restart-robust), cc/pm_uel_fillwatch_ro.*
 
+## ROSTER PRE-CHECK -- GREEN (2026-09-18, autonomous RO; the restart WILL work)
+- The engine spawns ONE task per account; a NON-FIRST category (uel) spawns only if pm_account.multi_category_ok=1
+  (else refused 'second_subdivision_on_account'). Ran the ACTUAL driver_roster.active_driver_subdivisions +
+  plan_driver_tasks against the live DB:
+  - multi_category_ok=1 for BOTH kalshi_jack and kalshi_karen.
+  - active_driver_subdivisions = 37 rows incl uel on both accounts (itf also present -> consistent w/ itf running).
+  - plan_driver_tasks SPAWNS uel on both accounts, 0 skips. VERDICT GREEN: the restart loads uel on both.
+  Runner cc/pm_uel_rostercheck_ro.*.
+- Jack sets restart ~12:00 ET (clear of the open). Boot-verify keys on the 'PM LIVE DRIVER WIRED -- {account:[cats]}'
+  log line (uel must appear for BOTH accounts) + 0 'REFUSING 2nd sub-division'/'SKIP uel' + NEW boot (PID!=467792 &
+  ActiveEnterTimestamp postdating, NEVER exit code) + all divisions back + itf still armed (timestamps unchanged) +
+  0 import errors. Jack reversed 'finish ITF first' -> ARM UEL when the restart lands (journal tags fills by category;
+  itf failure=wrong tour, uel failure=wrong club/draw leg -> unambiguous).
+
 ## SEQUENCE (each reserved step Jack-authorized; RO verifies autonomous)
 1. (RECOMMEND) Sizing normalize UEL -> contracts/5 (guarded DB write; before restart so boot reads it).
 2. ENABLE: NO-OP (moneyline already present) -- no write.
