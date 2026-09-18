@@ -74,6 +74,29 @@ ten per-league soccer matchers in Sept, dormant + unattached since). Same four g
   0 import errors. Jack reversed 'finish ITF first' -> ARM UEL when the restart lands (journal tags fills by category;
   itf failure=wrong tour, uel failure=wrong club/draw leg -> unambiguous).
 
+## RESTART + ARM -- DONE (2026-09-18) -- UEL LIVE + ARMED BOTH ACCOUNTS
+- RESTART (Jack) took on the 2nd fire (the 1st az-silent no-op'd; confirmed by PID not exit code). DOUBLE-BOOT
+  observed (18:14 PID 473931 + current 18:17 MainPID 474141) -- both wired uel, 0 degraded; current engine healthy.
+- BOOT-VERIFY GREEN (cc/pm_uel_bootverify_ro.*, triple duty): (1) NEW boot MainPID 474141 != 467792,
+  ExecMainStart 2026-09-18T18:17:05Z postdating, 0 import errors; (2) UEL WIRED on BOTH accounts (PM LIVE DRIVER
+  WIRED skipped=[]); (2b) cs2 alias graft loaded (live_driver.py csha16=4737629c, table={lg:luminosity,tl:liquid});
+  (3) ITF still armed, ts unchanged 2026-09-18T13:26:46Z. DIVISION HEALTH (cc/pm_divisions_health_ro.*): "0 degraded
+  live division(s): none" x2; MACE 4 loops/PMCC/PEAD/bitunix/coinbase/Robinhood/PM both accounts all back; 1 benign
+  yfinance SPXW error (chronic). Shard 0 funded (jack $287.91 / karen $283.33).
+- ARM (Jack-auth, cc/pm_uel_arm.*): PRE 33 armed / global armed / both uel keys absent / non-uel md5
+  a619d6fdc106efab04a6442e32fc93b8 (== pre-restart baseline -> restart preserved all arm rows byte-identically incl
+  ITF ts). Armed both uel scopes (ts 2026-09-18T18:23:48Z). POST: 33 non-uel rows BYTE-UNCHANGED; effective armed
+  scope=both; 33->35. NO restart.
+- WIRING PROVEN: uel in both accounts' cycle order; OPPOSING-PAIR guard fired kalshi_jack/uel 18:15:12 (whale holds
+  both sides of cid 0x28f9c065 -> correctly skipped both legs). No fill, no wrong fill. First fill pending a
+  one-sided copyable moneyline/draw signal mapping to an open KXUELGAME market (thin copyable exposure, like ITF).
+  First-fill watch cc/pm_uel_fillwatch_ro.* -- read back BOTH clubs + leg (incl -TIE) vs the whale's bet; wrong
+  club/leg -> raise alarm + present pm_global_disarm.ps1 (HALT reserved under the autonomy addendum; do NOT fire).
+
+## FF (Jack, reserved)
+- cs2 TL code+ledger: git push origin cs2-legaudit-tl-liquid-2026-09-18:prod-live (reconciles box==prod-live for
+  live_driver.py) + tag. Then the ITF/UEL ledgers (docs-only) rebased onto the new prod-live.
+
 ## SEQUENCE (each reserved step Jack-authorized; RO verifies autonomous)
 1. (RECOMMEND) Sizing normalize UEL -> contracts/5 (guarded DB write; before restart so boot reads it).
 2. ENABLE: NO-OP (moneyline already present) -- no write.
