@@ -630,3 +630,63 @@ pm_legaudit_graft_pmweb + pm_legaudit_graft_engine (the two grafts, azureuser),
 pm_legaudit_phase1_verify_ro, pm_legaudit_prerestart_snap_ro, pm_legaudit_engine_bootverify_ro,
 pm_legaudit_clear_lg_rows (the guarded DB op). Full manifest on prod-live:
 reports/prediction_markets/LEGAUDIT_ALIAS_DEPLOY_2026-09-17.md.
+
+
+2026-09-18 (later) — cs2 TL alias (engine, 1 line) + ITF & UEL enable/arm (DB), one restart for three jobs
+----------------------------------------------------------------------------------------------------------
+NOTE the standing "engine never restarted" fact at the top does NOT hold here: this work included ONE
+engine restart, and it did THREE jobs at once. prod-live moved 2362db46 -> f5deb6bc -> 777e87a5.
+
+1) cs2 TL leg-audit alias (ENGINE code, prod-live 2362db46 -> f5deb6bc, tag cs2-legaudit-tl-deploy-2026-09-18).
+   Same shape as last week's LG/Luminosity: a second cs2 flag `code_review:...TL!<Liquid` fired on a fill
+   that was CORRECT. Venue-confirmed from Kalshi (-TL market title 'Liquid wins', yes_sub_title 'Liquid',
+   result yes) and Polymarket (cs2-tl1-3dmax, whale bet 'Liquid', condition_id matches) — TL is Team Liquid,
+   the flag was only the subsequence artifact. The fix is ONE line in live_driver.py: add "tl": "liquid" to
+   the alias table. ★ ONE phase, not two, because pm_web already maps ok:code_alias -> clean REGARDLESS of
+   which alias — so the engine change stands alone. I verified that rather than assuming it. Grafted via
+   scp+tar (byte-exact; csha 2aee62e2 -> 4737629c), NO dedicated restart — it RODE the UEL restart below
+   (one bounce for both). Then a guarded DB update reclassified the 2 stale rows (id 1093/1094) to
+   ok:code_alias so the /live strip clears now, not just for future fills. Backups
+   pm_cs2_tl_graft_backup_20260918T180923Z (old file) + pm_cs2_tl_reclassify_backup_1789754504.json.
+   ★ The alias value is "liquid", NOT "teamliquid" — the audit folds plain lower-case, not the matcher's
+   canon (which expands Liquid->Team Liquid); canon would rubber-stamp and never flag.
+   ★ Broad scan of 5627 live KXCS2GAME markets (nothing added): 15 more codes would flag over time — 9 real
+   orgs (G1/GenOne, ALKAA, CHAMA, TSA, TS=Team Spirit, ISG, LVG, M8, TSAB), 5 country codes (DEU/ESP/ISL/MKD/
+   ROU, which are national markets not org abbreviations and may want different handling), and 1 UNK
+   placeholder. A manageable trickle, each needing its own venue proof before it's added.
+
+2) ITF & UEL enable + arm (DB row writes, prod-live f5deb6bc -> 777e87a5 = ledgers only, no code). Both
+   categories were already deployed (UEL is a Sept soccer league that sat dormant). First thing established
+   each time: the driver roster is read AT BOOT and is attachment-gated.
+   - ITF whale attached BEFORE the morning boot -> already in the running roster -> NO restart. Set both ITF
+     subs to flat 5 contracts (they were on the price-dependent $5 mode = the cfb trap), appended the
+     itf_moneyline token, armed both accounts.
+   - UEL whale attached AFTER the boot -> NOT in the roster -> a restart was REQUIRED (the cs2 starvation
+     case). UEL's enable was a NO-OP — it already carries the `moneyline` token the soccer matcher needs, so
+     arming was the whole job. Set both UEL subs to flat 5 contracts. Then the ENGINE RESTART
+     (467792 -> 474141, ExecMainStart 18:17:05Z). ★ The first restart fire silently did NOT run (az returned
+     success, PID unmoved — same trap; a DOUBLE-BOOT was visible in the journal). Confirmed the real boot by
+     PID + ActiveEnterTimestamp, never the exit code. That one restart did THREE jobs, all boot-verified
+     green: (a) UEL entered the roster on both accounts, (b) the cs2 TL alias loaded, (c) ITF stayed armed
+     with unchanged timestamps. Every division back, zero degraded. Armed both UEL accounts. 31 -> 35 armed.
+
+STAGING LESSON (now a standing rule): the cs2 graft's FIRST attempt ABORTED at the stage gate — the staged
+file's hash != target because Get-Content -Raw streaming had mangled live_driver.py (61 non-ASCII lines,
+PowerShell 5.1 misreads UTF-8 as Windows-1252). The gate left the box untouched (a mangled file would have
+been a boot SyntaxError after a full-division restart). THIRD staging failure this month (base64-in-heredoc
+twice, now Get-Content). Rule covering all three: STAGE BINARY-EXACT (scp+tar) AND VERIFY THE STAGED HASH ==
+TARGET BEFORE TOUCHING THE BOX.
+
+STILL UNEXERCISED (all three of today's paths): ITF has never filled, UEL has never filled, and the engine
+has never itself written ok:code_alias (the TL + LG rows were set by UPDATEs, not a fresh fill). Both whales
+are prop-heavy so none may land soon — and none needs a watcher: the verdicts persist and are queryable at
+any check-in. First-fill hazards to read from the Kalshi title: ITF = wrong tour (men's KXITFMATCH vs
+women's KXITFWMATCH); UEL = wrong club (PSG->"Paris" alias risk) or wrong draw leg. A wrong side is a
+global-disarm case, but I raise the alarm and hand you the disarm — I do not fire it.
+
+Full detail on prod-live: CS2_LEGAUDIT_TL_LIQUID_2026-09-18.md, ITF_ENABLE_ARM_2026-09-18.md,
+UEL_ENABLE_ARM_2026-09-18.md. Runners in cc (read-only unless noted): pm_cs2_tl_diag_ro, pm_cs2_tl_scratch_ro,
+pm_cs2_alias_scan_ro, pm_cs2_tl_graft (scp+tar, azureuser), pm_cs2_tl_reclassify (guarded DB),
+pm_{itf,uel}_orient_ro, pm_{itf,uel}_sizing_normalize (guarded DB), pm_itf_enable (guarded DB),
+pm_{itf,uel}_arm (guarded arm), pm_uel_rostercheck_ro, pm_uel_bootverify_ro, pm_divisions_health_ro,
+pm_{itf,uel}_fillwatch_ro.
