@@ -52,6 +52,14 @@ ten per-league soccer matchers in Sept, dormant + unattached since). Same four g
   wrong leg -> IMMEDIATE global disarm. Under the autonomy addendum HALT is RESERVED -> raise alarm + present
   pm_global_disarm.ps1 to Jack instantly (do NOT fire it myself). Unreadable = inconclusive, not a mismatch.
 
+## STEP 1 -- SIZING NORMALIZE (DONE 2026-09-18)
+- Guarded UPDATE (rowcount=2): both UEL subs sizing_mode 'fixed'->'contracts', contracts=5. Resolved
+  (sub_config_from_row): contracts/5, market_types=moneyline. 44 non-uel subs byte-unchanged (md5
+  cf3667ec25e3bde631f419bc5302fe19). Backup ~/pm_uel_sizing_backup_1789739537.json. NO restart.
+  Runner cc/pm_uel_sizing_normalize.{ps1,py}. ENABLE = NO-OP (moneyline already present) -- no write.
+- REMAINING (gated on Jack): (3) RESTART timed -> (4) boot-verify RO -> (5) ARM UEL -> (6) fill-watch.
+  Runners pre-built: cc/pm_uel_bootverify_ro.*, cc/pm_uel_arm.* (self-baselining, restart-robust), cc/pm_uel_fillwatch_ro.*
+
 ## SEQUENCE (each reserved step Jack-authorized; RO verifies autonomous)
 1. (RECOMMEND) Sizing normalize UEL -> contracts/5 (guarded DB write; before restart so boot reads it).
 2. ENABLE: NO-OP (moneyline already present) -- no write.
