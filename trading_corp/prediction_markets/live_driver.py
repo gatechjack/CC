@@ -803,6 +803,7 @@ _AUDIT_NAME_CATS = frozenset({"cs2", "atp", "wta", "ufc", "boxing", "itf"})   # 
 # human-verified exceptions, one venue-checked entry at a time.
 _LEG_AUDIT_CODE_ALIASES = {
     "lg": "luminosity",   # KXCS2GAME -LG = Luminosity (Gaming); venue-confirmed 2026-09-17, cond 0x8824..9341
+    "tl": "liquid",       # KXCS2GAME -TL = Liquid (Team Liquid); venue-confirmed 2026-09-18, cond 0x5f53..04aa
 }
 
 
