@@ -66,6 +66,22 @@ INERT 2026-09-16 (`ITF_DEPLOY_MANIFEST_2026-09-16.md`); this ledger records the 
 - D arm baseline GREEN: 31 armed, global armed, both itf keys ABSENT (cold-start), non-itf md5 UNCHANGED (c59a621d...).
   Runner cc/pm_itf_prearm_ro.{ps1,py}.
 
+## STEP 4 -- ARM (DONE 2026-09-18)
+- Fail-closed PRE PASS (31 armed, global armed, both itf keys ABSENT, non-itf md5 c59a621d...). Armed both ITF
+  scopes via arm.arm() (by=itf_enable_2026-09-18, ts 2026-09-18T13:26:46Z). global master UNTOUCHED.
+  POST: 31 non-itf arm rows BYTE-UNCHANGED (md5 c59a621d..., original timestamps preserved); both itf keys
+  armed=True; effective verdict armed/scope=both; total 31->33. NO restart. Runner cc/pm_itf_arm.{ps1,py}.
+- **ITF IS LIVE + ARMED ON BOTH ACCOUNTS.** STOP switch = pm_cli live-disarm --global (runner cc/pm_global_disarm.ps1).
+
+## FIRST-FILL WATCH (armed, pending)
+- ITF has never placed an order. Whale 0x746295... holds 3 open MEN'S M25 matches (De Marchi/Tabacco/Bertrand)
+  -> first fill most likely KXITFMATCH (men). Watch runner cc/pm_itf_fillwatch_ro.{ps1,py}: order journal +
+  Kalshi TITLE read-back (SERIES men KXITFMATCH vs women KXITFWMATCH + both players + our leg) vs the whale's bet
+  + runtime leg_audit + engine-journal grep (catches pre-submit skips leaving no order row).
+- WRONG player / leg / SERIES on the first fill -> IMMEDIATE global disarm (fire first): cc/pm_global_disarm.ps1
+  (proven; arm.disarm(global_=True), latch-preserving, propagation-verified, no restart). Unreadable audit =
+  INCONCLUSIVE, not a mismatch -> do NOT disarm.
+
 ## PLAN (each a separate authorization)
 1. (optional, Jack's ruling) sizing normalize sizing_mode='contracts' contracts=5 on both ITF subs (guarded, backup).
 2. ENABLE: append `itf_moneyline` -> `moneyline,total,spread,itf_moneyline` on both ITF subs; POST proves the
