@@ -53,6 +53,19 @@ INERT 2026-09-16 (`ITF_DEPLOY_MANIFEST_2026-09-16.md`); this ledger records the 
 - Baseline md5 of the 31 non-ITF rows (key\tvalue_json, sorted) = **`c59a621d758a373c175e02895b4577f2`**
   -- must be IDENTICAL after the arm write (proves the 31 + global untouched, original timestamps preserved).
 
+## STEP 3 -- ENABLE (DONE 2026-09-18)
+- Guarded APPEND (rowcount=2): both ITF subs `moneyline,total,spread` -> `moneyline,total,spread,itf_moneyline`.
+  Resolved (sub_config_from_row): token present, base tokens preserved, sizing contracts/5. 44 non-itf subs
+  byte-unchanged (md5 0a5f52d5124efa1cb48c1988972e7809). Backup `~/pm_itf_enable_backup_1789737607.json`. No restart.
+  Runner cc/pm_itf_enable.{ps1,py}. State now = enabled-but-DISARMED (gate-1 blocks all orders until armed).
+
+## STEP 4 pre-arm -- readiness GREEN (RO, 2026-09-18)
+- A shard 3 FUNDED (real per-shard, has_breakdown=True, fresh): jack shard3=$186.19 (total $479.57, shard0 $293.38),
+  karen shard3=$171.66 (total $462.07, shard0 $290.41). shards 1&2 = $0 (expected). NOT masked.
+- B/C enable+cap GREEN: both resolve itf_moneyline + contracts/5; max order notional ~$4.95 <= per_order_usd_cap $25.
+- D arm baseline GREEN: 31 armed, global armed, both itf keys ABSENT (cold-start), non-itf md5 UNCHANGED (c59a621d...).
+  Runner cc/pm_itf_prearm_ro.{ps1,py}.
+
 ## PLAN (each a separate authorization)
 1. (optional, Jack's ruling) sizing normalize sizing_mode='contracts' contracts=5 on both ITF subs (guarded, backup).
 2. ENABLE: append `itf_moneyline` -> `moneyline,total,spread,itf_moneyline` on both ITF subs; POST proves the
