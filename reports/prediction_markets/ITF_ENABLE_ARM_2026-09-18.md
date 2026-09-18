@@ -82,6 +82,19 @@ INERT 2026-09-16 (`ITF_DEPLOY_MANIFEST_2026-09-16.md`); this ledger records the 
   (proven; arm.disarm(global_=True), latch-preserving, propagation-verified, no restart). Unreadable audit =
   INCONCLUSIVE, not a mismatch -> do NOT disarm.
 
+## FIRST-FILL / WIRING PROOF (2026-09-18, autonomous RO checks -- logged)
+- Fill-watch #1 (13:2xZ): 0 order rows, BUT engine journal shows the ITF MATCHER FIRING ~3 min post-arm:
+  `OPPOSING-PAIR guard kalshi_{jack,karen}/itf -- 1 NEWLY-contested; skipped incoming both sides;
+  new_cids=['0xe60fcc3b...']`. The whale briefly held BOTH sides of cid 0xe60fcc3b -> the (existing, non-ITF)
+  opposing-pair safety guard correctly SKIPPED both legs (a two-sided hedge is not a directional copy) -> no
+  order row (a pre-submit skip leaves none). ENABLE+ARM PROVEN END-TO-END (matcher live); no fill, no wrong fill.
+- Whale-book check: book is DYNAMIC (open 15->11, ITF 3->2; whale actively trades). Current ITF = 2 ONE-SIDED
+  men's M25: itf-marchi1-chepel1 (De Marchi @0.559), itf-schoen1-bertra2 (Bertrand @0.6085). Contested cid
+  0xe60fcc3b already UNWOUND (gone) -> guard skip was a genuine whale hedge, NOT a clobber artifact.
+- STATE: ITF live+armed; first fill PENDING a one-sided ITF signal that maps to an open+liquid KXITFMATCH market
+  (M25 obscure matches may not be listed on Kalshi / thin book -> gate-skip). Runners: cc/pm_itf_fillwatch_ro.*,
+  cc/pm_itf_whalecheck_ro.*. FIRST-FILL READ-BACK still armed (series/players/leg) for whenever one lands.
+
 ## PLAN (each a separate authorization)
 1. (optional, Jack's ruling) sizing normalize sizing_mode='contracts' contracts=5 on both ITF subs (guarded, backup).
 2. ENABLE: append `itf_moneyline` -> `moneyline,total,spread,itf_moneyline` on both ITF subs; POST proves the
