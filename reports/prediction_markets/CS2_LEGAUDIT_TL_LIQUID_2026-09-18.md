@@ -29,16 +29,26 @@ Second cs2 `code_review:code_not_in_outcome` flag, same family as LG/Luminosity.
   live tree untouched) -- 6/6 PASS: current->exact flag; +tl->'ok:code_alias'; LG regression clean; 3DMAX subseq
   ->'ok'; TL+wrong-outcome->still code_review (value-specific); XX/liquid->code_review (no blanket).
 
-## DEPLOY (both reserved; each presented, Jack-run)
-- Graft md5: BASE (prod-live, == box) 15069d88dd4d69aea3df9aaece74bfdb -> TARGET (fcb18536) 8e81425b37b114fe796ccbcc8c9dd557;
-  diff = exactly the 1 alias line. Runner cc/pm_cs2_tl_graft.{ps1,sh}: stages the file, drift-gates box==BASE,
-  backs up (~/pm_cs2_tl_livedriver_backup_<ts>.py), applies, verifies ==TARGET, py_compiles, restore-on-fail,
-  ★ NO restart -> the alias loads on the NEXT engine restart, which can RIDE the pending UEL roster restart (one bounce).
-- Reclassify (independent of the graft; clears the CURRENT flag): cc/pm_cs2_tl_reclassify.{ps1,py} guarded UPDATE
-  the 2 entry rows code_review:...TL!<Liquid -> ok:code_alias (exact-count-2 abort, JSON backup, no restart).
-  ★ DEPLOY LESSON (LG): the code change only affects FUTURE writes, so the 2 existing rows need this reclassify or
-  the /live review strip stays up.
-- FF push (Jack, reserved) after the restart proves the graft: git push origin cs2-legaudit-tl-liquid-2026-09-18:prod-live.
+## DEPLOY
+- RECLASSIFY -- DONE 2026-09-18 (board-authorized, agent-run): cc/pm_cs2_tl_reclassify.{ps1,py} guarded UPDATE the 2
+  entry rows (id 1093 karen, 1094 jack) code_review:...TL!<Liquid -> ok:code_alias; rowcount=2; POST TL code_review=0,
+  ok:code_alias=2, TOTAL /live strip code_review rows = 0 (strip fully clear). Backup ~/pm_cs2_tl_reclassify_backup_1789754504.json.
+  DEPLOY LESSON (LG): the code change only affects FUTURE writes, so the 2 existing rows needed this or the strip stayed up.
+- GRAFT -- DONE 2026-09-18 (board-authorized, agent-run), NO restart: cc/pm_cs2_tl_graft.{ps1,sh}. CR-stripped sha256:16
+  BASE (prod-live 2362db46, == box) 2aee62e2ef8f608f -> TARGET (fcb18536) 4737629cd0896d2a. drift-gate box==BASE PASS;
+  scp+tar stage==TARGET PASS; CR-strip-apply -> box=4737629c (azureuser:azureuser); py_compile OK; backup
+  ~/pm_cs2_tl_graft_backup_20260918T180923Z. Engine MainPID 467792 NRestarts=0 (untouched). The alias loads on the NEXT
+  engine restart -> RIDES the UEL roster restart (one bounce, no extra). box!=prod-live until the FF push.
+  * STAGING-FAILURE LESSON (recorded): the FIRST graft attempt aborted at the stage gate (staged md5 != target, box
+    untouched) because Get-Content -Raw streaming MANGLES live_driver.py's 61 non-ASCII lines under PS 5.1's
+    Windows-1252 misread. This is the THIRD distinct staging failure this month (base64-in-heredoc x2, now Get-Content
+    streaming). THE RULE THAT COVERS ALL THREE: STAGE BINARY-EXACT (scp+tar) AND VERIFY THE STAGED HASH BEFORE TOUCHING
+    THE BOX. The stage gate turned a would-be boot-time SyntaxError (after a full-division restart) into a no-op.
+- FF push (Jack, reserved) AFTER the restart proves the graft loaded: git push origin cs2-legaudit-tl-liquid-2026-09-18:prod-live.
+- ★ THE UEL RESTART DOES TRIPLE DUTY: (1) uel enters the running roster on both accounts, (2) this alias graft loads
+  (box live_driver.py csha16==4737629c + deployed _LEG_AUDIT_CODE_ALIASES carries 'tl':'liquid'), (3) itf stays armed
+  with unchanged persisted timestamps. Confirm ALL THREE + a NEW boot (PID!=467792 & ActiveEnterTimestamp postdating).
+  Boot-verify cc/pm_uel_bootverify_ro.* covers all three.
 
 ## BROAD SCAN -- "how many more are coming?" (cc/pm_cs2_alias_scan_ro.*, RO; NOTHING added)
 - 5,627 live KXCS2GAME markets; 457 codes PASS the subsequence test; 17 FAIL (LG+TL aliased -> 15 NEW candidates).
