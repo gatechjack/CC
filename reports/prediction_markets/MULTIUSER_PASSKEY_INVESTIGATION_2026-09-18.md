@@ -59,12 +59,25 @@ between their phone/tablet/Mac/Chrome. BUT a laptop outside that ecosystem (a Wi
 sync, or a browser without a synced passkey provider) needs its OWN passkey registration. So Karen/Marc should
 enrol on the device(s) they will actually use, or use a syncing ecosystem.
 
-★ EXACT ROOT COMMANDS FOR JACK (read-only; run as root on the box):
-  sudo grep -nE 'webauthn|totp|duo|passkey|default_2fa|disable' /etc/authelia/configuration.yml
-  sudo sed -n '/^notifier:/,/^[a-z]/p' /etc/authelia/configuration.yml   # notifier type (smtp vs filesystem)
-  sudo sed -n '/^access_control:/,/^[a-z]/p' /etc/authelia/configuration.yml   # the rules gating predictions
-  sudo sed -n '/^identity_validation:/,/^[a-z]/p' /etc/authelia/configuration.yml
-  sudo grep -nE '^  [a-z0-9_]+:|displayname|email' /etc/authelia/users_database.yml   # users (NO password lines)
+★ WHO READS THIS + HOW (corrected 2026-09-18): the Authelia config + users_database hold SECRETS (session/JWT/
+HMAC/storage-encryption keys, SMTP password, argon2 password hashes). They are root-only (authelia:authelia, 0700)
+and are NOT the agent's to dump -- reading them via an az-root escalation was rejected as an unauthorized Production
+Read (and is not what "read command-paste-rule" asked for; that was about formatting, not escalation). So JACK reads
+them himself in his own root session on the box (he owns Authelia). This is a CHECKLIST of what to look at and what
+each answer means -- NOT a command blob to paste (per command-paste-rule, raw multi-line box commands are never
+handed for pasting). If Jack instead wants the agent to run a REDACTED, structure-only read via the sanctioned
+az-root channel, that is a separate escalation he can explicitly authorize; it is not assumed here.
+
+  In /etc/authelia/configuration.yml, confirm:
+   - webauthn: block present + enabled?  (and enable_passkey_login / default_2fa_method if passwordless is wanted)
+   - notifier: is it smtp (user gets enrolment links directly = remote) or filesystem (link written to a box file
+     -> Jack fetches + relays it)?  -- read the TYPE, not the SMTP password.
+   - access_control: do the rules let karen + marc reach predictions.jacksumner.com, or is it user:jack default-deny?
+     (THE most likely blocker -- see the risk note.)
+   - identity_validation / credential registration: is the emailed one-time-link step for registering a credential on?
+  In /etc/authelia/users_database.yml, confirm:
+   - does a user `karen` exist (with a displayname + email)?  `marc` must be added.  -- read usernames/emails, NOT
+     the password: hash lines.
 
 ═══════════════════════════════════════════════════════════════════════════════════════════════
 ## TASK 2 -- /live SCOPING (the standing "unscoped" ruling is STALE -- it is DONE)
