@@ -740,3 +740,51 @@ STATE FOR WHOEVER PICKS THIS UP:
     restart (bounces all divisions — time clear of opens), then their pm_account rows + sub-divisions + arm.
   Full detail: reports/prediction_markets/MULTIUSER_PASSKEY_INVESTIGATION_2026-09-18.md (branch
   pm-multiuser-passkey-investig-2026-09-18).
+
+
+2026-09-19 — MACE git-truth state — TWO BOX-ONLY advances since Round-2 (for the next reconcile round)
+------------------------------------------------------------------------------------------------------
+★ CROSS-DIVISION NOTE (MACE, not PM): recorded here so the next git-truth reconcile round has the MACE state.
+Round-2 closed at prod-live 93b5e908 (later corrected to 5e03b7a2 / schema head 23). Since then MACE has
+advanced BOX-ONLY TWICE, NOTHING PUSHED to origin. Both are deliberate box-only deploys, FF deferred to the
+reconcile round — the MACE box is AHEAD of prod-live by these two changes.
+
+ADVANCE 1 — TRIGGER-MID-ANCHOR (deployed box-only 2026-09-18). Box-truth commit **2362db46** (= c2593e34 + the
+fix). The winner-cap now anchors the exit debit cap to the mid captured AT the PT/TIME trigger + band, held
+FIXED across the whole ladder (not re-anchored each attempt) — a re-inflating winner DEFERS instead of chasing
+the mid up. Two files (execution + manager). Deployed blobs: manager md5 a83b62e1, execution md5 a65955bb.
+config UNTOUCHED at this advance (config_hash was still bfde856f here).
+
+ADVANCE 2 — PT MARK-TRUST GUARD + XLE rung reset (deployed box-only 2026-09-19). Branch
+**mace-pt-mark-guard-2026-09-18** @ build **67f687ec** (deploy toolkit commit cc464a85), forked off BOX-TRUTH
+**2362db46** — NOT off prod-live (777e87a5 at fork time; divergent and unreliable as a base). The guard gates
+ONLY the synthetic PT fire on a TIMELY + SANE cost-to-close mark (fixes the 9/18 XLE stale-0.13 false-PT).
+★ config_hash MOVED **bfde856f -> 931a8214be50** — a genuine config edit (the new `management.mark_guard`
+block in config/mace.yaml); a moved hash is CORRECT here, not drift. FIVE files grafted, box md5/sha ==
+build == branch (three-way proven):
+  config/mace.yaml                 sha256 931a8214be50
+  trading_corp/mace/config.py      md5    01117cca
+  trading_corp/mace/strategy.py    md5    69eef994
+  trading_corp/mace/execution.py   md5    66dba55a
+  trading_corp/mace/manager.py     md5    1d4334d7
+Engine PID 474141 -> 480408 (ExecMainStart 2026-09-19T06:09:41Z; boot-verify GREEN, config_hash 931a8214be50
+wired, 0 import/traceback, all divisions back, arm unchanged). Graft backup ~/mace_guard_graft_backup_20260919T054503Z.
+PLUS a one-time RUNTIME DB WRITE (NOT a git artifact, do NOT fold as a file): reset the stuck rung
+mace-XLE-2026-10-30-60-59-70-71-20260917 CLOSING -> open (exit_ts/reason/debit/realized stay NULL = the true
+never-closed state). Backup ~/mace_xle_reset_backup_20260919T061519Z.json.
+
+★ KEY FACTS FOR THE RECONCILE:
+  - Both advances are BOX-ONLY; NOTHING PUSHED to origin. Branch mace-pt-mark-guard-2026-09-18 is LOCAL-ONLY
+    (per the reserved-actions ruling — no FF-push by the agent). FF is DEFERRED to the reconcile round.
+  - MACE box has DIVERGED from prod-live AGAIN. prod-live = 5e03b7a2 (last known) — ★ RE-VERIFY against origin
+    at reconcile time; PM moves prod-live and it has gone stale within a day before (it was 777e87a5 during the
+    2026-09-18/19 MACE work). The MACE box carries 2362db46 + the guard graft on top.
+  - The branch base is the BOX (2362db46, md5-verified base==running before the graft), NOT prod-live — the
+    established MACE pattern, because prod-live is divergent/unreliable as a base.
+  - config_hash is now **931a8214be50** (supersedes bfde856f).
+  - Three-way proven box == build == branch. Box-only; FF deferred to the reconcile round. 95e78c4 lineage
+    intact — nothing rewritten (linear, additive).
+  - The XLE rung reset is RUNTIME STATE, not code — note that it happened; it is NOT a file to fold.
+  Detail: memory anchor mace-pt-mark-guard-deploy-2026-09-19; branch reports/mace/{XLE_MARK_GUARD_PLAN,
+  MARK_GUARD_DEPLOY_MANIFEST}_2026-09-18.md. Runners in cc: mace_baseverify_ro, mace_guard_{graft,bootverify_ro,
+  scratch,verify}, mace_postboot_ro, mace_xle_reset.
