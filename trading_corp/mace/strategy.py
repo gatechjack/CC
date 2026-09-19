@@ -855,6 +855,103 @@ def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
     return ManageDecision(rung.rung_id, None, "hold")
 
 
+# ── PT mark-trust guard (2026-09-18) ─────────────────────────────────────
+# The synthetic PT (evaluate_management above) fires on the fresh cost-to-close MID. On 2026-09-18 a
+# STALE/erroneous mark (0.13, identical twice) falsely satisfied the 50% PT on an XLE condor that was
+# NOT near profit (true value ~0.41; the identical-strike shorter-dated sibling marked 0.205 -> a
+# longer-dated same-strike condor cannot be worth LESS). This guard gates ONLY the PT fire on a mark
+# that is TIMELY (not frozen) + SANE (no arbitrage / structural violation). PURE: the manager fetches
+# the sibling fresh-marks + tracks the per-rung state and passes them in; here we only decide.
+
+@dataclass(frozen=True)
+class MarkTrust:
+    trusted: bool
+    reason: str          # ok | frozen | arbitrage | structural | no_baseline
+    alert: bool          # True -> emit the untrusted alert; False -> silent one-cycle hold (no_baseline)
+    detail: str = ""
+
+
+def shorter_dated_same_strike_siblings(
+    rungs: Sequence[RungState], rung: RungState,
+) -> list[RungState]:
+    """LIVE rungs (submitting/open/closing) for the same symbol with the SAME 4 strikes as `rung`
+    and a STRICTLY SHORTER expiry (excludes `rung` itself). A longer-dated same-strike condor cannot
+    cost LESS to close than a shorter-dated one, so these give an arbitrage LOWER bound on `rung`'s
+    cost-to-close mark. (PT's failure mode is a too-LOW mark, so only the shorter-dated lower bound
+    matters; longer-dated siblings are not used here.)"""
+    if rung.spec is None:
+        return []
+    s = rung.spec
+    out: list[RungState] = []
+    for r in rungs:
+        if (r.rung_id == rung.rung_id or r.symbol != rung.symbol
+                or r.status not in _LIVE_STATUSES or r.spec is None):
+            continue
+        o = r.spec
+        if (_k(o.short_put) == _k(s.short_put) and _k(o.long_put) == _k(s.long_put)
+                and _k(o.short_call) == _k(s.short_call) and _k(o.long_call) == _k(s.long_call)
+                and o.expiry < s.expiry):
+            out.append(r)
+    return out
+
+
+def assess_pt_mark_trust(
+    rung: RungState, mark: float | None, cfg: MaceConfig, *,
+    sibling_marks: Sequence[float | None], unchanged_repeat: int,
+    last_trusted_mark: float | None, dte: int,
+) -> MarkTrust:
+    """PURE. Decide whether a PT-eligible `mark` (cost-to-close mid that just satisfied the synthetic
+    PT) is trustworthy enough to FIRE the profit-target close.
+
+      TIMELY  — reject if `mark` has been bit-identical (to the cent) across >= frozen_cycles
+                consecutive PT-eligible ticks (`unchanged_repeat`, tracked by the caller): a frozen
+                upstream quote.
+      SANE    — structural: reject a nonsensical mark (< 0 or >= width; arbitrage-impossible for a
+                defined-risk short condor being bought back). Sibling (PRIMARY): reject if
+                `mark < max(sibling_marks) - epsilon` (longer-dated same-strike cannot be cheaper).
+                Fallback (no sibling): reject if `dte > time_exit_dte` AND
+                `mark < last_trusted_mark * (1 - max_cycle_drop_pct)` (an implausibly fast single-cycle
+                collapse far from the time-exit window). No sibling AND no baseline -> fail-closed
+                HOLD for one tick (silent, alert=False); the caller seeds the baseline and PT fires
+                next tick (Board-accepted one-cycle delay; PT is not deadline-driven).
+
+    Returns MarkTrust(trusted, reason, alert, detail)."""
+    mg = cfg.management.mark_guard
+    if not mg.enabled:
+        return MarkTrust(True, "ok", False, "guard disabled")
+
+    # TIMELY (frozen) — the caller passes the current consecutive-identical count including this tick.
+    if unchanged_repeat >= mg.frozen_cycles:
+        return MarkTrust(False, "frozen", True,
+                         f"mark {mark:.2f} unchanged across {unchanged_repeat} consecutive PT-eligible ticks")
+
+    # SANE — structural (mark==0 is allowed: a legitimately worthless near-expiry condor = max profit;
+    # a spurious 0 at high DTE is caught by the sibling/fallback/frozen checks, not here).
+    if mark is None or mark < 0.0 or mark >= rung.width_dollars:
+        return MarkTrust(False, "structural", True,
+                         f"mark {mark} outside [0, width {rung.width_dollars})")
+
+    # SANE — sibling arbitrage (primary).
+    sibs = [s for s in (sibling_marks or []) if s is not None]
+    if sibs:
+        max_sib = max(sibs)
+        if mark < max_sib - mg.sane_epsilon_usd:
+            return MarkTrust(False, "arbitrage", True,
+                             f"mark {mark:.2f} < shorter-dated same-strike sibling {max_sib:.2f} "
+                             f"- {mg.sane_epsilon_usd} (arbitrage-impossible)")
+        return MarkTrust(True, "ok", False, f"mark {mark:.2f} >= sibling {max_sib:.2f}")
+
+    # SANE — fallback decay (no same-strike shorter-dated sibling).
+    if last_trusted_mark is None:
+        return MarkTrust(False, "no_baseline", False,
+                         "no sibling + no trusted baseline; hold one tick (seed + fire next)")
+    if dte > cfg.management.time_exit_dte and mark < last_trusted_mark * (1.0 - mg.max_cycle_drop_pct):
+        return MarkTrust(False, "arbitrage", True,
+                         f"mark {mark:.2f} collapsed > {mg.max_cycle_drop_pct:.0%} vs last-trusted "
+                         f"{last_trusted_mark:.2f} at DTE {dte} > {cfg.management.time_exit_dte}")
+    return MarkTrust(True, "ok", False, f"mark {mark:.2f} within fallback bound")
+
+
 # ── breakers (alert-only) ────────────────────────────────────────────────
 
 def evaluate_breakers(day_realized: float, week_realized: float,

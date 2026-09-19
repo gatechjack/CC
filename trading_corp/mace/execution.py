@@ -304,6 +304,17 @@ class RungStore:
             (rung_id, symbol, mark, spot, ts),
         )
 
+    def get_live_state(self, rung_id: str) -> Optional[tuple]:
+        """Read the last persisted (mark, ts) for a rung from mace_rung_live, or None if absent.
+        Used by the PT mark-trust guard to read the PRIOR tick's mark BEFORE set_live_state overwrites
+        it (the guard's timeliness/frozen check). Read-only; mark may be None (unpriceable last tick)."""
+        r = self.conn.execute(
+            "SELECT mark, ts FROM mace_rung_live WHERE rung_id=?", (rung_id,)
+        ).fetchone()
+        if r is None:
+            return None
+        return (_f(r["mark"]), r["ts"])
+
     def clear_pt(self, rung_id: str) -> None:
         self.conn.execute(
             "UPDATE mace_rung SET pt_order_id=NULL WHERE rung_id=?", (rung_id,)

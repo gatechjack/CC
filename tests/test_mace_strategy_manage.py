@@ -166,3 +166,104 @@ def test_pt_needs_a_mark():
     d = st.evaluate_management(r, mark=None, spot=600, now_et=_now(h=12),
                                cfg=CFG, symbol_cfg=SPY, exdiv_within=False)
     assert d.exit_reason is None
+
+
+# ── PT MARK-TRUST GUARD (assess_pt_mark_trust) — 2026-09-18 ───────────────────
+# CFG.management.mark_guard: enabled=True, frozen_cycles=2, sane_epsilon_usd=0.01,
+# max_cycle_drop_pct=0.35. width_dollars=1.0 (XLE-like), time_exit_dte=21.
+import dataclasses  # noqa: E402
+
+
+def _xle(expiry, credit=0.30, sp=60.0, lp=59.0, sc=70.0, lc=71.0, width=1.0):
+    spec = CondorSpec("XLE", expiry, sp, lp, sc, lc, width)
+    return RungState(rung_id=f"x-{expiry.isoformat()}", symbol="XLE", status="open",
+                     expiry=expiry, spec=spec, width_dollars=width, contracts=2,
+                     credit_actual=credit)
+
+
+def _assess(rung, mark, *, sibling_marks=(), unchanged_repeat=1, last_trusted=None, dte=42, cfg=CFG):
+    return st.assess_pt_mark_trust(rung, mark, cfg, sibling_marks=list(sibling_marks),
+                                   unchanged_repeat=unchanged_repeat,
+                                   last_trusted_mark=last_trusted, dte=dte)
+
+
+def test_guard_9_18_replay_sibling_arbitrage_rejects():
+    # The incident: 42-DTE mark 0.13 vs identical-strike 28-DTE sibling 0.205 -> arbitrage-impossible.
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.13, sibling_marks=[0.205], dte=42)
+    assert (not t.trusted) and t.reason == "arbitrage" and t.alert
+
+
+def test_guard_fresh_sane_fires():
+    # A trusted mark (>= the shorter-dated sibling) -> PT allowed to fire.
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.14, sibling_marks=[0.12], dte=42)
+    assert t.trusted and t.reason == "ok" and not t.alert
+
+
+def test_guard_no_sibling_fallback_ok():
+    # No sibling, DTE 42, prior-trusted 0.28, mark 0.20 (28.6% drop < 35%) -> trusted.
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.20, sibling_marks=[], last_trusted=0.28, dte=42)
+    assert t.trusted
+
+
+def test_guard_no_sibling_fallback_rejects_collapse():
+    # No sibling, DTE 42, prior-trusted 0.28, mark 0.13 (53.6% drop > 35%) -> reject.
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.13, sibling_marks=[], last_trusted=0.28, dte=42)
+    assert (not t.trusted) and t.reason == "arbitrage" and t.alert
+
+
+def test_guard_fallback_inactive_inside_time_window():
+    # DTE 14 (<= time_exit_dte 21): a fast decay near the time-exit window is legit -> not rejected.
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.05, sibling_marks=[], last_trusted=0.28, dte=14)
+    assert t.trusted
+
+
+def test_guard_timely_but_insane_rejects():
+    # Changed (not frozen) mark but < sibling -> SANE fails.
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.13, sibling_marks=[0.205], unchanged_repeat=1, dte=42)
+    assert (not t.trusted) and t.reason == "arbitrage"
+
+
+def test_guard_stale_but_sane_rejects():
+    # Frozen (unchanged >= 2 cycles) even though >= sibling -> TIMELY fails (checked first).
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.13, sibling_marks=[0.10], unchanged_repeat=2, dte=42)
+    assert (not t.trusted) and t.reason == "frozen" and t.alert
+
+
+def test_guard_structural_rejects():
+    r = _xle(date(2026, 10, 30))
+    assert (not _assess(r, 1.0, sibling_marks=[0.5]).trusted)      # mark >= width 1.0
+    assert (not _assess(r, -0.01, sibling_marks=[0.5]).trusted)    # mark < 0
+    for m in (1.0, -0.01):
+        assert _assess(r, m, sibling_marks=[0.5]).reason == "structural"
+
+
+def test_guard_fail_closed_no_baseline_no_sibling_silent_hold():
+    # First-ever mark, no sibling, no trusted baseline -> HOLD one tick, NO alert (silent).
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.13, sibling_marks=[], last_trusted=None, dte=42)
+    assert (not t.trusted) and t.reason == "no_baseline" and not t.alert
+
+
+def test_guard_disabled_is_passthrough():
+    r = _xle(date(2026, 10, 30))
+    cfg_off = dataclasses.replace(
+        CFG, management=dataclasses.replace(
+            CFG.management, mark_guard=dataclasses.replace(CFG.management.mark_guard, enabled=False)))
+    t = _assess(r, 0.13, sibling_marks=[0.205], cfg=cfg_off)   # would be arbitrage if enabled
+    assert t.trusted and not t.alert
+
+
+def test_shorter_dated_same_strike_siblings_finder():
+    cand = _xle(date(2026, 10, 30))                                   # 60/59/70/71
+    sib = _xle(date(2026, 10, 16))                                    # SAME strikes, shorter
+    diff_strike = _xle(date(2026, 10, 16), sc=69.5, lc=70.5)          # diff strikes
+    longer = _xle(date(2026, 11, 6))                                  # same strikes, LONGER (excluded)
+    sibs = st.shorter_dated_same_strike_siblings([cand, sib, diff_strike, longer], cand)
+    assert [s.expiry for s in sibs] == [date(2026, 10, 16)]

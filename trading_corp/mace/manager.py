@@ -82,6 +82,10 @@ class MaceManager:
         self._audit_fn = audit
         self._now_utc = now_utc_fn
         self._now_et = now_et_fn
+        # PT mark-trust guard (2026-09-18): per-rung {last_mark, repeat, last_trusted} for the
+        # frozen (timeliness) + fallback-baseline checks. In-memory (resets on restart — benign:
+        # the sibling/structural checks are stateless; frozen also seeds off persisted mace_rung_live).
+        self._pt_mark_trust: dict[str, dict] = {}
 
     # ── small helpers ────────────────────────────────────────────────────
     def _audit(self, kind: str, **payload) -> None:
@@ -418,6 +422,14 @@ class MaceManager:
             spot_cache[rung.symbol] = await self._spot(rung.symbol)
         spot = spot_cache[rung.symbol]
 
+        # PT mark-trust guard (2026-09-18): capture the PRIOR persisted mark BEFORE set_live_state
+        # overwrites it, for the guard's frozen/timeliness check (restart-robust seed). Read-only.
+        try:
+            _prior_live = self.store.get_live_state(rung.rung_id)
+        except Exception:  # noqa: BLE001 — a read miss must not sink the tick
+            _prior_live = None
+        prior_persisted_mark = _prior_live[0] if _prior_live else None
+
         # UI read-model (A1/A2): persist this tick's live mark + spot to
         # mace_rung_live so the /mace GET can render them WITHOUT ever touching the
         # broker. FAIL-SAFE: a dashboard-write error is logged and swallowed — it
@@ -441,6 +453,13 @@ class MaceManager:
                                           exdiv_within=exdiv_within)
         if not decision.should_exit:
             return None
+        # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.
+        # An untrusted mark HOLDS the rung (return None) + alerts; it does NOT log mace_manage_exit
+        # (that would misreport a close that never happened). stop/time/exdiv are unguarded (they must
+        # fire — risk-reducing). The deployed close_rung/deferral is untouched.
+        if decision.exit_reason == EXIT_PT:
+            if not await self._pt_mark_guard(rung, mark, now, prior_persisted_mark):
+                return None
         self._audit("mace_manage_exit", rung_id=rung.rung_id,
                     reason=decision.exit_reason, detail=decision.detail,
                     symbol=rung.symbol,
@@ -454,6 +473,57 @@ class MaceManager:
         return await self.executor.close_rung(
             rung, decision.exit_reason, pricing=pricing, defer_on_unfilled=defer,
             trigger_mid=mark)
+
+    async def _pt_mark_guard(self, rung: RungState, mark: Optional[float], now: datetime,
+                             prior_persisted_mark: Optional[float]) -> bool:
+        """PT mark-trust guard (2026-09-18). Returns True if the PT-eligible `mark` is TRUSTED
+        (fire the profit-target close), False to HOLD the rung. Fetches the fresh marks of any
+        same-strike shorter-dated sibling rungs (the arbitrage lower bound), tracks the per-rung
+        frozen/trust state, calls the PURE `strategy.assess_pt_mark_trust`, and on an untrusted mark
+        emits the reuse alert (Activity Pulse audit + Telegram) — except the silent fail-closed
+        no-baseline one-cycle hold. Never raises into the manage tick."""
+        all_rungs = self.store.load_all()
+        sibs = st.shorter_dated_same_strike_siblings(all_rungs, rung)
+        sib_marks: list[Optional[float]] = []
+        for s in sibs:
+            try:
+                sib_marks.append(await self.executor.mark(s.spec))
+            except Exception as exc:  # noqa: BLE001 — a sibling quote miss must not sink the guard
+                self._audit("mace_pt_sibling_mark_error", rung_id=rung.rung_id,
+                            sibling=s.rung_id, error=str(exc))
+
+        stt = self._pt_mark_trust.get(rung.rung_id)
+        # Cold start (first touch / post-restart) falls back to the persisted prior mark so the frozen
+        # check is restart-robust; last_trusted stays None on cold start to preserve fail-closed-no-baseline.
+        eff_last = stt["last_mark"] if stt else prior_persisted_mark
+        prior_repeat = stt["repeat"] if stt else (1 if prior_persisted_mark is not None else 0)
+        last_trusted = stt["last_trusted"] if stt else None
+        identical = (eff_last is not None and mark is not None and abs(mark - eff_last) < 0.005)
+        unchanged_repeat = (prior_repeat + 1) if identical else 1
+        dte = (rung.expiry - now.date()).days
+
+        trust = st.assess_pt_mark_trust(
+            rung, mark, self.cfg, sibling_marks=sib_marks, unchanged_repeat=unchanged_repeat,
+            last_trusted_mark=last_trusted, dte=dte)
+
+        # Seed last_trusted on a trusted mark OR a no_baseline hold (so the next tick has a baseline).
+        new_trusted = mark if (trust.trusted or trust.reason == "no_baseline") else last_trusted
+        self._pt_mark_trust[rung.rung_id] = {
+            "last_mark": mark, "repeat": unchanged_repeat, "last_trusted": new_trusted}
+
+        if trust.trusted:
+            return True
+        if trust.alert:
+            self._audit("mace_pt_mark_reject", rung_id=rung.rung_id, symbol=rung.symbol,
+                        mark=(round(mark, 4) if mark is not None else None), reason=trust.reason,
+                        sibling_marks=[round(x, 4) for x in sib_marks if x is not None],
+                        dte=dte, detail=trust.detail)
+            self.notifier.reject(
+                symbol=rung.symbol,
+                detail=(f"PT held - untrusted mark "
+                        f"{('%.2f' % mark) if mark is not None else 'None'} "
+                        f"({trust.reason}); {trust.detail}"))
+        return False
 
     def _close_pricing(self, reason: str, rung: RungState,
                        now: datetime) -> "tuple[str, bool]":

@@ -67,6 +67,17 @@ class SizingConfig:
 
 
 @dataclass(frozen=True)
+class MarkGuardConfig:
+    """PT mark-trust guard (2026-09-18). Gates ONLY the synthetic PT fire on a mark that is
+    TIMELY (not frozen) + SANE (no arbitrage/structural violation); an untrusted mark HOLDS the
+    rung + alerts. Optional-with-defaults so an older config still loads (mirrors exit_winner_band)."""
+    enabled: bool = True             # kill-switch; False -> pass-through (PT fires as before)
+    frozen_cycles: int = 2           # TIMELY: reject a mark bit-identical (to cents) across >= this many consecutive PT-eligible ticks
+    sane_epsilon_usd: float = 0.01   # SANE: tolerance (1 tick) on the sibling arbitrage compare + structural floor
+    max_cycle_drop_pct: float = 0.35 # FALLBACK (no sibling): reject a single-cycle cost-to-close collapse > this while DTE > time_exit_dte
+
+
+@dataclass(frozen=True)
 class ManagementConfig:
     check_interval_sec: int
     window_et: tuple[str, str]
@@ -77,6 +88,7 @@ class ManagementConfig:
     exdiv_guard_sessions: int
     exit_winner_band: float          # winner (time/PT) close cap = mid + this (GDX P1 2026-09-11)
     time_exit_defer_floor_dte: int   # time-exit defers above this DTE, forces natural at/below
+    mark_guard: MarkGuardConfig = MarkGuardConfig()   # PT mark-trust guard (2026-09-18)
 
 
 @dataclass(frozen=True)
@@ -335,6 +347,22 @@ def load_mace_config(
                  if "exit_winner_band" in m else 0.10)
     time_defer_floor = (num(m, "time_exit_defer_floor_dte", "management", typ=int, lo=0)
                         if "time_exit_defer_floor_dte" in m else 14)
+    # PT mark-trust guard (2026-09-18) — optional-with-defaults block; validated into MarkGuardConfig.
+    mg = m.get("mark_guard")
+    if mg is None:
+        mg = {}
+    elif not isinstance(mg, dict):
+        errs.append(f"management.mark_guard: expected a mapping, got {mg!r}")
+        mg = {}
+    mg_enabled = mg.get("enabled", True)
+    if not isinstance(mg_enabled, bool):
+        errs.append(f"management.mark_guard.enabled: missing or not a bool: {mg_enabled!r}")
+    mg_frozen = (num(mg, "frozen_cycles", "management.mark_guard", typ=int, lo=1)
+                 if "frozen_cycles" in mg else 2)
+    mg_eps = (num(mg, "sane_epsilon_usd", "management.mark_guard", lo=0.0, lo_excl=True)
+              if "sane_epsilon_usd" in mg else 0.01)
+    mg_drop = (num(mg, "max_cycle_drop_pct", "management.mark_guard", lo=0.0, hi=1.0,
+                   lo_excl=True, hi_excl=True) if "max_cycle_drop_pct" in mg else 0.35)
 
     x = sect("execution")
     start_off = num(x, "entry_start_offset_usd", "execution", lo=0.0)
@@ -491,6 +519,12 @@ def load_mace_config(
             exdiv_guard_sessions=int(exdiv_sessions),
             exit_winner_band=float(exit_band),
             time_exit_defer_floor_dte=int(time_defer_floor),
+            mark_guard=MarkGuardConfig(
+                enabled=bool(mg_enabled),
+                frozen_cycles=int(mg_frozen),
+                sane_epsilon_usd=float(mg_eps),
+                max_cycle_drop_pct=float(mg_drop),
+            ),
         ),
         execution=ExecutionConfig(
             entry_start_offset_usd=float(start_off),
