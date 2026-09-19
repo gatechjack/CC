@@ -690,3 +690,53 @@ pm_cs2_alias_scan_ro, pm_cs2_tl_graft (scp+tar, azureuser), pm_cs2_tl_reclassify
 pm_{itf,uel}_orient_ro, pm_{itf,uel}_sizing_normalize (guarded DB), pm_itf_enable (guarded DB),
 pm_{itf,uel}_arm (guarded arm), pm_uel_rostercheck_ro, pm_uel_bootverify_ro, pm_divisions_health_ro,
 pm_{itf,uel}_fillwatch_ro.
+
+
+2026-09-19 — AUTHELIA multi-user logins (karen/marc/trey) — a CONFIG DEPLOY WITH NO GIT ARTIFACT
+------------------------------------------------------------------------------------------------
+★ NONE OF THIS IS IN GIT. It is five edits to /etc/authelia/configuration.yml + /etc/authelia/users_database.yml
+and one `systemctl restart authelia`, all on the box. A box-vs-prod-live comparison will NOT see it — it is
+DELIBERATE, not untracked drift. prod-live is UNCHANGED at 777e87a5; no PM code changed, no migration, no
+trading-corp or pm_web restart. The 35 armed sub-divisions traded through the whole thing (authelia is a separate
+service; restarting it does not touch the engine or pm_web).
+
+WHAT CHANGED ON THE BOX (Authelia v4.39.19, native systemd, behind Caddy forward_auth):
+  1. WebAuthn ENABLED (webauthn.disable true->false) — passkeys were off ("disabled tonight"); 2FA was TOTP-only.
+  2. access_control: predictions.jacksumner.com subject 'user:jack' -> ["user:jack","user:karen","user:marc","user:trey"].
+     trading.jacksumner.com left jack-only; default_policy stays deny. (This is what gates who reaches predictions.)
+  3. users_database.yml: created karen/marc/trey (argon2 hashes Jack generated himself via `authelia crypto hash
+     generate argon2`; the passwords never left his session). Emails kdsumner@/sumnermarc@/treysumner@yahoo.com.
+  4. Notifier LEFT as filesystem (Jack's choice; no SMTP). Enrolment/reset links land in
+     /var/lib/authelia/notification.txt — Jack relays each by hand (a relay per device re-enrolment; accepted).
+  5. ONE restart of authelia only. Verified by SERVICE STATE (MainPID 634->478479, ExecMainStart 2026-08-27 ->
+     2026-09-19T02:45:39Z, active/running) — NEVER the az exit code (az returns provisioning-success on empty runs).
+  Each edit was staged az-root (Jack-run), backed up, and validated env-independently by a BEFORE/AFTER
+  validate-config diff (standalone validate-config always reports 2 runtime-secret errors — jwt_secret +
+  storage.encryption_key — injected by the service env; the diff cancels that noise and only trips on an
+  edit-introduced error). Runners cc/pm_auth_step{1,2,3,5}.{ps1,sh}.
+
+★ RECOVERY / BACKUPS — READ THIS BEFORE RESTORING ANYTHING: the box holds
+/etc/authelia/configuration.yml.bak_* (x2) + users_database.yml.bak_*. Restoring one REVERTS the access rules and
+LOCKS karen/marc/trey OUT again — a restore UNDOES this weekend's work; it is NOT a failure-recovery. (It is only a
+recovery if a future edit breaks authelia's startup.) az-root reaches the box outside the web layer, so even a
+lock-out is fixable: `cp <oldest .bak> <file>; systemctl restart authelia` via az.
+
+READ-ONLY FINDING (corrected a stale backlog line): /live SCOPING WAS ALREADY DONE. web/authz.py + app.py 403 a
+non-owner on /live/{account}/{category} (visible_account_ids, fail-closed), with PM_ADMIN_IDENTITIES=jack and
+kalshi_karen.owner_identity='karen' making it effective. The "unscoped route, close it before Karen's first
+session" item was NEVER outstanding.
+
+STATE FOR WHOEVER PICKS THIS UP:
+  - Logins LIVE for karen/marc/trey; passwords set; NO PASSKEY ENROLLED YET.
+  - Enrolment needs the PERSON + their DEVICE + JACK RELAYING the link from notification.txt (filesystem notifier).
+  - default_2fa_method is still `totp` -> the authenticator option is offered alongside passkey; they must pick
+    security-key/passkey. One-line follow-up to make passkey the default: set `default_2fa_method: webauthn` (+
+    optionally `totp.disable: true`) and restart authelia — NOT done.
+  - MARC and TREY will log in and SEE NOTHING until their pm_account rows exist (owner_identity is what pm_web
+    scopes on). KAREN is otherwise COMPLETE (already trading, owner_identity='karen').
+  - MARC + TREY TRADING is a SEPARATE build (not done): ~6 lines each across utils/secrets.py (kalshi_marc/kalshi_trey
+    fields + env loads) and prediction_markets/shard_snapshot_task._SECRET_REF_KEYPAIR (explicit entries — the
+    whitelist is fail-closed by design, do NOT generalise), vault secrets KALSHI_MARC_*/KALSHI_TREY_*, an ENGINE
+    restart (bounces all divisions — time clear of opens), then their pm_account rows + sub-divisions + arm.
+  Full detail: reports/prediction_markets/MULTIUSER_PASSKEY_INVESTIGATION_2026-09-18.md (branch
+  pm-multiuser-passkey-investig-2026-09-18).
