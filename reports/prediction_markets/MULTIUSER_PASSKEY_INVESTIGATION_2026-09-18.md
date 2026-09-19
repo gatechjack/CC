@@ -17,6 +17,29 @@ b3e85e1e). Nothing built/changed/deployed. 35 sub-divisions armed + trading thro
   secret + engine restart, THEN the DB rows.
 
 ═══════════════════════════════════════════════════════════════════════════════════════════════
+## AUTHELIA BATCH -- APPLIED + VERIFIED 2026-09-19 (scope grew to TWO new users: MARC + TREY, four accounts total)
+Staged az-root edits (Jack-run, each backed up + validated env-independently via before/after validate-config diff,
+NO restart until step 5). All GREEN:
+- STEP 1 webauthn: `webauthn.disable: true->false` (one-line, guarded). validates with defaults (no extra fields).
+- STEP 2 access_control: `predictions.jacksumner.com` subject `'user:jack'` -> `["user:jack","user:karen","user:marc","user:trey"]`
+  (trading.jacksumner.com left jack-only; default_policy deny unchanged).
+- STEP 3 users: created `karen`/`marc`/`trey` in users_database.yml (Jack-generated argon2 hashes; emails
+  kdsumner@ / sumnermarc@ / treysumner@yahoo.com; displaynames Karen/Marc/Trey). Structure-guarded + YAML-parsed.
+- STEP 4 SMTP: SKIPPED -- Jack chose to keep the FILESYSTEM notifier and relay each enrolment link by hand from
+  /var/lib/authelia/notification.txt (device-bound passkeys => a relay per device re-enrolment; Jack accepted).
+- STEP 5 restart: pre-gate = validate-config shows ONLY the 2 runtime-secret baseline errors (jwt_secret +
+  storage.encryption_key, injected by the service env) -> `systemctl restart authelia`. Verified by SERVICE STATE
+  (MainPID 634->478479, ExecMainStart 2026-08-27 -> 2026-09-19T02:45:39Z, active/running), NOT the exit code.
+  Auto-recovery-to-original was armed but not needed. Authelia only -- trading engine / 35 armed subs / pm_web untouched.
+Runners cc/pm_auth_step{1_webauthn,2_acl,3_users,5_restart}.{ps1,sh} (Jack-run az-root; the agent is classifier-blocked
+from az-root writes/restarts). Backups on box: configuration.yml.bak_* (x2) + users_database.yml.bak_* -- recovery is
+`cp <oldest .bak> <file>; systemctl restart authelia` via az (outside the web layer).
+★ STILL TO DO for the goal (NOT part of this batch): (a) karen/marc/trey each ENROL a passkey (person + device;
+Jack relays the notification.txt link) -- karen is otherwise fully live (already trading); (b) MARC + TREY TRADING =
+the task-3 code (secrets.py fields + _SECRET_REF_KEYPAIR entries for kalshi_marc + kalshi_trey) + vault KALSHI_MARC_*
+/ KALSHI_TREY_* + ENGINE restart + pm_account rows (owner_identity marc/trey) + sub-divisions + arm. Marc/Trey see
+their account on login only once their pm_account row (owner_identity) exists.
+
 ## TASK 1 -- AUTHELIA (what is CONFIRMED vs what Jack must read as root)
 ═══════════════════════════════════════════════════════════════════════════════════════════════
 CONFIRMED (from readable sources: systemd unit, world-readable Caddyfile, the binary version):
