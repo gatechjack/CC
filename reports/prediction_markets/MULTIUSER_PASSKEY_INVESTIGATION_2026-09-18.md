@@ -7,9 +7,11 @@ b3e85e1e). Nothing built/changed/deployed. 35 sub-divisions armed + trading thro
 ## HEADLINE
 - **Task 2 (/live scoping) is DONE, not open.** The standing "both /live routes UNSCOPED, close before Karen"
   ruling is STALE. The deployed code scopes every read route AND returns 403 on the per-account page.
-- **Task 1 (Authelia) is mostly a CONFIG READ + a couple of config edits Jack does as root.** The version supports
-  passkeys; the config internals (webauthn-enabled? notifier? access_control? users?) are OWNED BY THE `authelia`
-  USER and NOT readable as azureuser -- Jack must read them as root (exact commands below).
+- **Task 1 (Authelia) = a few specific root config edits (now CONFIRMED by the root read):** WebAuthn is currently
+  DISABLED (2FA is TOTP-only), the access_control gates both consoles to `user:jack` only (default-deny), only user
+  `jack` exists, and the notifier is FILESYSTEM (enrolment links land in a box file, not email). So Jack must: enable
+  webauthn, add access_control rules for karen+marc, create the karen+marc users, restart authelia -- and relay each
+  enrolment link off the box (or switch to SMTP). The config is authelia-owned/root-only; Jack ran the read himself.
 - **Task 3 (Marc) is NOT pure data.** The multi-account driver is generic, BUT the secret_ref->keypair map is a
   hardcoded whitelist and the secrets loader is a fixed-field dataclass -> Marc needs a small CODE change + vault
   secret + engine restart, THEN the DB rows.
@@ -29,18 +31,26 @@ CONFIRMED (from readable sources: systemd unit, world-readable Caddyfile, the bi
     Remote-Email` to pm_web (copied from Authelia's RESPONSE -> a client cannot spoof them; this is the precondition
     authz.py depends on).
 
-NOT READABLE as azureuser (owned by `authelia`, dir 0700) -- **JACK MUST READ AS ROOT.** These decide the weekend:
-1. **Is WebAuthn ENABLED in the config today?** (a `webauthn:` block present; and `default_2fa_method` /
-   `webauthn.enable_passkey_login` if passwordless is wanted). If absent, it must be turned on (a config edit +
-   `systemctl restart authelia`).
-2. **The notifier** -- `smtp:` (real email; the user gets links directly = remote self-service) vs `filesystem:`
-   (Authelia writes the link to a FILE on the box; Jack must fetch + relay it to the user). This decides whether
-   Karen/Marc can enrol entirely on their own or need Jack to hand them a link.
-3. **`access_control` rules** -- ★ THE ONE MOST LIKELY TO BLOCK KAREN/MARC. If predictions.jacksumner.com is gated
-   to `subject: user:jack` with default deny, Karen/Marc are stopped by AUTHELIA before pm_web ever runs (even
-   though pm_web would scope them correctly). Likely the real config edit: add a rule allowing karen + marc (or any
-   authenticated 2FA user) to predictions.jacksumner.com.
-4. **users_database.yml** -- does `karen` already exist (with an email)? `marc` certainly must be added.
+CONFIG INTERNALS -- CONFIRMED (Jack ran the root read 2026-09-19T00:46Z, cc/pm_authelia_root_read.*; structure only):
+1. **WebAuthn is DISABLED today.** `webauthn: {disable: true}` (in-config comment: "WebAuthn (security keys /
+   passkeys) -- disabled tonight, can enable later"). `totp: {disable: false}`, `default_2fa_method: totp`, no Duo.
+   -> Today 2FA is TOTP-ONLY. **PASSKEYS REQUIRE A CONFIG CHANGE: set `webauthn.disable: false` (+ a webauthn block:
+   display_name / relying-party) and `systemctl restart authelia`.** This is a prerequisite for the whole passkey plan.
+2. **Notifier is FILESYSTEM, not SMTP.** `notifier: {filesystem: ...}` -> links (password-reset, and the
+   credential-registration verification link) are WRITTEN TO A FILE on the box (`/var/lib/authelia/notification.txt`,
+   currently 0 bytes), NOT emailed. **So Karen/Marc CANNOT self-serve remotely: Jack must read each link off the box
+   and relay it.** If true remote self-service is wanted, switch the notifier to SMTP first.
+3. **★ access_control = the confirmed BLOCKER.** `default_policy: deny`; the ONLY rules are
+   `trading.jacksumner.com` and `predictions.jacksumner.com` -> `policy: two_factor, subject: 'user:jack'`.
+   **Karen + Marc are DENIED at Authelia today** (before pm_web ever runs). Jack MUST add access_control rules for
+   them (e.g. per-user rules for predictions.jacksumner.com, or a group) + restart authelia.
+4. **users_database.yml has ONLY `jack`** (displayname "Jack", email jack@jacksumner.com, disabled:false). No
+   `karen`, no `marc` -- BOTH must be created (username + displayname + email + argon2 password hash). NB the
+   pm_account.owner_identity='karen' was set in anticipation, but the Authelia user `karen` does not exist yet.
+5. authentication_backend = FILE (users_database.yml), watch:false, password_reset enabled (disable:false).
+   identity_validation present (the credential-registration link flow). session cookie scoped to the `jacksumner.com`
+   APEX (one login spans trading + predictions + auth), authelia_url https://auth.jacksumner.com. storage = SQLite
+   (`/var/lib/authelia/db.sqlite3`, holds registered 2FA devices + sessions).
 
 ★ ENROLMENT -- HOW A NEW USER WITH NO FACTOR GETS THEIR FIRST PASSKEY (Authelia file-backend model; confirm against
 the config above): the user's FIRST factor is the PASSWORD, which the ADMIN provisions in users_database.yml
@@ -134,26 +144,36 @@ Authelia username, so pm_web scopes him to only his account), vault names `KALSH
 ═══════════════════════════════════════════════════════════════════════════════════════════════
 ## ORDER + WHO MUST BE PRESENT
 ═══════════════════════════════════════════════════════════════════════════════════════════════
-PARTS JACK CAN DO ALONE (no Karen/Marc needed):
-- Read the Authelia config as root (task 1 commands above) -- decides everything else.
-- Any Authelia config edits (enable webauthn if off; add access_control rules for karen/marc; confirm notifier).
-- Create the Authelia users (karen if absent, marc) with email + initial password.
-- Confirm/adjust pm_account.owner_identity to match each Authelia username (1-row DB edits).
-- Marc's TRADING enablement end to end: vault secrets, the ~6-line code change, deploy + engine restart, pm_account
-  row + sub-divisions + arm. (None of this needs Marc present -- only his Kalshi TOKEN, which he supplies once.)
-PARTS THAT NEED THE PERSON + THEIR DEVICE:
+PARTS JACK CAN DO ALONE (no Karen/Marc needed) -- ALL config edits are root, on the box, + `systemctl restart authelia`:
+- **Enable WebAuthn** in configuration.yml (`webauthn.disable: false` + a webauthn block; optionally
+  `default_2fa_method`/passkey-login). PREREQUISITE -- passkeys do not work until this + restart. (Currently TOTP-only.)
+- **Add access_control rules** for karen + marc to predictions.jacksumner.com (today it is `user:jack` only,
+  default-deny) -- THE blocker; without it they cannot reach the site at all.
+- **Create the Authelia users** karen + marc in users_database.yml (username + displayname + email + argon2 password
+  hash, e.g. `authelia crypto hash generate argon2`). Only `jack` exists today.
+- **Decide the notifier:** filesystem today -> Jack must read each enrolment/reset link from
+  `/var/lib/authelia/notification.txt` on the box and relay it. Optionally switch to SMTP for true remote self-serve.
+- Confirm/adjust pm_account.owner_identity to match each Authelia username (karen already ='karen'; add ='marc' on
+  Marc's row).
+- Marc's TRADING enablement end to end: vault secrets, the ~6-line code change (secrets.py + shard_snapshot_task.py),
+  deploy + ENGINE RESTART, pm_account row + sub-divisions + arm. (Needs Marc's TOKEN once; not Marc present.)
+PARTS THAT NEED THE PERSON + THEIR DEVICE (and Jack relaying the link, since the notifier is filesystem):
 - **Karen's first passkey enrolment** -- needs KAREN + her device (self-service after password login + the emailed
   one-time link). Everything else for Karen is already done (she trades + is scoped).
 - **Marc's first passkey enrolment** -- needs MARC + his device.
 - **Marc's Kalshi API token** -- needs MARC to supply it (once) before the vault secret can be created.
 
 RECOMMENDED ORDER:
-0. Jack: read the Authelia config as root -> confirm webauthn enabled, notifier type, access_control, users. (ALONE)
-1. Jack: task-2 is already done; just confirm Karen's Authelia username == `karen` (== her owner_identity). (ALONE)
-2. KAREN login: Jack ensures user `karen` exists + can reach predictions (access_control) -> Karen enrols her passkey.
-   (needs KAREN + device). Karen is fully live after this -- no trading change.
+0. Jack (ALONE, root, one authelia restart): ENABLE webauthn + ADD access_control rules for karen+marc + CREATE the
+   users karen+marc (password hashes) in users_database.yml -> `systemctl restart authelia`. (Config read is DONE.)
+   Optionally switch notifier filesystem->smtp here if you want the enrolment links emailed rather than relayed.
+1. Jack: task-2 (pm_web scoping) is already done; karen's owner_identity already ='karen'. (ALONE, nothing to do.)
+2. KAREN login: with #0 done, Karen logs in (password) + enrols her passkey; if the credential step needs a link,
+   Jack reads it from /var/lib/authelia/notification.txt and relays it. (needs KAREN + device [+ Jack relaying]).
+   Karen is fully live after this -- no trading change.
 3. MARC, in two independent tracks:
-   3a. LOGIN: Jack creates Authelia user `marc` + access_control -> Marc enrols his passkey (needs MARC + device).
+   3a. LOGIN: Jack creates Authelia user `marc` + access_control rule (done in #0 if batched) -> Marc enrols his
+       passkey, Jack relaying the notification.txt link if needed (needs MARC + device [+ Jack relaying]).
    3b. TRADING: Marc supplies his Kalshi token (needs MARC once) -> Jack: vault + ~6-line code change + deploy +
        ENGINE RESTART (bounces all divisions; time clear of opens) -> pm_account `kalshi_marc`
        (owner_identity='marc') + sub-divisions + attach + arm. Marc sees his account on login once 3b's pm_account
