@@ -949,3 +949,49 @@ HONEST FINDING (pre-existing, not this deploy): on a phone viewport the roster t
       stacked cards with no sideways scroll, but the PAGE still overflows (~895px) from the shell
       header nav + poll/arm chips + the MLB game-card scoreboard -- all unchanged by Deploy 12 (only
       the shell ?v= was bumped). Filed as a shell/game-card follow-up, not a roster item.
+
+
+2026-09-20 -- DEPLOY 13: LIVE TILE SIMPLIFY (one rolled-back attempt + a fix, then live)
+---------------------------------------------------------------------------------------
+WHAT: the /live TILE page. The LIVE tile was the Deploy-10 2x2 featured-scoreboard block; on an NFL
+      Sunday it spilled, stretched, and the money block detached (your screenshot). Now every tile is
+      the STANDARD size, money-first, and a LIVE tile adds ONE compact game line -- "AWAY @ HOME .
+      <signed shorthand>" per game for <=2 underway games, else a single "N games live . M positions >"
+      summary. No scores/innings on the tile (those stay on the detail page). Blue LIVE border kept;
+      the just-closed BANNER removed (flash + LAST line only).
+PROD-LIVE: 9ff6060c -> 0023e5a7 (code, FF) -> d1b93ce7 (docs, FF).  TAG: pm-live-tile-simplify-deploy13-2026-09-20
+      (on the code commit 0023e5a7).
+FILES: 6 pm_web files written + 1 DELETED (partials/pm_subs_event.html, the 2x2 block). NO app.py, NO
+      subdivision.py, NO migration, NO engine file. New partial partials/pm_subs_liveline.html. CR-sha16:
+        web/live_view.py                              233ed9a2 -> 5763057e   (_live_event rewritten; 2 dead helpers cut)
+        web/templates/pm_live_list.html               92693d07 -> af8e3210
+        web/templates/partials/pm_subs_liveline.html  (new)    -> 5809621d   (the FIX sha; 9b83b4a7 was the rolled-back one)
+        web/static/pm_desk.css                        b07fce48 -> 585ea101   (cache-bust ?v=585ea101)
+        web/static/pm_live_subs.js                    fe29f6e5 -> 87888c85
+        web/templates/pm_shell.html                   ec3a5519 -> 3abb6319
+        web/templates/partials/pm_subs_event.html     51ebf8ce -> DELETED
+SERVICES: engine trading-corp 491380 UNTOUCHED the whole time (PID + NRestarts=0 unchanged). pm_web
+      restarted THREE times, all pm_web-only: 494253 -> 496311 (attempt-1) -> 497016 (rollback) ->
+      497708 (attempt-2, the live one, ActiveEnter 2026-09-20 23:09:01Z). Restarts confirmed by PID +
+      timestamp, never the az exit code (empty stdout each time).
+THE ROLLBACK (why 3 restarts): attempt-1's ">2-games" summary was <a class="liveln more" href> nested
+      inside the tile's own <a class="t live" href>. Nested <a> is invalid HTML -> the browser closes
+      the tile early -> on jack/nfl the summary + LAST + week/month foot + state tab escaped the tile
+      box (exactly your screenshot). Post-check caught it; per the standing rule (rollback on a
+      post-deploy fail, never fix forward on prod) I restored all files from backup + restarted -> box
+      == prod-live, serving the old tiles. THE FIX: the summary is a <div>, not a nested <a> (the whole
+      tile is already the link). Re-verified (geometry: the line sits inside the tile; 24 baseline
+      failures, 0 new) and re-deployed the corrected build.
+      Two side-bugs found + fixed in the graft runner: the pm_subs_event grep matched pm_subs_eventline
+      (a substring) -> tightened to pm_subs_event\.html; and the rollback did not remove a newly-CREATED
+      file (no backup to restore) -> it now rm's new files on rollback. Backups:
+      /home/azureuser/pm_deploy13_backup_{20260920T221244Z (attempt-1), 20260920T230612Z (attempt-2)}.
+BOX == PROD-LIVE: 47/47 before and after (NOT 46 -- deleting pm_subs_event.html is offset by adding
+      pm_subs_liveline.html, so the count is unchanged).
+POST-DEPLOY (89 OK / 0 FAIL): /live all 4 tabs 200, no 2x2/scoreboard/banner, cache-bust 585ea101,
+      REGRESSION GUARD for the nested-anchor (0 a.liveln.more), jack/nfl shows the single <div> summary,
+      detail page + roster + 5-cell strip intact, all pages + 26 farm + static 200, 0 raw tickers, engine
+      journalctl 0 err. NOTE: jack/nfl summary is "4 games live . 4 positions" while OPEN is 6 -- correct:
+      2 of the 6 open NFL positions are on games not currently underway (incl. a Sep-21 game); the summary
+      counts LIVE games only.
+NOT EXERCISED: n/a (read-only page).
