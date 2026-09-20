@@ -1,66 +1,163 @@
-{# R2/R3/R4/R6 WHALE ROSTER -- the "Copies these whales" panel is now each whale's REAL-money live-copy record for
-   THIS sub-division (journal-filtered, Ruling 1), grouped ON-ROSTER vs FORMERLY-LIVE, each with the attachment dates,
-   dollars-first honest figures, a Detach control (owner-or-admin), and a click-to-filter-the-drawer drill-through
-   (R4: JS-only; JS-off shows all). Rendered from `whale_records` + `can_detach` (see _load_live_subdivision). #}
+{# ROSTER TABLE (2026-09-20) -- the "Copies these whales" panel is now a SORTABLE TABLE with the same look + mechanics
+   as the Farm League watchlist (pm-table family, sticky header). One row per whale, on-roster on top and (under the
+   "All" toggle) formerly-live dimmed BENEATH. All server-rendered from `roster_view` (live_view.build_roster_table):
+   the toggle (?whales=all), the sort (?sort=<col>&dir=<asc|desc>) and the default Realized-desc order are JS-off safe.
+   Clicking a whale row filters the trade drawer to its rows (data-wallet, JS enhancement; JS-off shows every row).
+   HONESTY: a value that cannot be read renders '--', never a fabricated 0; a raw ticker never appears here. #}
 {% from "pm_macros.html" import score_badge %}
-{% macro whale_row(w, formerly) %}
-  <div class="wr" data-whale="{{ w.wallet }}">
-    <div class="wr-head">
-      <button type="button" class="wname" data-whale="{{ w.wallet }}" title="Copied from {{ w.user_name or w.wallet }} ({{ w.wallet }}) &mdash; click to filter the trade drawer">{{ w.user_name or w.wallet }}</button>
-      {% if not w.user_name %}<span class="dim wr-wo">wallet only</span>{% endif %}
-      {# ★ the stored ANALYZE verdict, kept visible on the live surface (the score persists past Promote-to-live). #}
-      <span class="wr-score">{{ score_badge(w.score, w.wallet) }}</span>
-      {% if w.thin %}<span class="wr-thin" title="under {{ whale_records.thin_floor }} booked settlements &mdash; too few to read as a result">thin</span>{% endif %}
-      <span class="wr-when">
-        {% if formerly %}live {{ w.added_ts|etdate if w.added_ts else '?' }} &ndash; {{ w.removed_ts|etdate if w.removed_ts else '?' }}
-        {% else %}attached {{ w.added_ts|etdate if w.added_ts else '&mdash;'|safe }}{% endif %}
-      </span>
-      <span class="wr-actions">
-        <a class="wr-link" href="/watchlist/{{ w.wallet }}/{{ category }}">profile</a>
-        {% if not formerly and can_detach %}<a class="wr-detach" href="/live/{{ account_id }}/{{ category }}/detach/{{ w.wallet }}">Detach</a>{% endif %}
-      </span>
-    </div>
-    <div class="wr-figs">
-      <span class="wr-fig"><span class="wr-k">realized</span>
-        <b class="{{ w.realized_pnl|pnlcls }}">{{ w.realized_pnl|signed }}</b> all-time
-        &middot; <span class="{{ w.realized_today|pnlcls }}">{{ w.realized_today|signed }}</span> today
-        <span class="dim">on {{ w.booked_closes }} of {{ w.placed }} cop{{ 'y' if w.placed == 1 else 'ies' }}</span></span>
-      <span class="wr-fig"><span class="wr-k">open</span>
-        {{ w.n_open }} &middot; {{ w.open_cost_usd|money }} at cost &middot;
-        {% if w.open_value is none %}<span class="wsm">no mark</span>{% else %}<b style="color:var(--live)">{{ w.open_value|money }}</b> now{% endif %}
-        <span class="dim">({{ w.n_priced }} of {{ w.n_total }} priced)</span></span>
-      <span class="wr-fig"><span class="wr-k">record</span>
-        {{ w.booked_closes }} booked ({{ w.settled_w }}&ndash;{{ w.settled_l }}) &middot;
-        {{ w.unbooked_closes }} flattened/early-exit<span class="dim"> (opposed + whale-exit &mdash; no settlement P&amp;L, by design)</span></span>
-    </div>
-  </div>
+{% set rv = roster_view %}
+{% set _base = request.url.path %}
+{% set _qtab = '&tab=complete' if tab == 'complete' else '' %}
+{% set _qwhales = '&whales=all' if rv.show_all else '&whales=on' %}
+{% set _qsort = '&sort=' ~ rv.sort ~ '&dir=' ~ rv.dir %}
+
+{# a sortable column header -> a server-side link (?sort=col&dir=next), carrying the current toggle + tab so the sort
+   does not reset them. First click on a NEW column = desc (best first); clicking the ACTIVE column flips direction.
+   Reuses the watchlist arrow classes (pm-sort-asc/desc = up/down; pm-sortable = the neutral up-down glyph). #}
+{% macro sorth(col, label, cls='') %}
+  {%- set active = rv.sort == col -%}
+  {%- set nextdir = 'asc' if (active and rv.dir == 'desc') else 'desc' -%}
+  <th class="{{ cls }}{% if active %} rt-sorted{% endif %}">
+    <a class="pm-sortable{% if active %}{{ ' pm-sort-desc' if rv.dir == 'desc' else ' pm-sort-asc' }}{% endif %}"
+       href="{{ _base }}?sort={{ col }}&dir={{ nextdir }}{{ _qwhales }}{{ _qtab }}"
+       title="sort by {{ label }}{% if active %} ({{ 'now desc -- click for asc' if rv.dir == 'desc' else 'now asc -- click for desc' }}){% endif %}">{{ label }}</a>
+  </th>
 {% endmacro %}
-{% if whale_records and (whale_records.on_roster or whale_records.formerly_live) %}
-<div id="whale-roster" class="panel pad roster" style="margin-top:16px">
-  <div class="u">Copies these whales &mdash; roster</div>
-  <p class="caveat" style="margin:4px 0 10px">Real-money live-copy record for this sub-division (the journal, filtered to each whale). Click a whale to filter the trade drawer below to its rows. <span id="roster-filter-note" class="wsm"></span></p>
-  {% if whale_records.on_roster %}
-  <div class="rgrp"><div class="rgh">On roster &middot; {{ whale_records.on_roster|length }}</div>
-    {% for w in whale_records.on_roster %}{{ whale_row(w, false) }}{% endfor %}
+
+{% macro whalecell(w) %}
+  {%- set nm = w.user_name -%}
+  {%- set wl = w.wallet or '' -%}
+  <button type="button" class="rt-wname" data-whale="{{ wl }}"
+     title="Copied from {{ nm or wl }} ({{ wl }}) -- click to filter the trade drawer below">
+    {%- if nm -%}{{ nm }}{%- else -%}<span class="pm-mono">{{ wl[:8] }}{% if wl|length > 12 %}&hellip;{{ wl[-4:] }}{% endif %}</span>{%- endif -%}
+  </button>
+  {%- if not nm %}<span class="rt-wo dim">wallet only</span>{% endif -%}
+{% endmacro %}
+
+{# one whale row. `w` is a roster_view row (whale_live_records enriched with win_pct / roi_cost / tenure_days /
+   booked_cost_usd + formerly). data-label on each cell drives the phone stacked-card view (CSS ::before). #}
+{% macro wrow(w) %}
+  <tr class="rt-row{% if w.formerly %} rt-formerly{% endif %}" data-whale="{{ w.wallet }}">
+    <td class="pm-wcell" data-label="Whale">{{ whalecell(w) }}{% if w.formerly %}<span class="rt-formerly-tag" title="a past attachment -- record kept, no new copies">formerly live</span>{% endif %}</td>
+    <td class="pm-judge-col" data-label="Verdict">{{ score_badge(w.score, w.wallet) }}</td>
+    <td class="rt-tenure" data-label="Tenure" data-sort-value="{{ w.tenure_days if w.tenure_days is not none else -1 }}">
+      {# ONE span today (schema keeps one attachment row/whale); structured as a list so migration 023's prior spans
+         drop in as extra <span class="rt-span"> without a re-layout. On-roster = current span; formerly = the span. #}
+      <span class="rt-spans">
+        {%- if w.formerly -%}
+          <span class="rt-span">{{ w.added_ts|etdate if w.added_ts else '?' }} &ndash; {{ w.removed_ts|etdate if w.removed_ts else '?' }}</span>
+        {%- else -%}
+          <span class="rt-span" title="current span">attached {{ w.added_ts|etdate if w.added_ts else '&mdash;'|safe }}{% if w.tenure_days is not none %} <span class="dim">&middot; {{ w.tenure_days|int }}d</span>{% endif %}</span>
+        {%- endif -%}
+      </span>
+    </td>
+    <td class="pm-num rt-phone-hide" data-label="Copies">{{ w.placed }}</td>
+    <td class="pm-num" data-label="Booked">{{ w.booked_closes }}{% if w.thin %} <span class="rt-thin" title="under {{ rv.thin_floor }} booked settlements -- too few to read as a result">THIN</span>{% endif %}</td>
+    <td class="pm-num" data-label="W">{{ w.settled_w }}</td>
+    <td class="pm-num" data-label="L">{{ w.settled_l }}</td>
+    <td class="pm-num" data-label="Win%">{% if w.win_pct is not none %}{{ '%.0f'|format(w.win_pct * 100) }}%{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+    <td class="pm-num pm-primary {{ w.realized_pnl|pnlcls }}" data-label="Realized $" data-sort-value="{{ w.realized_pnl }}">{{ w.realized_pnl|signed }}</td>
+    <td class="pm-num pm-muted rt-phone-hide" data-label="Cost $">{% if w.booked_closes %}{{ w.booked_cost_usd|money }}{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+    <td class="pm-num {% if w.roi_cost is not none and w.roi_cost >= 0 %}pm-gain{% elif w.roi_cost is not none %}pm-loss{% endif %}" data-label="ROI%" data-sort-value="{{ w.roi_cost if w.roi_cost is not none else '' }}">{% if w.roi_cost is not none %}{{ '%+.1f'|format(w.roi_cost * 100) }}%{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+    <td class="pm-num rt-phone-hide" data-label="Unbooked">{% if w.unbooked_closes %}<span title="opposed + whale-exit closes -- no settlement P&amp;L, by design">{{ w.unbooked_closes }}</span>{% else %}0{% endif %}</td>
+    <td class="rt-open" data-label="Open" data-sort-value="{{ w.n_open }}">
+      {%- if w.n_open -%}
+        {{ w.n_open }} &middot; {{ w.open_cost_usd|money }}
+        &middot; {% if w.open_value is none %}<span class="wsm">no mark</span>{% else %}<b style="color:var(--live)">{{ w.open_value|money }}</b>{% endif %}
+        <span class="dim">({{ w.n_priced }} of {{ w.n_total }} priced)</span>
+      {%- else -%}<span class="dim">&mdash;</span>{%- endif -%}
+    </td>
+    <td class="pm-num rt-phone-hide {{ w.realized_today|pnlcls }}" data-label="Today $">{{ w.realized_today|signed }}</td>
+    <td class="pm-actioncell" data-label="Actions">
+      <a class="rt-link" href="/watchlist/{{ w.wallet }}/{{ category }}">profile</a>
+      {% if not w.formerly and can_detach %}<a class="rt-detach" href="/live/{{ account_id }}/{{ category }}/detach/{{ w.wallet }}">Detach</a>{% endif %}
+    </td>
+  </tr>
+{% endmacro %}
+
+{% if rv and (rv.on_roster_count or rv.formerly_count) %}
+<div id="whale-roster" class="panel roster-table" style="margin-top:16px">
+  <div class="rt-head">
+    <div class="u">Copies these whales &mdash; roster</div>
+    <div class="rt-toggle" role="group" aria-label="which whales to show">
+      <a class="tgl{% if not rv.show_all %} on{% endif %}" href="{{ _base }}?whales=on{{ _qsort }}{{ _qtab }}"
+         aria-pressed="{{ 'true' if not rv.show_all else 'false' }}">On roster ({{ rv.on_roster_count }})</a>
+      <a class="tgl{% if rv.show_all %} on{% endif %}" href="{{ _base }}?whales=all{{ _qsort }}{{ _qtab }}"
+         aria-pressed="{{ 'true' if rv.show_all else 'false' }}">All ({{ rv.on_roster_count + rv.formerly_count }})</a>
+    </div>
   </div>
-  {% endif %}
-  {% if whale_records.formerly_live %}
-  <div class="rgrp"><div class="rgh">Formerly live &middot; {{ whale_records.formerly_live|length }}</div>
-    {% for w in whale_records.formerly_live %}{{ whale_row(w, true) }}{% endfor %}
+  <p class="caveat" style="margin:2px 0 10px">Real-money live-copy record for this sub-division (the journal, filtered to each whale). Realized is settled trades only, net of fees; ROI is realized &divide; cost of the booked copies; unbooked closes carry no settlement P&amp;L by design. Click a whale to filter the trade drawer below.
+    <button type="button" id="rt-clear" class="rt-clear" hidden>show all whales</button>
+    <span id="rt-filter-note" class="wsm"></span></p>
+  <div class="pm-table-scroll rt-scroll">
+    <table class="pm-table pm-farm-table rt-table">
+      <thead><tr>
+        {{ sorth('whale', 'Whale', 'pm-wcell') }}
+        <th class="pm-judge-col" title="The stored Analyze verdict (tier + cost-ROI), kept visible on the live surface.">Farm verdict</th>
+        {{ sorth('tenure', 'Tenure', 'rt-tenure') }}
+        {{ sorth('copies', 'Copies', 'pm-num rt-phone-hide') }}
+        {{ sorth('booked', 'Booked', 'pm-num') }}
+        {{ sorth('w', 'W', 'pm-num') }}
+        {{ sorth('l', 'L', 'pm-num') }}
+        {{ sorth('winpct', 'Win%', 'pm-num') }}
+        {{ sorth('realized', 'Realized $', 'pm-num pm-primary') }}
+        {{ sorth('cost', 'Cost $', 'pm-num pm-muted rt-phone-hide') }}
+        {{ sorth('roi', 'ROI%', 'pm-num') }}
+        {{ sorth('unbooked', 'Unbooked', 'pm-num rt-phone-hide') }}
+        {{ sorth('open', 'Open', 'rt-open') }}
+        {{ sorth('today', 'Today $', 'pm-num rt-phone-hide') }}
+        <th>Actions</th>
+      </tr></thead>
+      <tbody>
+        {% for w in rv.rows %}{{ wrow(w) }}{% endfor %}
+        {% if not rv.rows %}<tr><td colspan="15" class="caveat" style="padding:14px">{% if rv.show_all %}No whales copied on this sub-division yet.{% else %}No whales on roster &mdash; switch to <b>All</b> to see any formerly-live records.{% endif %}</td></tr>{% endif %}
+      </tbody>
+      {% if rv.rows %}
+      {% set t = rv.totals %}
+      <tfoot><tr class="rt-totals">
+        <td class="pm-wcell" data-label="Whale">Total &middot; {{ rv.shown_count }} whale{{ '' if rv.shown_count == 1 else 's' }}</td>
+        <td class="pm-judge-col"></td>
+        <td class="rt-tenure"></td>
+        <td class="pm-num rt-phone-hide" data-label="Copies">{{ t.copies }}</td>
+        <td class="pm-num" data-label="Booked">{{ t.booked }}</td>
+        <td class="pm-num" data-label="W">{{ t.w }}</td>
+        <td class="pm-num" data-label="L">{{ t.l }}</td>
+        <td class="pm-num" data-label="Win%">{% if t.win_pct is not none %}{{ '%.0f'|format(t.win_pct * 100) }}%{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+        <td class="pm-num pm-primary {{ t.realized|pnlcls }}" data-label="Realized $">{{ t.realized|signed }}</td>
+        <td class="pm-num pm-muted rt-phone-hide" data-label="Cost $">{% if t.cost %}{{ t.cost|money }}{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+        <td class="pm-num {% if t.roi_cost is not none and t.roi_cost >= 0 %}pm-gain{% elif t.roi_cost is not none %}pm-loss{% endif %}" data-label="ROI%">{% if t.roi_cost is not none %}{{ '%+.1f'|format(t.roi_cost * 100) }}%{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+        <td class="pm-num rt-phone-hide" data-label="Unbooked">{{ t.unbooked }}</td>
+        <td class="rt-open" data-label="Open">{{ t.open_n }} &middot; {{ t.open_cost|money }} &middot; {% if t.open_total and t.open_priced %}<b style="color:var(--live)">{{ t.open_value|money }}</b> <span class="dim">({{ t.open_priced }} of {{ t.open_total }} priced)</span>{% elif t.open_total %}<span class="wsm">no mark</span> <span class="dim">(0 of {{ t.open_total }} priced)</span>{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+        <td class="pm-num rt-phone-hide {{ t.today|pnlcls }}" data-label="Today $">{{ t.today|signed }}</td>
+        <td></td>
+      </tr></tfoot>
+      {% endif %}
+    </table>
   </div>
-  {% endif %}
 </div>
-{# R4 drill-through: JS-ONLY filter of the trade drawer by whale wallet (data-wallet on each drawer row). JS-off: this
-   never runs and the drawer shows every row. Toggling the same whale clears the filter. #}
+{# R4/R5 drawer drill-through (JS enhancement; JS-off = the drawer shows every row). Clicking a whale row (or its
+   name) filters the drawer to that whale's data-wallet rows, highlights the row, writes "filtered to <whale>" into
+   the drawer heading, and reveals a "show all whales" clear control. Clicking the same whale again, or the clear
+   control, restores every row. #}
 <script>
 (function () {
+  function init() {
   var roster = document.getElementById('whale-roster');
-  var drawer = document.querySelector('details.drawer');
+  var drawer = document.querySelector('details.drawer');   // the drawer is LATER in the DOM -> wait for DOMContentLoaded
   if (!roster || !drawer) return;
   var mains = drawer.querySelectorAll('tr.main[data-wallet]');
   if (!mains.length) return;
-  var note = document.getElementById('roster-filter-note');
+  var note = document.getElementById('rt-filter-note');
+  var clearBtn = document.getElementById('rt-clear');
+  var summary = drawer.querySelector('summary');
+  var flabel = null;
+  if (summary) { flabel = document.createElement('span'); flabel.className = 'rt-drawer-filter'; summary.appendChild(flabel); }
+  var rows = Array.prototype.slice.call(roster.querySelectorAll('tr.rt-row[data-whale]'));
   var active = null;
+  function nameFor(w) {
+    var r = roster.querySelector('tr.rt-row[data-whale="' + (window.CSS && CSS.escape ? CSS.escape(w) : w) + '"] .rt-wname');
+    return r ? r.textContent.trim() : w;
+  }
   function detFor(main) { return drawer.querySelector('tr.det[data-detrow="' + main.getAttribute('data-row') + '"]'); }
   function apply(w) {
     active = (active === w) ? null : w;
@@ -69,16 +166,22 @@
       var show = !active || r.getAttribute('data-wallet') === active;
       r.style.display = show ? '' : 'none';
       var det = detFor(r);
-      if (det) det.style.display = show ? '' : 'none';   // matching det stays collapsed via its [hidden] attr
+      if (det) det.style.display = show ? '' : 'none';
     });
-    roster.querySelectorAll('.wname').forEach(function (b) {
-      b.classList.toggle('filtering', active !== null && b.getAttribute('data-whale') === active);
-    });
-    if (note) note.textContent = active ? 'Drawer filtered to one whale — click that whale again to clear.' : '';
+    rows.forEach(function (r) { r.classList.toggle('rt-filtering', active !== null && r.getAttribute('data-whale') === active); });
+    if (note) note.textContent = active ? '' : '';
+    if (clearBtn) clearBtn.hidden = !active;
+    if (flabel) flabel.textContent = active ? ('  — filtered to ' + nameFor(active)) : '';
   }
-  roster.querySelectorAll('.wname').forEach(function (b) {
-    b.addEventListener('click', function () { apply(b.getAttribute('data-whale')); });
+  rows.forEach(function (r) {
+    r.addEventListener('click', function (e) {
+      if (e.target.closest('.pm-actioncell')) return;   // let profile / Detach links work normally
+      apply(r.getAttribute('data-whale'));
+    });
   });
+  if (clearBtn) clearBtn.addEventListener('click', function () { if (active) apply(active); });
+  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', init); } else { init(); }
 })();
 </script>
 {% endif %}

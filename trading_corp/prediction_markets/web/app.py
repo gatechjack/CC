@@ -1301,7 +1301,9 @@ def _load_live_list(active_account: str | None = None, identity: str | None = No
 
 
 def _load_live_subdivision(account_id: str, category: str, now_ts: int,
-                           identity: str | None = None, is_admin_flag: bool = False):
+                           identity: str | None = None, is_admin_flag: bool = False,
+                           roster_sort: str | None = None, roster_dir: str | None = None,
+                           roster_show_all: bool = False):
     """Per-sub-division read for the GAME-CARD view (UI rewrite): its config + copied whales + the journal, joined
     to the cached sports feed + Kalshi marks into game cards. None -> 404; `_FORBIDDEN` -> 403 (the account exists
     but is not this identity's -- R6 fail-closed scoping; scoping the tile page while leaving this route open would
@@ -1329,6 +1331,8 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
         # THE WHALE ROSTER (2026-09-12): per-whale live-copy record, on-roster vs formerly-live, with current value.
         whale_records = subdivision.whale_live_records(conn, account_id, category, marks=marks, now_ts=now_ts,
                                                        today_start_ts=today_start_ts, thin_floor=floor)
+        # ROSTER TABLE (2026-09-20): booked cost basis per whale = the ROI(COST) denominator (additive reader).
+        booked_cost = subdivision.booked_cost_by_whale(conn, account_id, category)
         # ★ keep the ANALYZE verdict visible on the LIVE roster too -- the score is keyed (wallet, category), so it
         # persists past Promote-to-live and must not vanish on the surface that matters most. Read-only attach.
         _score_map = _load_whale_score_map(conn, category)
@@ -1346,10 +1350,15 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
                                      open_positions_by_whale=positions_by_whale,
                                      cache=ui_cache.cache(), now_ts=now_ts, category=category)
     can_detach = authz.can_act_on_account(identity, is_admin_flag, acct)   # R6: owner-or-admin (UI hint; the POST route is the gate)
+    # ROSTER TABLE view (2026-09-20): PURE assembler -- enriches whale_records with derived columns (win%, ROI(cost),
+    # tenure days), sorts server-side (default Realized $ desc, JS-off safe) + filters on-roster/All + footer totals.
+    roster_view = live_view.build_roster_table(whale_records, booked_cost, now_ts=now_ts,
+                                               sort=roster_sort, direction=roster_dir,
+                                               show_all=roster_show_all, thin_floor=floor)
     return {"sub": sub, "attached": attached, "n_live_trades": n_live_trades,
             "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
             "account_id": account_id, "category": category,
-            "whale_records": whale_records, "can_detach": can_detach,
+            "whale_records": whale_records, "roster_view": roster_view, "can_detach": can_detach,
             # SIZING: `can_size` = owner-or-admin (may LOWER; the change link shows only for them); `viewer_is_admin`
             # gates the RAISE affordance. The POST/GET routes are the true boundary (server-side R1), not these hints.
             "sizing": sizing_state, "sizing_changes": sizing_changes, "can_size": can_detach,
@@ -1402,16 +1411,19 @@ async def live_list_page(request: Request, account: str | None = None):
 
 
 @app.get("/live/{account_id}/{category}", response_class=HTMLResponse)
-async def live_subdivision_page(request: Request, account_id: str, category: str, tab: str | None = None):
+async def live_subdivision_page(request: Request, account_id: str, category: str, tab: str | None = None,
+                                whales: str | None = None, sort: str | None = None, dir: str | None = None):
     """One Account-Category sub-division as the GAME-CARD page: a card per game we hold, with the box score
     (cached sports feed), three fixed bet slots valued at contracts x BID (cached Kalshi marks), and a trade
-    drawer. `?tab=complete` shows settled cards (server-rendered so it works JS-off). Absent -> 404; exists but
-    not this identity's -> 403 (R6 scoping -- inventory add#5). READ-ONLY (no order path)."""
+    drawer. `?tab=complete` shows settled cards (server-rendered so it works JS-off). The roster table above reads
+    `?whales=all` (on-roster + formerly-live) + `?sort=<col>&dir=<asc|desc>` -- all server-rendered, JS-off safe.
+    Absent -> 404; exists but not this identity's -> 403 (R6 scoping -- inventory add#5). READ-ONLY (no order path)."""
     account_id = (account_id or "").strip()
     category = (category or "").strip().lower()
     identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
+    show_all = (whales or "").strip().lower() == "all"
     data = await asyncio.to_thread(_load_live_subdivision, account_id, category, int(time.time()),
-                                   identity, is_admin_flag)
+                                   identity, is_admin_flag, sort, dir, show_all)
     if data is None:
         return templates.TemplateResponse(
             request, "pm_live_404.html",

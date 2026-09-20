@@ -250,14 +250,20 @@ def _active(p, aid, wallet):
 
 
 def test_roster_page_renders_groups_and_detach(monkeypatch, tmp_path):
+    # 2026-09-20 re-layout: the roster is now a sortable TABLE with an On-roster (default) / All toggle. Under the
+    # DEFAULT toggle only on-roster whales show; formerly-live rows appear under ?whales=all, dimmed, profile-only.
     cl, _ = _client(monkeypatch, tmp_path)
     r = cl.get("/live/kalshi_jack/mlb", headers={"Remote-User": "jack"})
     assert r.status_code == 200
     body = r.text
-    assert "Copies these whales" in body and "On roster" in body and "Formerly live" in body
-    assert "Alpha" in body and "Bravo" in body               # on-roster + formerly-live whale names
+    assert "Copies these whales" in body and "On roster" in body        # the roster table heading + toggle
+    assert 'data-whale="0xa"' in body                                  # on-roster whale row (Alpha)
+    assert 'data-whale="0xb"' not in body                              # formerly-live row HIDDEN under the default toggle
     assert "/live/kalshi_jack/mlb/detach/0xa" in body        # Detach control present (admin) on the on-roster whale
     assert 'data-wallet="0xa"' in body                       # R4: drawer rows carry the wallet for the JS filter
+    ba = cl.get("/live/kalshi_jack/mlb?whales=all", headers={"Remote-User": "jack"}).text
+    assert 'data-whale="0xb"' in ba and "formerly live" in ba    # 'All' appends the formerly-live row, marked
+    assert "/live/kalshi_jack/mlb/detach/0xb" not in ba      # formerly-live rows are profile-only (no Detach)
 
 
 def test_detach_confirm_states_consequences(monkeypatch, tmp_path):
