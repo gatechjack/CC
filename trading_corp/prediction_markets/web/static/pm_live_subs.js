@@ -59,39 +59,23 @@
     return document.querySelector('.t[data-sub="' + ev.account + "/" + ev.code.toLowerCase() + '"]');
   }
 
-  function pulse(el, cls, banner) {
+  function pulse(el, cls) {
     if (!el) return;
-    el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);   // restart the animation
-    if (banner) {
-      var old = el.querySelector(".ev.pulse-banner");
-      if (old) old.remove();
-      var d = document.createElement("div");
-      d.className = "ev pulse-banner " + banner.cls;
-      d.innerHTML = banner.html;
-      var money = el.querySelector(".mny");
-      if (money) money.parentNode.insertBefore(d, money); else el.appendChild(d);
-    }
+    // R5 (2026-09-20): the JUST-PLACED/JUST-CLOSED BANNER is REMOVED (it displaced the money block). Keep ONLY the
+    // brief tile flash; the tile's LAST line updates via the normal server re-render (swap() runs each cycle before
+    // applyEvents, so by the time the flash fires the swapped-in tile already shows the fresh LAST close).
+    el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);   // restart the flash animation
   }
 
   function applyEvents(data) {
     if (!data) return;
-    (data.placed || []).forEach(function (p) {
-      pulse(tileFor(p), "fx-placed", {cls: "placed", html:
-        '<div class="t1">JUST PLACED</div><div class="t2">' + esc(p.name) + '</div>' +
-        '<div class="t3">detected on this poll</div>'});
-    });
+    (data.placed || []).forEach(function (p) { pulse(tileFor(p), "fx-placed"); });
     (data.closed || []).forEach(function (c) {
-      var won = c.result === "won";
-      pulse(tileFor(c), won ? "fx-closed-won" : "fx-closed-lost", {cls: "closed" + (won ? "" : " lost"), html:
-        '<div class="t1">JUST CLOSED' + (c.result ? " " + DOT + " " + c.result.toUpperCase() : "") + '</div>' +
-        '<div class="t2">' + (c.realized != null ? money(c.realized) + " realized" : "not booked") + '</div>' +
-        '<div class="t3">' + esc(c.name) + ' ' + DOT + ' settled -- picked up on this poll, not instantly</div>'});
+      pulse(tileFor(c), c.result === "won" ? "fx-closed-won" : "fx-closed-lost");
       tone(c.result);
     });
     if (typeof data.max_id === "number") since = data.max_id;
   }
-  function money(v) { return (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(2); }
-  function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
 
   function fetchEvents() {
     if (since == null) return Promise.resolve();

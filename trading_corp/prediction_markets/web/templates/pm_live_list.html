@@ -92,9 +92,10 @@
           <div class="t3">The engine is not running cycles for this sub-division. It is armed, so it is expected to trade and is not. Positions below may be unmanaged.</div>
         </div>
       {%- endif -%}
-      {%- if t.activity == 'LIVE' and t.event %}{% include 'partials/pm_subs_event.html' %}{% endif -%}
       {{ money(t) }}
       {{ openb(t) }}
+      {# LIVE tiles add ONE compact game line here (R3), AFTER the money + open block so money is never displaced. #}
+      {% if t.activity == 'LIVE' and t.event %}{% include 'partials/pm_subs_liveline.html' %}{% endif %}
       {% include 'partials/pm_subs_eventline.html' %}
       {{ hist(t) }}
       <span class="state">{{ 'ALARM' if t.is_alarm else t.activity }}</span>

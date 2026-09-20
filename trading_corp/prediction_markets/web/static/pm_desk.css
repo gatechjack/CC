@@ -384,11 +384,9 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .subs .ft .v{font-family:var(--dmono);font-size:11px}
 
 /* activity states -- the treatment carries the sort order */
-.subs .t.live{grid-column:span 2;grid-row:span 2;border-color:#2a5f78;background:linear-gradient(180deg,#0f1c26 0%,var(--panel) 46%);box-shadow:inset 0 0 0 1px #14384a}
-.subs .t.live .code{font-size:19px}
-.subs .t.live .plate{flex-basis:44px;width:44px;height:44px}
-.subs .t.live .mny .today{font-size:40px}
-@media(max-width:620px){.subs .t.live{grid-column:span 1;grid-row:span 1}.subs .t.live .mny .today{font-size:32px}}
+/* R1/R4 (2026-09-20): LIVE tiles are the STANDARD size (no 2x2 span, standard content sizing) -- only the blue LIVE
+   border + wash + corner tab remain so a live tile still reads as live at a glance. */
+.subs .t.live{border-color:#2a5f78;background:linear-gradient(180deg,#0f1c26 0%,var(--panel) 46%);box-shadow:inset 0 0 0 1px #14384a}
 .subs .t.upcoming{border-color:#24384a}
 .subs .t.settled{background:#0b1017}
 .subs .t.inactive{background:#090e15;border-color:#18222f}
@@ -405,40 +403,14 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .subs .t.upcoming .state{color:var(--text);background:#101a24}
 .subs .t.alarm .state{color:var(--alarm);background:#210d0b;border-color:#4d1a16}
 
-/* live event block */
-.subs .evt{margin-top:10px;border:1px solid #1c4459;border-radius:2px;background:#0a1620;padding:8px 10px 9px}
-.subs .evt .ttl{font-family:var(--dmono);font-size:9px;letter-spacing:.12em;color:var(--live);display:flex;gap:8px;align-items:center}
-.subs .evt .scr{display:flex;gap:14px;align-items:baseline;margin-top:5px;font-family:var(--dmono)}
-.subs .evt .scr .tm{font-size:13px;letter-spacing:.04em}
-.subs .evt .scr .tm.lead{color:var(--text)}
-.subs .evt .scr .tm:not(.lead){color:var(--dim)}
-.subs .evt .scr .inn{margin-left:auto;font-size:10.5px;color:var(--live);letter-spacing:.08em}
-.subs .plist{margin-top:8px;display:grid;gap:1px;background:#0a0e15;border-radius:2px;overflow:hidden}
-.subs .pr{display:grid;grid-template-columns:38px 1fr auto;gap:8px;align-items:baseline;background:#0c1520;padding:4px 8px;font-family:var(--dmono);font-size:11px}
-.subs .pr .kk{font-size:8.5px;letter-spacing:.12em;color:var(--dimmest)}
-.subs .pr .mk{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.subs .pr .vv{color:var(--live)}
-.subs .pr.won{background:#0f2c20}.subs .pr.won .kk{color:#5fd8a5}.subs .pr.won .mk{color:#8ce9be}.subs .pr.won .vv{color:var(--won)}
-.subs .pr.lost{background:#1f1216}.subs .pr.lost .vv{color:var(--lost)}
-/* FIX 2026-09-11: one row per underway game (evrow); .mine marks the ML team we hold in the score line */
-.subs .evt .evrow-n{margin-top:8px;padding-top:8px;border-top:1px solid #14384a}
-.subs .evt .scr .tm.mine{color:var(--text)}
-.subs .evt .scr .tm.mine::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--live);margin-right:5px;vertical-align:1px}
-.subs .evmore{display:block;margin-top:8px;font-family:var(--dmono);font-size:9.5px;letter-spacing:.06em;color:var(--live)}
-.subs .evmore:hover{color:#8fdcf6;text-decoration:underline}
-/* Item 1 (2026-09-12): FIXED-HEIGHT LIVE tile == its 2x2 slot (2 tile rows + the grid gap), regardless of game
-   count. The event block is already bounded (one FEATURED game + <=3 one-line chips + "+N more live"); pinning the
-   tile height + clipping (.subs .t already has overflow:hidden) stops it GROWING its grid row when a sub holds many
-   underway games -- the defect where the tile stretched and the money block floated over an empty half. No change to
-   any other tile type or to the grid template. On phone the LIVE tile is span-1 (below), so it flows naturally. */
-.subs .t.live{height:480px}
-@media(max-width:620px){.subs .t.live{height:auto}}
-.subs .plist .pr.pr-more{grid-template-columns:1fr;color:var(--dimmer);font-size:10px;letter-spacing:.04em}
-.subs .evchips{display:flex;flex-direction:column;gap:3px;margin-top:7px}
-.subs .evchip{font-family:var(--dmono);font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.subs .evchip .cm{color:var(--text);font-weight:600;margin-right:3px}
-.subs .evchip .cp{color:var(--dim)}
-.subs .evchip .cp .nomark{color:var(--dimmer)}
+/* R3 (2026-09-20): the LIVE tile's compact game line(s) -- SUPERSEDES the Deploy-10 2x2 event block (deleted, R8).
+   A single fixed-height row per underway game (matchup + signed shorthand, NO score); truncated with "..." so the
+   tile never grows; or one summary line linking to the detail page for >2 games. */
+.subs .liveln{margin-top:7px;font-family:var(--dmono);font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5}
+.subs .liveln .lm{color:var(--text);font-weight:600}
+.subs .liveln .lp{color:var(--dim)}
+.subs .liveln.more{display:block;color:var(--live);letter-spacing:.04em;text-decoration:none}
+.subs .liveln.more:hover{color:#8fdcf6;text-decoration:underline}
 
 /* events: just placed / just closed */
 @keyframes subs-placed{0%{box-shadow:inset 0 0 0 2px var(--live),0 0 22px #57c7ee55}100%{box-shadow:inset 0 0 0 1px transparent}}
@@ -449,14 +421,10 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .subs .t.fx-closed-won{animation:subs-closedwin 2.6s ease-out}
 .subs .t.fx-closed-lost{animation:subs-closedloss 2.6s ease-out}
 .subs .t.is-closed{border-color:#2a6a4e}
+/* .ev / .t1 / .t2 / .t3 are the ALARM block's styles (template's inline-styled alarm div). The JUST-PLACED/CLOSED
+   PULSE BANNER that also used .ev.placed / .ev.closed is REMOVED (R5) -- the flash animation below is kept. */
 .subs .ev{margin-top:9px;border-radius:2px;padding:7px 9px;display:grid;gap:2px}
-.subs .ev.placed{border:1px solid #1e4f66;background:#0a1620}
-.subs .ev.closed{border:1px solid #235f45;background:#0d2419}
-.subs .ev.closed.lost{border-color:#5f2330;background:#24101560}
 .subs .ev .t1{font-family:var(--dmono);font-size:9px;letter-spacing:.14em}
-.subs .ev.placed .t1{color:var(--live)}
-.subs .ev.closed .t1{color:var(--won)}
-.subs .ev.closed.lost .t1{color:var(--lost)}
 .subs .ev .t2{font-family:var(--dmono);font-size:11px;color:var(--text)}
 .subs .ev .t3{font-family:var(--dmono);font-size:9px;color:var(--dimmer)}
 
