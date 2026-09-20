@@ -1376,3 +1376,132 @@ def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub,
         "summary": _rollup(active) if active else None,
         "liveness_present": liveness_present, "max_order_id": int(max_order_id or 0), "now_ts": now_ts,
     }
+
+
+# ── THE WHALE ROSTER TABLE (2026-09-20): the "Copies these whales" roster becomes a sortable TABLE ────────────────
+# Pure assembler over subdivision.whale_live_records + subdivision.booked_cost_by_whale: enriches each per-whale
+# record with the DERIVED columns the table shows (win_pct, roi_cost, tenure_days, booked_cost_usd), keeps ON-ROSTER
+# (default) or appends FORMERLY-LIVE beneath ('All'), sorts server-side (default Realized $ desc -> JS-off safe), and
+# sums a FOOTER-TOTALS row over the shown rows. No DB, no network -> unit-testable. HONESTY: a value that cannot be
+# read (win% with 0 booked, ROI with 0 cost, open value with no mark) is None -> the template renders '--', never a
+# fabricated 0. Numbers never depend on the mark cache except open_value (already computed by whale_live_records).
+ROSTER_SORT_COLUMNS = ("whale", "tenure", "copies", "booked", "w", "l", "winpct",
+                       "realized", "cost", "roi", "unbooked", "open", "today")
+_ROSTER_DEFAULT_SORT = "realized"
+_ROSTER_NUM_KEY = {
+    "tenure": lambda r: r.get("tenure_days"),
+    "copies": lambda r: r.get("placed"),
+    "booked": lambda r: r.get("booked_closes"),
+    "w": lambda r: r.get("settled_w"),
+    "l": lambda r: r.get("settled_l"),
+    "winpct": lambda r: r.get("win_pct"),
+    "realized": lambda r: r.get("realized_pnl"),
+    "cost": lambda r: r.get("booked_cost_usd"),
+    "roi": lambda r: r.get("roi_cost"),
+    "unbooked": lambda r: r.get("unbooked_closes"),
+    "open": lambda r: r.get("n_open"),
+    "today": lambda r: r.get("realized_today"),
+}
+
+
+def _roster_enrich(rec, booked_cost, now_ts):
+    """Add the derived columns to ONE roster record IN PLACE and return it. All from journal fields already on the
+    record (never the mark cache; open_value was already computed by whale_live_records). A value that cannot be read
+    honestly is None (win% with 0 booked, ROI with <=0 cost, tenure with no attach date) -> the template shows '--'."""
+    booked = int(rec.get("booked_closes") or 0)
+    cost = float((booked_cost or {}).get(rec.get("wallet") or "", 0.0))
+    rec["booked_cost_usd"] = cost
+    rec["win_pct"] = (float(rec.get("settled_w") or 0) / booked) if booked > 0 else None
+    rec["roi_cost"] = (float(rec.get("realized_pnl") or 0.0) / cost) if cost > 0 else None
+    added = rec.get("added_ts")
+    if added:
+        # on-roster tenure runs to now; a formerly-live span ends at removed_ts (unknown end -> now, never negative).
+        end = rec.get("removed_ts") if (not rec.get("active") and rec.get("removed_ts")) else now_ts
+        rec["tenure_days"] = max(0.0, (float(end) - float(added)) / 86400.0)
+    else:
+        rec["tenure_days"] = None
+    return rec
+
+
+def _roster_sort(rows, sort, direction):
+    """Server-side sort (JS-off safe), IN PLACE. Missing (None) numeric values ALWAYS sort last, both directions (the
+    watchlist 'roi-None sorts last' convention). Whale sorts alphabetically by display name (wallet fallback)."""
+    desc = direction == "desc"
+    if sort == "whale":
+        rows.sort(key=lambda r: str(r.get("user_name") or r.get("wallet") or "").lower(), reverse=desc)
+        return rows
+    keyfn = _ROSTER_NUM_KEY.get(sort) or _ROSTER_NUM_KEY[_ROSTER_DEFAULT_SORT]
+
+    def ordk(r):
+        v = keyfn(r)
+        if v is None:
+            return (1, 0.0)                        # missing -> last (ascending places (1,..) after (0,..))
+        return (0, (-float(v) if desc else float(v)))
+    rows.sort(key=ordk)
+    return rows
+
+
+def _roster_totals(rows):
+    """FOOTER row: sums over the SHOWN rows. Open is (n / cost / value + N-of-M priced); win%/roi are recomputed from
+    the summed W/booked and realized/cost so the footer's own ratios are internally consistent (not an average of
+    ratios). open_value sums only priced legs -> ties to the money strip's unsettled_value (same held legs, same bid)."""
+    t = {"copies": 0, "booked": 0, "w": 0, "l": 0, "realized": 0.0, "cost": 0.0, "unbooked": 0,
+         "today": 0.0, "open_n": 0, "open_cost": 0.0, "open_value": 0.0, "open_priced": 0, "open_total": 0}
+    for r in rows:
+        t["copies"] += int(r.get("placed") or 0)
+        t["booked"] += int(r.get("booked_closes") or 0)
+        t["w"] += int(r.get("settled_w") or 0)
+        t["l"] += int(r.get("settled_l") or 0)
+        t["realized"] += float(r.get("realized_pnl") or 0.0)
+        t["cost"] += float(r.get("booked_cost_usd") or 0.0)
+        t["unbooked"] += int(r.get("unbooked_closes") or 0)
+        t["today"] += float(r.get("realized_today") or 0.0)
+        t["open_n"] += int(r.get("n_open") or 0)
+        t["open_cost"] += float(r.get("open_cost_usd") or 0.0)
+        t["open_priced"] += int(r.get("n_priced") or 0)
+        t["open_total"] += int(r.get("n_total") or 0)
+        if r.get("open_value") is not None:
+            t["open_value"] += float(r.get("open_value"))
+    t["win_pct"] = (t["w"] / t["booked"]) if t["booked"] > 0 else None
+    t["roi_cost"] = (t["realized"] / t["cost"]) if t["cost"] > 0 else None
+    return t
+
+
+def build_roster_table(whale_records, booked_cost=None, *, now_ts, sort=None, direction=None, show_all=False,
+                       thin_floor=50):
+    """PURE roster-table view over subdivision.whale_live_records(...) + subdivision.booked_cost_by_whale(...).
+
+    Enriches each per-whale record with win_pct / roi_cost / tenure_days / booked_cost_usd, keeps ON-ROSTER always and
+    appends FORMERLY-LIVE BENEATH only when show_all (each group sorted independently, formerly-live never intermixed
+    -- rule 3), sorts server-side (default Realized $ desc; every numeric column + whale sortable; None sorts last),
+    and returns a FOOTER-totals row over the shown rows. JS-off safe -- the caller renders from this alone. Returns
+    {rows, on_roster_count, formerly_count, shown_count, show_all, sort, dir, totals, thin_floor, columns}."""
+    wr = whale_records or {}
+    on = [dict(r) for r in (wr.get("on_roster") or [])]
+    formerly = [dict(r) for r in (wr.get("formerly_live") or [])]
+    for r in on:
+        _roster_enrich(r, booked_cost, now_ts)
+        r["formerly"] = False
+    for r in formerly:
+        _roster_enrich(r, booked_cost, now_ts)
+        r["formerly"] = True
+    sort = sort if sort in ROSTER_SORT_COLUMNS else _ROSTER_DEFAULT_SORT
+    direction = "asc" if str(direction).lower() == "asc" else "desc"
+    _roster_sort(on, sort, direction)
+    if show_all:
+        _roster_sort(formerly, sort, direction)
+        shown = on + formerly                       # formerly-live appended BENEATH the on-roster rows (rule 3)
+    else:
+        shown = on
+    return {
+        "rows": shown,
+        "on_roster_count": len(on),
+        "formerly_count": len(formerly),
+        "shown_count": len(shown),
+        "show_all": bool(show_all),
+        "sort": sort,
+        "dir": direction,
+        "totals": _roster_totals(shown),
+        "thin_floor": int(wr.get("thin_floor", thin_floor)),
+        "columns": ROSTER_SORT_COLUMNS,
+    }

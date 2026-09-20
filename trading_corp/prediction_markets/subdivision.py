@@ -430,6 +430,29 @@ def _realized_today_by_whale(conn, account_id: str, category: str, today_start_t
     return {(r["wallet"] or ""): float(r["rt"] or 0.0) for r in rows}
 
 
+def booked_cost_by_whale(conn, account_id: str, category: str) -> dict:
+    """{wallet: cost basis (USD) of that whale's BOOKED (settled) copies} for this sub-division -- the ROI(COST)
+    DENOMINATOR that mirrors the watchlist's cost_basis (net_pnl / cost_basis over closed). Read-only, journal-only.
+
+    Derived from the SETTLEMENT-close row ITSELF, not a close->entry join: settlement.py books
+    realized_pnl = proceeds - cost_basis_open, where the close row stores fill_count = the net-open contracts settled
+    and fill_price = the settled per-contract value (won->1.0 / lost->0.0 / void->avg_cost). So the settled cost basis
+    is exactly proceeds - realized_pnl = fill_count*fill_price - realized_pnl on that row -- invertible from the row
+    and, by construction, self-consistent with the realized_pnl the roster already shows (ROI = realized / cost ties
+    out arithmetically). SETTLEMENTS ONLY (close_source='settlement'), the SAME set booked_closes / W-L count, so an
+    opposed/whale-exit close (realized_pnl NULL, no booked outcome) never enters the denominator. Empty if the journal
+    is absent; a whale with no settled copy is simply absent from the map (the caller reads 0.0 -> ROI '--')."""
+    if not _table_exists(conn, "pm_subdivision_order"):
+        return {}
+    rows = conn.execute(
+        "SELECT wallet, COALESCE(SUM(COALESCE(fill_count,0)*COALESCE(fill_price,0) - COALESCE(realized_pnl,0)), 0) bc "
+        "FROM pm_subdivision_order "
+        "WHERE account_id=? AND category=? AND dry_run=0 AND is_exit=1 AND close_source='settlement' "
+        "  AND realized_pnl IS NOT NULL "
+        "GROUP BY wallet", (account_id, category)).fetchall()
+    return {(r["wallet"] or ""): float(r["bc"] or 0.0) for r in rows}
+
+
 def whale_live_records(conn, account_id: str, category: str, *, marks=None, now_ts: int,
                        today_start_ts: int | None = None, thin_floor: int = 50) -> dict:
     """THE WHALE ROSTER for a sub-division: per-whale real-money live-copy record, grouped on-roster vs formerly-live.
