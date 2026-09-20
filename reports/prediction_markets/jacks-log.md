@@ -839,3 +839,63 @@ through. A read-only box wrap-check runner (cc/pm_authelia_wrapcheck_ro) confirm
 ★ BACKUP CAVEAT (restated because it is a foot-gun): /etc/authelia/configuration.yml.bak_* and
 users_database.yml.bak_* are NOT failure-recovery for this weekend — restoring one REVERTS the access
 rules and LOCKS karen/marc/trey OUT again. Keep them; do NOT "restore to recover."
+
+================================================================================
+2026-09-20 -- MARC + TREY BROUGHT LIVE (3rd & 4th Kalshi accounts). This CLOSES the
+"MARC and TREY trading = separate build, not done" pickup item above. Four accounts
+now trade: jack / karen / marc / trey. ** THIS DEPLOY DID RESTART THE ENGINE ** (unlike
+the pm_web-only ones above) -- the driver reads its account roster only AT BOOT, so marc/
+trey could not be wired without a restart. You timed and ran it.
+
+CODE (2 files, additive, fail-closed; jack/karen paths byte-unchanged): utils/secrets.py
+(kalshi_marc/trey fields + KV pull + redact) + prediction_markets/shard_snapshot_task.
+_SECRET_REF_KEYPAIR (kalshi_marc / kalshi_trey entries, the fail-closed whitelist).
+prod-live FF 777e87a5 -> e9769aa9 (clean linear, additive, no revert; tag
+pm-marc-trey-deploy-2026-09-20). Box grafted the 2 files BEFORE the restart (scp+tar,
+CR-sha 8fc9a0dd / 194530498d). N-CLAIM PROVEN: each account is ONE small code edit, NOT
+pure data -- Trey needed the identical 2-file mirror in the same graft; a 5th costs the
+same. main.py:2680 (legacy divisions builder, `if kalshi_karen else -> jack keys`) left as
+a DEAD-code landmine and filed -- do NOT tidy it in a live-engine graft (main.py is the
+28-hour-incident file).
+
+SHARDS (you ran the transfers personally; jack/karen untouched): moved shard0->shard3 via
+Kalshi POST /portfolio/intra_exchange_instance_transfer (amount in CENTICENTS) so marc and
+trey each hold $50 on shard 3 (mlb is shard 3).
+
+ROSTER: cloned Karen -> each account 22 subs + 38 active attachments, multi_category_ok=1
+(INHERITED from karen; REQUIRED or the driver refuses the 2nd category), sizing_mode=
+contracts, contracts=1 EXCEPT mlb/nfl=2. 5 whale-less cats (fed/fl1/nba/nhl/sea) = subs
+only, will not wire until a whale is pinned.
+
+RESTART + BOOT-VERIFY GREEN: engine 480408 -> 491380 (2026-09-20 15:54:57Z; confirmed by
+PID + ActiveEnterTimestamp, never exit code). Driver wired 4 account tasks, 0 import errors,
+all divisions back. ARM baseline was 34 armed subs (NOT 35 -- the "35" counted arm:global).
+
+ARMED, in two steps: first mlb+nfl only on each (34->38), then the rest of the attached set
+(the 30 remaining) -> 68 total, 0 latched. The 38 pre-existing arm rows proven byte-unchanged
+(original timestamps intact); arm:global untouched. The 5 whale-less cats stay disarmed.
+
+CREDENTIAL PROOF (the load-bearing gate) COMPLETE: first fills read back from EACH account's
+OWN venue book via its OWN keys -- marc equity $97.67 / trey $103.46, DISTINCT order ids ->
+each on its own account, never jack's. The wrong-account-fill failure is proven absent.
+
+CAP SHAPE -- the INVERSE of jack/karen: on marc/trey the BALANCE is TIGHT and the caps are
+SLACK (caps cloned from Karen, who holds ~4x). Binding constraint = the per-shard BALANCE
+(marc shard0 ~$32 across 13 categories = the tightest thing on the board), NOT the $150/day
+cap. ** WATCH: the ACCOUNT ORDER CAP is 50 orders/day across ALL categories -- on a busy
+Sunday it likely fires BEFORE the money runs out, and when it does EVERY category goes quiet
+at once for the rest of the UTC day. That looks exactly like a failure; it is the cap. ** itf
+resolves to the CODE-default caps (its columns are NULL) so it behaves differently from its 14
+siblings (per_order $25 not $50) -- fine at 1 contract, but nobody would guess it from the roster.
+
+NEVER-PLACED WATCH (corrected against the box, not recollection): itf HAS filled family-wide
+(jack 5 / karen 9, KXITFWMATCH) -- itf is NOT never-placed. The truly never-placed-ANYWHERE
+families = uel + f5 + first_half (f5/first_half ride the already-armed mlb/nfl). A first fill
+in one of those is that FAMILY'S first live proof, not just marc's/trey's -> full read-back
+(uel: both clubs, leg, draw->TIE; and itf on a new account still gets competitors/leg/strike/
+SERIES because men-KXITFMATCH vs women-KXITFWMATCH is the hazard a skeptic caught). Wrong
+competitor / leg / strike / series = IMMEDIATE global disarm, fire first; an unreadable audit
+is INCONCLUSIVE, not a mismatch.
+
+PICKUP: passkey enrolment for marc/trey still pending (you + their device + relaying the link).
+Kill switch: PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global.
