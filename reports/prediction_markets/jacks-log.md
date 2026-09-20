@@ -788,3 +788,54 @@ never-closed state). Backup ~/mace_xle_reset_backup_20260919T061519Z.json.
   Detail: memory anchor mace-pt-mark-guard-deploy-2026-09-19; branch reports/mace/{XLE_MARK_GUARD_PLAN,
   MARK_GUARD_DEPLOY_MANIFEST}_2026-09-18.md. Runners in cc: mace_baseverify_ro, mace_guard_{graft,bootverify_ro,
   scratch,verify}, mace_postboot_ro, mace_xle_reset.
+
+
+2026-09-19 (later) — AUTHELIA ENROLMENT-LINK RUNNER + WRAP (ops/git only; no box or code change)
+------------------------------------------------------------------------------------------------
+★ THIS SESSION TOUCHED NO CODE AND NO BOX STATE. It built one read-only runner and wrote git (this
+log + the runner, on this branch). prod-live is UNCHANGED at 777e87a5 — no PM code, no migration, no
+trading-corp or pm_web restart, no config edit, no DB write. The 35 armed sub-divisions traded through
+untouched; authelia was not restarted either. A box-vs-git compare sees ONLY the runner + this entry —
+that is the entire footprint, and it is deliberate (this is the CONFIG/OPS half of the multi-user work,
+whose config deploy is the entry above and lives on the box with no git artifact).
+
+THE RUNNER: reports/prediction_markets/runners/pm_authelia_enrol_link_ro.{ps1,sh} (a runnable copy is
+also kept loose in cc/, which is how it is actually run). It is the reusable, no-SMTP way to relay a
+passkey enrolment link. Because the notifier is filesystem, every link lands in
+/var/lib/authelia/notification.txt, which is authelia-user-owned and unreadable as azureuser — so it
+reads as ROOT through the same az-root channel as the config reads (az vm run-command RunShellScript,
+--scripts "@file"; az reads the .sh raw, so nothing in it is mangled). It TAILS ONLY THE NEWEST block
+(Authelia appends; the file grows as people re-enrol on more devices) and prints: the entry TIMESTAMP
+(alongside the current UTC time, so a fresh attempt is distinguishable from an earlier one), WHICH USER
+(Recipient + email), the LINK(s), and the EXPIRY (plain-text wording PLUS a decoded JWT `exp` if the
+link carries one, with an ALREADY-EXPIRED warning). It is read-only: cat/awk/grep/stat/date only, no
+write, no restart. Re-run it every time anyone enrols a device — passkeys are device-bound, not one-off.
+
+TWO GOTCHAS (also written into the runner's own header, because a stale link looks identical to a fresh
+one):
+  1. A NEW LINK COMES FROM THE PERSON RETRYING THE REGISTRATION IN THEIR BROWSER — NOT from re-running
+     the reader. The reader only reads the file; re-running shows the SAME (possibly already-expired)
+     block until they trigger a fresh attempt. If the timestamp/expiry is old, have them retry FIRST.
+  2. default_2fa_method is still `totp`, so the login offers the AUTHENTICATOR option ALONGSIDE the
+     passkey one — the person must pick security-key/passkey. (Make passkey the default with
+     `default_2fa_method: webauthn` + restart authelia — a separate one-line change, NOT done.)
+
+PICKUP STATE FOR TOMORROW:
+  - KAREN is FULLY ENROLLED AND COMPLETE — password + passkey, and she was already trading.
+  - MARC and TREY each need their passkey enrolment (their device + Jack relaying the link via the
+    runner above).
+  - MARC and TREY will SEE NOTHING until their pm_account rows exist (owner_identity is what pm_web
+    scopes on). Their TRADING is a SEPARATE build (not done): ~6 lines each across utils/secrets.py +
+    prediction_markets/shard_snapshot_task._SECRET_REF_KEYPAIR (fail-closed whitelist — explicit
+    entries, do NOT generalise), vault secrets KALSHI_{MARC,TREY}_*, an ENGINE restart (bounces all
+    divisions — time clear of opens), then pm_account rows + sub-divisions + arm. It needs their Kalshi
+    tokens — the one thing that cannot be started without them.
+
+BOX / ENGINE / pm_web: NOT TOUCHED — this session issued no box write and no restart, so the engine
+(trading-corp) and pm_web (prediction-markets-web) could not have changed; the 35 armed subs traded
+through. A read-only box wrap-check runner (cc/pm_authelia_wrapcheck_ro) confirms this from the box
+(service states + arm count) rather than from the client.
+
+★ BACKUP CAVEAT (restated because it is a foot-gun): /etc/authelia/configuration.yml.bak_* and
+users_database.yml.bak_* are NOT failure-recovery for this weekend — restoring one REVERTS the access
+rules and LOCKS karen/marc/trey OUT again. Keep them; do NOT "restore to recover."
