@@ -406,14 +406,14 @@ def test_mlb_feed_is_authoritative_over_milestone():
 
 
 def test_live_event_block_non_mlb_via_milestone():
+    # 2026-09-20 (supersedes the Item-1 featured structure): a non-MLB (tennis) sub whose match is underway via the
+    # milestone start is COUNTED as a live game, but tennis has no ticker team-map -> it is counted, NOT labelled with
+    # a matchup (R2/R3: never a raw ticker). So game_count=1 with zero labelled lines and no summary (<=2 games).
     starts = {"KXATPMATCH-26SEP12ABCDEF": NOW - 600}
     ev = LV._live_event("atp", [_pos("KXATPMATCH-26SEP12ABCDEF-XYZ")], {}, {}, NOW, starts)
     assert ev is not None
-    row = ev["featured"]                                 # Item 1: one featured game (+ chips for others)
-    assert ev["others"] == [] and ev["n_live"] == 1
-    assert row["has_scoreboard"] is False               # no scores in scope for non-MLB
-    assert row["label"] and "KXATPMATCH" not in row["label"]   # R2: never a raw ticker
-    assert len(row["positions"]) == 1
+    assert ev["game_count"] == 1 and ev["position_count"] == 1 and ev["summary_only"] is False
+    assert ev["games"] == []                             # unjoinable (no tennis team map) -> counted, never labelled
 
 
 def test_live_event_none_when_no_start():
@@ -448,7 +448,8 @@ def test_build_subdivisions_context_classifies_atp_live_via_milestone():
     ctx = _atp_ctx({"KXATPMATCH-26SEP12ABCDEF": NOW - 600})
     live = [t for t in ctx["sections"]["LIVE"] if t["category"] == "atp"]
     assert len(live) == 1 and live[0]["activity"] == "LIVE"
-    assert live[0]["event"] is not None and len(live[0]["event"]["featured"]["positions"]) == 1   # Item 1 structure
+    ev = live[0]["event"]                                # 2026-09-20 structure: counted, unjoinable -> no labelled line
+    assert ev is not None and ev["game_count"] == 1 and ev["position_count"] == 1 and ev["games"] == []
 
 
 def test_build_subdivisions_context_atp_upcoming_without_milestone():

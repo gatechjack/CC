@@ -1061,131 +1061,57 @@ def _event_underway(category, tickers, feed_games, marks, now_ts, starts=None) -
     return False
 
 
-def _score_detail(gs) -> str | None:
-    """'<HALF> <inning> DOT <outs> out DOT <balls>-<strikes>' for a live MLB game, guarding the None fields at an
-    inning break (MID/END have no outs/count)."""
-    if gs is None or gs.inning is None:
-        return None
-    bits = []
-    if gs.half:
-        bits.append("%s %d" % (gs.half, gs.inning))
-    if gs.outs is not None:
-        bits.append("%d out" % gs.outs)
-    if gs.balls is not None and gs.strikes is not None:
-        bits.append("%d-%d" % (gs.balls, gs.strikes))
-    return (" %s " % _MIDDOT).join(bits) if bits else None
-
-
-def _event_rows(positions, marks):
-    """The held positions as named bet rows (kind label + terse market + current value at bid), for the LIVE
-    event block. Open positions are 'live' (valued at bid); cost is never shown as value."""
-    rows = []
-    for p in (positions or []):
-        tk, leg = p.get("ticker"), p.get("held_leg")
-        mk = (marks or {}).get(tk)
-        kind = _kind(tk)
-        bid = marks_mod.bid_for_leg(mk, leg)
-        contracts = p.get("contracts")
-        value = (contracts * bid) if (bid is not None and contracts is not None) else None
-        rows.append({"kind": KIND_LABEL.get(kind, (kind or "").upper()[:3] or "-"),
-                     "market": _short_label(tk, kind, leg),
-                     "value": value, "value_known": value is not None, "state": "live"})
-    return rows
-
-
 def _live_event(category, positions, feed_games, marks, now_ts, starts=None):
-    """The LIVE tile's event block -- ONE compact row PER UNDERWAY GAME the sub holds a position on. FIX
-    (2026-09-11): each row carries that game's scoreboard (MLB) or market label (non-MLB) and ONLY that game's held
-    positions -- the prior version attached EVERY open position to a single underway game (jack/mlb showed a PHI
-    position on the TB@ATL block). Positions are GROUPED by the same ticker->game join the card page uses
-    (game_key_from_ticker); a position whose ticker joins no game is OMITTED, never guessed onto one (FIX 3) -- it
-    stays counted on the OPEN line. Positions on games that are NOT underway are also not in the block. Rows are
-    ordered most-recently-started first, capped at 3, with `more` = the overflow ('+N more live' -> detail page).
-    The held ML team is marked in the score line (away_ours/home_ours) so who we're cheering for is unmistakable.
-    Non-MLB rows carry a market label + positions (no scoreboard -- scores are out of scope); the start comes from
-    the ticker HHMM or the Kalshi milestone (2026-09-12), so tennis/ufc/soccer now populate the block once underway.
-    Returns None if no underway game."""
+    """The LIVE tile's compact game line(s) -- 2026-09-20 (SUPERSEDES the Deploy-10 featured-scoreboard block; the
+    2x2 tile did not survive a football weekend -> scores moved to the detail page and the tile is money-first).
+    Groups the sub's OPEN positions by the UNDERWAY game they sit on (MLB via the game_key -> feed is_live join;
+    other categories via the ticker/milestone start-time: has a start, not future, not finalized -- the same underway
+    test as before), and returns the counts plus, ONLY when <=2 games are underway, one labelled line per game:
+      {"games": [{"matchup": "AWAY @ HOME", "positions_shorthand": "ML WSH . SPR -1.5 WSH"}]  (only when <=2 games),
+       "game_count": <underway games>, "position_count": <positions on those games>, "summary_only": game_count > 2}.
+    NO score / inning / clock -- those live ONLY on the sub-division detail page (R7). The matchup is TICKER-DERIVED
+    (_ordered_teams via the team map) so it is feed-independent and FAIL-CLOSED: a game whose ticker yields no matchup
+    (tennis/ufc/fed, or an unmapped split) is COUNTED but never labelled with a ticker (R2/R3). >2 games -> no per-game
+    lines, just the counts (the template renders one summary line to the detail page). None if no underway game."""
     if not positions:
         return None
     cat = str(category or "").lower()
-    groups: dict = {}                                  # group key -> {start, gs, positions, ticker}
+    groups: dict = {}                                  # group key -> {start, positions, ticker}
     for p in positions:
-        tk, leg = p.get("ticker"), p.get("held_leg")
+        tk = p.get("ticker")
         if cat == "mlb":
             gk = game_key_from_ticker(tk)
             if gk is None:
-                continue                               # FIX 3: unjoinable ticker -> omit, never attach to a game
+                continue                               # unjoinable ticker -> omit from the block (stays on OPEN)
             gs = feed_mlb.match_in_slate(feed_games, gk[0], gk[3], gk[1], gk[2]) if feed_games else None
             if gs is None or not gs.is_live:
                 continue                               # only UNDERWAY games ride the block
-            g = groups.get(gk)
-            if g is None:
-                g = groups[gk] = {"start": parse_ticker_start(cat, tk) or 0, "gs": gs, "positions": [], "ticker": tk}
-            g["positions"].append(p)
+            key = gk
         else:
             st = start_ts_for_ticker(cat, tk, starts)   # ticker HHMM (LIVE_CAPABLE) or Kalshi milestone start
             if st is None or st > int(now_ts) or getattr((marks or {}).get(tk), "status", None) == "finalized":
                 continue                               # not underway (no start, future, or already settled)
             key = tk.rsplit("-", 1)[0]                  # the match stem (strip the leg/side suffix) == the event ticker
-            g = groups.get(key)
-            if g is None:
-                g = groups[key] = {"start": st, "gs": None, "positions": [], "ticker": tk}
-            g["positions"].append(p)
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"start": (parse_ticker_start(cat, tk) or 0), "positions": [], "ticker": tk}
+        g["positions"].append(p)
     if not groups:
         return None
-    # FEATURED game = the one CLOSEST TO SETTLING (Item 1.2, DETERMINISTIC): baseball latest inning, then most outs;
-    # tie -> most held positions; tie -> away code A->Z. A non-MLB game has no inning/outs (0,0) and falls to the
-    # held-count then code tiebreak. The rest are OTHER underway games, each a single compact chip (Item 1.3).
-    # Bounding the block to ONE featured game + <=3 chips gives the LIVE tile a FIXED height regardless of the game
-    # count (Item 1.1) -- the CSS caps + clips it; this just supplies a bounded, deterministically-ordered structure.
-    def _settling_key(g):
-        gs = g["gs"]
-        inn = (getattr(gs, "inning", None) or 0) if gs is not None else 0
-        outs = (getattr(gs, "outs", None) or 0) if gs is not None else 0
-        a_code, _h = _ordered_teams(g["ticker"])
-        return (-inn, -outs, -len(g["positions"]), (a_code or "").upper())
-    ranked = sorted(groups.values(), key=_settling_key)     # featured first (closest to settling), then the chips
-    feat_g, others = ranked[0], ranked[1:]
-
-    our = next((_held_team_code(p.get("ticker"), p.get("held_leg")) for p in feat_g["positions"]
-                if _kind(p.get("ticker")) == "moneyline"), None)
-    featured = {"has_scoreboard": feat_g["gs"] is not None, "label": None, "away": None, "home": None,
-                "home_lead": False, "away_ours": False, "home_ours": False, "detail": None, "age_sec": None,
-                "positions": _event_rows(feat_g["positions"], marks)[:3],
-                "more_positions": max(0, len(feat_g["positions"]) - 3)}
-    gs = feat_g["gs"]
-    if gs is not None:
-        asc = "" if gs.away.score is None else str(gs.away.score)
-        hsc = "" if gs.home.score is None else str(gs.home.score)
-        featured["away"] = ("%s %s" % (gs.away.abbr or "-", asc)).strip()
-        featured["home"] = ("%s %s" % (gs.home.abbr or "-", hsc)).strip()
-        featured["label"] = "%s @ %s" % (gs.away.abbr or "-", gs.home.abbr or "-")
-        featured["home_lead"] = (gs.home.score or 0) > (gs.away.score or 0)
-        featured["detail"] = _score_detail(gs)
-        featured["age_sec"] = getattr(gs, "age_sec", None)
-        a_code, h_code = _ordered_teams(feat_g["ticker"])   # ticker-space away/home -> position-based marker (feed-abbr safe)
-        featured["away_ours"] = bool(our and our == (a_code or "").upper())
-        featured["home_ours"] = bool(our and our == (h_code or "").upper())
-    else:
-        p0 = feat_g["positions"][0]
-        featured["label"], _ = name_market(p0.get("ticker"), p0.get("held_leg"), (marks or {}).get(p0.get("ticker")), None, cat)
-
-    chips = []                                              # each OTHER underway game -> one line: matchup + <=2 pairs
-    for g in others[:3]:
-        ggs = g["gs"]
-        if ggs is not None:
-            clabel = "%s@%s" % (ggs.away.abbr or "-", ggs.home.abbr or "-")
-        else:
-            q0 = g["positions"][0]
-            clabel, _ = name_market(q0.get("ticker"), q0.get("held_leg"), (marks or {}).get(q0.get("ticker")), None, cat)
-        pairs = []
-        for p in g["positions"]:
-            tk, leg = p.get("ticker"), p.get("held_leg")
-            bid = marks_mod.bid_for_leg((marks or {}).get(tk), leg)
-            val = (p.get("contracts") * bid) if (bid is not None and p.get("contracts") is not None) else None
-            pairs.append({"short": _short_label(tk, _kind(tk), leg), "value": val, "value_known": val is not None})
-        chips.append({"label": clabel, "pairs": pairs[:2], "overflow": len(pairs) > 2})
-    return {"featured": featured, "others": chips, "more": max(0, len(others) - 3), "n_live": len(groups)}
+    game_count = len(groups)
+    position_count = sum(len(g["positions"]) for g in groups.values())
+    if game_count > 2:                                  # R3: >2 underway -> ONE summary line (no per-game lines)
+        return {"games": [], "game_count": game_count, "position_count": position_count, "summary_only": True}
+    # <=2 underway -> one line per game, most-recently-started first (deterministic). The matchup is ticker-derived;
+    # a game with no matchup (tennis/ufc/unmapped) is counted (above) but NOT labelled -- never a raw ticker (R2/R3).
+    games = []
+    for g in sorted(groups.values(), key=lambda x: (-int(x["start"] or 0), str(x["ticker"]))):
+        a, h = _ordered_teams(g["ticker"])
+        if not (a and h):
+            continue                                    # unjoinable -> counted (above), not labelled
+        shorts = [_short_label(p.get("ticker"), _kind(p.get("ticker")), p.get("held_leg")) for p in g["positions"]]
+        games.append({"matchup": "%s @ %s" % (a, h), "positions_shorthand": (" %s " % _MIDDOT).join(shorts)})
+    return {"games": games, "game_count": game_count, "position_count": position_count, "summary_only": False}
 
 
 def _next_event(category, positions, marks, now_ts, starts=None):
