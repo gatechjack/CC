@@ -1,6 +1,9 @@
-# PM /live — SUB-DIVISION ROSTER TABLE + MONEY-STRIP RE-LAYOUT (BUILD) — 2026-09-20
+# PM /live — SUB-DIVISION ROSTER TABLE + MONEY-STRIP RE-LAYOUT (BUILD + DEPLOY 12) — 2026-09-20
 
-**STATUS: BUILT + TESTED + RENDERED + BOX-TIED (read-only) + COMMITTED. NOT DEPLOYED / NOT PUSHED / NOT RESTARTED.**
+**STATUS: DEPLOYED LIVE (DEPLOY 12) 2026-09-20. prod-live `e9769aa9 -> b9e1c215` (FF), tag
+`pm-roster-table-deploy12-2026-09-20`. pm_web-only; ONE pm_web restart (467489 -> 494253); engine `trading-corp`
+491380 / NRestarts 0 NEVER touched. box == prod-live 47/47. Full deploy record: §11 below.** (Build status was: BUILT
++ TESTED + RENDERED + BOX-TIED + COMMITTED — preserved below.)
 Branch `pm-roster-table-2026-09-20` off `origin/prod-live` @ **`e9769aa9`** (git truth = box), worktree
 `C:\Users\AA Incorporado\cc-pm-roster-table-wt`. DEPLOY / PUSH-to-prod-live / RESTART are Jack's reserved actions.
 
@@ -203,4 +206,76 @@ deployed commit, `git push origin pm-roster-table-2026-09-20:prod-live` (FF-only
 ## 10. RUNNERS (cc/, read-only)
 `pm_roster_boxshas_ro.{ps1,py}` (box == prod-live 47/47), `pm_roster_boxtie_ro.{ps1,py}` (RO reader tie-out on the
 live box DB → `renders_roster_table/box_tie_out.txt`), `pm_roster_table_render.py` (the 8 render PNGs +
-`box_tie_out.txt` in `cc/renders_roster_table/`). No deploy runner authored (deploy is Jack's).
+`box_tie_out.txt` in `cc/renders_roster_table/`). Deploy 12 runners: `pm_deploy12_precheck_ro`, `pm_deploy12_graft`,
+`pm_deploy12_restart_az` (az-root, Jack-run), `pm_deploy12_postrestart_ro`, `pm_deploy12_postcheck_ro`,
+`pm_deploy12_journal_ro`, `pm_deploy12_fetch_served` + `pm_deploy12_phone_render.py`.
+
+--------------------------------------------------------------------------------
+## 11. DEPLOY 12 — LIVE ON PROD 2026-09-20 (board-authorized)
+
+**SHIPPED `b9e1c215` (branch pm-roster-table-2026-09-20) off prod-live `e9769aa9`. prod-live FF `e9769aa9 ->
+b9e1c215`, tag `pm-roster-table-deploy12-2026-09-20`. pm_web-only (8 files, incl. the engine-shared additive
+subdivision.py); ONE pm_web restart; engine `trading-corp` NEVER touched. box == prod-live 47/47 before AND after.**
+
+**Step 1-5 PRE-DEPLOY (RO, all green — `pm_deploy12_precheck_ro`, `pm_roster_boxshas_ro`):**
+- Engine `trading-corp` MainPID **491380** NRestarts 0 active (boot 2026-09-20 15:54:57Z); pm_web **467489** NRestarts 0;
+  **schema_head = 24** (NOT the brief's 23 — migration 024 = `pm_subdivision_attachment_event` attachment-span-history
+  ALREADY landed by the engine agent; I ship no db.py, so head is recorded, not touched); heartbeats fresh (task
+  11-16s, cat 1-3s); pm_live arm rows 69.
+- prod-live tip still `e9769aa9`; box == prod-live **47/47** (CR-stripped); FF-able. No reconcile finding.
+- **★ COST-BASIS GATE (Jack's ruling, ROI settled-only): PASS to the cent** for every whale on jack/mlb + karen/mlb —
+  the close-derived `booked_cost` (fill_count*fill_price - realized_pnl) equals the entry-side sum (Σ entry
+  fill_count*fill_price + fee over copies with a booked settlement). No partial-exit divergence (whale-exits fully
+  close; they never leave a partial-then-settle position).
+- BEFORE figures — jack/mlb: 4 on-roster + 3 formerly-live, footer copies 163 / unbooked 13 / realized 24.27 / open_n
+  2 / open_cost 8.00; strip positions_held 2 / unsettled_cost 8.00 / realized_today 4.51. karen/mlb: 4 on + 2 former,
+  footer copies 119 / open_n 2 / open_cost 6.40; strip 2 / 6.40 / today 3.61. Served pm_desk.css sha `2a290250`.
+
+**Step 4+6 BACKUP + GRAFT (`pm_deploy12_graft`, scp+tar):** GATE 1 staged CR-sha == TARGET (8/8); GATE 2 box CR-sha
+== BEFORE (8/8, no drift); **GATE 3 BACKUP IS A GATE** = `/home/azureuser/pm_deploy12_backup_20260920T203451Z`
+(8 files backed up + each sha verified == box before any write); APPLY (CR-stripped); VERIFY box CR-sha == TARGET
+(8/8); py_compile OK; import/standalone gate **routes=24, /pm/arm=0, detach=2, forbidden modules=[]**. Before -> After
+CR-sha16:
+
+| file | BEFORE | AFTER |
+|---|---|---|
+| subdivision.py (engine-shared, ADDITIVE +23/-0) | 83e3893079a40625 | 5b6f42a6ed12f4fc |
+| web/app.py | 5303952cc138783c | 0ef64011d2c223a2 |
+| web/live_view.py | 05691d237eac3884 | 233ed9a28fd325f4 |
+| web/static/pm_desk.css | 2a290250c04c41b5 | b07fce488bb0634c |
+| web/templates/partials/pm_sizing_control.html | e96a94fc374931a2 | 3e1fe122f7145d85 |
+| web/templates/partials/pm_whale_roster.html | 849c6ca2dedf30fe | e496d37b412fc1ee |
+| web/templates/pm_live_subdivision.html | 79e2c7f4bc6ea6be | 86b22d9947e6ced9 |
+| web/templates/pm_shell.html | 2d48f5dcbf2e4504 | ec3a5519f3c0991e |
+
+**Step 7 RESTART (`pm_deploy12_restart_az`, az-root, board-authorized):** `az vm run-command ... 'systemctl restart
+prediction-markets-web'`. az returned Provisioning-succeeded with EMPTY stdout (ambiguous — NOT the confirmation).
+Confirmed by PID + timestamp (`pm_deploy12_postrestart_ro`): pm_web **467489 -> 494253**, ActiveEnter **2026-09-20
+20:37:44Z**, active. **Engine `trading-corp` 491380 / NRestarts 0 UNCHANGED.**
+
+**Step 8-15 POST-DEPLOY (RO, `pm_deploy12_postcheck_ro` = 72 OK / 0 FAIL):**
+- 5-cell strip (4 money + **Sizing** cell; standalone `sizectl` line gone) then the roster table, on jack/mlb,
+  karen/mlb, and jack/cfb (shared template). Every column present; default sorted Realized $ desc; THIN badges;
+  zero-copy `—`; Detach on on-roster; profile on all; `data-whale`/`data-wallet`/`rt-clear` present; toggle On
+  roster/All; **0 raw tickers in the roster region; 0 double-escaped entities.**
+- `?whales=all` appends dimmed formerly-live ("formerly live" tag, `rt-formerly`); `?sort=roi&dir=desc` reorders.
+- **Step 10 TIE-OUT (after):** per-whale figures == BEFORE (no fills in-window); footer open_n/open_cost tie to the
+  strip (jack 2/8.00, karen 2/6.40); **COST-BASIS GATE re-confirmed PASS**; Cost $ == the step-3 entry-cost sums.
+- Gating: karen own 200 / karen->jack 403 / no-identity 403; sizing n=0 -> 400, n=51 -> 400 (GET-only, no POST).
+- All pages 200 (`/`, `/live`, both account pages) + **all 26 `/farm/{category}` 200** + all static assets 200
+  (0 404s — no rollback condition). **Served pm_desk.css sha8 == `b07fce48`; shell `?v=b07fce48`.**
+- **Step 15:** pm_web `journalctl -p err` since the restart = **No entries (0)**; engine `journalctl -p err` = No
+  entries; engine **491380 / NRestarts 0 active — UNCHANGED** across every step.
+- **Step 11 drawer filter:** `data-wallet` + `rt-clear` present in the served HTML; the click-to-filter + "filtered to
+  <whale>" + clear behaviour is render-proven (`renders_roster_table/mlb_all_filtered_1600.png`, identical template).
+- **Step 12 phone (served page, `pm_deploy12_phone_render.py`):** the **roster table collapses to stacked cards with
+  NO overflow** (`.roster-table` right-edge <= viewport). ★ HONEST FINDING: the PAGE as a whole shows a pre-existing
+  895px horizontal overflow from the SHELL HEADER nav + poll/arm chips + the live MLB game-card scoreboard (all
+  unchanged by this deploy — I only bumped the shell `?v=`). NOT a Deploy-12 regression and NOT a rollback condition;
+  the roster deliverable meets "no sideways scroll". Filed as a pre-existing shell/game-card phone-overflow item.
+
+**Step 16 WRAP:** FF `origin/prod-live e9769aa9 -> b9e1c215`; tag `pm-roster-table-deploy12-2026-09-20`; box ==
+prod-live **47/47** re-verified at b9e1c215. main untouched.
+
+**NOT EXERCISED ON PROD:** no Detach POST and no sizing POST were run during the deploy (GET confirms only) — the
+first real Detach / sizing change from the new table is Jack's, as before.

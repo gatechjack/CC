@@ -1,8 +1,39 @@
 # PM UI — HANDOFF for the next UI code agent
 
-**STATUS: CURRENT — last updated 2026-09-12 (DEPLOY 9: per-whale live-copy ROSTER + Detach). prod-live tip =
-`afbcfbea`.** (This handoff now lives ON prod-live — the truth-consistent home; previously only on the
-pm-farm-livewhale branch.)
+**STATUS: CURRENT — last updated 2026-09-20 (DEPLOY 12: sub-division ROSTER TABLE + 5-cell money-strip re-layout).
+prod-live tip = `b9e1c215`, tag `pm-roster-table-deploy12-2026-09-20`.** (This handoff lives ON prod-live.)
+
+**★★ DEPLOY 12 (2026-09-20) — ROSTER TABLE + STRIP RE-LAYOUT. prod-live `e9769aa9 -> b9e1c215` (FF).** The flat
+"Copies these whales" roster panel on `/live/{account}/{category}` is now a **sortable TABLE** (Farm-League watchlist
+CSS family, sticky header): Whale · Farm verdict · Tenure · Copies · Booked · W · L · Win% · Realized $ · Cost $ ·
+ROI% · Unbooked · Open · Today $ · Actions. The money strip moved directly under the header chips and gained a **5th
+SIZING cell** (the standalone sizing line is gone); the roster table sits below the strip. 8 pm_web files (incl.
+engine-shared **subdivision.py, ADDITIVE-ONLY +23/-0**); ONE pm_web restart (467489 -> 494253); engine `trading-corp`
+491380 NEVER touched. box == prod-live 47/47. Full record: `PM_ROSTER_TABLE_2026-09-20.md` §11.
+  - **ARCHITECTURE.** Reader `subdivision.booked_cost_by_whale(conn, account, category)` (NEW, additive) = the
+    ROI(COST) denominator per whale, `SUM(fill_count*fill_price - realized_pnl)` over `close_source='settlement'`
+    rows — invertible from the settlement row itself, self-consistent with the realized the roster shows
+    (validated on the box by a cost-basis gate: it equals the entry-side Σ(fill*price+fee) of settled copies to the
+    cent). Assembler `live_view.build_roster_table(whale_records, booked_cost, *, now_ts, sort, direction, show_all,
+    thin_floor)` (PURE, pm-side): enriches each `whale_live_records` row with `win_pct` / `roi_cost` / `tenure_days` /
+    `booked_cost_usd` (honest-None on zero-booked / zero-cost), keeps on-roster (default) or appends formerly-live
+    BENEATH (`?whales=all`), sorts server-side (default Realized desc; every numeric column + whale; None sorts last),
+    returns a footer-totals row. **URL-DRIVEN toggle + sort are server-rendered (JS-off safe)** — NOT the client-only
+    `pm_sort.js` (which is ascending-first; a known trap). `pm_whale_roster.html` = the table + a drill-through JS
+    (binds on **DOMContentLoaded** — the drawer is later in the DOM); `pm_sizing_control.html` repurposed into the 5th
+    strip `.cell`; `pm_live_subdivision.html` re-laid-out. `app.py` loader + route read `?whales/?sort/?dir`.
+  - **SCHEMA.** Head is **24** (NOT 23): migration 024 `pm_subdivision_attachment_event` (attachment-span-history)
+    already landed via the engine agent; **the next free migration is 025.** Deploy 12 ships NO db.py / NO migration.
+    The roster Tenure cell is structured (`.rt-spans` list) so those prior spans render as a list once a reader
+    consumes `pm_subdivision_attachment_event` (today `whale_live_records` still returns the single current span).
+  - **TEST BASELINE is now 24** (was documented as 22): the local `.venv-webtest` differential adds
+    `test_refresh_stagger_and_lookback` + `test_rung3_observability` (engine env-gap, need `pykalshi`), on top of the
+    prior 22 (test_live_r3 ×14, test_accounts_m2 ×3, test_stage2_nav ×2, test_stage2_phase3 ×2,
+    test_ctx_pagination_fix ×1). New tests: `test_roster_table.py` (17) + `test_whale_roster.py` render test updated.
+  - **KNOWN pre-existing phone-overflow** (surfaced at Deploy 12, NOT introduced): the roster table collapses to
+    stacked cards with no overflow, but the SHELL HEADER nav + poll/arm chips + the MLB game-card scoreboard overflow
+    a phone viewport (~895px). A shell/game-card follow-up, not a roster item.
+  - **NOT EXERCISED ON PROD:** the first Detach / sizing change from the new table (GET confirms only in the deploy).
 
 **★★ DEPLOY 9 (2026-09-12) — PER-WHALE LIVE RECORD + DETACH. prod-live `dfbb140a -> afbcfbea` (FF), tag
 `pm-roster-deploy9-2026-09-12`.** The "Copies these whales" line on `/live/{account}/{category}` is now the whale
