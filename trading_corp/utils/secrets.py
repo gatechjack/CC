@@ -59,6 +59,8 @@ _SECRET_KEY_NAMES = (
     "KALSHI_PRIVATE_KEY_PEM",
     "KALSHI_KAREN_API_KEY_ID",
     "KALSHI_KAREN_PRIVATE_KEY_PEM",
+    "KALSHI_MARC_API_KEY_ID",
+    "KALSHI_MARC_PRIVATE_KEY_PEM",
     # Apify (Phase K3 — Kalshi Copy Trading). Token authenticates calls to
     # the saswave Kalshi leaderboard + profile actors used for whale
     # discovery and position monitoring. Free/Starter tier; pulled from KV.
@@ -185,6 +187,12 @@ class Secrets:
     kalshi_private_key_pem: str | None
     kalshi_karen_api_key_id: str | None
     kalshi_karen_private_key_pem: str | None
+    # Kalshi MARC (third account, 2026-09-20). Isolated keypair, an exact
+    # mirror of the karen fields above; resolved via secret_ref 'kalshi_marc'
+    # in shard_snapshot_task._SECRET_REF_KEYPAIR. KALSHI_MARC_* env /
+    # KALSHI-MARC-* KV. Unset -> None -> that account fail-closed skips.
+    kalshi_marc_api_key_id: str | None
+    kalshi_marc_private_key_pem: str | None
     # Apify (Phase K3 — Kalshi Copy Trading). Token authorizes calls to
     # the saswave leaderboard + profile actors for whale discovery and
     # ongoing position monitoring. If unset, the Apify client initializes
@@ -310,6 +318,8 @@ def _populate_from_keyvault(vault_uri: str) -> None:
         "KALSHI_PRIVATE_KEY_PEM",
         "KALSHI_KAREN_API_KEY_ID",
         "KALSHI_KAREN_PRIVATE_KEY_PEM",
+        "KALSHI_MARC_API_KEY_ID",
+        "KALSHI_MARC_PRIVATE_KEY_PEM",
         "ODDS_API_KEY",
         "APIFY_API_TOKEN",
         "TASTYTRADE_PROVIDER_SECRET",
@@ -406,6 +416,8 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         kalshi_private_key_pem=_env("KALSHI_PRIVATE_KEY_PEM"),
         kalshi_karen_api_key_id=_env("KALSHI_KAREN_API_KEY_ID"),
         kalshi_karen_private_key_pem=_env("KALSHI_KAREN_PRIVATE_KEY_PEM"),
+        kalshi_marc_api_key_id=_env("KALSHI_MARC_API_KEY_ID"),
+        kalshi_marc_private_key_pem=_env("KALSHI_MARC_PRIVATE_KEY_PEM"),
         apify_api_token=_env("APIFY_API_TOKEN"),
         tastytrade_provider_secret=_env("TASTYTRADE_PROVIDER_SECRET"),
         tastytrade_refresh_token=_env("TASTYTRADE_REFRESH_TOKEN"),
@@ -436,6 +448,7 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
     # as the polymarket wallet keys above.
     register_redact_literal(secrets.kalshi_private_key_pem)
     register_redact_literal(secrets.kalshi_karen_private_key_pem)
+    register_redact_literal(secrets.kalshi_marc_private_key_pem)
     # Apify token — auth bearer for all saswave Kalshi actor calls. K3.
     register_redact_literal(secrets.apify_api_token)
     # Tastytrade OAuth secrets — both sensitive and BOTH long-lived (the SDK
