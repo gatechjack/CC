@@ -1,10 +1,13 @@
 {# LIVE tile compact game line(s) -- 2026-09-20 (R3; supersedes the Deploy-10 2x2 event block). A SINGLE fixed-height
    line per underway game (<=2 games): matchup from the ticker + that game's held positions in the signed shorthand,
-   NO score/inning/clock. >2 games: one summary line linking to the detail page. Truncates with "..." (never wraps),
-   so the tile never grows. `t` inherited from the caller; `t.event` = live_view._live_event's structure. #}
+   NO score/inning/clock. >2 games: one summary line -> the detail page. Truncates with "..." (never wraps), so the
+   tile never grows. `t` inherited from the caller; `t.event` = live_view._live_event's structure.
+   ★ The summary is a DIV, not an <a>: the whole tile is already `<a class="t live" href="{{ t.href }}">`, so a nested
+   <a> is invalid HTML (the browser closes the tile early -> the line + foot escape the tile). Clicking the tile
+   anywhere (incl. this line) navigates to the detail page; the "›" chevron signals more there. #}
 {% set e = t.event %}
 {%- if e and e.summary_only -%}
-  <a class="liveln more" href="{{ t.href }}">{{ e.game_count }} games live &middot; {{ e.position_count }} position{{ '' if e.position_count == 1 else 's' }} &rsaquo;</a>
+  <div class="liveln more">{{ e.game_count }} games live &middot; {{ e.position_count }} position{{ '' if e.position_count == 1 else 's' }} &rsaquo;</div>
 {%- elif e and e.games -%}
   {%- for g in e.games -%}
     <div class="liveln"><span class="lm">{{ g.matchup }}</span> <span class="lp">&middot; {{ g.positions_shorthand }}</span></div>
