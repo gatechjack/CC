@@ -31,6 +31,7 @@ DEFAULT_INTERVAL_SEC = 300   # 5 min -> ~576 /portfolio/balance calls/day for 2 
 # line of the per-account-trading build.
 #   'kalshi_karen' -> the ISOLATED Karen keypair.
 #   'kalshi_marc'  -> the ISOLATED Marc keypair (3rd account, added 2026-09-20; exact mirror of karen).
+#   'kalshi_trey'  -> the ISOLATED Trey keypair (4th account, added 2026-09-20; exact mirror of karen).
 #   'KALSHI' + 'kalshi_jack' -> the shared/original keypair. jack's pm_account is 'kalshi_jack' and its secret_ref
 #     is 'KALSHI' (main.py:1544); BOTH are whitelisted to jack so the LIVE account can never be excluded by a
 #     ref-spelling mismatch. Deploy PRE-CHECK: confirm the live pm_account.secret_ref for kalshi_jack is one of
@@ -38,6 +39,7 @@ DEFAULT_INTERVAL_SEC = 300   # 5 min -> ~576 /portfolio/balance calls/day for 2 
 _SECRET_REF_KEYPAIR = {
     "kalshi_karen": ("kalshi_karen_api_key_id", "kalshi_karen_private_key_pem"),
     "kalshi_marc":  ("kalshi_marc_api_key_id",  "kalshi_marc_private_key_pem"),
+    "kalshi_trey":  ("kalshi_trey_api_key_id",  "kalshi_trey_private_key_pem"),
     "KALSHI":       ("kalshi_api_key_id",       "kalshi_private_key_pem"),
     "kalshi_jack":  ("kalshi_api_key_id",       "kalshi_private_key_pem"),
 }

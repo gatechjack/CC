@@ -64,3 +64,31 @@ def test_resolve_kalshi_keys_end_to_end_against_real_loaded_secrets(monkeypatch,
     s = secrets_mod.load_secrets(env_file=tmp_path / "nonexistent.env")
     kid, pem = resolve_kalshi_keys("kalshi_marc", s)
     assert (kid, pem) == (fake_kid, fake_pem)
+
+
+def test_load_secrets_populates_trey_fields(monkeypatch, tmp_path):
+    monkeypatch.delenv("KEY_VAULT_URI", raising=False)
+    fake_kid = "FAKEtrey_api_key_id_0123456789abcdef"
+    fake_pem = "FAKEtrey_private_key_pem_0123456789abcdef"
+    monkeypatch.setenv("KALSHI_TREY_API_KEY_ID", fake_kid)
+    monkeypatch.setenv("KALSHI_TREY_PRIVATE_KEY_PEM", fake_pem)
+
+    s = secrets_mod.load_secrets(env_file=tmp_path / "nonexistent.env")
+    assert s.kalshi_trey_api_key_id == fake_kid
+    assert s.kalshi_trey_private_key_pem == fake_pem
+
+
+def test_resolve_kalshi_keys_end_to_end_trey(monkeypatch, tmp_path):
+    """Same end-to-end linkage proof as marc, for trey: the whitelist strings
+    must match real Secrets fields. Fake values only; never reprs real secrets."""
+    from trading_corp.prediction_markets.shard_snapshot_task import resolve_kalshi_keys
+
+    monkeypatch.delenv("KEY_VAULT_URI", raising=False)
+    fake_kid = "FAKEtrey_api_key_id_0123456789abcdef"
+    fake_pem = "FAKEtrey_private_key_pem_0123456789abcdef"
+    monkeypatch.setenv("KALSHI_TREY_API_KEY_ID", fake_kid)
+    monkeypatch.setenv("KALSHI_TREY_PRIVATE_KEY_PEM", fake_pem)
+
+    s = secrets_mod.load_secrets(env_file=tmp_path / "nonexistent.env")
+    kid, pem = resolve_kalshi_keys("kalshi_trey", s)
+    assert (kid, pem) == (fake_kid, fake_pem)

@@ -1,107 +1,115 @@
-# MARC (3rd Kalshi account) — LIVE BUILD LEDGER, 2026-09-20
+# MARC + TREY (3rd & 4th Kalshi accounts) — LIVE BUILD LEDGER, 2026-09-20
 
-Bringing `kalshi_marc` live as the 3rd Kalshi account (after kalshi_jack, kalshi_karen),
-traded by the PM live driver. Built EXACTLY like Karen, using Marc's own Kalshi API keys.
-This ledger is the deploy record + per-step manifest. Each numbered step is a SEPARATE
-authorization; the engine restart bounces every division (Jack times it).
+Bringing `kalshi_marc` AND `kalshi_trey` live (after kalshi_jack, kalshi_karen), traded by the PM
+live driver. Built EXACTLY like Karen, each using its OWN Kalshi API keys. FOUR accounts total.
+Both added in ONE pass to save an engine restart. Each numbered step is a SEPARATE authorization;
+the engine restart bounces every division (Jack times it).
 
 ## Base / branch
 - Base = `origin/prod-live` = **777e87a5** (git truth; box asserted == prod-live).
 - Branch **pm-marc-account-2026-09-20** (worktree `C:/Users/AA Incorporado/cc-pm-marc-wt`), off 777e87a5.
+- Commits: `3037dedf` (marc) -> `<trey>` (trey). Both pushed. prod-live NOT advanced (record only).
 
-## Scope decision (verified against 777e87a5, not inherited)
-The PM live path is ALREADY N-account-generic: the driver spawn (main.py ~1445-1525) and the
-M3 shard-snapshot writer (main.py ~1538-1564) enumerate the DB roster / `pm_account WHERE
-active=1` and resolve each account's keys via the fail-CLOSED whitelist
-`shard_snapshot_task.resolve_kalshi_keys`. boot_reconcile, caps/`sub_config_from_row`, the
-refresh stagger (`rank/N*interval`), authz `visible_account_ids`, and the pm_web accounts grid
-are all per-account-generic (audited). **The ONLY code change is the two Karen-mirror spots.**
-
-Built EXACTLY like Karen (Jack's instruction), NOT an N-generic refactor. Consequence, stated
-plainly: **Trey (coming) = ANOTHER small code change** — the same additive ~7 lines in the same
-two files — NOT pure data. The Karen-mirror shape keeps each account explicit + fail-closed
-(unknown secret_ref -> skip, never route-to-jack), which is why it is not zero-code. A pure-data
-Trey would require a registry/scan refactor of the live jack/karen credential path (declined).
+## N-ACCOUNT CLAIM — stated plainly (Jack asked)
+I said Trey would be **another (small) code change, NOT pure data**. Adding Trey confirmed exactly
+that: the same additive ~7 lines in the same two files. So the Karen-mirror shape = **one small,
+fail-closed code edit per account** (explicit + greppable + never route-to-jack) — NOT zero-code.
+True pure-data-per-account would require a registry/KV-scan refactor of the live jack/karen
+credential path (declined via "exactly like Karen"). The claim held; it did not fail.
 
 ## THE CODE CHANGE (2 files, purely additive; jack/karen paths byte-unchanged)
-1. `trading_corp/utils/secrets.py` — add `kalshi_marc_*` mirroring `kalshi_karen_*`:
-   - `_SECRET_KEY_NAMES` redact tuple: `KALSHI_MARC_API_KEY_ID`, `KALSHI_MARC_PRIVATE_KEY_PEM`
-   - `Secrets` dataclass: `kalshi_marc_api_key_id`, `kalshi_marc_private_key_pem`
-   - `_populate_from_keyvault` expected_env_vars: the two `KALSHI_MARC_*` names
-   - `load_secrets` ctor: `kalshi_marc_api_key_id=_env("KALSHI_MARC_API_KEY_ID")` (+ pem)
-   - `register_redact_literal(secrets.kalshi_marc_private_key_pem)`
+1. `trading_corp/utils/secrets.py` — add `kalshi_marc_*` and `kalshi_trey_*` mirroring
+   `kalshi_karen_*` in FIVE spots each: `_SECRET_KEY_NAMES` redact tuple; `Secrets` dataclass;
+   `_populate_from_keyvault` expected_env_vars; `load_secrets` ctor; `register_redact_literal`.
 2. `trading_corp/prediction_markets/shard_snapshot_task.py` — add to `_SECRET_REF_KEYPAIR`:
-   `"kalshi_marc": ("kalshi_marc_api_key_id", "kalshi_marc_private_key_pem")` (+ comment line).
+   `"kalshi_marc": (...)` and `"kalshi_trey": (...)` (+ comment lines).
 
-Vault secrets (Jack pre-created, Enabled): `KALSHI-MARC-API-KEY-ID`, `KALSHI-MARC-PRIVATE-KEY-PEM`.
-KV translation `KALSHI_MARC_API_KEY_ID` -> `KALSHI-MARC-API-KEY-ID` matches exactly (`.replace('_','-')`).
+Vault secrets (Jack pre-created, Enabled): `KALSHI-MARC-{API-KEY-ID,PRIVATE-KEY-PEM}` +
+`KALSHI-TREY-{API-KEY-ID,PRIVATE-KEY-PEM}`. KV translation `KALSHI_MARC_API_KEY_ID` ->
+`KALSHI-MARC-API-KEY-ID` (`.replace('_','-')`) matches exactly; same for trey.
 
-## Tests (new)
-- `tests/prediction_markets/test_secret_ref_keypair.py` (5): marc resolves to HIS keypair not
-  jack's; whitelist maps marc->marc fields; existing accounts unchanged; **unmapped ref (incl
-  kalshi_trey, KALSHI_MARC, None) FAILS CLOSED**; recognised-ref-with-absent-field fails closed.
-- `tests/test_secrets_kalshi_marc.py` (3): load_secrets populates marc fields; registers the
-  marc PEM as a redact literal (security-safe pattern); **end-to-end** resolve_kalshi_keys against
-  a REAL loaded Secrets (proves the whitelist's attr-name strings match real dataclass fields —
-  closes the "typo -> silent skip" gap a stub would mask).
+The PM live path is ALREADY N-account-generic (audited): driver spawn (main.py ~1445-1525) + M3
+shard-snapshot writer (main.py ~1538-1564) enumerate the DB roster / `pm_account WHERE active=1`
+and resolve each account's keys via the fail-CLOSED whitelist `resolve_kalshi_keys`. boot_reconcile,
+caps/`sub_config_from_row`, the refresh stagger (`rank/N*interval`), authz `visible_account_ids`,
+and the pm_web accounts grid are all per-account-generic. **The whitelist + secrets fields are the
+only code needed per account.**
+
+## Tests
+- `tests/prediction_markets/test_secret_ref_keypair.py`: marc resolves to HIS keypair not jack's;
+  trey resolves to HIS not jack's AND not marc's (no cross-bleed); whitelist maps marc/trey to
+  their own fields; existing accounts unchanged; **unmapped/typo'd ref FAILS CLOSED** (kalshi_trey
+  now WIRED so it moved to the positive test); recognised-ref-with-absent-field fails closed.
+- `tests/test_secrets_kalshi_marc.py`: load_secrets populates marc + trey fields; registers each
+  PEM as a redact literal (security-safe pattern); **end-to-end** resolve against a REAL loaded
+  Secrets for BOTH (proves the whitelist attr-name strings match real dataclass fields — closes the
+  "typo -> silent skip" gap a stub would mask).
 
 ## Adversarial skeptics (2, independent) — BOTH converged
-- **main.py:2680 landmine** (both): legacy `family=='kalshi'` divisions builder does
+- **main.py:2680 landmine**: legacy `family=='kalshi'` divisions builder does
   `if kalshi_karen ... else -> jack keys`; an unknown secret_ref would SILENTLY route to jack.
-  DEAD today (0 `family:kalshi` divisions in config/divisions.yaml). **Jack ruled: LEAVE it out
-  of this deploy (blast radius — main.py is the shared-trio file whose wholesale overwrite cost
-  PM 28h armed-not-trading; do not touch it for dead code).** FILED (memory
-  `pm-divisions-builder-else-routes-to-jack`); fix = elif mirror / route via resolve_kalshi_keys
-  in a main.py-ONLY window; compounds with Trey.
-- **Test gap** (skeptic B): whitelist-mapping test was tautological + nothing proved attr-name
-  strings match real Secrets fields. FIXED — added the end-to-end resolve test above.
-- No misroute / boot / fail-closed / KV-name defects on Marc's live path.
+  Now traps BOTH marc AND trey. DEAD today (0 `family:kalshi` divisions in config/divisions.yaml).
+  **Jack ruled LEAVE it out (blast radius — main.py wholesale-overwrite cost PM 28h
+  armed-not-trading; do not touch it for dead code).** FILED (memory
+  `pm-divisions-builder-else-routes-to-jack`, names marc + trey); fix = fail-closed elif mirror /
+  route via resolve_kalshi_keys, in a main.py-ONLY window.
+- **Test gap** (skeptic B): whitelist-mapping test was tautological; nothing proved attr-name
+  strings match real Secrets fields. FIXED — end-to-end resolve tests (marc + trey).
 
 ## BOX-SCRATCH (RO, isolated ~/marc_scratch_<ts>, live tree untouched) — GREEN
-`pm_marc_boxscratch.ps1` (scp+tar staging; secrets.py has non-ASCII so streaming would mangle):
-- PY_COMPILE_OK
-- Import ISOLATION proven: SECRETS_FROM under the scratch dir (not /home/azureuser/trading_corp)
-- MARC_IN_WHITELIST True; MARC_MAPS_TO the marc fields; MARC_FIELD_ON_SECRETS True
-- Chain-of-custody EXACT: box CR-stripped sha256 == local — secrets.py `624c6048…`,
-  shard_snapshot_task.py `f1b816ad…`
-- pytest **23 passed RC=0** (marc + redaction + completeness) with `-p no:pytest_ethereum`
+`pm_marc_boxscratch.ps1` (scp+tar; secrets.py non-ASCII so streaming would mangle):
+- PY_COMPILE_OK; import ISOLATION proven (SECRETS_FROM under scratch, not the live tree)
+- Chain-of-custody EXACT: box CR-stripped sha256 == local — secrets.py `8fc9a0dd…`,
+  shard_snapshot_task.py `194530498d…`
+- pytest **26 passed RC=0** (marc + trey + redaction + completeness) with `-p no:pytest_ethereum`
 
-## Reversibility per step (what a mistake costs)
+## GRAFT state (IMPORTANT — the marc-only graft ALREADY ran)
+- Marc-only graft ran at 14:31Z: box `secrets.py`/`shard_snapshot_task.py` == marc-only target
+  (`624c6048…`/`f1b816ad…`); backup `~/marc_graft_backup_20260920T143115Z`. **Engine NOT restarted**
+  -> the running engine still executes 777e87a5 code; the on-disk marc change is inert until restart.
+- COMBINED graft (`pm_marc_graft.ps1`, updated): drift-gate BASE = the CURRENT box state (marc-only
+  `624c6048…`/`f1b816ad…`), TARGET = marc+trey (`8fc9a0dd…`/`194530498d…`). Clean gated supersede
+  (NOT forced): box marc-only -> marc+trey in one gated cp. Final box 2 files = 777e87a5 + combined
+  diff = branch tip. New backup kept.
+
+## Reversibility per step
 | Step | Reversible without a restart? |
 |---|---|
-| 1. Code (build/test/commit/push) | N/A — nothing live touched |
-| 2. Graft to box (2 files) | Yes (restore from backup) — but only takes effect at next restart |
-| 3. Engine restart | **NO** — bounces every division (~3.5 min); irreversible commit point |
-| 4. Boot-verify | Read-only |
-| 5. `pm_account` row insert | Row is UPDATE-able (active=0) but `account_id` is the PERMANENT PK — no delete |
-| 6. Sub-divisions / sizing / enable | Yes — per-cycle DB reads, no restart |
-| 6. Arm | Yes — `live-disarm` per-cycle, no restart |
+| Code (build/test/commit/push) | N/A — nothing live touched |
+| Combined graft (2 files) | Yes (restore from backup) — inert until restart |
+| Engine restart | **NO** — bounces every division (~3.5 min); irreversible commit point |
+| Boot-verify | Read-only |
+| pm_account rows (marc, trey) | UPDATE-able (active=0), but `account_id` is the PERMANENT PK — no delete |
+| Sub-divisions / sizing / enable / arm | Yes — per-cycle DB reads, no restart |
+
+## ★ SEQUENCING NOTE (roster read AT BOOT — proven by ITF/UEL)
+The driver + M3 writer read the roster / active pm_accounts ONLY AT BOOT. So for the driver to wire
+marc + trey at a SINGLE restart, their `pm_account` rows + attached subs must exist BEFORE that
+restart. Proposed one-restart flow (reorders vs the literal step list; confirm):
+graft -> **standalone credential-proof (marc, trey)** -> create rows+subs DISARMED ->
+**ONE restart** -> boot-verify sees FOUR wired -> arm. (Credential proof runs as an independent
+service-env process using the grafted secrets + KV; it does NOT need the engine restarted.)
 
 ## Remaining steps (each a SEPARATE authorization; HALT before each)
-2. **Graft** the 2 files to the box (scp+tar, drift-gate box==777e87a5 CR-stripped BEFORE apply,
-   backup, py_compile, verify). `data/` is gitignored but NO new module lands in data/ (both edits
-   are existing tracked files) -> no force-add needed.
-3. **Engine restart** — Jack times it (bounces MACE/PMCC/PEAD/bitunix/coinbase/RH). Canonical
-   `restart_tc.ps1` (az-root; agent-blocked -> Jack runs).
-4. **Boot-verify** (weighted for the shared engine): EVERY division back (MACE/PMCC/PEAD/bitunix/
-   coinbase/RH, 0 degraded); 35 armed with unchanged persisted timestamps, 0 latched; 0 import
-   errors; driver wiring **THREE** account tasks (not two). Confirm restart by **PID change +
-   ActiveEnterTimestamp**, NEVER the az exit code.
-5. **`pm_account` row**: account_id `kalshi_marc`, venue `kalshi`, **owner_identity `marc`** (MUST
-   equal his Authelia username — pm_web scopes on it), secret_ref `kalshi_marc`. account_id is the
-   PERMANENT PK.
-   - **CREDENTIAL PROOF (load-bearing):** before any order, authenticate against HIS book and
-     confirm balance/identity is Marc's, not Jack's. This is what carried the weight for Karen.
-6. **Sub-divisions + sizing + enable + arm**:
-   - FUND-CHECK first: which shard his categories settle on and whether it holds money (a starved
-     shard reads healthy because the balance call returns the masked total).
-   - CONTRACTS x PRICE vs `per_order_usd_cap` (a pre-submit reject writes NO order row — silences a
-     category with nothing to grep; silenced jack-mlb for a day).
-   - Read RESOLVED config via `sub_config_from_row` before arming — a new sub may carry
-     `sizing_mode='fixed'` from the DDL default rather than 'contracts'.
-7. **FIRST FILL = the credential proof**: read Marc's first order back from HIS VENUE (not the
-   journal); confirm it landed on HIS book with its own order id. A fill on the wrong account is
-   the failure this whole sequence exists to prevent.
+- **Combined graft** (present; Jack runs — box write).
+- **Credential proof (BEFORE any row/arm), marc AND trey SEPARATELY**: authenticate against EACH
+  book, confirm balance/identity is his own, not jack's. One proof does NOT cover both.
+- **pm_account rows** (DISARMED subs): marc -> account_id `kalshi_marc`, owner_identity `marc`,
+  secret_ref `kalshi_marc`; trey -> `kalshi_trey`/`trey`/`kalshi_trey`. owner_identity MUST equal the
+  Authelia username (pm_web scopes on it). account_id is the PERMANENT PK.
+- **Engine restart** (Jack times it) -> wires FOUR.
+- **Boot-verify** (weighted for the shared engine): EVERY division back (MACE/PMCC/PEAD/bitunix/
+  coinbase/RH, 0 degraded); driver wiring **FOUR** account tasks (jack+karen unchanged, marc+trey
+  added, neither replacing); 35 armed with unchanged persisted timestamps + 0 latched (marc/trey add
+  0 armed yet — any change is a finding); 0 import errors. Confirm restart by **PID change +
+  ActiveEnterTimestamp**, NEVER the az exit code.
+- **Fund-check + caps + sizing per account**: shard the categories settle on + whether it holds
+  money (a starved shard reads healthy — masked total); contracts x price vs `per_order_usd_cap`
+  (a pre-submit reject writes NO order row); read RESOLVED config via `sub_config_from_row` before
+  arming (a new sub may carry `sizing_mode='fixed'` from the DDL default).
+- **Arm** marc/trey subs (per-cycle DB write, no restart).
+- **FIRST FILL = the credential proof**: read each account's first order back from ITS VENUE (not the
+  journal); confirm it landed on the right book with its own order id.
 
 ## STOP (global disarm), from /home/azureuser/trading_corp
 ```

@@ -28,6 +28,8 @@ def _fake_secrets():
         kalshi_karen_private_key_pem="KAREN_PEM",
         kalshi_marc_api_key_id="MARC_KID",
         kalshi_marc_private_key_pem="MARC_PEM",
+        kalshi_trey_api_key_id="TREY_KID",
+        kalshi_trey_private_key_pem="TREY_PEM",
     )
 
 
@@ -38,10 +40,22 @@ def test_marc_resolves_to_his_own_keypair_not_jacks():
     assert kid != "JACK_KID" and pem != "JACK_PEM"
 
 
-def test_marc_is_in_the_whitelist_pointing_at_marc_fields():
+def test_trey_resolves_to_his_own_keypair_not_jacks():
+    kid, pem = resolve_kalshi_keys("kalshi_trey", _fake_secrets())
+    assert (kid, pem) == ("TREY_KID", "TREY_PEM")
+    assert kid != "JACK_KID" and pem != "JACK_PEM"
+    # And marc's keys are NOT trey's (no cross-bleed between the two new accounts).
+    assert kid != "MARC_KID" and pem != "MARC_PEM"
+
+
+def test_marc_and_trey_map_to_their_own_fields():
     assert _SECRET_REF_KEYPAIR["kalshi_marc"] == (
         "kalshi_marc_api_key_id",
         "kalshi_marc_private_key_pem",
+    )
+    assert _SECRET_REF_KEYPAIR["kalshi_trey"] == (
+        "kalshi_trey_api_key_id",
+        "kalshi_trey_private_key_pem",
     )
 
 
@@ -53,11 +67,12 @@ def test_existing_accounts_unchanged():
 
 
 def test_unmapped_ref_fails_closed():
-    """The single most important property: an unknown / typo'd / not-yet-wired
-    ref returns (None, None) so the caller SKIPS -- never routes to jack.
-    'kalshi_trey' is here on purpose: Trey is fail-closed until his own code
-    change lands (he is NOT pure data under the karen-mirror shape)."""
-    for bad in ("kalshi_marcc", "kalshi_trey", "marc", "", "KALSHI_MARC", None):
+    """The single most important property: an unknown / typo'd ref returns
+    (None, None) so the caller SKIPS -- never routes to jack. NOTE: kalshi_trey
+    is now WIRED (2026-09-20), so it is NO LONGER here -- see the positive trey
+    resolve test above. Bare 'marc'/'trey' (no kalshi_ prefix) + typos stay
+    fail-closed."""
+    for bad in ("kalshi_marcc", "kalshi_treyy", "marc", "trey", "", "KALSHI_MARC", "KALSHI_TREY", None):
         assert resolve_kalshi_keys(bad, _fake_secrets()) == (None, None)
 
 
