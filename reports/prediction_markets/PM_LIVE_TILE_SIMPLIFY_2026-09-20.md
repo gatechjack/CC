@@ -1,6 +1,9 @@
-# PM /live TILES — STANDARD SIZE, MONEY-FIRST, COMPACT GAME LINES (BUILD) — 2026-09-20
+# PM /live TILES — STANDARD SIZE, MONEY-FIRST, COMPACT GAME LINES (BUILD + DEPLOY 13) — 2026-09-20
 
-**STATUS: BUILT + TESTED + RENDERED + BOX-TIED (read-only) + COMMITTED. NOT DEPLOYED / NOT PUSHED / NOT RESTARTED.**
+**STATUS: DEPLOYED LIVE (DEPLOY 13) 2026-09-20 — after ONE rolled-back attempt (a nested-anchor defect) + a fix.
+prod-live `9ff6060c -> 0023e5a7` (FF), tag `pm-live-tile-simplify-deploy13-2026-09-20`. pm_web-only; engine
+`trading-corp` 491380 / NRestarts 0 NEVER touched. box == prod-live 47/47. Full deploy record + the rollback: §9
+below.** (Build status was: BUILT + TESTED + RENDERED + BOX-TIED + COMMITTED — preserved below.)
 Branch `pm-live-tile-simplify-2026-09-20` off `origin/prod-live` @ **`9ff6060c`** (git truth = box), worktree
 `C:\Users\AA Incorporado\cc-pm-live-tile-wt`. DEPLOY / PUSH-to-prod-live / RESTART are Jack's reserved actions.
 
@@ -145,5 +148,67 @@ new structure. atp/tennis is unjoinable (no team map), so the new expectation is
 ## 8. RUNNERS (cc/, read-only)
 `pm_roster_boxshas_ro` (box == prod-live 47/47), `pm_tile_render.py` (the seeded 1/2/6-game + just-closed + phone
 renders in `cc/renders_tile/`, with measured heights + overflow diagnostics), `pm_tile_boxdump_ro.{ps1,py}` (dumps
-jack's live open positions RO) + the local `_live_event` tie-out (`cc/renders_tile/box_tieout.txt`). No deploy runner
-authored (deploy is Jack's).
+jack's live open positions RO) + the local `_live_event` tie-out (`cc/renders_tile/box_tieout.txt`). Deploy 13 runners:
+`pm_deploy13_precheck_ro`, `pm_deploy13_graft` (backup+write6+delete1+grep+rollback), `pm_deploy13_restart_az`
+(az-root, Jack-run), `pm_deploy13_postrestart_ro`, `pm_deploy13_postcheck_ro`, `pm_deploy13_journal_ro`,
+`pm_deploy13_fetch_served`, and the rollback runners `pm_deploy13_restore` + `pm_deploy13_cleanup_leftover`.
+
+--------------------------------------------------------------------------------
+## 9. DEPLOY 13 — LIVE ON PROD 2026-09-20 (board-authorized; ONE rolled-back attempt + a fix)
+
+**SHIPPED `0023e5a7` (branch pm-live-tile-simplify-2026-09-20) off prod-live `9ff6060c`. prod-live FF `9ff6060c ->
+0023e5a7`, tag `pm-live-tile-simplify-deploy13-2026-09-20`. pm_web-only (6 files written + 1 deleted); engine
+`trading-corp` 491380 / NRestarts 0 NEVER touched. box == prod-live 47/47 before AND after.** Deploy target was
+recorded as `1d39a1bf` (§4 shas) but the FIRST graft's summary line escaped its tile (see below) -> rolled back ->
+fixed -> the DEPLOYED code is `0023e5a7` (the fix commit); the only sha that changed from §4 is
+`pm_subs_liveline.html` `9b83b4a78793b219 -> 5809621dc39e9d4e`.
+
+**Pre-deploy (RO, green — `pm_deploy13_precheck_ro`, `pm_roster_boxshas_ro`):** engine `trading-corp` MainPID **491380**
+NRestarts 0 active; pm_web **494253**; schema head **24**; heartbeats fresh; pm_live arm rows 69; prod-live `9ff6060c`;
+box == prod-live **47/47**; served pm_desk.css `b07fce48`. Before /live: jack/nfl **7 open / 7 games**, jack/wta 1/1.
+
+**★ ATTEMPT 1 (rolled back) — a NESTED-ANCHOR defect.** The graft (backup `/home/azureuser/pm_deploy13_backup_
+20260920T221244Z`) applied 6 + deleted the partial cleanly; the first `pm_subs_event` grep FALSE-aborted on
+`pm_subs_eventline.html` (a substring match; the runner rolled back cleanly) -> tightened to `pm_subs_event\.html`
+and the rollback to also `rm` the new file (a new file has no backup to restore); a leftover `pm_subs_liveline.html`
+from that first rollback was removed by `pm_deploy13_cleanup_leftover` (box re-verified 47/47). The 2nd graft succeeded;
+pm_web restart **494253 -> 496311** (ActiveEnter 22:37:44Z), engine unchanged. **Post-check (86 OK) then caught the
+real defect:** the `>2-games` summary was `<a class="liveln more" href>` nested inside the tile's own
+`<a class="t live" href>`. Nested `<a>` is invalid HTML -> the browser closes the tile early -> on jack/nfl the
+summary + LAST line + week/month foot + state tab **escaped the tile box** (Jack's screenshot confirmed it). Per the
+brief (rollback on a 7-13 fail, never fix forward on prod): **ROLLED BACK** — `pm_deploy13_restore` restored the 6
+files from backup + removed the new partial (each verified == prod-live sha), pm_web restart **496311 -> 497016**
+(22:53:58Z), verified serving prod-live (my `liveln` absent, old event-block restored, pm_desk.css `b07fce48`, all
+pages 200), engine 491380/0 unchanged. box == prod-live 47/47.
+
+**THE FIX (commit `0023e5a7`):** the summary line is now a `<div class="liveln more">`, not a nested `<a>`. The whole
+tile is already `<a class="t live" href="{{ t.href }}">`, so clicking the line still navigates to the detail page; the
+`›` chevron signals more. Geometry re-check (seeded + the live served page): every `.liveln` (incl. the summary) sits
+INSIDE its tile bbox (`liveln-inside-tile` = true). Full suite **24 == baseline, 0 new failures**; 51 tile tests pass.
+
+**ATTEMPT 2 (LIVE) — the corrected build.** Graft (backup `/home/azureuser/pm_deploy13_backup_20260920T230612Z`):
+GATE 1 staged == TARGET (6/6, liveline now `5809621d`); GATE 2 box == BEFORE (5 modified + new absent + delete file
+present); GATE 3 backup verified; APPLY 6 + DELETE the partial; VERIFY 6 == TARGET + deleted absent; grep 0
+`pm_subs_event.html` refs; py_compile OK; import gate routes=24 / pm_arm=0 / forbidden=[]. Restart
+**497016 -> 497708** (ActiveEnter **2026-09-20 23:09:01Z**), engine **491380 / NRestarts 0 UNCHANGED**.
+
+**Post-deploy (RO, `pm_deploy13_postcheck_ro` = 89 OK / 0 FAIL):** /live all 4 tabs (jack/karen/marc/trey) 200, no
+2×2/scoreboard markup, no just-closed banner, `?v=585ea101`; **REGRESSION GUARD: 0 nested-anchor summaries
+(`<a class="liveln more"`) anywhere**; jack/nfl `>2 games -> a single `<div class="liveln more">` summary` ("4 games
+live · 4 positions"); the summary M (4, positions on LIVE games) `<=` the tile OPEN count (6) — a subset, because 2
+of jack/nfl's 6 open positions are on games not currently underway (incl. a Sep-21 Monday-night game), which is
+correct + honest (the earlier 7/7 all-underway snapshot is the M==open case). Detail `/live/kalshi_jack/nfl` unchanged
+(Deploy-12 roster table + 5-cell strip intact); `/live/kalshi_jack/mlb` game-card page 200. All pages + 26
+`/farm/{cat}` + all static 200; **served pm_desk.css sha8 == `585ea101`**, `pm_subs_event.html` 404 (deleted). 0 raw
+tickers on /live, 0 double-escaped. **Geometry on the live served page:** NFL + WNBA `liveln-inside-tile` = true;
+per-section heights uniform (LIVE 338, UPCOMING 314, SETTLED 275, INACTIVE 192 — no 2×2). pm_web `journalctl -p err`
+since restart = **0**; engine `journalctl -p err` = 0; engine 491380/0 UNCHANGED.
+
+**Wrap:** FF `origin/prod-live 9ff6060c -> 0023e5a7`; tag `pm-live-tile-simplify-deploy13-2026-09-20`; box ==
+prod-live **47/47** re-verified (pm_subs_event.html gone, pm_subs_liveline.html present — net 47, NOT 46: the delete
+is offset by the new partial). main untouched.
+
+**LESSONS (two, worth keeping):** (1) a tile is an `<a>` — a link inside a tile must be a `<div>` (or the tile's own
+link), never a nested `<a>`; the post-check now guards it. (2) a graft that CREATES a new file must, on rollback,
+`rm` it (a new file has no backup to restore) — the first rollback left `pm_subs_liveline.html` behind; the runner
+now removes new files on rollback.

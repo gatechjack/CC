@@ -1,7 +1,32 @@
 # PM UI — HANDOFF for the next UI code agent
 
-**STATUS: CURRENT — last updated 2026-09-20 (DEPLOY 12: sub-division ROSTER TABLE + 5-cell money-strip re-layout).
-prod-live tip = `b9e1c215`, tag `pm-roster-table-deploy12-2026-09-20`.** (This handoff lives ON prod-live.)
+**STATUS: CURRENT — last updated 2026-09-20 (DEPLOY 13: LIVE-tile simplify). prod-live tip = `0023e5a7`, tag
+`pm-live-tile-simplify-deploy13-2026-09-20`.** (This handoff lives ON prod-live.)
+
+**★★ DEPLOY 13 (2026-09-20) — LIVE TILE SIMPLIFY. prod-live `9ff6060c -> 0023e5a7` (FF), after ONE rolled-back
+attempt (a nested-anchor defect) + a fix.** The `/live` tile page's LIVE tile is no longer the Deploy-10 2×2
+featured-scoreboard block (it spilled on an NFL Sunday, detaching the money block). **THE TILE RULE NOW:** every tile
+is the STANDARD size (no 2×2 span, no fixed 480px); content is money-first (header → REALIZED hero → booked/W-L →
+OPEN → [LIVE line] → LAST → week/month foot → state tab); a LIVE tile adds ONE compact game line — `AWAY @ HOME ·
+<signed shorthand>` per game for **≤2 underway games**, else a single `N games live · M positions ›` summary — NO
+score/inning (those live on the detail page). The blue LIVE border + corner tab stay; the just-closed BANNER is gone
+(flash + LAST line only). 6 pm_web files written + 1 deleted (`partials/pm_subs_event.html`); NO app.py/subdivision.py,
+NO migration. Engine 491380 NEVER touched. Full record: `PM_LIVE_TILE_SIMPLIFY_2026-09-20.md` §9.
+  - **ARCHITECTURE.** `live_view._live_event` returns `{games:[{matchup, positions_shorthand}] (≤2 games only),
+    game_count, position_count, summary_only}` (was `{featured, others, more, n_live}`); matchup is ticker-derived
+    (`_ordered_teams`, fail-closed — tennis/ufc counted-not-labelled). New partial `partials/pm_subs_liveline.html`
+    (the compact line / summary); `pm_live_list.html` includes it after the money+open block. Deleted `_score_detail`
+    + `_event_rows`. `pm_desk.css` `?v=585ea101`; `pm_live_subs.js` banner removed (flash kept).
+  - **★ DEPLOY 10 ITEM 1 IS SUPERSEDED** (the featured-scoreboard 2×2 fixed-height LIVE tile). Scores/innings live
+    ONLY on the sub-division detail page now (unchanged there).
+  - **★ TWO DEPLOY LESSONS (in the report §9, worth keeping):** (1) a tile is an `<a>` — any link inside it must be a
+    `<div>` (the tile's own `<a href>` already navigates), NEVER a nested `<a>` (that closes the tile early → the line
+    + foot escape the tile box; this was the rolled-back defect, caught only after the first restart). (2) a graft
+    that CREATES a new file must `rm` it on rollback (no backup to restore) — the first rollback left the new partial
+    behind. The post-check now guards the nested-anchor; the graft runner now removes new files on rollback.
+  - **★ BACKLOG (new): SHELL-HEADER PHONE OVERFLOW.** At a phone width the whole page overflows (~900px) from the
+    shell header nav + poll/arm chips + the account tabs row (NOT the tile grid, which is 1-column). Pre-existing
+    (surfaced at Deploys 12 + 13); its own small pass — make the shell header/tabs wrap or scroll-contain on phone.
 
 **★★ DEPLOY 12 (2026-09-20) — ROSTER TABLE + STRIP RE-LAYOUT. prod-live `e9769aa9 -> b9e1c215` (FF).** The flat
 "Copies these whales" roster panel on `/live/{account}/{category}` is now a **sortable TABLE** (Farm-League watchlist
