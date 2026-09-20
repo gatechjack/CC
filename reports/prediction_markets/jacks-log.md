@@ -899,3 +899,53 @@ is INCONCLUSIVE, not a mismatch.
 
 PICKUP: passkey enrolment for marc/trey still pending (you + their device + relaying the link).
 Kill switch: PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py live-disarm --global.
+
+
+2026-09-20 -- DEPLOY 12: SUB-DIVISION ROSTER TABLE + MONEY-STRIP RE-LAYOUT
+-------------------------------------------------------------------------
+WHAT: the /live/{account}/{category} page. The flat "Copies these whales" roster panel is now a
+      sortable TABLE (same look/mechanics as the Farm-League watchlist): one row per whale --
+      Whale, Farm verdict, Tenure, Copies, Booked, W, L, Win%, Realized $, Cost $, ROI%, Unbooked,
+      Open, Today $, Actions. On-roster shows by default; the "All" toggle (?whales=all) appends
+      formerly-live rows dimmed beneath; column sort is in the URL (?sort=&dir=), all server-rendered
+      so it works with JS off. The money strip moved directly under the header chips and gained a
+      FIFTH cell for SIZING (contracts/copy + who/age + the change control), so the old standalone
+      sizing line is gone. Game cards / positions table / trade drawer follow as before.
+PROD-LIVE: e9769aa9 -> b9e1c215 (code, FF) -> 9ff6060c (docs, FF).  TAG: pm-roster-table-deploy12-2026-09-20
+      (on the code commit b9e1c215).
+FILES: 8 pm_web files + the engine-shared subdivision.py, ADDITIVE-ONLY (23 insertions / 0 deletions
+      = one new function booked_cost_by_whale; no existing function changed, so the engine's behaviour
+      is unchanged -- it loads the new subdivision.py on its own next restart). NO db.py, NO migration.
+      New readers: subdivision.booked_cost_by_whale (the ROI cost denominator) + live_view.build_roster_table
+      (the pure table view). CR-sha16 before -> after:
+        subdivision.py                                83e3893079a40625 -> 5b6f42a6ed12f4fc
+        web/app.py                                    5303952cc138783c -> 0ef64011d2c223a2
+        web/live_view.py                              05691d237eac3884 -> 233ed9a28fd325f4
+        web/static/pm_desk.css                        2a290250c04c41b5 -> b07fce488bb0634c   (cache-bust ?v=b07fce48)
+        web/templates/partials/pm_sizing_control.html e96a94fc374931a2 -> 3e1fe122f7145d85
+        web/templates/partials/pm_whale_roster.html   849c6ca2dedf30fe -> e496d37b412fc1ee
+        web/templates/pm_live_subdivision.html        79e2c7f4bc6ea6be -> 86b22d9947e6ced9
+        web/templates/pm_shell.html                   2d48f5dcbf2e4504 -> ec3a5519f3c0991e
+SERVICES: engine trading-corp 491380 UNTOUCHED (PID + NRestarts=0 unchanged before/after every step).
+      pm_web restarted, PID 467489 -> 494253 (ONE restart, ActiveEnter 2026-09-20 20:37:44Z; confirmed
+      by PID + timestamp, NOT the az exit code -- the az call returned success with EMPTY stdout).
+BOX == PROD-LIVE: 47/47 pm_web deploy-surface files, verified before AND after (CR-stripped).
+BACKUP: /home/azureuser/pm_deploy12_backup_20260920T203451Z (the 8 files, each verified == box before
+      any write -- backup-is-a-gate).
+YOUR RULING implemented: ROI is SETTLED-ONLY. booked_cost_by_whale derives the cost basis from the
+      settlement row itself (contracts*settled_value - realized_pnl) so ROI = realized / cost is
+      arithmetically self-consistent with the realized the row shows. A pre-deploy COST-BASIS GATE
+      confirmed, to the cent for every whale on jack/mlb + karen/mlb, that this equals the independent
+      entry-side sum (entry fills of the copies that settled). It PASSED.
+MIGRATION: NONE. Schema head is 24 (migration 024 = pm_subdivision_attachment_event, the
+      attachment-span-history, already landed via the engine agent before this deploy); the next free
+      migration is 025. This deploy ships no db.py.
+TESTS: 17 new (test_roster_table.py) + the test_whale_roster render test updated for the toggle; full
+      suite differential 24 baseline failures, 0 new. (The baseline is 24 now, not the older 22 --
+      two engine env-gap tests were added since.)
+NOT EXERCISED ON PROD: the first Detach or sizing change from the NEW table (the deploy ran GET confirms
+      only, no POST). The first one is yours.
+HONEST FINDING (pre-existing, not this deploy): on a phone viewport the roster table collapses to
+      stacked cards with no sideways scroll, but the PAGE still overflows (~895px) from the shell
+      header nav + poll/arm chips + the MLB game-card scoreboard -- all unchanged by Deploy 12 (only
+      the shell ?v= was bumped). Filed as a shell/game-card follow-up, not a roster item.
