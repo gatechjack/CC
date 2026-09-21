@@ -1130,3 +1130,50 @@ HANDED TO OTHER WORKSTREAMS (not fixed here): (a) capital decision -- both bitun
       dust (~$13-24 notional) on drawn-down accounts; the fix revives them but doesn't decide whether that's
       worth running. (b) bitunix_sfp had 2 "insufficient balance" (20003) rejects in 90 days -- SFP funding
       is low. (c) tc-audit-reality still fails by design (rescope/retire is a separate open item).
+
+
+2026-09-21 -- DEPLOY 15: WATCHLIST SPLITS PAGE (per category)
+-------------------------------------------------------------
+WHAT: a new READ-ONLY page /farm/{category}/splits, linked from every /farm/{category} page. It
+      takes the category's Watchlist whales' OPEN paper positions and decodes each into
+      game x market-type x side, then draws a stake-vs-headcount split: two bars (how many whales
+      vs how many dollars) with a tick showing where the headcount split sits on the stake bar, so
+      you can see where the MONEY disagrees with the CROWD. Three views (splits table default /
+      whale grid / heatmap treemap), modes all / copied-only / compare, groups game / consensus /
+      flat, sorts divergence / stake / most-split / most-agreed -- all in the URL, works with JS off.
+      Nothing on it places, sizes or cancels; the route never touches the order path.
+PROD-LIVE: 5b8df49a -> f36f7ccc (code+report, FF) -> 8a23e1e8 (docs, FF).  TAG: pm-splits-deploy15-2026-09-21
+      (on the code+report commit f36f7ccc).
+FILES: 4 pm_web files -- 3 modified + 1 NEW. NO subdivision.py, NO db.py, NO migration, NO cache-bust
+      bump (the splits CSS is inline-scoped in the template -- no shared static asset changed), NO
+      engine file. CR-sha16:
+        web/app.py                                    bf9895b0 -> bcece565   (loader + GET-only route)
+        web/live_view.py                              2cba1fe6 -> cd5e69f2   (build_watchlist_splits + treemap, pure)
+        web/templates/pm_farm_category.html           fb3b891c -> 678c9bf5   (splits link)
+        web/templates/pm_farm_splits.html             (new)    -> f2a756ad   (the page)
+SERVICES: engine trading-corp 503492 UNTOUCHED (PID + NRestarts=0 unchanged before/after; it was
+      moved 491380->503492 EARLIER today by a bitunix deploy -- that is the baseline I preserved, not
+      my restart). pm_web 499620 -> 511353 (ONE restart, ActiveEnter 2026-09-21 20:07:47Z; confirmed
+      by PID + timestamp, NOT the az exit code). Backup /home/azureuser/pm_deploy15_backup_20260921T200659Z
+      (3 modified backed up; rollback restores the 3 + rm's the new file).
+THE KEY DECISION (source): the splits read pm_paper_trade (the 30-min paper-poll of pinned whales),
+      NOT pm_open_position (the daily discovery pull, which was 3.8+ days stale). STAKE = shares x the
+      whale's ENTRY price (whale_size_at_observation x entry_price_avg_at_observation) = dollars at
+      cost -- NOT cost_basis, which is our fixed paper notional (~70x smaller, box-proven). Grouping
+      via the data-side parse_poly_bet (no broker); structural coverage = cfb/mlb/nba/nfl/nhl/wnba only
+      (soccer/tennis/ufc/cs2/fed show an honest "no structural decode"). Kalshi flag DROPPED -- no
+      pm_web index can say a game IS listed (milestones=start-times, marks=held-only); absence != absent.
+POST-DEPLOY (154 OK / 0 defect): /farm/mlb/splits page total $179,512 == box to the cent, nfl $32,856
+      == box; unparsed page==box; last-refresh ET + real age, STALE only past 30 min; ZERO raw slug/
+      ticker as a label; grid+heatmap render; trusted mode count 4==attachment&pinned; every sort/group
+      200; JS-off rows server-rendered; NO nested <a> in a row/tile. All 26 /farm categories: splits link
+      present, Watchlist+Prospects intact, "pinned" absent (vocab clean). atp/epl "no structural decode";
+      nba honest-empty. No FADE/NEUTRAL. Phone hides the heatmap. All pages + static 200, 0 double-escape.
+      Engine 503492/0 across every step, 0 journalctl err (pm_web AND engine), orders 1750->1750.
+      ONE FLAG (not a defect): the post-check looked for lowercase "not analyzed" and did not find it --
+      because ALL 28 pinned MLB whales are analyzed right now (0 un-analyzed), so the summary honestly
+      reads "NOT ANALYZED: 0" and no who-block shows the phrase; the mechanism is unit-proven.
+NOT EXERCISED: the STALE banner on live prod (data was fresh, 9 min, at post-check) -- render-proven only.
+      Multi-line markets (two total lines on one game) -- keyed separately by design, none live at check.
+BACKLOG: extract the soccer/tennis/ufc/cs2 matchers' slug grammar into a data-only module pm_web can
+      import (mirroring sports_structural_match) so splits can cover those categories too.
