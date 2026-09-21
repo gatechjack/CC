@@ -71,6 +71,7 @@ import asyncio
 import dataclasses
 import hashlib
 import logging
+import math
 import random
 import time
 import uuid
@@ -184,19 +185,27 @@ _DEFAULT_SNAPSHOT_STALENESS_S = 60.0
 # error table (runbooks/2026-05-29_bitunix_live_reuse_audit.md §8) —
 # reimplemented here as a lookup.
 _ERROR_CODES: dict[int, tuple[str, str]] = {
+    10002: ("PARAMETER_ERROR", "malformed/out-of-spec order parameter — usually qty over basePrecision or price over quotePrecision (venue rejects over-precise wire fields), or an inapplicable field (e.g. `effect` on a MARKET order)"),
     10004: ("IP_NOT_WHITELISTED", "API key IP whitelist rejection — whitelist the prod VM IP"),
     10005: ("RATE_LIMIT", "request rate limit exceeded — back off"),
     10006: ("RATE_LIMIT", "request rate limit exceeded — back off"),
     10007: ("SIGN_ERROR", "signature error — body re-serialized after signing, or clock drift"),
+    10008: ("PARAM_RULE_VIOLATION", "a field value does not comply with the rule (precision/range) — see correctValue in msg"),
     20003: ("INSUFFICIENT_BALANCE", "insufficient balance for the order"),
     20006: ("LEVERAGE_LOCKED", "cannot change leverage/mode while orders/positions are open"),
     30001: ("WOULD_LIQUIDATE", "order would immediately liquidate"),
+    30005: ("TRIGGER_TOO_CLOSE", "trigger price too close to current price — may trigger immediately"),
+    30014: ("PRICE_ABOVE_MAX", "buy price exceeds the priceProtectScope max"),
+    30015: ("PRICE_BELOW_MIN", "sell price below the priceProtectScope min"),
     30016: ("QTY_BELOW_MIN", "quantity below the symbol minimum"),
     30017: ("QTY_BELOW_MIN", "quantity below the symbol minimum"),
     30018: ("REDUCE_ONLY_VIOLATION", "reduce-only rule violation"),
     30019: ("REDUCE_ONLY_VIOLATION", "reduce-only rule violation"),
+    30022: ("SL_WRONG_SIDE_MARK", "SL trigger must be higher than mark price (short position)"),
+    30023: ("SL_WRONG_SIDE_MARK", "SL trigger must be lower than mark price (long position)"),
     30024: ("SL_BEYOND_LIQ", "stop-loss set beyond liquidation price"),
     30025: ("SL_BEYOND_LIQ", "stop-loss set beyond liquidation price"),
+    30031: ("SL_WRONG_SIDE_MARK", "SL price on the wrong side of the mark price"),
     30038: ("TPSL_EXCEEDS_POSITION", "TP/SL amount exceeds position size"),
     30042: ("CLIENT_ID_DUPLICATE", "clientId already used — order already accepted; safe to treat as success"),
 }
@@ -293,6 +302,66 @@ def _amount_str(qty: float) -> str:
     string with no scientific notation and no trailing zeros."""
     s = f"{abs(float(qty)):.8f}".rstrip("0").rstrip(".")
     return s or "0"
+
+
+# ── Venue instrument-spec clamping (2026-09-21) ─────────────────────────────
+# BitUnix rejects an order whose qty carries more decimal places than the
+# pair's `basePrecision`, or whose price (limit / slPrice / tpPrice) carries
+# more than `quotePrecision`, with the GENERIC code 10002 'Parameter error' —
+# a PRE-SEMANTIC structural reject (the specific TP/SL codes 30005/30022/30031
+# fire only AFTER precision validation passes). The venue tightened this
+# enforcement on ~2026-08-27: entries that had filled for months (qty + price
+# sent at up to 8 dp by `_amount_str`) began 100%-rejecting with 10002 across
+# BOTH bitunix divisions with no code change on our side. `_amount_str` never
+# quantized to the pair step/tick, so every wire body violated the published
+# `basePrecision`/`quotePrecision`. These helpers floor qty to the lot step
+# (10**-basePrecision, raised to minTradeVolume) and round price to the tick
+# (quotePrecision decimals), using the spec from GET /market/trading_pairs.
+#
+# Fallback map for the currently-traded symbols so clamping still applies when
+# the live spec fetch is unavailable. Fail-open: a symbol absent from BOTH the
+# live cache and this map degrades to raw `_amount_str` (today's behaviour) —
+# never blocks trading on a spec hiccup, never worse than pre-fix.
+_INSTRUMENT_SPEC_FALLBACK: dict[str, tuple[int, int, float]] = {
+    # wire_symbol: (basePrecision, quotePrecision, minTradeVolume)
+    "BTCUSDT": (4, 1, 0.0001),
+    "ETHUSDT": (3, 2, 0.003),
+    "XRPUSDT": (1, 4, 2.0),
+    "SOLUSDT": (2, 2, 0.1),
+}
+# Re-fetch the full trading_pairs spec at most this often (seconds). The pair
+# list is near-static; a periodic refresh picks up any venue change cheaply.
+_INSTRUMENT_SPEC_TTL_S = 6 * 3600.0
+
+
+def _quantize_qty(qty: float, base_precision: int, min_qty: float) -> float:
+    """Floor `qty` to the lot step (10**-base_precision), then raise to
+    `min_qty` if the floored value fell below it. Flooring (not rounding) never
+    sizes ABOVE the risk-capped intent. Returns a value carrying at most
+    `base_precision` decimals."""
+    try:
+        q = float(qty)
+    except (TypeError, ValueError):
+        return 0.0
+    if q <= 0:
+        return 0.0
+    step = 10.0 ** (-int(base_precision))
+    # +1e-9 guards against float underflow (floor(2.9999999) -> 2).
+    floored = round(math.floor(q / step + 1e-9) * step, int(base_precision))
+    if min_qty and floored < float(min_qty):
+        floored = float(min_qty)
+    return floored
+
+
+def _quantize_price(price: float, quote_precision: int) -> float:
+    """Round `price` to the price tick (quote_precision decimals)."""
+    try:
+        return round(float(price), int(quote_precision))
+    except (TypeError, ValueError):
+        try:
+            return float(price)
+        except (TypeError, ValueError):
+            return 0.0
 
 
 def _sign(
@@ -451,6 +520,13 @@ class BitunixBroker(Broker):
         # fetch rather than each firing a request.
         self._snapshot_inflight: asyncio.Task[AccountSnapshot] | None = None
         self._snapshot_lock = asyncio.Lock()
+        # ── Venue instrument-spec cache (precision clamp, 2026-09-21) ────
+        # {wire_symbol: (basePrecision, quotePrecision, minTradeVolume)}.
+        # Primed at connect() + refreshed on TTL before each placement so
+        # `_fmt_qty` / `_fmt_price` can floor/round the wire body to the pair
+        # step/tick (venue 10002 on over-precise qty/price).
+        self._instrument_spec: dict[str, tuple[int, int, float]] = {}
+        self._instrument_spec_fetched_at: float | None = None
 
     async def connect(self) -> None:
         if self._stub:
@@ -469,6 +545,14 @@ class BitunixBroker(Broker):
             )
         except Exception as e:
             log.warning("BitunixBroker connect-time snapshot failed: %s", e)
+
+        # Prime the instrument-spec cache so the first entry can clamp qty +
+        # slPrice to the pair step/tick. Best-effort: a failed prime falls back
+        # to the hardcoded spec map (or raw formatting) at placement time.
+        try:
+            await self._ensure_instrument_specs()
+        except Exception as e:
+            log.warning("BitunixBroker instrument-spec prime failed: %s", e)
 
         self._connected = True
 
@@ -883,6 +967,76 @@ class BitunixBroker(Broker):
         except (TypeError, ValueError):
             return None
 
+    # ── Venue instrument-spec clamp (2026-09-21) ───────────────────────
+    async def _ensure_instrument_specs(self, *, force: bool = False) -> None:
+        """Populate/refresh the per-symbol instrument-spec cache from the public
+        GET /market/trading_pairs (one call covers all pairs). TTL-gated and
+        fail-soft: on any error the prior cache (or the hardcoded fallback map)
+        is kept, so order placement is NEVER blocked by a spec-fetch hiccup."""
+        if self._stub or not self._client:
+            return
+        now = time.monotonic()
+        if (
+            not force
+            and self._instrument_spec
+            and self._instrument_spec_fetched_at is not None
+            and (now - self._instrument_spec_fetched_at) < _INSTRUMENT_SPEC_TTL_S
+        ):
+            return
+        try:
+            r = await self._client.get("/api/v1/futures/market/trading_pairs")
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") != 0:
+                raise RuntimeError(
+                    f"trading_pairs code={data.get('code')} msg={data.get('msg')!r}"
+                )
+            specs: dict[str, tuple[int, int, float]] = {}
+            for d in data.get("data") or []:
+                sym = str(d.get("symbol") or "")
+                if not sym:
+                    continue
+                try:
+                    bp = int(d.get("basePrecision"))
+                    qp = int(d.get("quotePrecision"))
+                    mv = float(d.get("minTradeVolume") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                specs[sym] = (bp, qp, mv)
+            if specs:
+                self._instrument_spec = specs
+                self._instrument_spec_fetched_at = now
+        except Exception as e:
+            log.warning(
+                "BitUnix trading_pairs fetch failed (keeping cache/fallback): %s", e,
+            )
+
+    def _spec_for(self, wire: str) -> "tuple[int, int, float] | None":
+        """(basePrecision, quotePrecision, minTradeVolume) for `wire` from the
+        live cache, else the hardcoded fallback map, else None (raw formatting)."""
+        spec = self._instrument_spec.get(wire)
+        if spec is not None:
+            return spec
+        return _INSTRUMENT_SPEC_FALLBACK.get(wire)
+
+    def _fmt_qty(self, wire: str, qty: float) -> str:
+        """Wire-format an order qty, floored to the pair lot step (raised to the
+        min). Fail-open to raw `_amount_str` when the spec is unknown."""
+        spec = self._spec_for(wire)
+        if spec is None:
+            return _amount_str(qty)
+        base_prec, _quote_prec, min_qty = spec
+        return _amount_str(_quantize_qty(qty, base_prec, min_qty))
+
+    def _fmt_price(self, wire: str, price: float) -> str:
+        """Wire-format a price, rounded to the pair tick (quotePrecision).
+        Fail-open to raw `_amount_str` when the spec is unknown."""
+        spec = self._spec_for(wire)
+        if spec is None:
+            return _amount_str(price)
+        _base_prec, quote_prec, _min_qty = spec
+        return _amount_str(_quantize_price(price, quote_prec))
+
     # ── Phase 4: signed REST core ───────────────────────────────────────
     async def _request(
         self,
@@ -1109,6 +1263,9 @@ class BitunixBroker(Broker):
         if not reduce_only:
             await self._ensure_leverage(wire, extra.get("leverage"))
 
+        # Refresh the instrument-spec cache so _build_order_body clamps qty +
+        # slPrice to the pair step/tick (venue 10002 on over-precise fields).
+        await self._ensure_instrument_specs()
         body = self._build_order_body(order, wire, reduce_only)
         client_id = body["clientId"]
         try:
@@ -1317,12 +1474,13 @@ class BitunixBroker(Broker):
             "symbol": wire,
             "side": order.side.upper(),
             "orderType": otype,
-            "qty": _amount_str(order.qty),
+            # Clamp qty to the pair lot step (basePrecision / minTradeVolume).
+            "qty": self._fmt_qty(wire, order.qty),
         }
         if otype == "LIMIT":
             if not order.limit_price:
                 raise ValueError("BitUnix LIMIT order requires limit_price")
-            body["price"] = _amount_str(order.limit_price)
+            body["price"] = self._fmt_price(wire, order.limit_price)
         if reduce_only:
             body["reduceOnly"] = True
         else:
@@ -1336,10 +1494,15 @@ class BitunixBroker(Broker):
                 except (TypeError, ValueError):
                     sl_px = 0.0
                 if sl_px > 0:
-                    body["slPrice"] = _amount_str(sl_px)
+                    # Clamp the attached stop to the pair price tick (quotePrecision).
+                    body["slPrice"] = self._fmt_price(wire, sl_px)
                     body["slStopType"] = "MARK_PRICE"
                     body["slOrderType"] = "MARKET"
-        if otype == "LIMIT" or not reduce_only:
+        # `effect` (TIF) is a LIMIT-only field per BitUnix docs; sending it on a
+        # MARKET order is out-of-spec (a candidate co-cause of the 10002 the
+        # broker docstring warns about — "if the first live entry param-errors,
+        # drop them"). Only attach it to LIMIT orders (entries and resting exits).
+        if otype == "LIMIT":
             body["effect"] = str((order.extra or {}).get("tif", "GTC")).upper()
         body["clientId"] = self._client_id(order)
         return body
@@ -1997,14 +2160,15 @@ class BitunixBroker(Broker):
             wire = to_wire_format(symbol)
         except Exception:
             wire = symbol
+        await self._ensure_instrument_specs()
         body: dict = {
             "symbol": wire,
             "positionId": str(position_id),
-            "tpPrice": _amount_str(tp_price),
-            "tpQty": _amount_str(tp_qty),
+            "tpPrice": self._fmt_price(wire, tp_price),
+            "tpQty": self._fmt_qty(wire, tp_qty),
             "tpStopType": tp_stop_type,
             "tpOrderType": tp_order_type,
-            "tpOrderPrice": _amount_str(tp_price),
+            "tpOrderPrice": self._fmt_price(wire, tp_price),
         }
         idempotent_dup = False
         try:
@@ -2100,10 +2264,11 @@ class BitunixBroker(Broker):
             wire = to_wire_format(symbol)
         except Exception:
             wire = symbol
+        await self._ensure_instrument_specs()
         body: dict = {
             "symbol": wire,
             "positionId": str(position_id),
-            "slPrice": _amount_str(sl_price),
+            "slPrice": self._fmt_price(wire, sl_price),
             "slStopType": sl_stop_type,
             "slOrderType": sl_order_type,
         }
@@ -2191,10 +2356,11 @@ class BitunixBroker(Broker):
             wire = to_wire_format(symbol)
         except Exception:
             wire = symbol
+        await self._ensure_instrument_specs()
         body: dict = {
             "symbol": wire,
             "positionId": str(position_id),
-            "slPrice": _amount_str(new_sl_price),
+            "slPrice": self._fmt_price(wire, new_sl_price),
             "slStopType": sl_stop_type,
             "slOrderType": sl_order_type,
         }

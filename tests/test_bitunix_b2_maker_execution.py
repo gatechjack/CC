@@ -280,7 +280,9 @@ async def test_flag_off_is_plain_taker_market_entry():
     await b.place_order(order)
     body = client.body_of(P_PLACE)
     assert body["orderType"] == "MARKET"                            # taker market, unchanged
-    assert body["effect"] == "GTC"                                  # NOT POST_ONLY
+    # `effect` is LIMIT-only per BitUnix docs; the 2026-09-21 spec-clamp fix
+    # drops it from MARKET orders entirely (so definitely NOT POST_ONLY here).
+    assert "effect" not in body
     assert "-mk" not in body["clientId"] and "-tk" not in body["clientId"]
     # B1 stop still attached + taker on this plain entry too:
     assert body["slStopType"] == "MARK_PRICE" and body["slOrderType"] == "MARKET"
