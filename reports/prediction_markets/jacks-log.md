@@ -1177,3 +1177,30 @@ NOT EXERCISED: the STALE banner on live prod (data was fresh, 9 min, at post-che
       Multi-line markets (two total lines on one game) -- keyed separately by design, none live at check.
 BACKLOG: extract the soccer/tennis/ufc/cs2 matchers' slug grammar into a data-only module pm_web can
       import (mirroring sports_structural_match) so splits can cover those categories too.
+
+
+2026-09-21 -- SESSION CLOSE (pm_web UI workstream)
+--------------------------------------------------
+PROD-LIVE tip: 8a23e1e8 (Deploy 15 code f36f7ccc + docs 8a23e1e8). TAGS on origin this session:
+      pm-roster-tenure-deploy14-2026-09-20 (-> dc48d072) and pm-splits-deploy15-2026-09-21 (-> f36f7ccc).
+BOX == PROD-LIVE: re-verified read-only at close -- 48 tracked pm_web files match, 0 drift; the 7
+      .bak_*/.orig files (dated 2026-09-01) are pre-existing untracked box backups, not drift.
+SCHEMA: head 24, next free migration 025 (no migration shipped this session).
+SERVICES (observed, read-only): pm_web prediction-markets-web PID 511353 (D15 restart, ActiveEnter
+      2026-09-21 20:07:47Z). Engine trading-corp PID 503492 / NRestarts 0 -- ★ moved 491380 -> 503492
+      EARLIER 2026-09-21 by a BITUNIX precision-clamp deploy, NOT this workstream; the pm_web deploys
+      (14 + 15) never touched the engine. Heartbeats fresh (4 accounts), arm rows 69.
+SHIPPED THIS SESSION: Deploy 14 (roster multi-span Tenure from migration-024 events) + Deploy 15
+      (the /farm/{category}/splits page). Both pm_web-only, one pm_web restart each, engine untouched.
+UNEXERCISED ON PROD (carry forward): (a) first Detach from the Deploy-12 roster table (GET confirm
+      only so far); (b) first sizing change from the roster table; (c) first real detach-then-re-attach
+      of a whale -> the FIRST multi-span Tenure row on prod (today every key has <=1 event, single-span);
+      (d) the splits STALE banner on live prod (data was fresh at post-check, render-proven only);
+      (e) first Analyze/Promote/Demote interplay is unchanged and not re-exercised this session.
+OPEN BACKLOG (verbatim from the handoff): extract the soccer / tennis / UFC / CS2 matchers' Poly-slug
+      grammar (game/market/side decode) into a DATA-ONLY module pm_web can import without the broker
+      (mirroring how sports_structural_match was carved out), then add those categories to the splits
+      coverage; until then they honestly show "no structural decode". Also parked: the ITF tile logo
+      (file not yet supplied -- wire-in is a one-file static add + cache-bust bump when it arrives).
+NOTHING deployed, restarted, or written to the box in this close-out -- housekeeping only (RO box reads
+      + git docs on this log's own branch).
