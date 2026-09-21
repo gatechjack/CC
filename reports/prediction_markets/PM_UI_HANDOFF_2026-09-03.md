@@ -563,3 +563,42 @@ NO new file, NO delete, **NO subdivision.py, NO migration, NO engine file**. `fa
   detach-then-re-attach happens on the same sub-division. Not a defect.
 - **Backlog update** — attach/detach event-log is LIVE (migration **024**, `pm_subdivision_attachment_event`; head is
   24, next free 025 — the older "023 reserved" note is superseded). The roster Tenure cell now consumes it.
+
+--------------------------------------------------------------------------------
+## DEPLOY 15 (2026-09-21): WATCHLIST SPLITS PAGE (per category)
+
+**`origin/prod-live 5b8df49a -> f36f7ccc` (code+report, FF) -> docs FF, tag `pm-splits-deploy15-2026-09-21`.**
+pm_web-ONLY, **4 files** (app.py, live_view.py, pm_farm_category.html modified + **pm_farm_splits.html new**). NO
+subdivision.py, NO db.py, NO migration, NO cache-bust bump (splits CSS is inline-scoped in the template), NO engine
+file. ONE `prediction-markets-web` restart (499620 -> 511353); engine `trading-corp` **503492 / NRestarts 0
+UNTOUCHED**. Post-check **154 OK / 0 defect**. Full record: `PM_WATCHLIST_SPLITS_2026-09-21.md` §8.
+
+- **What it is** — a **read-only** page `/farm/{category}/splits`, linked from every `/farm/{category}` page: the
+  category's Watchlist whales' OPEN paper positions decoded into **game × market-type × side** and drawn as a
+  **stake-vs-headcount split** (splits table [default], whale grid, heatmap treemap). Modes all / copied-only /
+  compare, groups game / consensus / flat, sorts divergence / stake / most-split / most-agreed — **all in the URL,
+  server-rendered, JS-off safe** (NOT pm_sort.js). Nothing places/sizes/cancels; the route never reaches the order path.
+- **SPLITS ARCHITECTURE (the load-bearing decisions):**
+  - **SOURCE = `pm_paper_trade` (status='open'), NOT `pm_open_position`.** `pm_paper_trade` is the pinned-whale paper
+    poll (`paper.poll_pinned`, `pm_watchlist status='pinned' active=1`); `pm_open_position` is the daily whale-discovery
+    pull and is often days-stale — do not use it for a live view.
+  - **CADENCE 30 min:** the `paper-poll` crontab (`*/30`) writes `pm_paper_trade`; freshness = `last_observed_ts`
+    (per-row, can lag); the page shows last-refresh **ET + real age**, STALE past 30 min.
+  - **STAKE = whale_size_at_observation × entry_price_avg_at_observation** = the whale's dollars **at cost** (R4).
+    NOT `cost_basis` (that is our fixed paper `size_basis`×px = notional). Box-proven ~70× apart.
+  - **Grouping via the data-side `parse_poly_bet`** (`live_view._parse_poly_bet` / `_STRUCT_LEAGUES`) — **no broker
+    import** (standalone invariant preserved). **Structural coverage = cfb / mlb / nba / nfl / nhl / wnba ONLY**
+    (the `LEAGUES` keys). Other categories get an honest "no structural decode" state. A position that does not resolve
+    to a two-side frame is **omitted + counted** ("N positions not grouped").
+  - **Kalshi flag DROPPED (R8):** no pm_web index enumerates market existence (`milestones.py` = start-times keyed by
+    event ticker; `marks.py` = held/open tickers only) — absence ≠ non-existence, so per R8 the flag is dropped rather
+    than approximated. Start time: date from the slug + "start time unavailable" (a Poly slug is date-only; R6).
+  - Trusted = live-attached active=1 on any account (R3, overrides tier); tiers `PROMOTE/WATCH/PASS/INSUFFICIENT_DATA`
+    + "not analyzed" (no FADE/NEUTRAL). Reader `live_view.build_watchlist_splits` (pure) + `splits_frame` /
+    `splits_ordered` / `splits_treemap`; loader `app._load_watchlist_splits`; route `GET /farm/{category}/splits`.
+- **★ BACKLOG (next):** a **broker-free slug parse for soccer / tennis / UFC / CS2** so splits can cover those
+  categories too. Today only the STRUCTURAL matcher (`data/sports_structural_match`) is importable by pm_web without
+  the broker; the soccer (`soccer_poly_kalshi_match`) and tennis/UFC matchers live behind engine imports. The task:
+  **extract each matcher's slug grammar (the Poly-slug → game/market/side decode) into a data-only module** pm_web can
+  import, mirroring how `sports_structural_match` was carved out — then add those categories to the splits coverage.
+  Until then, those categories honestly show "no structural decode".

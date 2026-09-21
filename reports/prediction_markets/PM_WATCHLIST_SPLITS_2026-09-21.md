@@ -1,9 +1,12 @@
 # PM FARM LEAGUE — WATCHLIST SPLITS PAGE (per category) — 2026-09-21
 
-**STATUS: BUILT + TESTED (25 new, full-suite differential 24==24) + RENDERED (1600/1280/phone, all views/states) +
-BOX-VERIFIED (read-only, MLB+NFL tie out to the cent) + COMMITTED + BRANCH PUSHED. NOT DEPLOYED / NOT RESTARTED.**
-Branch `pm-watchlist-splits-2026-09-21` off `origin/prod-live` @ **`5b8df49a`** (git truth = box), worktree
-`C:\Users\AA Incorporado\cc-watchlist-splits-wt`. DEPLOY / RESTART are Jack's (Board actions).
+**STATUS: DEPLOY 15 LIVE ON prod-live 2026-09-21.** `origin/prod-live` **`5b8df49a` -> `f36f7ccc` (code+report, FF)**,
+tag **`pm-splits-deploy15-2026-09-21`**; a docs FF follows (this section + handoff). pm_web-only (4 files: 3 modified +
+1 new), ONE `prediction-markets-web` restart (**499620 -> 511353**, ActiveEnter 2026-09-21 20:07:47 UTC); engine
+`trading-corp` **503492 / NRestarts 0 UNTOUCHED**; box == prod-live; post-check **154 OK / 0 defect** (1 flagged check
+= a live-data condition, not a bug — see §8). Full record in section 8. Build record (sections 1-7) preceded the deploy.
+Branch `pm-watchlist-splits-2026-09-21` off `origin/prod-live` @ `5b8df49a` (git truth = box), worktree
+`C:\Users\AA Incorporado\cc-watchlist-splits-wt`.
 
 A new **read-only** page `/farm/{category}/splits`: the category's pinned-watchlist whales' OPEN paper positions,
 decoded into game × market-type × side and drawn as a stake-vs-headcount split (splits table + whale grid + heatmap).
@@ -113,4 +116,61 @@ db.py, NO migration, NO engine-shared file. Engine `trading-corp` NEVER restarte
 `pm_wlsplits_discover_ro` + `pm_wlsplits_discover2_ro` (D1–D6 box discovery: STRUCT coverage, tiers, cadence, price
 semantics, parse coverage), `pm_wlsplits_render.py` (the seeded all-shapes/stale/empty/unsupported renders in
 `cc/renders_wlsplits/`), `pm_wlsplits_verify_ro.py` (box ground-truth dump) + `pm_wlsplits_verify_local.py` (runs the
-real reader on the real rows and ties out to the cent). No deploy runner authored (deploy is Jack's).
+real reader on the real rows and ties out to the cent). Deploy runners in section 8.
+
+--------------------------------------------------------------------------------
+## 8. DEPLOY 15 (2026-09-21): WATCHLIST SPLITS PAGE — LIVE
+
+**`origin/prod-live 5b8df49a -> f36f7ccc` (code+report, FF), tag `pm-splits-deploy15-2026-09-21`.** pm_web-ONLY,
+4 files (3 modified + 1 new). **NO subdivision.py, NO db.py, NO migration, NO cache-bust bump (splits CSS is
+inline-scoped — no shared static asset changed), NO engine file.** ONE `prediction-markets-web` restart under the
+standing restart-authority grant; engine `trading-corp` **503492 / NRestarts 0 UNTOUCHED** before + after.
+
+**Files (CR-stripped sha16 BEFORE -> AFTER; box drift-gated to BEFORE, verified to AFTER):**
+
+| file | BEFORE | AFTER |
+|---|---|---|
+| `web/app.py` | `bf9895b03ed2a7b9` | `bcece565e3cb0693` |
+| `web/live_view.py` | `2cba1fe691bffba2` | `cd5e69f220ea8178` |
+| `web/templates/pm_farm_category.html` | `fb3b891cf87705c1` | `678c9bf5c6668c94` |
+| `web/templates/pm_farm_splits.html` | *(new)* | `f2a756ad13ae8aa0` |
+
+**Backup (gate):** `/home/azureuser/pm_deploy15_backup_20260921T200659Z` (3 modified files, each verified == box before
+ANY write; rollback restores the 3 + `rm`s the new pm_farm_splits.html). **pm_web PID:** 499620 -> **511353**
+(ActiveEnter 2026-09-21 20:07:47 UTC), NRestarts 0.
+
+**Steps 1-14 (all green):**
+- **1-2 precheck** — engine 503492/0 active (moved from 491380 by a bitunix deploy earlier today; that is the baseline
+  preserved); pm_web 499620; schema **24**; 4 heartbeats fresh; arm 69. box == prod-live for the 3 modified (== BEFORE)
+  + new file absent; **full web surface: 43 tracked files match, 0 drift** (the 7 `.bak_*`/`.orig` are pre-existing
+  untracked box backups). prod-live tip still 5b8df49a at deploy time (no rebase). No POST/mutating route in the diff.
+- **4 before (RO)** — ground truth captured; `/farm/mlb` before = 200 with the splits link **not yet present** (correct).
+- **5 graft** — GATE1 staged==TARGET (4), GATE2 box==BEFORE (3)+new absent, GATE3 backup verified, APPLY 4, VERIFY
+  written==TARGET, py_compile OK, **import gate: routes=25, /pm/arm=0, splits route present + methods=['GET'] (GET-only),
+  0 engine/broker/execution/pykalshi modules**.
+- **6 restart** — az run-command (pm_web only). Confirmed by MainPID 499620 -> 511353 + ActiveEnter 20:07:47 UTC (NOT
+  the az exit code); **engine 503492/0 unchanged immediately after**.
+- **7 tie-out** — `/farm/mlb/splits` page total **$179,512 == box $179,512**; `/farm/nfl/splits` **$32,856 == box**;
+  unparsed page==box (mlb 1, nfl 8); last-refresh **ET timestamp + age** shown; STALE banner correct (age 9m, absent);
+  **zero raw slug/ticker as a label**.
+- **8 views/URL** — `?view=grid`/`?view=heatmap` render; `?mode=trusted` (page trusted count **4 == attachment&pinned
+  4**); `?mode=compare`; `?group=shape` buckets; all 4 sorts; rows server-rendered (JS-off); **no nested `<a>` inside a
+  row/tile (D13 lesson guard)**.
+- **9 unsupported/empty** — `/farm/atp/splits` + `/farm/epl/splits` = 200 + "NO STRUCTURAL DECODE" + 0 rows;
+  `/farm/nba/splits` = 200 + honest empty ("No open, groupable").
+- **10 every /farm category (26)** — splits link present, Watchlist+Prospects intact, **"pinned" absent (vocab clean)**.
+- **11 tiers** — no FADE, no NEUTRAL. "not analyzed" mechanism is unit-proven; on live data **all 28 pinned MLB whales
+  are analyzed (0 un-analyzed)**, so the who-block phrase legitimately does not appear and the summary shows
+  "NOT ANALYZED: 0" — the one flagged post-check line is this live-data condition, **not a defect** (verified against
+  the box: 0 un-scored pinned whales).
+- **12 phone** — `.tm{display:none}` (heatmap hidden, R10) + bars markup present.
+- **13 rest of site** — /, /live all 4 tabs, /live/kalshi_jack/mlb, both /account = 200; all static assets 200; 0
+  double-escaped entities.
+- **14 engine** — trading-corp 503492/0 UNCHANGED across every step; 0 journalctl -p err (pm_web AND engine) since the
+  restart; order rows 1750 -> 1750 (monotonic; delta = fills only).
+
+**Post-check: 154 OK / 1 flagged (live-data, not a defect). box == prod-live** (4 shipped blobs == deployed shas).
+
+**Runners (cc/, added for D15):** `pm_deploy15_precheck_ro.{ps1,py}`, `pm_deploy15_graft.{ps1,sh}`,
+`pm_deploy15_restart_az.ps1`, `pm_deploy15_journal_ro.{ps1,sh}`, `pm_deploy15_postcheck_ro.{ps1,py}`,
+`pm_deploy15_restore.{ps1,sh}` (rollback armed with the backup path; unused — no failure).
