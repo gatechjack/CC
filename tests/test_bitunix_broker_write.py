@@ -256,6 +256,10 @@ async def test_place_entry_payload_and_fill():
     fill = await broker.place_order(order)
 
     body = client.body_of(P_PLACE)
+    # `effect` (TIF) is a LIMIT-only field per BitUnix docs; the 2026-09-21
+    # spec-clamp fix drops it from MARKET entries (out-of-spec on MARKET; a
+    # candidate co-cause of the 10002 reject regression). qty 0.001 already
+    # sits on the BTCUSDT lot step (basePrecision 4) so it is unchanged.
     assert body == {
         "symbol": "BTCUSDT",
         "side": "BUY",
@@ -263,9 +267,9 @@ async def test_place_entry_payload_and_fill():
         "qty": "0.001",
         "tradeSide": "OPEN",
         "reduceOnly": False,
-        "effect": "GTC",
         "clientId": f"tc-{order.id}",
     }
+    assert "effect" not in body
     # Fill parsed from history VWAP.
     assert fill.qty == pytest.approx(0.001)
     assert fill.price == pytest.approx(65000.0)
@@ -310,7 +314,9 @@ def test_entry_body_attaches_server_side_stop():
     broker, _ = _make_broker()
     order = _entry_order_with_stop(side="sell", stop=63402.83065)
     body = broker._build_order_body(order, "BTCUSDT", reduce_only=False)
-    assert body["slPrice"] == bx._amount_str(63402.83065)
+    # slPrice is clamped to the BTCUSDT price tick (quotePrecision=1 -> 0.1)
+    # by the 2026-09-21 spec-clamp fix: 63402.83065 -> 63402.8.
+    assert body["slPrice"] == "63402.8"
     assert body["slStopType"] == "MARK_PRICE"
     assert body["slOrderType"] == "MARKET"
     # MARKET stop → no slOrderPrice (that field is LIMIT-only).
@@ -359,7 +365,8 @@ async def test_place_entry_with_stop_sends_sl_on_the_wire():
     order = _entry_order_with_stop(side="sell", stop=63402.83065)
     await broker.place_order(order)
     body = client.body_of(P_PLACE)
-    assert body["slPrice"] == bx._amount_str(63402.83065)
+    # slPrice tick-clamped to quotePrecision=1 (spec-clamp fix): 63402.83065 -> 63402.8.
+    assert body["slPrice"] == "63402.8"
     assert body["slStopType"] == "MARK_PRICE"
     assert body["slOrderType"] == "MARKET"
     assert body["reduceOnly"] is False and body["tradeSide"] == "OPEN"
