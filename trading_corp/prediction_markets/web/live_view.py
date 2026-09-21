@@ -1483,3 +1483,270 @@ def build_roster_table(whale_records, booked_cost=None, *, now_ts, sort=None, di
         "thin_floor": int(wr.get("thin_floor", thin_floor)),
         "columns": ROSTER_SORT_COLUMNS,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+# WATCHLIST SPLITS (2026-09-21): the pinned-whale PAPER positions of a category, decoded into
+# game x market-type x side and drawn as a stake-vs-headcount split. SOURCE = pm_paper_trade
+# status='open' for pm_watchlist-pinned whales (the 30-min paper poll). STAKE = the whale's DOLLARS AT
+# COST = whale_size_at_observation * entry_price_avg_at_observation (R4 -- NOT cost_basis, which is our
+# fixed paper size_basis, i.e. notional). Grouping uses the SAME data-side parse_poly_bet already imported
+# (no broker). TRUSTED = live-attached (active=1) on any account for this category (R3, overrides tier).
+# Pure + FAIL-CLOSED: a position that does not resolve to a two-side frame is OMITTED and COUNTED (R7),
+# never guessed onto a game. READ-ONLY: nothing here can place, size or cancel. No Kalshi flag (R8: not
+# answerable from a pm_web index). Start time: "unavailable" (a Poly slug carries date only; R6).
+# ══════════════════════════════════════════════════════════════════════════════════════════════════
+SPLITS_THIN_WHALES = 4               # R9: fewer whales than this on a market = a THIN row
+SPLITS_DIVERGENCE_POINTS = 18        # R9: |stake% - headcount%| at/above this = DIVERGENCE
+SPLITS_STALE_AFTER_SEC = 30 * 60     # R5: a read older than this is STALE
+SPLITS_CONSENSUS_PCT = 70            # R9: majority-side headcount >= this = CONSENSUS
+SPLITS_LEAN_PCT = 56                 # R9: >= this (and < consensus) = LEAN; below = SPLIT
+SPLITS_TIERS = ("PROMOTE", "WATCH", "PASS", "INSUFFICIENT_DATA")   # the ONLY real tiers (no FADE/NEUTRAL, R3)
+SPLITS_SORTS = ("divergence", "stake", "consensus", "conflict")
+SPLITS_MODES = ("all", "trusted", "compare")
+SPLITS_GROUPS = ("game", "shape", "flat")
+
+
+def _short_wallet(wallet) -> str:
+    """A short, honest whale identifier when there is no user_name: '0x684baa57...' (never a raw slug/ticker,
+    never a fabricated name). A wallet IS a stable identifier, not an invented label."""
+    w = str(wallet or "")
+    return (w[:10] + "…") if len(w) > 12 else (w or "(unknown wallet)")
+
+
+def splits_frame(pb):
+    """Canonical two-side frame from a ParsedBet: (market_type, line, anchor, A_label, B_label, side_AB) or
+    None (FAIL-CLOSED for a non-two-team / prop / unresolved bet). The frame is CONSISTENT per (game,
+    market_type, line, anchor) so every whale on the same market lands on the same A/B: A = home / Over /
+    anchor-minus, B = away / Under / other-plus. Labels are team CODES + lines only (slug/ticker-free)."""
+    if pb is None or pb.away_code is None or pb.home_code is None or pb.away_name is None or pb.home_name is None:
+        return None
+    mt = pb.market_type
+    if mt == "moneyline" and pb.side in ("home", "away"):
+        return ("moneyline", None, None, "ML %s" % pb.home_code, "ML %s" % pb.away_code,
+                "A" if pb.side == "home" else "B")
+    if mt == "total" and pb.line is not None and pb.leg in ("yes", "no"):
+        return ("total", float(pb.line), None, "Over %.1f" % pb.line, "Under %.1f" % pb.line,
+                "A" if pb.leg == "yes" else "B")
+    if mt == "spread" and pb.line is not None and pb.leg in ("yes", "no") and pb.anchor_side in ("home", "away"):
+        anchor = pb.away_code if pb.anchor_side == "away" else pb.home_code
+        other = pb.home_code if pb.anchor_side == "away" else pb.away_code
+        return ("spread", float(pb.line), pb.anchor_side, "%s -%.1f" % (anchor, pb.line),
+                "%s +%.1f" % (other, pb.line), "A" if pb.leg == "yes" else "B")
+    return None
+
+
+def _split_stats(positions) -> dict:
+    """Aggregate position dicts (each {'side':'A'|'B','cost':float}) into the A/B split: stake per side (sum of
+    cost), headcount per side, and stake% / headcount% per side. Pure; empty -> all zeros."""
+    A = [p for p in positions if p.get("side") == "A"]
+    B = [p for p in positions if p.get("side") == "B"]
+    sA = sum(p["cost"] for p in A); sB = sum(p["cost"] for p in B)
+    n = len(positions); st = sA + sB
+    return {"A": A, "B": B, "nA": len(A), "nB": len(B), "n": n,
+            "stakeA": sA, "stakeB": sB, "stake": st,
+            "cA": (len(A) / n * 100.0) if n else 0.0, "cB": (len(B) / n * 100.0) if n else 0.0,
+            "kA": (sA / st * 100.0) if st else 0.0, "kB": (sB / st * 100.0) if st else 0.0}
+
+
+def _splits_shape(d) -> str:
+    """UNANIMOUS / CONSENSUS(>=70) / LEAN(>=56) / SPLIT by majority-side HEADCOUNT; SINGLE for one whale;
+    NONE for none (R9 thresholds). Measured on headcount, inside ONE market only."""
+    n = d["n"]
+    if not n:
+        return "NONE"
+    if n == 1:
+        return "SINGLE"
+    if d["cA"] == 100.0 or d["cB"] == 100.0:
+        return "UNANIMOUS"
+    one = max(d["cA"], d["cB"])
+    if one >= SPLITS_CONSENSUS_PCT:
+        return "CONSENSUS"
+    if one >= SPLITS_LEAN_PCT:
+        return "LEAN"
+    return "SPLIT"
+
+
+def build_watchlist_splits(paper_rows, whales, trusted_by_wallet, scores_by_wallet, *, category, now_ts,
+                           cfg=None, thin=SPLITS_THIN_WHALES, divergence=SPLITS_DIVERGENCE_POINTS,
+                           stale_after=SPLITS_STALE_AFTER_SEC):
+    """PURE builder for /farm/{category}/splits.
+    paper_rows: pm_paper_trade status='open' rows for `category`, each a dict with keys wallet, slug, outcome,
+      title, w_size (whale_size_at_observation), w_px (entry_price_avg_at_observation), last_observed_ts.
+    whales: the pinned watchlist set -- list of {'wallet': ...} (R2).
+    trusted_by_wallet: {wallet: [account_label,...]} for active=1 attachments of THIS category (R3).
+    scores_by_wallet: {wallet: {'tier': str|None, 'analyzed': bool, 'name': str|None}} (no row -> not analyzed, R3).
+    Returns the page context. FAIL-CLOSED: a row that does not resolve to a two-side frame is OMITTED and
+    counted in unparsed_count (R7). supported=False for a non-structural category (honest empty)."""
+    cat = str(category or "").lower()
+    if cfg is None:
+        cfg = _STRUCT_LEAGUES.get(cat)
+    supported = cfg is not None
+    scores_by_wallet = scores_by_wallet or {}
+    trusted_by_wallet = trusted_by_wallet or {}
+
+    def _wname(wallet):
+        sc = scores_by_wallet.get(wallet) or {}
+        return sc.get("name") or _short_wallet(wallet)
+
+    markets = {}
+    unparsed = 0
+    last_ts = None
+    for r in (paper_rows or []):
+        lt = r.get("last_observed_ts")
+        if lt is not None:
+            last_ts = int(lt) if last_ts is None else max(last_ts, int(lt))
+        pb = _parse_poly_bet(r.get("slug") or "", r.get("outcome") or "", cfg, r.get("title")) if supported else None
+        fr = splits_frame(pb)
+        if fr is None:
+            unparsed += 1
+            continue
+        mt, line, anchor, a_label, b_label, side = fr
+        w_size = float(r.get("w_size") or 0.0)
+        w_px = float(r.get("w_px") or 0.0)
+        matchup = "%s @ %s" % (pb.away_code, pb.home_code)
+        key = (matchup, pb.date_iso, mt, line, anchor)
+        m = markets.get(key)
+        if m is None:
+            m = markets[key] = {"matchup": matchup, "date": pb.date_iso, "market_type": mt, "line": line,
+                                "anchor": anchor, "A_label": a_label, "B_label": b_label,
+                                "positions": [], "last_observed_ts": (int(lt) if lt is not None else None)}
+        elif lt is not None:
+            m["last_observed_ts"] = int(lt) if m["last_observed_ts"] is None else max(m["last_observed_ts"], int(lt))
+        wallet = r.get("wallet")
+        copied_by = list(trusted_by_wallet.get(wallet) or [])
+        sc = scores_by_wallet.get(wallet) or {}
+        m["positions"].append({"wallet": wallet, "name": _wname(wallet),
+                               "tier": (sc.get("tier") if sc.get("analyzed") else None),
+                               "analyzed": bool(sc.get("analyzed")),
+                               "side": side, "shares": w_size, "price": w_px, "cost": w_size * w_px,
+                               "trusted": bool(copied_by), "copied_by": copied_by,
+                               "age_sec": (int(now_ts) - int(lt)) if lt is not None else None})
+
+    def _row(m):
+        allpos = m["positions"]
+        trpos = [p for p in allpos if p["trusted"]]
+        d_all = _split_stats(allpos)
+        d_tr = _split_stats(trpos)
+        gap = d_all["kA"] - d_all["cA"]
+        gap_tr = d_tr["kA"] - d_tr["cA"]
+        shape = _splits_shape(d_all)
+        shape_tr = _splits_shape(d_tr)
+        conflicted = shape in ("SPLIT", "LEAN")
+        conflicted_tr = shape_tr in ("SPLIT", "LEAN")
+        guard = conflicted and any(p["side"] == "A" and p["trusted"] for p in allpos) \
+            and any(p["side"] == "B" and p["trusted"] for p in allpos)
+        age = (int(now_ts) - int(m["last_observed_ts"])) if m["last_observed_ts"] is not None else None
+        return {"matchup": m["matchup"], "date": m["date"], "market_type": m["market_type"],
+                "kind_label": KIND_LABEL.get(m["market_type"], (m["market_type"] or "").upper()),
+                "line": m["line"], "anchor": m["anchor"], "A_label": m["A_label"], "B_label": m["B_label"],
+                "positions": sorted(allpos, key=lambda p: -p["cost"]),
+                "all": d_all, "trusted": d_tr, "gap": gap, "gap_tr": gap_tr,
+                "shape": shape, "shape_tr": shape_tr, "conflicted": conflicted, "conflicted_tr": conflicted_tr,
+                "guard": guard, "thin_all": d_all["n"] < thin, "thin_tr": d_tr["n"] < thin,
+                "diverges": abs(gap) >= divergence, "diverges_tr": abs(gap_tr) >= divergence,
+                "has_trusted": d_tr["n"] > 0, "age_sec": age,
+                "stale": (age is not None and age > stale_after),
+                "key": "%s|%s|%s|%s|%s" % (m["matchup"], m["date"], m["market_type"], m["line"], m["anchor"])}
+
+    rows = [_row(m) for m in markets.values()]
+    _order = {"moneyline": 0, "spread": 1, "total": 2}
+    games = {}
+    for row in rows:
+        gk = (row["matchup"], row["date"])
+        g = games.get(gk)
+        if g is None:
+            g = games[gk] = {"matchup": row["matchup"], "date": row["date"], "markets": [],
+                             "start_label": "start time unavailable"}   # R6: Poly slug is date-only
+        g["markets"].append(row)
+    game_list = list(games.values())
+    for g in game_list:
+        g["markets"].sort(key=lambda r: (_order.get(r["market_type"], 9), r["line"] or 0.0))
+        g["stake"] = sum(r["all"]["stake"] for r in g["markets"])
+    game_list.sort(key=lambda g: -g["stake"])
+
+    read_age = (int(now_ts) - int(last_ts)) if last_ts is not None else None
+    stale = (read_age is not None and read_age > stale_after)
+    tier_counts = {t: 0 for t in SPLITS_TIERS}
+    for w in whales:
+        sc = scores_by_wallet.get(w["wallet"]) or {}
+        if sc.get("analyzed") and sc.get("tier") in tier_counts:
+            tier_counts[sc["tier"]] += 1
+    n_not_analyzed = sum(1 for w in whales if not (scores_by_wallet.get(w["wallet"]) or {}).get("analyzed"))
+    trusted_wallets = [w for w in whales if trusted_by_wallet.get(w["wallet"])]
+    return {"supported": supported, "category": cat,
+            "games": game_list, "rows": rows, "unparsed_count": unparsed,
+            "read_age_sec": read_age, "refresh_ts": last_ts, "stale": stale,
+            "total_stake": sum(r["all"]["stake"] for r in rows),
+            "trusted_stake": sum(r["trusted"]["stake"] for r in rows),
+            "tier_counts": tier_counts, "n_not_analyzed": n_not_analyzed,
+            "n_whales": len(whales), "n_trusted": len(trusted_wallets),
+            "trusted_names": [(scores_by_wallet.get(w["wallet"], {}).get("name") or _short_wallet(w["wallet"]))
+                              for w in trusted_wallets],
+            "n_games": len(game_list), "n_markets": len(rows),
+            "thin": thin, "divergence": divergence, "stale_after": stale_after}
+
+
+def splits_shown(row, mode):
+    """The split a row shows under `mode`: the trusted subset for 'trusted', else all (R3 filter). 'compare'
+    shows all with the trusted overlay drawn by the template."""
+    return row["trusted"] if mode == "trusted" else row["all"]
+
+
+def splits_sort_key(mode, sort):
+    """Server-side sort key (R3: sort lives in the URL, JS-off safe). Divergence/stake/consensus/conflict,
+    measured on the mode's split. Returns a function row->sortable (descending applied by the caller)."""
+    def _shown(r):
+        return splits_shown(r, mode)
+    if sort == "stake":
+        return lambda r: _shown(r)["stake"]
+    if sort == "consensus":
+        return lambda r: max(_shown(r)["cA"], _shown(r)["cB"])
+    if sort == "conflict":
+        return lambda r: -max(_shown(r)["cA"], _shown(r)["cB"])
+    return lambda r: abs(_shown(r)["kA"] - _shown(r)["cA"])   # divergence (default)
+
+
+def splits_ordered(ctx, *, mode="all", sort="divergence", group="game"):
+    """Return the rows/games to render, filtered by mode + sorted by `sort`, grouped per `group`. Pure, no JS:
+    (a) mode='trusted' drops rows with no trusted whale; (b) sort is applied descending; (c) group='game'
+    returns games (each markets-sorted) ordered by max member sort-key; 'shape' returns shape buckets; 'flat'
+    a single ordered list. Everything server-rendered so the page is correct with JS off (R3)."""
+    mode = mode if mode in SPLITS_MODES else "all"
+    sort = sort if sort in SPLITS_SORTS else "divergence"
+    group = group if group in SPLITS_GROUPS else "game"
+    rows = ctx["rows"]
+    if mode == "trusted":
+        rows = [r for r in rows if r["has_trusted"]]
+    keyf = splits_sort_key(mode, sort)
+    rows = sorted(rows, key=keyf, reverse=True)
+    out = {"mode": mode, "sort": sort, "group": group}
+    if group == "flat":
+        out["flat"] = rows
+        return out
+    if group == "shape":
+        buckets = [("SPLIT", "Split - no consensus"), ("LEAN", "Lean"), ("CONSENSUS", "Consensus"),
+                   ("UNANIMOUS", "Unanimous"), ("SINGLE", "One whale only - not a consensus")]
+        shape_of = (lambda r: r["shape_tr"]) if mode == "trusted" else (lambda r: r["shape"])
+        out["buckets"] = [{"key": k, "title": t, "rows": [r for r in rows if shape_of(r) == k]}
+                          for k, t in buckets]
+        out["buckets"] = [b for b in out["buckets"] if b["rows"]]
+        return out
+    # group == game: order games by their best (max) row sort-key, markets already type-ordered within
+    seen = {}
+    order = []
+    for r in rows:
+        gk = (r["matchup"], r["date"])
+        if gk not in seen:
+            seen[gk] = {"matchup": r["matchup"], "date": r["date"], "markets": [], "score": keyf(r)}
+            order.append(gk)
+        seen[gk]["markets"].append(r)
+        seen[gk]["score"] = max(seen[gk]["score"], keyf(r))
+    _order = {"moneyline": 0, "spread": 1, "total": 2}
+    games = [seen[gk] for gk in order]
+    for g in games:
+        g["markets"].sort(key=lambda r: (_order.get(r["market_type"], 9), r["line"] or 0.0))
+        g["stake"] = sum(r["all"]["stake"] for r in g["markets"])
+    games.sort(key=lambda g: -g["score"])
+    out["games"] = games
+    return out
