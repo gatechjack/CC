@@ -602,3 +602,26 @@ UNTOUCHED**. Post-check **154 OK / 0 defect**. Full record: `PM_WATCHLIST_SPLITS
   **extract each matcher's slug grammar (the Poly-slug → game/market/side decode) into a data-only module** pm_web can
   import, mirroring how `sports_structural_match` was carved out — then add those categories to the splits coverage.
   Until then, those categories honestly show "no structural decode".
+
+--------------------------------------------------------------------------------
+## STANDING NOTES FOR THE NEXT UI AGENT (as of 2026-09-21, through Deploy 15)
+
+- **The pm_web RESTART is within atomic authority (standing since Deploy 14).** A board-authorized pm_web deploy brief
+  that says "ONE prediction-markets-web restart" INCLUDES the restart — run `pm_deploy<N>_restart_az.ps1` yourself; do
+  NOT hold it for a separate paste. Verify it by **MainPID + ActiveEnterTimestamp, never the az exit code** (az returns
+  "Provisioning succeeded" / empty stdout whether it ran or not). Confirm the engine `trading-corp` PID + NRestarts are
+  UNCHANGED immediately after. Scope = pm_web deploys ONLY (does not generalise az-root for engine restarts).
+- **VOCABULARY RULE (this bit the Deploy-15 build).** `pinned` / `candidate` are CODE words and must NEVER appear in
+  served HTML — the screen words are **Watchlist** (pinned) and **Prospects** (candidate). Tests enforce it
+  (`test_stage2_nav::test_category_page_knows_its_category`, `test_stage2_phase3::test_vocab_still_clean`); a link that
+  said "pinned whales" failed CI until reworded to "Watchlist whales". Grep any new served string for these words.
+- **ITF TILE LOGO — PARKED (open, not blocking).** The `itf` category has no `static/logos/ITF.png`, so its tile
+  renders no logo (the code degrades honestly: a logo shows only when the file exists, `live_view.py` / `app.py:1219`).
+  Jack was to supply the source PNG (chose the compact ITF+ball mark); it had not arrived at session close. Wire-in =
+  a ONE-FILE static add (`static/logos/ITF.png`) + a cache-bust (the tile img is `?v=<sha8>` from the file itself);
+  the code auto-detects the new file. No template change needed.
+- **WORKTREES LEFT IN PLACE (do not delete — each is at its deployed/pushed tip):**
+  - `C:\Users\AA Incorporado\cc-roster-tenure-wt` — branch `pm-roster-tenure-2026-09-20` @ `4d9a2c8e` (Deploy 14).
+  - `C:\Users\AA Incorporado\cc-watchlist-splits-wt` — branch `pm-watchlist-splits-2026-09-21` @ `8a23e1e8` (Deploy 15).
+  - `C:\Users\AA Incorporado\CC\.claude\worktrees\jackslog-2026-09-17` — branch `pm-docs-jackslog-2026-09-12`
+    (the running jacks-log; its own branch, deliberately NOT on prod-live).
