@@ -1667,6 +1667,9 @@ def build_watchlist_splits(paper_rows, whales, trusted_by_wallet, scores_by_wall
 
     read_age = (int(now_ts) - int(last_ts)) if last_ts is not None else None
     stale = (read_age is not None and read_age > stale_after)
+    refresh_et = None
+    if last_ts is not None:
+        refresh_et = datetime.fromtimestamp(int(last_ts), tz=timezone.utc).astimezone(_ET).strftime("%Y-%m-%d %H:%M ET")
     tier_counts = {t: 0 for t in SPLITS_TIERS}
     for w in whales:
         sc = scores_by_wallet.get(w["wallet"]) or {}
@@ -1676,7 +1679,7 @@ def build_watchlist_splits(paper_rows, whales, trusted_by_wallet, scores_by_wall
     trusted_wallets = [w for w in whales if trusted_by_wallet.get(w["wallet"])]
     return {"supported": supported, "category": cat,
             "games": game_list, "rows": rows, "unparsed_count": unparsed,
-            "read_age_sec": read_age, "refresh_ts": last_ts, "stale": stale,
+            "read_age_sec": read_age, "refresh_ts": last_ts, "refresh_et": refresh_et, "stale": stale,
             "total_stake": sum(r["all"]["stake"] for r in rows),
             "trusted_stake": sum(r["trusted"]["stake"] for r in rows),
             "tier_counts": tier_counts, "n_not_analyzed": n_not_analyzed,

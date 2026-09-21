@@ -93,12 +93,12 @@
     <a href="/farm/{{ category }}">{{ category|upper }}</a> &rsaquo; Watchlist splits</nav>
   <div class="h1row">
     <h1>Watchlist splits &mdash; {{ category|upper }}</h1>
-    {% if refresh_ts %}<span class="chip{{ ' stale' if stale }}">positions read
+    {% if refresh_ts %}<span class="chip{{ ' stale' if stale }}">last refresh {{ refresh_et }} &middot;
       {% if read_age_sec < 3600 %}{{ (read_age_sec // 60) }}m{% elif read_age_sec < 86400 %}{{ (read_age_sec // 3600) }}h{% else %}{{ (read_age_sec // 86400) }}d{% endif %} ago{{ ' &middot; stale'|safe if stale }}</span>
     {% else %}<span class="chip">no positions read</span>{% endif %}
     <span class="chip">read-only</span>
   </div>
-  <p class="caveat">The {{ n_whales }} pinned whales&rsquo; open paper positions, grouped by game &amp; market.
+  <p class="caveat">The {{ n_whales }} Watchlist whales&rsquo; open paper positions, grouped by game &amp; market.
     Stake is dollars at cost (shares &times; the whale&rsquo;s entry price) &mdash; never notional. Trusted means
     live-copied by an account ({{ n_trusted }} of {{ n_whales }}). Nothing here places, sizes or cancels anything.</p>
 
