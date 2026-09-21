@@ -13159,3 +13159,31 @@ a41644d0/acea4a74 match the build base exactly -> clean bump to 398dc425 / d342e
 **Three-way prove (box == build == prod-live):** strategy.py 7bdc7203 + mace.yaml 49476b0e on all three. box = live graft (on-box==build 0-diff at graft); build = branch mace-sizing-bp-floor-2026-09-09 @ bbb63ab; prod-live = this commit.
 
 **prod-live:** FF-push branch `mace-sizing-deploy-prodlive-2026-09-09` -> prod-live (base 4a99a3a = current origin/prod-live tip; prod-live's strategy 373260c6 / mace.yaml c382c937 matched the build base exactly -> clean FF bump to 7bdc7203 / 49476b0e). Clean fast-forward. 3rd prod-live push (after command-center-perf chain + pulse-phase1).
+
+---
+
+## 2026-09-21 ~10:31 UTC — bitunix precision-clamp: fix the 10002 reject regression that killed BOTH bitunix divisions (agent-driven, autonomous under explicit Board authorization; flat-guarded restart)
+
+**Commits:** fix `c360ca79` (cherry-picked to prod-live as `a4d437ad`), docs/report on branch `bitunix-futures-health-2026-09-20` @ `3cfedc46`.
+**Triggered by:** Board — "DEPLOY + RESTART the bitunix precision-clamp fix" (health-check session).
+**Backup tag:** box file backup `~/bfut_graft_backup_20260921T102326Z/` (n/a git tag; single-file graft).
+
+**Files deployed (1 code + 3 tests):**
+- `trading_corp/brokers/bitunix.py` — CR-sha `05fe1aab5f670d02` -> `d292a8fcffc14111`. Reads venue instrument spec (GET /market/trading_pairs, 6h TTL cache, primed at connect + before each placement, fail-soft); `_fmt_qty` floors qty to the lot step (10**-basePrecision, raised to minTradeVolume), `_fmt_price` rounds price to the tick (quotePrecision), fail-open to raw `_amount_str` for unknown symbols (fallback map BTC/ETH/XRP/SOL). Applied at all 8 wire sites (entry qty+limit+slPrice, TP legs, position SL, SL trail). Drops LIMIT-only `effect` from MARKET orders; KEEPS required `tradeSide=OPEN`. Error table expanded (10002/10008/30005/30014/30015/30022/30023/30031).
+- `tests/test_bitunix_spec_clamp.py` (new) + `tests/test_bitunix_broker_write.py` + `tests/test_bitunix_b2_maker_execution.py` (updated for the effect-drop + tick-clamped slPrice).
+
+**Root cause (proven, 90d box audit):** BitUnix tightened structural order validation ~2026-08-27 -> now rejects qty over basePrecision / price over quotePrecision with generic 10002 (pre-semantic; specific stop codes 30005/30022/30031 fire only after precision passes -- the 1x 30031 in 90d proves 10002 is structural, not mark/distance). `_amount_str` sent up to 8 dp, never quantized. Last live fill futures 2026-08-28T02:30 / sfp 2026-08-27T11:03 -> ~24 days of 100% rejects, both divisions via the shared broker, no code change our side. Stop-distance theory DISPROVEN (fills==rejects distance, wrongside=0).
+
+**Features shipped (load-bearing):** bitunix entries/TP/SL now send spec-valid qty (<=basePrecision) + price (<=quotePrecision); MARKET orders no longer send `effect`. Repairs BOTH bitunix_futures AND bitunix_sfp (shared broker).
+
+**Verification:** box-scratch on box venv (py3.14) 98 passed / 0 failed (`-p no:pytest_ethereum`); graft drift-gate box==base passed, applied, py_compile OK. Restart flat-guarded (0 open live rows both divisions, reconciler clean pre-restart). Restart via restart_tc.ps1: MainPID **491380 -> 503492** (start 2026-09-21 10:30:53 UTC, NRestarts 0). Boot-verify GREEN: restarted engine loads d292a8fc; both divisions wired; restart-resume matched=0 orphan=0; reconciler clean (0 matched live rows); 0 tracebacks/imports; **0 10002 since restart**.
+
+**Three-way prove (box == build == prod-live == main):** bitunix.py CR-sha `d292a8fcffc14111` on the box (grafted), the build (branch @ c360ca79), prod-live (this commit), and main (cherry-picked) -- all four equal. Base `05fe1aab` was identical on box/prod-live/main before deploy (main==prod-live invariant preserved: the fix grafted onto BOTH).
+
+**Inert / pending acceptance:** the FIRST real fill is the live acceptance and is SIGNAL-GATED (~1-2 signals/day) -- boot proves the code loads/runs but a filled order proves the venue accepts the clamped body. WATCH: first entry FILLS, live_orders_placed passes 123, no new 10002. If the first entry still 10002s -> rollback (see recipe) + revert prod-live/main, do NOT iterate live.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp ~/bfut_graft_backup_20260921T102326Z/trading_corp/brokers/bitunix.py /home/azureuser/trading_corp/trading_corp/brokers/bitunix.py"
+# then restart_tc.ps1 ; and git revert the prod-live + main FF commits (non-force).
+```
