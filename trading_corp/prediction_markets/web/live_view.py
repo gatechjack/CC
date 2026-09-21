@@ -1750,3 +1750,67 @@ def splits_ordered(ctx, *, mode="all", sort="divergence", group="game"):
     games.sort(key=lambda g: -g["score"])
     out["games"] = games
     return out
+
+
+def splits_treemap(rows, mode="all"):
+    """Server-side SQUARIFIED treemap of the visible rows by shown stake (the heatmap: tile AREA = stake at cost,
+    tint depth = consensus strength, hue = leading side). Pure port of the design's squarify -> a list of tiles
+    {row, x, y, w, h (percent of a 0-100 box), lead, lead_label, strength(0-1), stake, pct}. Deterministic, no JS
+    (R3/R10: the heatmap is hidden on phone; this is the desktop view). Rows with zero shown stake are dropped."""
+    items = [[r, splits_shown(r, mode)["stake"]] for r in rows]
+    items = [it for it in items if it[1] > 0]
+    items.sort(key=lambda it: -it[1])
+    placed = []
+
+    def squ(lst, x, y, w, h):
+        if not lst:
+            return
+        if len(lst) == 1:
+            placed.append((lst[0][0], x, y, w, h))
+            return
+        total = sum(v for _, v in lst)
+        short = min(w, h)
+        best, best_ratio = 1, float("inf")
+        for i in range(1, len(lst) + 1):
+            acc = sum(v for _, v in lst[:i])
+            frac = (acc / total) if total else 0.0
+            length = (w * frac) if w >= h else (h * frac)
+            worst = 0.0
+            for _, v in lst[:i]:
+                side = (v / acc) * short if acc else 0.0
+                if side and length:
+                    worst = max(worst, max(length / side, side / length))
+            if worst < best_ratio:
+                best_ratio, best = worst, i
+            else:
+                break
+        head, rest = lst[:best], lst[best:]
+        hv = sum(v for _, v in head)
+        frac = (hv / total) if total else 0.0
+        if w >= h:
+            cw = w * frac
+            cy = y
+            for r, v in head:
+                ch = h * (v / hv) if hv else 0.0
+                placed.append((r, x, cy, cw, ch))
+                cy += ch
+            squ(rest, x + cw, y, w - cw, h)
+        else:
+            ch = h * frac
+            cx = x
+            for r, v in head:
+                cw = w * (v / hv) if hv else 0.0
+                placed.append((r, cx, y, cw, ch))
+                cx += cw
+            squ(rest, x, y + ch, w, h - ch)
+
+    squ(items, 0.0, 0.0, 100.0, 100.0)
+    tiles = []
+    for r, x, y, w, h in placed:
+        d = splits_shown(r, mode)
+        lead = "A" if d["kA"] >= d["kB"] else "B"
+        tiles.append({"row": r, "x": x, "y": y, "w": w, "h": h, "lead": lead,
+                      "lead_label": r["A_label"] if lead == "A" else r["B_label"],
+                      "strength": max(d["kA"], d["kB"]) / 100.0, "stake": d["stake"],
+                      "pct": max(d["kA"], d["kB"])})
+    return tiles

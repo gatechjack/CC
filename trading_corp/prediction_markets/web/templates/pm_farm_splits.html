@@ -1,0 +1,330 @@
+{% extends "pm_shell.html" %}
+{% block title %}{{ category|upper }} splits &middot; Farm League &middot; Prediction Markets{% endblock %}
+
+{# WATCHLIST SPLITS (2026-09-21). SERVER-RENDERED, JS-OFF SAFE (R3): view/mode/group/sort live in the URL as
+   links; who-is-on-each-side uses <details> (native expand, no JS); no <script> at all. READ-ONLY page --
+   nothing here places, sizes or cancels. Scoped under .wls so pm.css/pm_desk.css are untouched. #}
+{% set base = "/farm/" ~ category ~ "/splits" %}
+{% set O = ordered %}
+{% macro qp(view, mode, group, sort) -%}
+{{ base }}?view={{ view }}&amp;mode={{ mode }}&amp;group={{ group }}&amp;sort={{ sort }}
+{%- endmacro %}
+{% macro money(v) -%}${{ '{:,.0f}'.format(v or 0) }}{%- endmacro %}
+{% macro pctv(v) -%}{{ (v or 0)|round|int }}%{%- endmacro %}
+{% macro tier_badge(p) -%}
+  {%- if p.analyzed and p.tier -%}<span class="wls-tr t{{ p.tier[0] }}" title="Analyze tier">{{ 'INSUF' if p.tier=='INSUFFICIENT_DATA' else p.tier }}</span>
+  {%- else -%}<span class="wls-tr na" title="no stored Analyze score">not analyzed</span>{%- endif -%}
+{%- endmacro %}
+
+{# ── one market row's two bars: headcount split, then stake split with the headcount TICK + the divergence gap ── #}
+{% macro bars(d) -%}
+  <div class="wls-bars">
+    <div class="bw"><span class="bk">WHALES {{ d.n }}</span>
+      <div class="bar count">
+        {% if d.cA > 0 %}<div class="sa" style="flex:0 0 {{ d.cA }}%"><span class="pc">{{ pctv(d.cA) }}</span></div>{% endif %}
+        {% if d.cB > 0 %}<div class="sb"><span class="pc">{{ pctv(d.cB) }}</span></div>{% endif %}
+      </div></div>
+    <div class="bw"><span class="bk">STAKE</span>
+      <div class="bar stake">
+        {% if d.kA > 0 %}<div class="sa" style="flex:0 0 {{ d.kA }}%"><span class="pc">{{ pctv(d.kA) }}</span></div>{% endif %}
+        {% if d.kB > 0 %}<div class="sb"><span class="pc">{{ pctv(d.kB) }}</span></div>{% endif %}
+        <div class="tick" style="left:{{ d.cA }}%" title="headcount split sits here"></div>
+        {% set lo = d.kA if d.kA < d.cA else d.cA %}
+        <div class="gapbar" style="left:{{ lo }}%;width:{{ (d.kA - d.cA)|abs }}%"></div>
+      </div></div>
+  </div>
+{%- endmacro %}
+
+{% macro who(r, d) -%}
+  <details class="wls-who"><summary>who is on each side</summary>
+    <div class="who">
+      {% for side, list, lbl in [('A', d.A, r.A_label), ('B', d.B, r.B_label)] %}
+      <div class="wc {{ side }}">
+        <div class="hd">{{ lbl }} &mdash; {{ list|length }} whale{{ '' if list|length==1 else 's' }} &middot; {{ money(list|sum(attribute='cost')) }}</div>
+        <div class="wl">
+          {% for p in list %}
+          <div class="wr">
+            <span class="nm">{{ p.name }}</span>{{ tier_badge(p) }}
+            <span class="st">{{ money(p.cost) }} <span class="dimmer">&middot; {{ '{:,.0f}'.format(p.shares) }} @ ${{ '%.2f'|format(p.price) }}</span></span>
+            {% if p.trusted %}<span class="cp">copied &middot; {{ p.copied_by|join(' + ') }}</span>{% endif %}
+          </div>
+          {% else %}<div class="wr"><span class="st dim">none</span></div>{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+{%- endmacro %}
+
+{% macro split_row(r) -%}
+  {% set d = r.trusted if O.mode == 'trusted' else r.all %}
+  {% set gap = d.kA - d.cA %}
+  {% set thin = r.thin_tr if O.mode == 'trusted' else r.thin_all %}
+  {% set shp = r.shape_tr if O.mode == 'trusted' else r.shape %}
+  {% set div = r.diverges_tr if O.mode == 'trusted' else r.diverges %}
+  {% set conf = r.conflicted_tr if O.mode == 'trusted' else r.conflicted %}
+  <div class="r{{ ' conflict' if conf }}{{ ' unan' if shp=='UNANIMOUS' }}{{ ' thin' if thin }}{{ ' guard' if r.guard }}">
+    <div class="lbl">
+      <div class="mk">{{ r.kind_label }}{{ ' ' ~ ('%.1f'|format(r.line)) if r.line is not none }}</div>
+      <div class="sides"><span class="a">{{ r.A_label }}</span><span class="v">vs</span><span class="b">{{ r.B_label }}</span></div>
+      <div class="flags">
+        <span class="f">{{ 'ONE WHALE' if shp=='SINGLE' else shp }}</span>
+        {% if div %}<span class="f div">DIVERGENCE {{ gap|abs|round|int }}PTS</span>{% endif %}
+        {% if thin %}<span class="f thin">THIN &middot; {{ d.n }} WHALE{{ '' if d.n==1 else 'S' }}</span>{% endif %}
+        {% if r.guard %}<span class="f guard">GUARD &middot; COPIED BOTH SIDES</span>{% endif %}
+        {% if r.stale %}<span class="f thin">STALE {{ (r.age_sec // 60) }}m</span>{% endif %}
+      </div>
+    </div>
+    {{ bars(d) }}
+    <div class="rr">
+      <div class="k">TOTAL STAKE AT COST</div>
+      <div class="stk">{{ money(d.stake) }}</div>
+      <div class="gp">{% if gap|abs < 1 %}<span class="dim">stake tracks headcount</span>
+        {%- else %}<b>{{ gap|abs|round|int }} pts</b> <span class="dim">more stake than heads on</span> {{ r.A_label if gap > 0 else r.B_label }}{% endif %}</div>
+      {% if O.mode == 'compare' and r.trusted.n %}<div class="trl"><span class="k">trusted</span> {{ pctv(r.trusted.kA) }} <span class="k">on {{ r.A_label }} &middot; {{ r.trusted.n }} of {{ r.all.n }} &middot; {{ money(r.trusted.stake) }}</span></div>{% endif %}
+    </div>
+    <div class="whowrap">{{ who(r, d) }}</div>
+  </div>
+{%- endmacro %}
+
+{% block content %}
+<div class="wls{{ ' isstale' if stale }}">
+  <nav class="crumb"><a href="/">Dashboard</a> &rsaquo; <a href="/farm">Farm League</a> &rsaquo;
+    <a href="/farm/{{ category }}">{{ category|upper }}</a> &rsaquo; Watchlist splits</nav>
+  <div class="h1row">
+    <h1>Watchlist splits &mdash; {{ category|upper }}</h1>
+    {% if refresh_ts %}<span class="chip{{ ' stale' if stale }}">positions read
+      {% if read_age_sec < 3600 %}{{ (read_age_sec // 60) }}m{% elif read_age_sec < 86400 %}{{ (read_age_sec // 3600) }}h{% else %}{{ (read_age_sec // 86400) }}d{% endif %} ago{{ ' &middot; stale'|safe if stale }}</span>
+    {% else %}<span class="chip">no positions read</span>{% endif %}
+    <span class="chip">read-only</span>
+  </div>
+  <p class="caveat">The {{ n_whales }} pinned whales&rsquo; open paper positions, grouped by game &amp; market.
+    Stake is dollars at cost (shares &times; the whale&rsquo;s entry price) &mdash; never notional. Trusted means
+    live-copied by an account ({{ n_trusted }} of {{ n_whales }}). Nothing here places, sizes or cancels anything.</p>
+
+  {% if not supported %}
+  <div class="staleban"><div class="t">NO STRUCTURAL DECODE</div>
+    <div class="b">{{ category|upper }} has no two-team game&times;market decode (only cfb / mlb / nba / nfl / nhl / wnba
+      parse a Polymarket slug into game, market type and side). The splits view needs that structure, so it is not
+      available for this category. This is honest-empty, not an error.</div></div>
+  {% else %}
+
+  {% if stale %}
+  <div class="staleban"><div class="t">STALE READ</div>
+    <div class="b">This snapshot is
+      {% if read_age_sec < 86400 %}{{ (read_age_sec // 3600) }}h {{ (read_age_sec % 3600) // 60 }}m{% else %}{{ (read_age_sec // 86400) }}d{% endif %}
+      old (the paper poller writes every ~30&nbsp;min; a read past 30&nbsp;min is stale) and positions move.
+      Bars are dimmed; treat every figure as last-known, not current.</div></div>
+  {% endif %}
+
+  {# ── summary ── #}
+  <div class="sum">
+    <div class="sc"><div class="u">Open whale stake &mdash; at cost</div>
+      <div class="big">{{ money(total_stake) }}</div>
+      <div class="caveat">{{ n_markets }} market{{ '' if n_markets==1 else 's' }} across {{ n_games }} game{{ '' if n_games==1 else 's' }}.
+        {% if unparsed_count %}{{ unparsed_count }} position{{ '' if unparsed_count==1 else 's' }} not grouped (unparsed &mdash; props / futures with no game&times;market frame).{% endif %}</div></div>
+    <div class="sc"><div class="u">Whales on the {{ category|upper }} watchlist</div>
+      <div class="big">{{ n_whales }}</div>
+      <div class="tiers">
+        {% for t in ['PROMOTE','WATCH','PASS','INSUFFICIENT_DATA'] %}<div><span class="tv">{{ tier_counts[t] }}</span><span class="tk">{{ 'INSUF' if t=='INSUFFICIENT_DATA' else t }}</span></div>{% endfor %}
+        <div><span class="tv">{{ n_not_analyzed }}</span><span class="tk">NOT ANALYZED</span></div>
+      </div>
+      <div class="caveat">Analyze grade, for context only &mdash; the filter here is whether we copy the whale live, not the grade.</div></div>
+    <div class="sc"><div class="u">Copied live &mdash; any account</div>
+      <div class="big">{{ money(trusted_stake) }}</div>
+      <div class="caveat">{% if total_stake %}{{ (trusted_stake / total_stake * 100)|round|int }}% of all stake, {% endif %}from the {{ n_trusted }} whale{{ '' if n_trusted==1 else 's' }} we copy{% if trusted_names %}: {{ trusted_names|join(', ') }}{% endif %}. A live copy is money committed, not an opinion.</div></div>
+    <div class="sc"><div class="u">What to look at</div>
+      <div class="tiers" style="margin-top:7px">
+        <div><span class="tv">{{ rows|selectattr('diverges')|list|length }}</span><span class="tk">DIVERGENT</span></div>
+        <div><span class="tv">{{ rows|selectattr('conflicted')|list|length }}</span><span class="tk">CONFLICTED</span></div>
+        <div><span class="tv">{{ rows|selectattr('thin_all')|list|length }}</span><span class="tk">THIN</span></div>
+        <div><span class="tv">{{ rows|selectattr('guard')|list|length }}</span><span class="tk">GUARD</span></div>
+      </div>
+      <div class="caveat">Divergent = stake and headcount disagree by {{ divergence }} points or more. Guard = a
+        conflicted market where copied whales sit on both sides.</div></div>
+  </div>
+
+  {# ── controls: URL links, JS-off safe ── #}
+  <div class="ctl">
+    <div class="grp"><span class="u">View</span><div class="seg">
+      {% for v,l in [('splits','Splits'),('grid','Whale grid'),('heatmap','Heatmap')] %}<a class="sb{{ ' on' if view==v }}" href="{{ qp(v, O.mode, O.group, O.sort) }}">{{ l }}</a>{% endfor %}</div></div>
+    <div class="grp"><span class="u">Whose consensus</span><div class="seg">
+      {% for v,l in [('all','All watchlist'),('trusted','Copied only'),('compare','Compare')] %}<a class="sb{{ ' on' if O.mode==v }}" href="{{ qp(view, v, O.group, O.sort) }}">{{ l }}</a>{% endfor %}</div></div>
+    <div class="sp">
+      {% if view=='splits' %}<div class="grp"><span class="u">Group</span><div class="seg">
+        {% for v,l in [('game','By game'),('shape','By consensus'),('flat','Flat')] %}<a class="sb{{ ' on' if O.group==v }}" href="{{ qp(view, O.mode, v, O.sort) }}">{{ l }}</a>{% endfor %}</div></div>{% endif %}
+      <div class="grp"><span class="u">Sort</span><div class="seg">
+        {% for v,l in [('divergence','Divergence'),('stake','Stake'),('conflict','Most split'),('consensus','Most agreed')] %}<a class="sb{{ ' on' if O.sort==v }}" href="{{ qp(view, O.mode, O.group, v) }}">{{ l }}</a>{% endfor %}</div></div>
+    </div>
+  </div>
+
+  {% if n_markets == 0 %}
+  <div class="empty">No open, groupable positions for the {{ category|upper }} watchlist right now.
+    {% if unparsed_count %}({{ unparsed_count }} open position{{ '' if unparsed_count==1 else 's' }} are props / futures with no game&times;market frame.){% endif %}</div>
+  {% elif view == 'splits' %}
+    {% if O.group == 'game' %}
+      {% for g in O.games %}
+      <div class="gh"><span class="g">{{ g.matchup }}</span>
+        <span class="sub">{{ g.date }} &middot; <b>start time unavailable</b> &middot; {{ g.markets|length }} market{{ '' if g.markets|length==1 else 's' }} &middot; {{ money(g.stake) }}</span></div>
+      <div class="rows">{% for r in g.markets %}{{ split_row(r) }}{% endfor %}</div>
+      {% endfor %}
+    {% elif O.group == 'shape' %}
+      {% for b in O.buckets %}
+      <h2 class="bkt">{{ b.title }} <span class="n">{{ b.rows|length }}</span></h2>
+      <div class="rows">{% for r in b.rows %}{{ split_row(r) }}{% endfor %}</div>
+      {% endfor %}
+    {% else %}
+      <div class="rows">{% for r in O.flat %}{{ split_row(r) }}{% endfor %}</div>
+    {% endif %}
+    <div class="legend">
+      <span><i class="ia"></i>side one</span><span><i class="ib"></i>side two &mdash; neither means good or bad</span>
+      <span><i class="itick"></i>headcount mark on the stake bar</span>
+      <span class="dim">the wider the gap between the fill and the mark, the more the money disagrees with the crowd</span>
+    </div>
+
+  {% elif view == 'grid' %}
+    {% set ws = whales_grid if whales_grid is defined else [] %}
+    <div class="gwrap"><table class="gg">
+      <thead><tr><th class="rowhd">Game &middot; market</th>
+        {% set cols = [] %}
+        {% for r in O.flat if False %}{% endfor %}
+        {% set flat = O.flat if O.group=='flat' else (O.games|map(attribute='markets')|sum(start=[])) if O.group=='game' else (O.buckets|map(attribute='rows')|sum(start=[])) %}
+        {% set colwallets = [] %}
+        {% for r in flat %}{% for p in r.positions %}{% if p.wallet not in colwallets %}{% set _ = colwallets.append(p.wallet) %}{% endif %}{% endfor %}{% endfor %}
+        {% for wid in colwallets %}{% set nm = (flat|map(attribute='positions')|sum(start=[])|selectattr('wallet','equalto',wid)|first) %}<th title="{{ nm.name }}">{{ nm.name if nm.name|length <= 12 else nm.name[:11] ~ '…' }}<div class="th2">{{ (nm.tier[:5] if nm.tier else 'n/a') }}{{ ' &middot; LIVE'|safe if nm.trusted }}</div></th>{% endfor %}
+      </tr></thead>
+      <tbody>
+        {% for r in flat %}{% set d = r.trusted if O.mode=='trusted' else r.all %}
+        <tr class="{{ 'conflict' if r.conflicted }}">
+          <td class="rowhd"><div class="g">{{ r.matchup }}</div><div class="m">{{ r.kind_label }}{{ ' '~('%.1f'|format(r.line)) if r.line is not none }} &middot; {{ d.n }}w &middot; {{ money(d.stake) }}{{ ' &middot; thin'|safe if r.thin_all }}</div></td>
+          {% for wid in colwallets %}{% set p = (r.positions|selectattr('wallet','equalto',wid)|first) %}
+            {% if p %}<td><div class="cell {{ p.side }}{{ ' big' if p.cost >= 1500 }}" title="{{ p.name }} &middot; {{ (r.A_label if p.side=='A' else r.B_label) }} &middot; {{ money(p.cost) }}">{{ (r.A_label if p.side=='A' else r.B_label)|truncate(9, true, '…') }}</div></td>
+            {% else %}<td><div class="cell n">&middot;</div></td>{% endif %}
+          {% endfor %}
+        </tr>{% endfor %}
+      </tbody>
+    </table></div>
+    <div class="caveat" style="margin-top:9px">Rows are markets, columns are whales; a cell is the side taken (not a rating).
+      A bolder cell is a bigger position (&ge; {{ money(1500) }} cost). Empty means no open position in that market.</div>
+
+  {% else %}{# heatmap #}
+    <div class="tm">
+      {% for t in tiles %}
+      <div class="tmx {{ 'xs' if t.w < 7 or t.h < 9 else ('sm' if t.w < 11 or t.h < 13 else '') }}"
+           style="left:{{ t.x }}%;top:{{ t.y }}%;width:{{ t.w }}%;height:{{ t.h }}%;background:rgba({{ '125,155,240' if t.lead=='A' else '201,138,182' }},{{ [0.08, [0.34, (0.10 + (t.strength-0.5)*2*0.24)]|min]|max|round(3) }})"
+           title="{{ t.row.matchup }} &middot; {{ t.row.kind_label }} &middot; {{ money(t.stake) }} &middot; {{ pctv(t.pct) }} on {{ t.lead_label }}">
+        <span class="g">{{ t.row.matchup }}</span><span class="m">{{ t.row.kind_label }}</span>
+        <span class="s">{{ money(t.stake) }}</span><span class="c">{{ pctv(t.pct) }} {{ t.lead_label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="caveat" style="margin-top:9px">Tile area is total stake at cost across {{ tiles|length }} markets. Tint depth is
+      consensus strength; hue is the leading side. This view answers &ldquo;where is the money&rdquo; only &mdash; a thin
+      row cannot read as thin here, so read it alongside the splits. (Hidden on phone, R10.)</div>
+  {% endif %}
+
+  {% endif %}{# supported #}
+</div>
+
+<style>
+.wls{max-width:1600px;margin:0 auto;padding:0 4px 60px;
+  --sA:#7d9bf0;--sAd:#1b2747;--sAt:#b7c6fa;--sB:#c98ab6;--sBd:#3a2033;--sBt:#e6bcd8;
+  --wbg:#0d131d;--wln:#1e2a3a;--wln2:#2b3a4e;--wdim:#8092a6;--wdimmer:#5d6f84;--wstale:#f0a94c;--wtext:#e2e8f0}
+.wls .mono,.wls .stk,.wls .big{font-variant-numeric:tabular-nums}
+.wls .crumb{font-family:var(--dmono,monospace);font-size:11px;color:var(--wdimmer);padding:14px 0 2px}
+.wls .h1row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px}
+.wls h1{font-size:22px;font-weight:600;margin:0;letter-spacing:-.01em}
+.wls .chip{font-family:var(--dmono,monospace);font-size:10px;padding:2px 6px;border-radius:2px;border:1px solid var(--wln2);color:var(--wdim)}
+.wls .chip.stale{color:var(--wstale);border-color:#6b4a1c;background:#2a1d0b}
+.wls .caveat{font-size:11.5px;color:var(--wdim);line-height:1.4;max-width:104ch;margin:7px 0 0}
+.wls .dim{color:var(--wdim)}.wls .dimmer{color:var(--wdimmer)}
+.wls .staleban{margin-top:14px;border:1px solid #6b4a1c;border-left:3px solid var(--wstale);background:#1b1408;border-radius:3px;padding:11px 14px;display:flex;gap:14px;flex-wrap:wrap}
+.wls .staleban .t{font-family:var(--dmono,monospace);font-size:11px;letter-spacing:.13em;color:var(--wstale)}
+.wls .staleban .b{font-size:12.5px;color:#efdcc2;max-width:88ch}
+.wls .empty{margin-top:20px;padding:26px;border:1px dashed var(--wln2);border-radius:4px;color:var(--wdim);text-align:center}
+.wls .sum{margin-top:16px;border:1px solid var(--wln);border-radius:3px;background:var(--wbg);display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}
+.wls .sc{padding:12px 15px;border-right:1px solid var(--wln)}.wls .sc:last-child{border-right:0}
+.wls .u{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--wdim)}
+.wls .big{font-family:var(--dmono,monospace);font-size:25px;letter-spacing:-.02em;margin-top:2px}
+.wls .tiers{display:flex;gap:10px;margin-top:7px;flex-wrap:wrap}
+.wls .tiers>div{display:flex;align-items:baseline;gap:4px}
+.wls .tv{font-family:var(--dmono,monospace);font-size:14px}.wls .tk{font-family:var(--dmono,monospace);font-size:8.5px;letter-spacing:.08em;color:#4a5d74}
+.wls .ctl{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:18px 0 0}
+.wls .grp{display:grid;gap:5px}.wls .ctl .sp{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
+.wls .seg{display:inline-flex;border:1px solid var(--wln2);border-radius:2px;overflow:hidden}
+.wls .seg .sb{font-family:var(--dmono,monospace);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;background:transparent;color:var(--wdim);border-right:1px solid var(--wln2);padding:6px 11px;text-decoration:none}
+.wls .seg .sb:last-child{border-right:0}.wls .seg .sb.on{background:#121b28;color:var(--wtext)}
+.wls .gh{display:flex;align-items:baseline;gap:10px;margin:18px 0 -1px;padding:0 2px;flex-wrap:wrap}
+.wls .gh .g{font-family:var(--dmono,monospace);font-size:13.5px}.wls .gh .sub{font-family:var(--dmono,monospace);font-size:10px;color:var(--wdimmer)}
+.wls h2.bkt{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--wdim);margin:24px 0 8px}
+.wls h2.bkt .n{font-family:var(--dmono,monospace);color:var(--wdimmer)}
+.wls .rows{display:grid;gap:7px;margin-top:10px}
+.wls .r{background:var(--wbg);border:1px solid var(--wln);border-radius:3px;padding:10px 13px;display:grid;grid-template-columns:230px minmax(0,1fr) 168px;gap:16px;align-items:center}
+.wls .r.conflict{box-shadow:inset 3px 0 0 0 var(--wstale)}.wls .r.unan{box-shadow:inset 3px 0 0 0 #33455c}
+.wls .r.thin{border-style:dashed}.wls .r.guard{border-color:#6d3f1c}
+.wls .mk{font-family:var(--dmono,monospace);font-size:12px;letter-spacing:.1em;color:var(--wdim)}
+.wls .sides{display:flex;align-items:baseline;gap:7px;margin-top:2px;flex-wrap:wrap}
+.wls .sides .a{font-family:var(--dmono,monospace);font-size:14px;color:var(--sAt)}.wls .sides .b{font-family:var(--dmono,monospace);font-size:14px;color:var(--sBt)}
+.wls .sides .v{font-family:var(--dmono,monospace);font-size:10px;color:#42566d}
+.wls .flags{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap}
+.wls .f{font-family:var(--dmono,monospace);font-size:8.5px;letter-spacing:.09em;padding:2px 5px;border-radius:2px;border:1px solid var(--wln2);color:#5d7188}
+.wls .f.thin{color:var(--wstale);border-color:#6b4a1c}.wls .f.guard{color:var(--wstale);border-color:#6b4a1c;background:#241a08}
+.wls .f.div{color:var(--wtext);border-color:#46596f;background:#141d29}
+.wls .bars{display:grid;gap:5px;min-width:0}
+.wls .bw{display:grid;grid-template-columns:56px minmax(0,1fr);gap:9px;align-items:center}
+.wls .bw .bk{font-family:var(--dmono,monospace);font-size:8.5px;letter-spacing:.1em;color:#4a5d74;text-align:right}
+.wls .bar{position:relative;height:19px;background:#0a0e15;border-radius:2px;display:flex;overflow:hidden}
+.wls .bar .sa{background:var(--sAd);border-right:1px solid var(--sA);display:flex;align-items:center;padding-left:6px;min-width:0}
+.wls .bar .sb{background:var(--sBd);display:flex;align-items:center;justify-content:flex-end;padding-right:6px;min-width:0;flex:1}
+.wls .bar .pc{font-family:var(--dmono,monospace);font-size:10px}.wls .bar .sa .pc{color:var(--sAt)}.wls .bar .sb .pc{color:var(--sBt)}
+.wls .bar.stake .sa{background:var(--sA);border-right-color:#c8d5fd}.wls .bar.stake .sb{background:var(--sB)}
+.wls .bar.stake .sa .pc{color:#08101f;font-weight:600}.wls .bar.stake .sb .pc{color:#25101c;font-weight:600}
+.wls .tick{position:absolute;top:-3px;bottom:-3px;width:0;border-left:1px dashed var(--wtext);z-index:2}
+.wls .gapbar{position:absolute;top:50%;height:3px;transform:translateY(-50%);background:var(--wtext);opacity:.5;z-index:1}
+.wls .rr{display:grid;gap:3px;justify-items:end;text-align:right;min-width:0}
+.wls .rr .k{font-family:var(--dmono,monospace);font-size:8.5px;letter-spacing:.09em;color:#4a5d74}
+.wls .rr .stk{font-family:var(--dmono,monospace);font-size:17px;letter-spacing:-.02em}
+.wls .rr .gp{font-family:var(--dmono,monospace);font-size:10.5px;line-height:1.4}
+.wls .rr .trl{font-family:var(--dmono,monospace);font-size:10px;color:var(--wtext);margin-top:3px;padding-top:4px;border-top:1px dotted #46596f}
+.wls .whowrap{grid-column:1/-1}
+.wls .wls-who summary{font-family:var(--dmono,monospace);font-size:10px;color:var(--wdim);cursor:pointer;list-style:none;padding-top:8px}
+.wls .wls-who summary::-webkit-details-marker{display:none}
+.wls .who{margin-top:8px;padding-top:9px;border-top:1px solid #141d29;display:grid;grid-template-columns:1fr 1fr;gap:10px 18px}
+.wls .wc .hd{font-family:var(--dmono,monospace);font-size:9.5px;letter-spacing:.1em;margin-bottom:5px}
+.wls .wc.A .hd{color:var(--sAt)}.wls .wc.B .hd{color:var(--sBt)}
+.wls .wl{display:grid;gap:2px}
+.wls .wr{display:flex;gap:8px;align-items:baseline;font-family:var(--dmono,monospace);font-size:11px;flex-wrap:wrap}
+.wls .wr .nm{color:var(--wtext)}.wls .wr .st{color:var(--wdim)}
+.wls .wls-tr{font-size:8.5px;letter-spacing:.08em;padding:1px 4px;border-radius:2px;border:1px solid var(--wln2);color:#5d7188}
+.wls .wls-tr.tP{color:var(--wtext);border-color:#46596f;background:#161f2c}.wls .wls-tr.tW{color:var(--wdim)}
+.wls .wls-tr.na{color:var(--wdimmer);border-style:dashed}
+.wls .wr .cp{font-size:8.5px;color:var(--wstale)}
+.wls .legend{display:flex;flex-wrap:wrap;gap:14px;padding:10px 13px;font-family:var(--dmono,monospace);font-size:10px;color:var(--wdim);border:1px solid var(--wln);border-radius:3px;background:var(--wbg);margin-top:14px}
+.wls .legend i{display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:1px}
+.wls .legend .ia{background:var(--sA)}.wls .legend .ib{background:var(--sB)}.wls .legend .itick{width:1px;height:11px;background:var(--wtext)}
+.wls .gwrap{overflow-x:auto;border:1px solid var(--wln);border-radius:3px;background:var(--wbg);margin-top:12px}
+.wls table.gg{border-collapse:collapse;font-family:var(--dmono,monospace);font-size:11px;min-width:100%}
+.wls table.gg th,.wls table.gg td{border-right:1px solid #141d29;border-bottom:1px solid #141d29;padding:0}
+.wls table.gg thead th{background:var(--wbg);padding:7px;font-weight:400;color:var(--wdim);font-size:9.5px;text-align:center;white-space:nowrap;vertical-align:bottom}
+.wls table.gg th.rowhd,.wls table.gg td.rowhd{text-align:left;position:sticky;left:0;background:var(--wbg);z-index:2;min-width:230px;padding:6px 9px}
+.wls table.gg .th2{color:#42566d;font-size:8px}
+.wls table.gg td.rowhd .g{color:var(--wtext)}.wls table.gg td.rowhd .m{color:#4a5d74;font-size:9px}
+.wls .cell{height:32px;display:flex;align-items:center;justify-content:center;font-size:9.5px}
+.wls .cell.A{background:var(--sAd);color:var(--sAt);box-shadow:inset 0 -2px 0 0 var(--sA)}
+.wls .cell.B{background:var(--sBd);color:var(--sBt);box-shadow:inset 0 -2px 0 0 var(--sB)}
+.wls .cell.n{color:#1d2735}.wls .cell.big{font-weight:600}
+.wls .tm{position:relative;margin-top:12px;border:1px solid var(--wln);border-radius:3px;background:#090e15;height:420px;overflow:hidden}
+.wls .tmx{position:absolute;border:1px solid #070b12;padding:7px 8px;overflow:hidden;color:var(--wtext);display:flex;flex-direction:column;gap:2px}
+.wls .tmx .g{font-family:var(--dmono,monospace);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wls .tmx .m{font-family:var(--dmono,monospace);font-size:8.5px;letter-spacing:.1em;opacity:.7}
+.wls .tmx .s{font-family:var(--dmono,monospace);font-size:14px;margin-top:auto}.wls .tmx .c{font-family:var(--dmono,monospace);font-size:8.5px;opacity:.75}
+.wls .tmx.sm .m,.wls .tmx.sm .c{display:none}.wls .tmx.xs .s,.wls .tmx.xs .m,.wls .tmx.xs .c{display:none}.wls .tmx.xs .g{font-size:9px}
+.wls.isstale .bar .sa,.wls.isstale .bar .sb,.wls.isstale .cell,.wls.isstale .tmx{opacity:.42}
+.wls.isstale .rr .stk,.wls.isstale .sc .big{color:var(--wstale)}
+@media(max-width:1100px){.wls .sum{grid-template-columns:1fr 1fr}}
+@media(max-width:1000px){.wls .r{grid-template-columns:1fr;gap:10px}.wls .rr{justify-items:start;text-align:left}}
+@media(max-width:640px){.wls .sum{grid-template-columns:1fr}.wls .who{grid-template-columns:1fr}
+  .wls .tm{display:none}  /* R10: heatmap hidden on phone */
+  .wls .ctl .sp{margin-left:0}}
+</style>
+{% endblock %}

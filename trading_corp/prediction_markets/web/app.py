@@ -585,6 +585,53 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
             "live_accounts": live_accounts, "live_attach": live_attach}
 
 
+def _account_label(account_id: str) -> str:
+    """A short friendly account label for the 'copied by' line: 'kalshi_jack' -> 'Jack'. Falls back to the raw
+    id (never invented)."""
+    tail = str(account_id or "").split("_")[-1]
+    return tail.title() if tail else str(account_id or "")
+
+
+def _load_watchlist_splits(category: str, now_ts: int) -> dict | None:
+    """Read-only loader for /farm/{category}/splits (R1). Returns None -> 404 for a non-league category (same
+    allowlist gate as /farm/{category}). Reads the PINNED watchlist set (R2), each whale's stored tier + name
+    (R3; 'not analyzed' when no score row), the live-attachment TRUSTED map (R3: active=1 on any account for
+    this category), and the OPEN pm_paper_trade positions (R4/R5 source: the 30-min paper poll), then builds the
+    pure splits context. NO engine/broker import; NOTHING mutates; no route reaches the order path."""
+    if not farm.is_league_category(category):
+        return None
+    with connect() as conn:
+        pinned = farm.farm_rows(conn, status=farm.PINNED, category=category)
+        pinned_set = {r["wallet"] for r in pinned}
+        whales = [{"wallet": r["wallet"]} for r in pinned]
+        score_map = _load_whale_score_map(conn, category)
+        scores_by_wallet = {}
+        for r in pinned:
+            w = r["wallet"]
+            cell = _score_cell(score_map.get(w), now_ts)
+            scores_by_wallet[w] = {"tier": cell.get("tier"), "analyzed": bool(cell.get("analyzed")),
+                                   "name": (r["user_name"] if "user_name" in r.keys() else None)}
+        trusted_by_wallet: dict = {}
+        try:
+            for a in conn.execute("SELECT wallet, account_id FROM pm_subdivision_attachment "
+                                  "WHERE category=? AND active=1", (category,)):
+                trusted_by_wallet.setdefault(a["wallet"], []).append(_account_label(a["account_id"]))
+        except Exception:   # noqa: BLE001 -- absent table -> honest-empty (no whale trusted), never a 500
+            trusted_by_wallet = {}
+        paper_rows = []
+        try:
+            for p in conn.execute(
+                    "SELECT wallet, slug, outcome, title, whale_size_at_observation AS w_size, "
+                    "entry_price_avg_at_observation AS w_px, last_observed_ts FROM pm_paper_trade "
+                    "WHERE category=? AND status='open'", (category,)):
+                if p["wallet"] in pinned_set:                 # R2: pinned whales only (drop trades of unpinned wallets)
+                    paper_rows.append(dict(p))
+        except Exception:   # noqa: BLE001 -- absent table (pre-migration-005) -> honest-empty page, never a 500
+            paper_rows = []
+    return live_view.build_watchlist_splits(paper_rows, whales, trusted_by_wallet, scores_by_wallet,
+                                            category=category, now_ts=now_ts)
+
+
 # ── Multi-account (M2, 2026-09-01): the accounts overview (the new top of the hierarchy, R1) + per-account page. ──
 # DISPLAY-ONLY (ruled): these render PM's journal-derived P&L per account; they carry NO arm/attach control (R4:
 # the global arm STATE is visible read-only, the CONTROL is admin-only + M5). An account with 0 PM sub-divisions is
@@ -781,6 +828,28 @@ async def farm_league_category(request: Request, category: str):
         return templates.TemplateResponse(
             request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)
     return templates.TemplateResponse(request, "pm_farm_category.html", {"request": request, **data})
+
+
+@app.get("/farm/{category}/splits", response_class=HTMLResponse)
+async def farm_category_splits(request: Request, category: str, mode: str = "all",
+                              sort: str = "divergence", group: str = "game", view: str = "splits"):
+    """WATCHLIST SPLITS (2026-09-21): the pinned whales' open PAPER positions for this category, decoded into
+    game x market-type x side and drawn as a stake-vs-headcount split. READ-ONLY -- nothing here places, sizes
+    or cancels, and this route never reaches the order path. mode/sort/group/view live in the URL (JS-off safe,
+    R3). A non-league category 404s (same gate as /farm/{category})."""
+    category = (category or "").strip().lower()
+    data = await asyncio.to_thread(_load_watchlist_splits, category, int(time.time()))
+    if data is None:
+        return templates.TemplateResponse(
+            request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)
+    ordered = live_view.splits_ordered(data, mode=mode, sort=sort, group=group)
+    view = view if view in ("splits", "grid", "heatmap") else "splits"
+    tiles = None
+    if view == "heatmap":
+        vis = [r for r in data["rows"] if (ordered["mode"] != "trusted" or r["has_trusted"])]
+        tiles = live_view.splits_treemap(vis, ordered["mode"])
+    return templates.TemplateResponse(request, "pm_farm_splits.html",
+                                      {"request": request, **data, "ordered": ordered, "view": view, "tiles": tiles})
 
 
 # ── THE THREE FARM ACTIONS (Stage 3 R6) -- the FIRST mutating POST routes besides Analyze ────────────────────

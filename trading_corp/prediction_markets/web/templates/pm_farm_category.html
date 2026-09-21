@@ -9,6 +9,10 @@
     <h1 class="pm-h1">{{ category|upper }}</h1>
     <p class="pm-sub"><strong>Watchlist</strong> (our paper trades) on top, <strong>Prospects</strong>
       (completed-trade screening) below &mdash; two lists, two data bases, on one page.</p>
+    <p class="pm-sub" style="margin-top:6px">
+      <a href="/farm/{{ category }}/splits" style="font-weight:600">&rsaquo; Watchlist splits</a>
+      &mdash; the pinned whales&rsquo; open positions grouped by game &amp; market, drawn as stake vs headcount
+      (read-only).</p>
   </div>
 
   {# TOP region = screen word "Watchlist" = code status='pinned' = PAPER basis (pm_paper_category_stats via
