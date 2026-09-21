@@ -1037,3 +1037,96 @@ NOT EXERCISED: multi-span rendering on LIVE data -- every (account, category, wa
       event today, so the page shows ONE span per whale. Multi-span (open + dimmed earlier + phone "+N earlier
       spans") is fixture-proven and first appears on prod at the first real detach-then-re-attach of a whale
       on the same sub-division (R3). Not a defect.
+
+
+2026-09-21 -- BITUNIX PRECISION-CLAMP: revive both bitunix divisions (10002 reject fix)
+--------------------------------------------------------------------------------------
+*** READ THIS FLAG FIRST: this is NOT a pm_web deploy. It is a TRADING-ENGINE deploy, and it is the ONE
+    entry in this log where the standing facts above do NOT hold -- the engine `trading-corp` WAS restarted
+    on purpose (MainPID 491380 -> 503492), which bounced ALL divisions for ~3.5 min. pm_web and all
+    prediction_markets logic were untouched. It lives in this log because you asked for a record of EVERY
+    prod change; it just happens to be the bitunix (crypto futures) side, not pm_web. ***
+
+WHAT WAS BROKEN: BitUnix quietly tightened order validation around 2026-08-27 -- it now enforces each
+      pair's basePrecision (max decimal places for quantity) and quotePrecision (max decimals for price).
+      Our broker's number formatter (`_amount_str`) had always sent up to 8 decimals and never rounded to
+      the pair's step/tick, so after the venue change EVERY order got rejected with a generic code 10002
+      "Parameter error". Result: bitunix_futures placed ZERO live trades for ~24 days (last fill
+      2026-08-28 02:30), bitunix_sfp dead since 2026-08-27 -- both silently, because a reject writes no
+      position (missed trades, never naked risk). It looked like "a couple rejects a day" only because
+      that's how often a signal fires; in truth 100% of entries were dying. Proven with 90 days of the
+      box's own audit rows: filled and rejected orders had IDENTICAL stop distances, so the earlier
+      "tight-stop" theory was wrong; and the one specific-code reject in 90 days (30031) proved the venue
+      names mark/distance problems specifically -- so the generic 10002 could only be a format/precision
+      reject.
+
+THE FIX (one broker file, repairs BOTH divisions because they share it): read the venue instrument spec
+      (GET /market/trading_pairs, cached 6h, refreshed before each order, fail-soft); floor quantity to the
+      lot step and round every price (entry limit, the attached stop, TP legs, position SL, SL trail) to
+      the tick, at all 8 places the broker builds a wire value; if the spec is ever unavailable it falls
+      back to a hardcoded BTC/ETH/XRP/SOL table, then to raw formatting (never blocks trading). Also stops
+      sending `effect` (a limit-only time-in-force field) on MARKET orders, and KEEPS `tradeSide=OPEN`
+      (that one is required even in one-way mode). Source: health-check branch
+      bitunix-futures-health-2026-09-20, fix commit c360ca79.
+
+PROD-LIVE: 4d9a2c8e -> 5b8df49a  (fix cherry-picked onto prod-live as a4d437ad, then the deploy_log ledger
+      commit 5b8df49a; clean fast-forward, no force-push).  TAG: bfut-precision-clamp-deploy-2026-09-21.
+MAIN: 61de372f -> 1d9bdf06  (the SAME fix cherry-picked; clean FF). Why both: bitunix.py was byte-identical
+      on main and prod-live before this (base 05fe1aab), so to keep the main==prod-live invariant on the
+      deployed code I advanced BOTH by the identical delta. The unrelated ~181/29-commit main<->prod-live
+      divergence (the old reconcile debt) was left untouched -- not part of this deploy.
+
+FILES: 1 engine-shared code file + 3 tests. CR-stripped sha16:
+        trading_corp/brokers/bitunix.py    05fe1aab5f670d02 -> d292a8fcffc14111
+        tests/test_bitunix_spec_clamp.py   (NEW) + test_bitunix_broker_write.py + test_bitunix_b2_maker_execution.py (updated)
+      NO schema change (no db.py, no migration; schema head untouched). NO pm_web / prediction_markets file.
+      NO shared main.py. Only the broker + its tests.
+
+SERVICES: trading-corp engine RESTARTED via restart_tc.ps1 (az vm run-command ... systemctl restart, root
+      via the Azure agent). MainPID 491380 -> 503492, NRestarts 0, fresh start 2026-09-21 10:30:53 UTC --
+      confirmed by PID change + timestamp, NOT the az exit code (az returns empty stdout either way).
+      Pre-restart it was flat-safe: 0 open live rows on both divisions, no latched halt, reconciler clean.
+      Boot-verify GREEN: restarted engine loads d292a8fc, both divisions wired, restart-resume matched=0
+      orphan=0, reconciler clean (0 matched live rows), 0 tracebacks/imports, 0 x 10002 since boot.
+      pm_web (prediction-markets-web) NOT touched.
+BACKUP: box graft backup /home/azureuser/bfut_graft_backup_20260921T102326Z (the pre-fix bitunix.py). No DB
+      snapshot -- there is no schema or data change.
+
+BOX == PROD-LIVE == MAIN == BUILD: bitunix.py CR-sha d292a8fcffc14111 on all four (box grafted, build
+      c360ca79, prod-live 5b8df49a, main 1d9bdf06). Four-way match.
+
+TEST: box-scratch on the box venv (Python 3.14), a copy of the package + tests with the fix overlaid (live
+      tree never touched): 98 passed / 0 failed. Command:
+        PYTHONPATH=/tmp/bfut_scratch venv/bin/python -m pytest tests/test_bitunix_spec_clamp.py
+        tests/test_bitunix_broker_write.py tests/test_bitunix_b2_maker_execution.py
+        tests/test_bitunix_rest_retry.py tests/test_bitunix_broker_get_pending_positions.py
+        tests/test_bitunix_exception_class_identity.py -p no:pytest_ethereum -p no:cacheprovider -q
+      (`-p no:pytest_ethereum` mandatory -- the box venv's broken web3 plugin crashes collection otherwise.)
+      Separately, 12 bitunix tests in the full suite fail on config-expectation drift (they still assert the
+      old paper/halted defaults; config has been live/trading since 2026-06-30) -- those fail identically on
+      the UNMODIFIED tree, i.e. NOT from this fix.
+
+RULINGS IMPLEMENTED: (1) the structural "broker never reads the venue instrument spec" gap flagged on
+      2026-08-28 is now closed -- the broker reads it and clamps qty + all trigger/limit prices. (2) `effect`
+      is treated as limit-only and dropped from MARKET orders.
+
+NOT EXERCISED -- ACCEPTANCE STILL PENDING AT LOG TIME: no live entry had fired yet when this was written
+      (live_orders_placed frozen at 123; this division only fires ~1-2 signals/day). The deploy is green on
+      every gate I control (graft, prod-live, main, restart, boot) but the venue only truly PROVES it accepts
+      the clamped body when a real order FILLS. A read-only watcher (_bfut_diag/bfut_accept_watch.ps1) is
+      polling for the first entry: a FILL = accepted (done); a fresh 10002 = auto-HALT, restore the backup,
+      revert the prod-live/main FF, and report -- no live iteration.
+
+PROCESS NOTE (sequencing): I restarted and confirmed a clean boot BEFORE pushing prod-live/main, so those
+      refs only ever moved to a version the box actually runs -- if boot had failed I'd have restored the
+      backup and pushed nothing, keeping box==prod-live==main honest.
+
+RECOVERY (if you ever need to back this out): bitunix.py is engine-shared. Restore
+      /home/azureuser/bfut_graft_backup_20260921T102326Z/trading_corp/brokers/bitunix.py over the box file,
+      then restart the engine via restart_tc.ps1 -- NEVER hand-edit the running engine -- and `git revert`
+      the prod-live (5b8df49a) + main (1d9bdf06) commits (a normal revert, never a force-push).
+
+HANDED TO OTHER WORKSTREAMS (not fixed here): (a) capital decision -- both bitunix divisions are trading
+      dust (~$13-24 notional) on drawn-down accounts; the fix revives them but doesn't decide whether that's
+      worth running. (b) bitunix_sfp had 2 "insufficient balance" (20003) rejects in 90 days -- SFP funding
+      is low. (c) tc-audit-reality still fails by design (rescope/retire is a separate open item).
