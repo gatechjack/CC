@@ -531,6 +531,8 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
 .rt-open{white-space:nowrap;font-variant-numeric:tabular-nums}
 .rt-tenure{white-space:nowrap;color:var(--dim);font-size:11px}
 .rt-spans{display:inline-flex;flex-direction:column;gap:1px}
+.rt-span.earlier{color:var(--dimmer);font-size:10px}   /* earlier (closed) spans dimmed beneath the current one */
+.rt-spans-more{display:none}                            /* phone-only: "+N earlier spans" (shown in the media query) */
 .rt-link{font-size:11px;color:var(--dim);text-decoration:none}
 .rt-link:hover{color:var(--text)}
 .rt-detach{font-family:var(--dmono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--lost);border:1px solid #6b2626;border-radius:2px;padding:2px 8px;text-decoration:none;margin-left:8px}
@@ -560,4 +562,7 @@ table.postbl th.pnum,table.postbl td.pnum{text-align:right}
   .rt-table td.pm-actioncell{justify-content:flex-start;gap:14px;margin-top:5px}
   .rt-table td.pm-actioncell::before{display:none}
   .rt-phone-hide{display:none !important}
+  /* R5 phone: the Tenure cell shows the CURRENT span + "+N earlier spans" (earlier spans collapse to the count). */
+  .rt-table .rt-tenure .rt-span.earlier{display:none}
+  .rt-table .rt-tenure .rt-spans-more{display:inline;color:var(--dim);font-size:10px;margin-top:1px}
 }

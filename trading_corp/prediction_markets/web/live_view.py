@@ -21,10 +21,13 @@ DB and no network. Per the brief we do NOT render a "settled during a live game"
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+_log = logging.getLogger(__name__)
 
 from ..market_describe import describe_market
 from ...data.mlb_poly_kalshi_match import kalshi_to_iso_date
@@ -1315,7 +1318,7 @@ ROSTER_SORT_COLUMNS = ("whale", "tenure", "copies", "booked", "w", "l", "winpct"
                        "realized", "cost", "roi", "unbooked", "open", "today")
 _ROSTER_DEFAULT_SORT = "realized"
 _ROSTER_NUM_KEY = {
-    "tenure": lambda r: r.get("tenure_days"),
+    "tenure": lambda r: r.get("tenure_sort"),
     "copies": lambda r: r.get("placed"),
     "booked": lambda r: r.get("booked_closes"),
     "w": lambda r: r.get("settled_w"),
@@ -1330,22 +1333,28 @@ _ROSTER_NUM_KEY = {
 }
 
 
-def _roster_enrich(rec, booked_cost, now_ts):
+def _roster_enrich(rec, booked_cost, now_ts, events_for_wallet=None):
     """Add the derived columns to ONE roster record IN PLACE and return it. All from journal fields already on the
-    record (never the mark cache; open_value was already computed by whale_live_records). A value that cannot be read
-    honestly is None (win% with 0 booked, ROI with <=0 cost, tenure with no attach date) -> the template shows '--'."""
+    record (never the mark cache; open_value was already computed by whale_live_records) plus the 024 attachment-event
+    SPANS. A value that cannot be read honestly is None (win% with 0 booked, ROI with <=0 cost, tenure with no attach
+    date) -> the template shows '--'."""
     booked = int(rec.get("booked_closes") or 0)
     cost = float((booked_cost or {}).get(rec.get("wallet") or "", 0.0))
     rec["booked_cost_usd"] = cost
     rec["win_pct"] = (float(rec.get("settled_w") or 0) / booked) if booked > 0 else None
     rec["roi_cost"] = (float(rec.get("realized_pnl") or 0.0) / cost) if cost > 0 else None
-    added = rec.get("added_ts")
-    if added:
-        # on-roster tenure runs to now; a formerly-live span ends at removed_ts (unknown end -> now, never negative).
-        end = rec.get("removed_ts") if (not rec.get("active") and rec.get("removed_ts")) else now_ts
-        rec["tenure_days"] = max(0.0, (float(end) - float(added)) / 86400.0)
+    # TENURE SPANS (2026-09-20): newest-first spans from the 024 event log, with the permanent pre-024 attachment-row
+    # fallback (build_spans). tenure_days = the CURRENT/open span's length ("attached <date> . N days"; None for a
+    # closed newest span). tenure_sort (R5): on-roster by the OPEN span's start, formerly by the LATEST span's end.
+    spans = build_spans(events_for_wallet or [], rec.get("added_ts"), rec.get("removed_ts"), rec.get("active"), now_ts)
+    rec["spans"] = spans
+    if spans:
+        top = spans[0]
+        rec["tenure_days"] = top["days"] if top["end"] is None else None
+        rec["tenure_sort"] = float(top["end"]) if top["end"] is not None else float(top["start"])
     else:
         rec["tenure_days"] = None
+        rec["tenure_sort"] = None
     return rec
 
 
@@ -1393,8 +1402,48 @@ def _roster_totals(rows):
     return t
 
 
+def build_spans(events, added_ts, removed_ts, active, now_ts):
+    """PURE. The whale's attachment SPANS, NEWEST-FIRST, from the migration-024 event log with the PERMANENT pre-024
+    fallback (2026-09-20). `events` = that whale's rows [{action:'attach'|'detach', ts}, ...] in ANY order. Returns
+    [{start, end, days}] where end=None is an OPEN span, ordered newest-first (start desc); days = the span's length
+    (open -> now - start), an int-able float for display.
+
+    PAIRING: sort by ts, then pair each 'attach' with the NEXT 'detach'; a trailing 'attach' with no following 'detach'
+    is the CURRENT OPEN span. MALFORMED, handled without inventing anything (R1/R6): a 'detach' with no open 'attach'
+    is skipped with a warning (never fabricate an attach); a second 'attach' while one is already open is ignored with
+    a warning, keeping the first span open (never fabricate a detach to close it).
+    FALLBACK (R2, permanent + invisible): if the events yield NO span (empty log, or all-malformed), return the SINGLE
+    span from the attachment row -- {start: added_ts, end: (removed_ts if detached else None)} -- exactly as the pre-024
+    UI shows; [] only if there is no added_ts either. Dates come ONLY from events or the attachment row (R6), never
+    from journal timestamps."""
+    evs = sorted((e for e in (events or []) if e.get("action") in ("attach", "detach")),
+                 key=lambda e: int(e.get("ts") or 0))
+    spans, open_start = [], None
+    for e in evs:
+        act, ts = e["action"], int(e.get("ts") or 0)
+        if act == "attach":
+            if open_start is None:
+                open_start = ts
+            else:                                                  # double attach -> already open; never invent a detach
+                _log.warning("attach-history: redundant 'attach' at %s while a span is already open -- ignored", ts)
+        else:                                                      # detach
+            if open_start is not None:
+                spans.append({"start": open_start, "end": ts}); open_start = None
+            else:                                                  # detach with no open attach -> never fabricate one
+                _log.warning("attach-history: 'detach' at %s with no open span -- skipped", ts)
+    if open_start is not None:
+        spans.append({"start": open_start, "end": None})
+    if not spans and added_ts:                                     # R2 fallback: the attachment row's single span
+        spans.append({"start": int(added_ts), "end": (int(removed_ts) if (not active and removed_ts) else None)})
+    spans.sort(key=lambda s: -int(s["start"]))                     # newest-first
+    for s in spans:
+        end = s["end"] if s["end"] is not None else now_ts
+        s["days"] = max(0.0, (float(end) - float(s["start"])) / 86400.0)
+    return spans
+
+
 def build_roster_table(whale_records, booked_cost=None, *, now_ts, sort=None, direction=None, show_all=False,
-                       thin_floor=50):
+                       thin_floor=50, events=None):
     """PURE roster-table view over subdivision.whale_live_records(...) + subdivision.booked_cost_by_whale(...).
 
     Enriches each per-whale record with win_pct / roi_cost / tenure_days / booked_cost_usd, keeps ON-ROSTER always and
@@ -1405,11 +1454,14 @@ def build_roster_table(whale_records, booked_cost=None, *, now_ts, sort=None, di
     wr = whale_records or {}
     on = [dict(r) for r in (wr.get("on_roster") or [])]
     formerly = [dict(r) for r in (wr.get("formerly_live") or [])]
+    ev_by_wallet = {}                                             # 024 attach/detach events grouped per whale
+    for e in (events or []):
+        ev_by_wallet.setdefault((e.get("wallet") or "").lower(), []).append(e)
     for r in on:
-        _roster_enrich(r, booked_cost, now_ts)
+        _roster_enrich(r, booked_cost, now_ts, ev_by_wallet.get((r.get("wallet") or "").lower()))
         r["formerly"] = False
     for r in formerly:
-        _roster_enrich(r, booked_cost, now_ts)
+        _roster_enrich(r, booked_cost, now_ts, ev_by_wallet.get((r.get("wallet") or "").lower()))
         r["formerly"] = True
     sort = sort if sort in ROSTER_SORT_COLUMNS else _ROSTER_DEFAULT_SORT
     direction = "asc" if str(direction).lower() == "asc" else "desc"

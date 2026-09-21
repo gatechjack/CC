@@ -40,15 +40,20 @@
   <tr class="rt-row{% if w.formerly %} rt-formerly{% endif %}" data-whale="{{ w.wallet }}">
     <td class="pm-wcell" data-label="Whale">{{ whalecell(w) }}{% if w.formerly %}<span class="rt-formerly-tag" title="a past attachment -- record kept, no new copies">formerly live</span>{% endif %}</td>
     <td class="pm-judge-col" data-label="Verdict">{{ score_badge(w.score, w.wallet) }}</td>
-    <td class="rt-tenure" data-label="Tenure" data-sort-value="{{ w.tenure_days if w.tenure_days is not none else -1 }}">
-      {# ONE span today (schema keeps one attachment row/whale); structured as a list so migration 023's prior spans
-         drop in as extra <span class="rt-span"> without a re-layout. On-roster = current span; formerly = the span. #}
+    <td class="rt-tenure" data-label="Tenure" data-sort-value="{{ w.tenure_sort if w.tenure_sort is not none else -1 }}">
+      {# SPANS newest-first (2026-09-20, mig 024): the OPEN span (end None) reads "attached <date> . N days"; a CLOSED
+         span reads "<start> - <end>". The first is the current span; earlier spans are dimmed beneath. Multi-span
+         appears once a whale is detached + re-attached on this sub; a pre-024 whale (no events) falls back to the
+         single attachment-row span, indistinguishable from an event-backed single span (R2). #}
       <span class="rt-spans">
-        {%- if w.formerly -%}
-          <span class="rt-span">{{ w.added_ts|etdate if w.added_ts else '?' }} &ndash; {{ w.removed_ts|etdate if w.removed_ts else '?' }}</span>
-        {%- else -%}
-          <span class="rt-span" title="current span">attached {{ w.added_ts|etdate if w.added_ts else '&mdash;'|safe }}{% if w.tenure_days is not none %} <span class="dim">&middot; {{ w.tenure_days|int }}d</span>{% endif %}</span>
-        {%- endif -%}
+        {%- for s in w.spans -%}
+          <span class="rt-span{% if not loop.first %} earlier{% endif %}"{% if loop.first and s.end is none %} title="current span"{% endif %}>
+            {%- if s.end is none -%}attached {{ s.start|etdate }} <span class="dim">&middot; {{ s.days|int }}d</span>
+            {%- else -%}{{ s.start|etdate }} &ndash; {{ s.end|etdate }}{%- endif -%}
+          </span>
+        {%- endfor -%}
+        {%- if not w.spans -%}<span class="rt-span dim">&mdash;</span>{%- endif -%}
+        {%- if w.spans and w.spans|length > 1 -%}<span class="rt-spans-more">+{{ w.spans|length - 1 }} earlier span{{ '' if (w.spans|length - 1) == 1 else 's' }}</span>{%- endif -%}
       </span>
     </td>
     <td class="pm-num rt-phone-hide" data-label="Copies">{{ w.placed }}</td>

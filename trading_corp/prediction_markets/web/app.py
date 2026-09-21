@@ -1333,6 +1333,9 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
                                                        today_start_ts=today_start_ts, thin_floor=floor)
         # ROSTER TABLE (2026-09-20): booked cost basis per whale = the ROI(COST) denominator (additive reader).
         booked_cost = subdivision.booked_cost_by_whale(conn, account_id, category)
+        # TENURE SPANS (2026-09-20): the migration-024 attach/detach event log for this sub (ALL whales, one query);
+        # build_roster_table pairs them into per-whale spans, with the pre-024 attachment-row fallback. Read-only.
+        attach_events = farm_actions.read_attachment_events(conn, account_id, category)
         # ★ keep the ANALYZE verdict visible on the LIVE roster too -- the score is keyed (wallet, category), so it
         # persists past Promote-to-live and must not vanish on the surface that matters most. Read-only attach.
         _score_map = _load_whale_score_map(conn, category)
@@ -1354,7 +1357,7 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
     # tenure days), sorts server-side (default Realized $ desc, JS-off safe) + filters on-roster/All + footer totals.
     roster_view = live_view.build_roster_table(whale_records, booked_cost, now_ts=now_ts,
                                                sort=roster_sort, direction=roster_dir,
-                                               show_all=roster_show_all, thin_floor=floor)
+                                               show_all=roster_show_all, thin_floor=floor, events=attach_events)
     return {"sub": sub, "attached": attached, "n_live_trades": n_live_trades,
             "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
             "account_id": account_id, "category": category,
