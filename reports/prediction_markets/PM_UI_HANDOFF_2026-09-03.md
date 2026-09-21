@@ -515,3 +515,51 @@ Full record: PM_SIZING_UI_2026-09-12.md §8. Cache-bust `pm_desk.css?v=422c45ec`
   The DEPLOY GATE drift-checks box head == N-1 before applying and renumbers to box-head+1 on collision.
 - **Backlog update** — Contract-sizing-from-the-UI is now DONE (was a follow-up). The attach/detach event-log
   (migration 023) remains a backlog item. The 22 stale UI tests remain the standing differential baseline.
+
+--------------------------------------------------------------------------------
+## DEPLOY 12-13 (2026-09-20): bridge (full records in their own reports)
+
+- **DEPLOY 12 — ROSTER TABLE + STRIP RE-LAYOUT.** `/live/{account}/{category}` roster is now a sortable TABLE
+  (watchlist CSS family) + a 5-cell money strip (adds a SIZING cell; the standalone sizing line is gone). Added
+  `subdivision.booked_cost_by_whale` (ROI cost denom) + pure `live_view.build_roster_table`. `prod-live -> b9e1c215
+  (code) -> 9ff6060c (docs)`, tag `pm-roster-table-deploy12-2026-09-20`. Full record: `PM_ROSTER_TABLE_2026-09-20.md`.
+- **DEPLOY 13 — LIVE TILE SIMPLIFY.** `/live` tiles are all STANDARD size, money-first, ONE compact game line per
+  game for <=2 underway games else a single "N games live . M positions" summary. `prod-live -> 0023e5a7 (code) ->
+  d1b93ce7 (docs)`, tag `pm-live-tile-simplify-deploy13-2026-09-20`. Full record: `PM_LIVE_TILE_SIMPLIFY_2026-09-20.md`.
+  **★ LESSON (carry forward):** inside a tile that is itself an `<a>`, a child link must be a `<div>` (or the tile's
+  own href) — NEVER a nested `<a>` (that closes the tile early; caught only after restart -> rolled back -> fixed).
+  The post-check now guards `a.liveln.more`.
+
+--------------------------------------------------------------------------------
+## DEPLOY 14 (2026-09-21): ROSTER TENURE — MULTI-SPAN FROM MIGRATION-024 EVENTS
+
+**`origin/prod-live d1b93ce7 -> dc48d072` (code+report, FF) -> docs FF, tag `pm-roster-tenure-deploy14-2026-09-20`.**
+pm_web-ONLY, **5 modified files** (app.py, live_view.py, pm_desk.css, partials/pm_whale_roster.html, pm_shell.html) —
+NO new file, NO delete, **NO subdivision.py, NO migration, NO engine file**. `farm_actions.py` NOT shipped (box copy
+`23f91d44` confirmed == prod-live; the new loader path reads it). ONE `prediction-markets-web` restart (497708 ->
+499620); engine `trading-corp` **491380 / NRestarts 0 UNTOUCHED**. Post-check **130 OK / 0 FAIL**; box == prod-live
+47/47. Cache-bust `pm_desk.css?v=0b50095b`. Full record: `PM_ROSTER_TENURE_2026-09-20.md` §8.
+
+- **What it does** — the Deploy-12 roster **Tenure cell** now renders the FULL attach->detach->re-attach span history
+  from the migration-024 event log (`pm_subdivision_attachment_event`), newest span first: the open span reads
+  "attached `<date>` . N days"; earlier closed spans "`<start>` - `<end>`" render dimmed beneath; phone collapses the
+  earlier spans to a "+N earlier spans" indicator. The ONE cell allowed to grow a line per span.
+- **`live_view.build_spans(events, added_ts, removed_ts, active, now_ts)` (NEW, PURE)** — pairs each `attach` with the
+  NEXT `detach` (sorted by ts); a trailing `attach` is the current OPEN span; returns spans NEWEST-FIRST. **Malformed
+  input is handled WITHOUT inventing anything:** a second `attach` while already open is ignored + warned (never a
+  fabricated detach); a `detach` with no open span is skipped + warned (never a fabricated attach). Dates come ONLY
+  from events or the attachment row — never inferred from journal timestamps.
+- **PERMANENT, INVISIBLE pre-024 FALLBACK (the rule to keep):** if the events yield NO span (empty log OR all
+  malformed), `build_spans` returns the SINGLE span from the attachment row (`added_ts`, `removed_ts` if detached) —
+  exactly what the pre-024 UI showed, indistinguishable on the page. `[]` only if there is no `added_ts`. This
+  fallback is not a migration-window shim; it stays forever so a whale attached before 024 (no events) always renders
+  its tenure. On live data today every key has <=1 event, so the fallback and the <=1-event path render identically.
+- **TENURE SORT RULE** — `build_roster_table(..., events=)` sets `rec["tenure_sort"]`: **on-roster rows sort by the
+  OPEN span's start; formerly-live rows sort by the LATEST span's end.** `_ROSTER_NUM_KEY["tenure"]` -> `tenure_sort`;
+  URL `?sort=tenure&dir=` is server-rendered (JS-off safe), not pm_sort.js.
+- **Loader** — `app.py` reads `farm_actions.read_attachment_events(conn, account, category)` ONCE (all whales) and
+  passes `events=` to `build_roster_table`. app.py already imported farm_actions for the Detach route.
+- **★ R3 STANDING NOTE** — multi-span is **fixture-proven only**; the live page shows ONE span per whale until a real
+  detach-then-re-attach happens on the same sub-division. Not a defect.
+- **Backlog update** — attach/detach event-log is LIVE (migration **024**, `pm_subdivision_attachment_event`; head is
+  24, next free 025 — the older "023 reserved" note is superseded). The roster Tenure cell now consumes it.

@@ -1,8 +1,11 @@
 # PM /live ROSTER — MULTI-SPAN TENURE FROM ATTACHMENT EVENTS (BUILD) — 2026-09-20
 
-**STATUS: BUILT + TESTED + RENDERED + BOX-TIED (read-only) + COMMITTED. NOT DEPLOYED / NOT PUSHED / NOT RESTARTED.**
-Branch `pm-roster-tenure-2026-09-20` off `origin/prod-live` @ **`d1b93ce7`** (git truth = box), worktree
-`C:\Users\AA Incorporado\cc-roster-tenure-wt`. DEPLOY / PUSH-to-prod-live / RESTART are Jack's reserved actions.
+**STATUS: DEPLOY 14 LIVE ON prod-live 2026-09-21.** `origin/prod-live` **`d1b93ce7` -> `dc48d072` (code+report, FF)**,
+tag **`pm-roster-tenure-deploy14-2026-09-20`**; a docs FF follows (this section + handoff). pm_web-only (5 files),
+ONE `prediction-markets-web` restart (**497708 -> 499620**, ActiveEnter 2026-09-21 02:17:05 UTC); engine `trading-corp`
+**491380 / NRestarts 0 UNTOUCHED**; box == prod-live 47/47; post-check **130 OK / 0 FAIL**. Full record in section 8.
+Branch `pm-roster-tenure-2026-09-20` off `origin/prod-live` @ `d1b93ce7` (git truth = box), worktree
+`C:\Users\AA Incorporado\cc-roster-tenure-wt`. Build record (sections 1-7) preceded the deploy.
 
 Extends the Deploy-12 roster table's Tenure cell to render the FULL attach→detach→re-attach span history from the
 migration-024 event log (`pm_subdivision_attachment_event`), with a permanent, invisible pre-024 fallback to the
@@ -113,4 +116,66 @@ the correct current state; extra spans appear the first time a whale is re-attac
 ## 7. RUNNERS (cc/, read-only)
 `pm_roster_boxshas_ro` (box == prod-live), `pm_tenure_boxdump_ro.{ps1,py}` (dump jack/mlb + karen/mlb attachments +
 events RO) + the local build_spans tie-out, `pm_roster_tenure_render.py` (the seeded multi-span renders +
-geometry/phone measurements in `cc/renders_tenure/`). No deploy runner authored (deploy is Jack's).
+geometry/phone measurements in `cc/renders_tenure/`). Deploy runners added in section 8.
+
+--------------------------------------------------------------------------------
+## 8. DEPLOY 14 (2026-09-21): ROSTER TENURE MULTI-SPAN — LIVE
+
+**`origin/prod-live d1b93ce7 -> dc48d072` (code+report, FF), tag `pm-roster-tenure-deploy14-2026-09-20`.** pm_web-ONLY,
+5 modified files (NO new file, NO delete, NO subdivision.py, NO migration, NO engine file). `farm_actions.py` NOT
+shipped — box copy confirmed `23f91d44` == prod-live (the new loader path depends on it). ONE
+`prediction-markets-web` restart; engine `trading-corp` **491380 / NRestarts 0 UNTOUCHED**. Full atomic authority
+(the pm_web restart was run under the standing DEPLOY-14 restart-authority grant, verified by MainPID+timestamp).
+
+**Files (CR-stripped sha16 BEFORE -> AFTER; box drift-gated to BEFORE, verified to AFTER):**
+
+| file | BEFORE | AFTER |
+|---|---|---|
+| `web/app.py` | `0ef64011d2c223a2` | `bf9895b03ed2a7b9` |
+| `web/live_view.py` | `5763057e2e757841` | `2cba1fe691bffba2` |
+| `web/static/pm_desk.css` | `585ea1011a67f695` | `0b50095b62c5e7b1` |
+| `web/templates/partials/pm_whale_roster.html` | `e496d37b412fc1ee` | `dd0a08cf4b8b63e7` |
+| `web/templates/pm_shell.html` | `3abb631977586ba8` | `520765803e15f47d` |
+
+**Backup (gate):** `/home/azureuser/pm_deploy14_backup_20260921T021214Z` (5 files, each verified == box before ANY
+write). **pm_web PID:** 497708 (before) -> **499620** (after; ActiveEnter 2026-09-21 02:17:05 UTC), NRestarts 0.
+
+**Steps 1-13 (all green):**
+- **1-2 precheck** — engine 491380/0 active; pm_web 497708 active; schema_head **24**; 4 heartbeats fresh (3-27s);
+  order rows 1703; arm rows 69; **box CR-sha16 == prod-live BEFORE for all 5 + farm_actions (ALL-OK)**.
+- **4 before-render** — jack/mlb + karen/mlb each 4 on-roster whales, **spans=1, rt-spans-more absent**; every key
+  **<=1 event** (one atomic-writer event on `0x41b4cd88`, span start == added_ts; the rest fall back to the attachment
+  row); served pm_desk.css sha8 585ea101. Per-whale BEFORE tenure text captured for the zero-diff check.
+- **5 graft** — GATE1 staged==TARGET (5), GATE2 box==BEFORE (5) + farm_actions==prod-live, GATE3 backup verified,
+  APPLY 5, VERIFY written==TARGET (5), py_compile OK, **import gate: routes=24, /pm/arm=0, 0 engine/broker/execution
+  modules, read_attachment_events resolved**.
+- **6 restart** — az run-command (pm_web only). Confirmed by MainPID 497708 -> 499620 + ActiveEnter 02:17:05 UTC
+  (NOT the az exit code); **engine 491380/0 unchanged immediately after**.
+- **7 tenure** — jack/mlb + karen/mlb (4+4): each **exactly 1 span, AFTER text == BEFORE text (zero diff)**, no
+  empty/"no history"/fallback badge, no rt-spans-more. The R2 fallback and the <=1-event path render identically —
+  the expected current state.
+- **8 toggles** — `?whales=all` 200 + formerly-live rows render `rt-formerly` + a closed span (jack/mlb has 3
+  detached whales); `?sort=tenure&dir=desc|asc` 200.
+- **9 R4** — Detach GET gating exact: **karen-own 200, karen-on-jack 403, no-identity 403 (GET-only, never POST)**;
+  4 whales render `pm-score-flagged` live (the flagged-metric path exercised); 0 un-analyzed on live data (the
+  "not analyzed" path stays unit-test-proven).
+- **10 phone** — no "+N earlier spans" on either account (none exist today).
+- **11 surfaces** — Deploy 12 roster-table + 5-cell strip (`sizcell`) + footer `rt-totals`; all 4 /live tabs
+  standard tiles (no evt/scr scoreboard, no banner, **no nested-anchor summary [D13 lesson guard]**), shell
+  `?v=0b50095b`; non-MLB (nfl) detail renders (shared template).
+- **12 pages/static** — /, /live, both /account, /farm + 24 /farm/{cat}, all static assets 200; **served
+  pm_desk.css sha8 == 0b50095b**; 0 raw tickers; 0 double-escaped entities.
+- **13 engine** — trading-corp 491380/0 UNCHANGED across every step; 0 journalctl -p err (pm_web AND engine) since
+  the restart; order rows 1703 -> 1703 (monotonic; delta = fills only).
+
+**Post-check: 130 OK / 0 FAIL. box == prod-live 47/47** (the 7 `.bak_*`/`.orig` files dated 2026-09-01 are
+pre-existing untracked box-local backups absent from git — not the deploy surface, unchanged).
+
+**STANDING NOTE (R3):** multi-span rendering is **fixture-proven only** — every (account, category, wallet) on the
+box has <=1 attachment event today, so the live page shows ONE span per whale. Extra spans (open + dimmed earlier +
+the phone "+N earlier spans") first appear on prod at the **first real detach-then-re-attach** of a whale on the same
+sub-division. This is correct current behaviour, not a defect.
+
+**Runners (cc/, added for D14):** `pm_deploy14_precheck_ro.{ps1,py}`, `pm_deploy14_graft.{ps1,sh}`,
+`pm_deploy14_restart_az.ps1`, `pm_deploy14_journal_ro.{ps1,sh}`, `pm_deploy14_postcheck_ro.{ps1,py}`,
+`pm_deploy14_restore.{ps1,sh}` (rollback armed with the backup path; unused — no failure).
