@@ -995,3 +995,45 @@ POST-DEPLOY (89 OK / 0 FAIL): /live all 4 tabs 200, no 2x2/scoreboard/banner, ca
       2 of the 6 open NFL positions are on games not currently underway (incl. a Sep-21 game); the summary
       counts LIVE games only.
 NOT EXERCISED: n/a (read-only page).
+
+
+2026-09-21 -- DEPLOY 14: ROSTER TENURE MULTI-SPAN (from migration-024 attachment events)
+---------------------------------------------------------------------------------------
+WHAT: the /live/{account}/{category} roster's Tenure cell. It now renders the FULL
+      attach->detach->re-attach span history from the migration-024 event log
+      (pm_subdivision_attachment_event), newest first: the open span reads "attached <date> . N days",
+      earlier closed spans "<start> - <end>" dimmed beneath, phone collapses them to "+N earlier spans".
+      A PERMANENT, invisible pre-024 fallback: a whale with no events (attached before 024) still renders
+      its single span from the attachment row -- indistinguishable on the page. New pure live_view.build_spans
+      (pairs attach->next detach; trailing attach = open span; malformed handled without inventing a
+      detach/attach). Tenure SORT rule: on-roster by the open span's start, formerly-live by the latest
+      span's end.
+PROD-LIVE: d1b93ce7 -> dc48d072 (code+report, FF) -> 4d9a2c8e (docs, FF).  TAG: pm-roster-tenure-deploy14-2026-09-20
+      (on the code+report commit dc48d072).
+FILES: 5 pm_web files, ALL modifications (NO new file, NO delete, NO subdivision.py, NO migration, NO engine
+      file). farm_actions.py NOT shipped (box 23f91d44 == prod-live; the new loader path reads it). CR-sha16:
+        web/app.py                                     0ef64011 -> bf9895b0   (loader reads read_attachment_events, passes events=)
+        web/live_view.py                               5763057e -> 2cba1fe6   (build_spans added, pure)
+        web/static/pm_desk.css                         585ea101 -> 0b50095b   (cache-bust ?v=0b50095b)
+        web/templates/partials/pm_whale_roster.html    e496d37b -> dd0a08cf   (Tenure cell renders w.spans newest-first)
+        web/templates/pm_shell.html                    3abb6319 -> 52076580
+SERVICES: engine trading-corp 491380 UNTOUCHED (PID + NRestarts=0 unchanged before/after). pm_web 497708 ->
+      499620 (ONE restart, ActiveEnter 2026-09-21 02:17:05Z; confirmed by PID + timestamp, NOT the az exit
+      code). Backup /home/azureuser/pm_deploy14_backup_20260921T021214Z (gate: each file == box before any
+      write). FIRST deploy run end-to-end under the standing restart-authority grant (Board 2026-09-21): the
+      pm_web restart is part of full atomic authority now -- no separate paste.
+BOX == PROD-LIVE: 47/47 (the 7 .bak_*/.orig files dated 2026-09-01 are pre-existing untracked box backups
+      absent from git -- not the deploy surface, unchanged).
+POST-DEPLOY (130 OK / 0 FAIL): jack/mlb + karen/mlb each render 4 whales, EXACTLY 1 span, AFTER text ==
+      BEFORE text (zero diff) -- the R2 pre-024 fallback and the <=1-event path render identically, the
+      expected current state; no empty/"no history"/fallback badge; rt-spans-more absent. ?whales=all shows
+      formerly-live rows with a closed span (jack/mlb has 3 detached); ?sort=tenure desc/asc 200. R4 intact:
+      Detach GET karen-own 200 / karen-on-jack 403 / no-identity 403 (GET-only, never POST); 4 whales render
+      pm-score-flagged. Deploy 12/13 surfaces intact (roster-table, 5-cell strip, footer rt-totals, standard
+      tiles all 4 tabs, no nested-anchor, cache-bust 0b50095b, non-MLB detail renders). All pages + 24 farm +
+      static 200, 0 raw tickers, 0 double-escape. Engine 491380/0 across every step, 0 journalctl err (pm_web
+      AND engine) since the restart, order rows 1703 -> 1703 (delta = fills only).
+NOT EXERCISED: multi-span rendering on LIVE data -- every (account, category, wallet) has <=1 attachment
+      event today, so the page shows ONE span per whale. Multi-span (open + dimmed earlier + phone "+N earlier
+      spans") is fixture-proven and first appears on prod at the first real detach-then-re-attach of a whale
+      on the same sub-division (R3). Not a defect.
