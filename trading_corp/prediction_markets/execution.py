@@ -192,6 +192,7 @@ class MarketContext:
     h1_spread_index: dict | None = None
     period_indices: dict | None = None    # PHASE 1: {pk: {"win":idx,"total":idx,"spread":idx}} -- quarters (q1-q4) + 2H
     team_total_index: dict | None = None  # PHASE 1: {stem: {(team_code, strike): ticker}} -- KX{X}TEAMTOTAL
+    prop_index: dict | None = None         # Phase B/C: {series: {stem: [(player_code, strike, ticker)]}} -- KX{NFL,MLB} player props
 
 
 @dataclass(frozen=True)
@@ -449,7 +450,8 @@ def _mlb_match(parsed, ctx, allowed_market_types):
     return M.match_bet(parsed, ctx.moneyline_index, ctx.total_index, ctx.spread_index, ctx.kalshi_dates,
                        allowed_market_types=allowed_market_types, rfi_index=ctx.rfi_index or {},
                        f5_win_index=ctx.f5_win_index or {}, f5_total_index=ctx.f5_total_index or {},
-                       f5_spread_index=ctx.f5_spread_index or {}, team_total_index=ctx.team_total_index or {})
+                       f5_spread_index=ctx.f5_spread_index or {}, team_total_index=ctx.team_total_index or {},
+                       prop_index=ctx.prop_index or {})
 
 
 def _ufc_parse(slug, outcome, title=None):
@@ -577,7 +579,8 @@ def _structural_adapter(cfg):
                             total_index=ctx.total_index, spread_index=ctx.spread_index,
                             h1_win_index=ctx.h1_win_index or {}, h1_total_index=ctx.h1_total_index or {},
                             h1_spread_index=ctx.h1_spread_index or {},
-                            period_indices=ctx.period_indices or {}, team_total_index=ctx.team_total_index or {})
+                            period_indices=ctx.period_indices or {}, team_total_index=ctx.team_total_index or {},
+                            prop_index=ctx.prop_index or {})
     return _parse, _match
 
 
