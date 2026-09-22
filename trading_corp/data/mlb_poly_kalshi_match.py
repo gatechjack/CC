@@ -292,6 +292,25 @@ def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str
                                      fail_reason=f"team_total_team_not_in_game:{tteam!r}", raw=raw, line=line, leg=leg)
             return ParsedPolyBet("team_total", date_iso, away_code, home_code, away_name, home_name,
                                  anchor, tname, fail_reason=fr, raw=raw, line=line, leg=leg, anchor_side=anchor)
+        # ── Phase D (2026-09-22): PER-INNING WINNER -- '-inning-{N}-winner-{away|home|draw}', per-side Yes/No (mirrors
+        # f5_winner). draw -> the TIE ticker ONLY. The inning N rides in raw; _match_inning_winner routes ONLY to that
+        # inning's ticker. ROUTE-ONLY: never a full-game / F5 winner. ──
+        _iw = _POLY_INNINGWIN_RE.match(suffix)
+        if _iw is not None:
+            n = int(_iw.group("n")); side = _iw.group("side")
+            o = (outcome or "").strip().lower()
+            leg = "yes" if o == "yes" else "no" if o == "no" else None
+            fr = None if leg else f"inning_winner_outcome_not_yes_no:{outcome!r}"
+            rw = {**raw, "inning": n}
+            if side == "draw":                                 # -> the TIE ticker ONLY (side_name None => TIE in match)
+                return ParsedPolyBet("inning_winner", date_iso, away_code, home_code, away_name, home_name,
+                                     "draw", None, fail_reason=fr, raw=rw, leg=leg)
+            if away_name is None or home_name is None:
+                miss = [c for c, nm in ((away_code, away_name), (home_code, home_name)) if nm is None]
+                return ParsedPolyBet("inning_winner", date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason=f"unrecognized_team_code:{miss}", raw=rw, leg=leg)
+            return ParsedPolyBet("inning_winner", date_iso, away_code, home_code, away_name, home_name,
+                                 side, (away_name if side == "away" else home_name), fail_reason=fr, raw=rw, leg=leg)
         # ── Phase C (2026-09-22): PLAYER PROPS. A recognised MLB stat token (k/hr/outs/tb/hrr/hits) -> market_type
         # 'prop' carrying the parsed dict in raw (routed + PER-STAT gated in match_bet); an unrecognised suffix stays
         # a raw-less 'prop' -> the existing skip_non_ml. ──
@@ -533,12 +552,31 @@ def match_poly_to_kalshi(parsed: ParsedPolyBet, kalshi_index: dict,
 # ══════════════════════════════════════════════════════════════════════════════
 
 COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread", "first_inning_run", "f5_winner", "f5_total", "f5_spread",
-                         "team_total", "prop")   # PHASE 1b team totals; Phase C 'prop' gates PER-STAT (below)
+                         "team_total", "prop", "inning_winner")   # PHASE 1b team totals; Phase C 'prop' gates PER-STAT;
+                                                                  # Phase D 'inning_winner' (below)
 _F5_TYPES = ("f5_winner", "f5_total", "f5_spread")   # one enable token 'f5' gates all three (see match_bet)
 from . import player_props_match as PROPS   # Phase C (2026-09-22): shared player-prop core (parse + index + code-bind)
 
 _KALSHI_TOTAL_RE  = re.compile(r"^KXMLBTOTAL-(?P<stem>[A-Z0-9]+)-(?P<n>\d+)$")
 _KALSHI_SPREAD_RE = re.compile(r"^KXMLBSPREAD-(?P<stem>[A-Z0-9]+)-(?P<team>[A-Z]+)(?P<n>\d+)$")
+# ── Phase D (2026-09-22): PER-INNING WINNER. Kalshi KXMLBINNINGWIN-{stem}-{N}-{SIDE} (verified live: N 1..9; SIDE is a
+# team code or TIE; 3-way per inning). The generic sub-game _win_re does NOT fit (it has the extra -{N} segment), so a
+# DEDICATED index keyed by (int inning, side). Route-only: an inning-N bet reaches ONLY the inning-N ticker. ──
+_KALSHI_INNINGWIN_RE = re.compile(r"^KXMLBINNINGWIN-(?P<stem>[A-Z0-9]+)-(?P<n>\d+)-(?P<side>[A-Z]+)$")
+# Poly grammar MIRRORS the F5-winner convention (`-first-five-winner-{side}` + Yes/No). No whale per-inning demand
+# exists (0 slugs 2026-09-22) so this grammar is a DESIGN off the F5 analog, UNVERIFIED against a real Poly slug --
+# it ships INERT behind the 'inning_winner' token and, if it ever fires, is fail-closed + exact (inning, side).
+_POLY_INNINGWIN_RE = re.compile(r"^-inning-(?P<n>[1-9])-winner-(?P<side>away|home|draw)$")
+
+
+def build_kalshi_inningwin_index(tickers) -> dict:
+    """{stem: {(inning:int, side): ticker}} for KXMLBINNINGWIN-{stem}-{N}-{SIDE}. side is a team code or 'TIE'."""
+    idx: dict = {}
+    for t in tickers:
+        m = _KALSHI_INNINGWIN_RE.match(t or "")
+        if m:
+            idx.setdefault(m.group("stem"), {})[(int(m.group("n")), m.group("side"))] = t
+    return idx
 
 
 def _strike_from_n(n: str) -> float:
@@ -761,11 +799,40 @@ def _match_team_total(parsed, moneyline_index, team_total_index, kalshi_dates) -
                        reason="team_total_stem_join")
 
 
+def _match_inning_winner(parsed, moneyline_index, inningwin_index, kalshi_dates) -> MatchResult:
+    """PHASE D PER-INNING WINNER: resolve the GAME via the moneyline index (date+teams), then join KXMLBINNINGWIN by
+    (this game's stem, the EXACT inning N, side). ★ ROUTE-ONLY: reads ONLY inningwin_index -- a full-game / F5 winner
+    is UNREACHABLE, and an inning-N bet reaches ONLY the inning-N ticker (N is part of the key). 3-way: a draw binds
+    ONLY the TIE ticker. Yes->yes / No->no. A fail-closed parse (leg None) never reaches a matched ticker."""
+    mt = "inning_winner"
+    if parsed.leg is None:
+        return MatchResult("fail", 0.0, reason=parsed.fail_reason or "inning_winner_leg_missing", market_type=mt)
+    inning = (parsed.raw or {}).get("inning")
+    if not isinstance(inning, int):
+        return MatchResult("fail", 0.0, reason="inning_winner_no_inning", market_type=mt)
+    game, miss = _resolve_unique_game(parsed, moneyline_index, kalshi_dates)
+    if miss is not None:
+        return miss
+    if parsed.side == "draw":
+        side_key = SG.TIE_KEY
+    else:
+        side_key = next((code for code, name in ((game.team_a_code, game.team_a_name),
+                                                 (game.team_b_code, game.team_b_name)) if name == parsed.side_name), None)
+        if side_key is None:
+            return MatchResult("fail", 0.0, reason="inning_winner_side_not_in_game:%r" % parsed.side_name, market_type=mt)
+    ticker = (inningwin_index or {}).get(game.stem, {}).get((inning, side_key))
+    if ticker is None:
+        return MatchResult("no_kalshi_contract", 0.0,
+                           reason="no_inningwin_%s_%d_%s" % (game.stem, inning, side_key), market_type=mt)
+    return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, market_type=mt,
+                       reason="inning_winner_stem_join_inning%d" % inning)
+
+
 def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, spread_index: dict,
               kalshi_dates: frozenset,
               allowed_market_types=COPYABLE_MARKET_TYPES, rfi_index=None,
               f5_win_index=None, f5_total_index=None, f5_spread_index=None,
-              team_total_index=None, prop_index=None) -> MatchResult:
+              team_total_index=None, prop_index=None, inningwin_index=None) -> MatchResult:
     """Unified 3-dimension match. `allowed_market_types` = the sub-division's `market_types` (R1) -- a copyable
     type NOT in it is a LABELLED SKIP (`skip_market_type_excluded`), never an error; a non-copyable type
     (prop / futures / non-mlb) is `skip_non_ml` / `skip_non_game`. Moneyline DELEGATES to the unchanged
@@ -798,6 +865,8 @@ def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, s
         return _match_f5(parsed, moneyline_index, f5_win_index or {}, f5_total_index or {}, f5_spread_index or {}, kalshi_dates)
     if mt == "team_total":
         return _match_team_total(parsed, moneyline_index, team_total_index or {}, kalshi_dates)
+    if mt == "inning_winner":                              # Phase D: game via the shared resolver, EXACT (inning, side)
+        return _match_inning_winner(parsed, moneyline_index, inningwin_index or {}, kalshi_dates)
     if mt == "prop":                                       # Phase C: game via the shared resolver, PLAYER by code
         pp = parsed.raw["prop"]
         game, miss = _resolve_unique_game(parsed, moneyline_index, kalshi_dates)

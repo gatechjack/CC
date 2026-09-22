@@ -218,16 +218,20 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     f5w_t, f5t_t, f5s_t = [], [], []                      # F5 winner / total / spread ticker lists
     tt_t: list = []                                       # PHASE 1b: KXMLBTEAMTOTAL tickers (INERT until 'team_total' enabled)
     prop_t: list = []                                      # Phase C: KXMLB{KS,HR,OUTS,TB,HRR,HIT} player-prop tickers (INERT until a stat token enabled)
+    iw_t: list = []                                        # Phase D: KXMLBINNINGWIN tickers (INERT until 'inning_winner' enabled)
     _MLB_PROP_SERIES = tuple(s for s, c in PROPS.PROP_SERIES.items() if c == "mlb")
     markets: dict = {}
     dates: set = set()
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     per_series = {"KXMLBGAME": game_t, "KXMLBTOTAL": total_t, "KXMLBSPREAD": spread_t, "KXMLBRFI": rfi_t,
-                  "KXMLBF5": f5w_t, "KXMLBF5TOTAL": f5t_t, "KXMLBF5SPREAD": f5s_t, "KXMLBTEAMTOTAL": tt_t}
+                  "KXMLBF5": f5w_t, "KXMLBF5TOTAL": f5t_t, "KXMLBF5SPREAD": f5s_t, "KXMLBTEAMTOTAL": tt_t,
+                  "KXMLBINNINGWIN": iw_t}
     per_series.update({s: prop_t for s in _MLB_PROP_SERIES})   # all prop series -> one list; build_prop_index reads each ticker's series
-    # ★ PERF FOLLOW-UP (flagged, not built): the prop series are fetched EVERY cycle even while INERT (no sub carries a
-    # stat token). Before ANY prop enable, gate this fetch on an enabled-token check to avoid the per-cycle API cost.
-    _fetch_series = SERIES + ("KXMLBRFI", "KXMLBF5", "KXMLBF5TOTAL", "KXMLBF5SPREAD", "KXMLBTEAMTOTAL") + _MLB_PROP_SERIES   # RFI + F5 + team-total + props alongside so
+    # ★ PERF FOLLOW-UP (flagged, not built): the prop series + KXMLBINNINGWIN are fetched EVERY cycle even while INERT (no
+    # sub carries a stat / inning_winner token). Before ANY enable, gate this fetch on an enabled-token check to avoid the
+    # per-cycle API cost (KXMLBINNINGWIN alone is ~447 open markets = 9 innings x 3 sides x ~17 games).
+    _fetch_series = SERIES + ("KXMLBRFI", "KXMLBF5", "KXMLBF5TOTAL", "KXMLBF5SPREAD", "KXMLBTEAMTOTAL",
+                              "KXMLBINNINGWIN") + _MLB_PROP_SERIES   # RFI + F5 + team-total + per-inning + props alongside so
                                              # the indices are READY; both stay INERT until a sub enables the token.
     # ★ OPEN pagination is UNIVERSAL (2026-09-11): every ctx builder here now fetches OPEN with fetch_all=True (was
     # single-page for all but the structural builder). Measured 2026-09-11 (pm_ctx_allscan_ro): ONLY cfb total(2008)/
@@ -255,11 +259,12 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     f5s_idx = M.build_kalshi_f5_spread_index(f5s_t)
     tt_idx = M.build_kalshi_team_total_index(tt_t)   # PHASE 1b: {stem: {(team,strike): KXMLBTEAMTOTAL ticker}} (route-only)
     prop_idx = PROPS.build_prop_index(prop_t)        # Phase C: {series:{stem:[(player_code,strike,ticker)]}} (route-only, inert)
+    iw_idx = M.build_kalshi_inningwin_index(iw_t)    # Phase D: {stem: {(inning,side): KXMLBINNINGWIN ticker}} (route-only, inert)
     for tk in game_t:               # the matcher's exact-strike gate is the real guard; carry the game tickers
         dates.add(tk)
     return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets, rfi_index=rfi_idx,
                                    f5_win_index=f5w_idx, f5_total_index=f5t_idx, f5_spread_index=f5s_idx,
-                                   team_total_index=tt_idx, prop_index=prop_idx)
+                                   team_total_index=tt_idx, prop_index=prop_idx, inningwin_index=iw_idx)
 
 
 async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketContext:
