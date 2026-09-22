@@ -292,6 +292,13 @@ def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str
                                      fail_reason=f"team_total_team_not_in_game:{tteam!r}", raw=raw, line=line, leg=leg)
             return ParsedPolyBet("team_total", date_iso, away_code, home_code, away_name, home_name,
                                  anchor, tname, fail_reason=fr, raw=raw, line=line, leg=leg, anchor_side=anchor)
+        # ── Phase C (2026-09-22): PLAYER PROPS. A recognised MLB stat token (k/hr/outs/tb/hrr/hits) -> market_type
+        # 'prop' carrying the parsed dict in raw (routed + PER-STAT gated in match_bet); an unrecognised suffix stays
+        # a raw-less 'prop' -> the existing skip_non_ml. ──
+        _pp = PROPS.parse_prop_suffix("mlb", suffix, outcome, title)
+        if _pp is not None:
+            return ParsedPolyBet("prop", date_iso, away_code, home_code, away_name, home_name,
+                                 None, None, raw={**raw, "prop": _pp}, line=_pp.get("line"), leg=_pp.get("leg"))
         # prop / unknown suffix -> labelled non-moneyline (NEVER silently moneyline).
         return ParsedPolyBet("prop", date_iso, away_code, home_code, away_name, home_name,
                              None, None, raw=raw)
@@ -526,8 +533,9 @@ def match_poly_to_kalshi(parsed: ParsedPolyBet, kalshi_index: dict,
 # ══════════════════════════════════════════════════════════════════════════════
 
 COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread", "first_inning_run", "f5_winner", "f5_total", "f5_spread",
-                         "team_total")   # PHASE 1b (2026-09-22): MLB team totals (KXMLBTEAMTOTAL); own enable token
+                         "team_total", "prop")   # PHASE 1b team totals; Phase C 'prop' gates PER-STAT (below)
 _F5_TYPES = ("f5_winner", "f5_total", "f5_spread")   # one enable token 'f5' gates all three (see match_bet)
+from . import player_props_match as PROPS   # Phase C (2026-09-22): shared player-prop core (parse + index + code-bind)
 
 _KALSHI_TOTAL_RE  = re.compile(r"^KXMLBTOTAL-(?P<stem>[A-Z0-9]+)-(?P<n>\d+)$")
 _KALSHI_SPREAD_RE = re.compile(r"^KXMLBSPREAD-(?P<stem>[A-Z0-9]+)-(?P<team>[A-Z]+)(?P<n>\d+)$")
@@ -757,17 +765,19 @@ def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, s
               kalshi_dates: frozenset,
               allowed_market_types=COPYABLE_MARKET_TYPES, rfi_index=None,
               f5_win_index=None, f5_total_index=None, f5_spread_index=None,
-              team_total_index=None) -> MatchResult:
+              team_total_index=None, prop_index=None) -> MatchResult:
     """Unified 3-dimension match. `allowed_market_types` = the sub-division's `market_types` (R1) -- a copyable
     type NOT in it is a LABELLED SKIP (`skip_market_type_excluded`), never an error; a non-copyable type
     (prop / futures / non-mlb) is `skip_non_ml` / `skip_non_game`. Moneyline DELEGATES to the unchanged
     match_poly_to_kalshi (leg forced 'yes' -- a moneyline copy BUYS YES on the bet team's KXMLBGAME ticker).
     Totals/spreads are EXACT-STRIKE-ONLY and carry the Kalshi `leg` so the executor never re-derives it."""
     mt = parsed.market_type
+    if mt == "prop" and not (parsed.raw or {}).get("prop"):    # Phase C: an UNRECOGNISED prop stat -> unchanged skip
+        return MatchResult("skip_non_ml", 0.0, reason=parsed.fail_reason or "prop", market_type=mt)
     if mt not in COPYABLE_MARKET_TYPES:
         return MatchResult("skip_non_ml" if mt == "prop" else "skip_non_game", 0.0,
                            reason=parsed.fail_reason or mt, market_type=mt)
-    enable_tok = "f5" if mt in _F5_TYPES else mt      # the 3 f5_* sub-types share ONE enable token 'f5'
+    enable_tok = "f5" if mt in _F5_TYPES else (parsed.raw["prop"]["stat"] if mt == "prop" else mt)  # prop gates PER-STAT
     if enable_tok not in allowed_market_types:
         return MatchResult("skip_market_type_excluded", 0.0,
                            reason=f"{enable_tok}_not_in_subdivision_market_types", market_type=mt)
@@ -788,6 +798,17 @@ def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, s
         return _match_f5(parsed, moneyline_index, f5_win_index or {}, f5_total_index or {}, f5_spread_index or {}, kalshi_dates)
     if mt == "team_total":
         return _match_team_total(parsed, moneyline_index, team_total_index or {}, kalshi_dates)
+    if mt == "prop":                                       # Phase C: game via the shared resolver, PLAYER by code
+        pp = parsed.raw["prop"]
+        game, miss = _resolve_unique_game(parsed, moneyline_index, kalshi_dates)
+        if miss is not None:
+            return miss
+        tk, leg, reason = PROPS.match_prop(pp, game.stem, game.team_a_code, game.team_b_code, prop_index or {})
+        if tk is None:
+            st = "no_kalshi_strike" if str(reason).startswith("no_kalshi_strike") else "skip_prop"
+            return MatchResult(st, 0.0, reason=reason, strike=pp.get("strike"), market_type=mt)
+        return MatchResult("matched", 1.0, kalshi_ticker=tk, leg=leg, strike=pp.get("strike"),
+                           market_type=mt, reason="exact_prop_%s" % pp.get("stat"))
     return MatchResult("fail", 0.0, reason="unhandled_market_type:%s" % mt, market_type=mt)
 
 
