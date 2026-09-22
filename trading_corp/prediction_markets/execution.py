@@ -193,6 +193,7 @@ class MarketContext:
     period_indices: dict | None = None    # PHASE 1: {pk: {"win":idx,"total":idx,"spread":idx}} -- quarters (q1-q4) + 2H
     team_total_index: dict | None = None  # PHASE 1: {stem: {(team_code, strike): ticker}} -- KX{X}TEAMTOTAL
     prop_index: dict | None = None         # Phase B/C: {series: {stem: [(player_code, strike, ticker)]}} -- KX{NFL,MLB} player props
+    inningwin_index: dict | None = None    # Phase D: {stem: {(inning:int, side): ticker}} -- KXMLBINNINGWIN (MLB only)
 
 
 @dataclass(frozen=True)
@@ -451,7 +452,7 @@ def _mlb_match(parsed, ctx, allowed_market_types):
                        allowed_market_types=allowed_market_types, rfi_index=ctx.rfi_index or {},
                        f5_win_index=ctx.f5_win_index or {}, f5_total_index=ctx.f5_total_index or {},
                        f5_spread_index=ctx.f5_spread_index or {}, team_total_index=ctx.team_total_index or {},
-                       prop_index=ctx.prop_index or {})
+                       prop_index=ctx.prop_index or {}, inningwin_index=ctx.inningwin_index or {})
 
 
 def _ufc_parse(slug, outcome, title=None):
