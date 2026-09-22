@@ -62,6 +62,7 @@ from ..data import fed_poly_kalshi_match as FED   # rung 4 (2026-09-07): fed buc
 from ..data import boxing_poly_kalshi_match as BX   # boxing (2026-09-14): KXBOXING winner bout-index builder for fetch_boxing_market_context
 from ..data import f1_poly_kalshi_match as F1X   # F1 (2026-09-14): KXF1RACE per-driver race-winner index builder for fetch_f1_market_context
 from ..data import itf_poly_kalshi_match as ITF   # ITF (2026-09-16): KX(ITFMATCH|ITFWMATCH) match index builder for fetch_itf_market_context
+from ..data import player_props_match as PROPS   # Phase B/C (2026-09-22): shared player-prop core + PROP_SERIES catalog (NFL/MLB)
 # REUSE (pure builders + the benign/loud split) -- NOT KalshiLiveBroker, NOT place_order (structural: no rebuild).
 from ..brokers.kalshi_live import (KalshiNoFill, OrderPlacementError, fill_event_from_v2_response,
                                    _is_benign_fok_nofill, _V2_ORDERS_PATH)
@@ -216,12 +217,17 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     game_t, total_t, spread_t, rfi_t = [], [], [], []
     f5w_t, f5t_t, f5s_t = [], [], []                      # F5 winner / total / spread ticker lists
     tt_t: list = []                                       # PHASE 1b: KXMLBTEAMTOTAL tickers (INERT until 'team_total' enabled)
+    prop_t: list = []                                      # Phase C: KXMLB{KS,HR,OUTS,TB,HRR,HIT} player-prop tickers (INERT until a stat token enabled)
+    _MLB_PROP_SERIES = tuple(s for s, c in PROPS.PROP_SERIES.items() if c == "mlb")
     markets: dict = {}
     dates: set = set()
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     per_series = {"KXMLBGAME": game_t, "KXMLBTOTAL": total_t, "KXMLBSPREAD": spread_t, "KXMLBRFI": rfi_t,
                   "KXMLBF5": f5w_t, "KXMLBF5TOTAL": f5t_t, "KXMLBF5SPREAD": f5s_t, "KXMLBTEAMTOTAL": tt_t}
-    _fetch_series = SERIES + ("KXMLBRFI", "KXMLBF5", "KXMLBF5TOTAL", "KXMLBF5SPREAD", "KXMLBTEAMTOTAL")   # RFI + F5 + team-total alongside so
+    per_series.update({s: prop_t for s in _MLB_PROP_SERIES})   # all prop series -> one list; build_prop_index reads each ticker's series
+    # ★ PERF FOLLOW-UP (flagged, not built): the prop series are fetched EVERY cycle even while INERT (no sub carries a
+    # stat token). Before ANY prop enable, gate this fetch on an enabled-token check to avoid the per-cycle API cost.
+    _fetch_series = SERIES + ("KXMLBRFI", "KXMLBF5", "KXMLBF5TOTAL", "KXMLBF5SPREAD", "KXMLBTEAMTOTAL") + _MLB_PROP_SERIES   # RFI + F5 + team-total + props alongside so
                                              # the indices are READY; both stay INERT until a sub enables the token.
     # ★ OPEN pagination is UNIVERSAL (2026-09-11): every ctx builder here now fetches OPEN with fetch_all=True (was
     # single-page for all but the structural builder). Measured 2026-09-11 (pm_ctx_allscan_ro): ONLY cfb total(2008)/
@@ -248,11 +254,12 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     f5t_idx = M.build_kalshi_f5_total_index(f5t_t)
     f5s_idx = M.build_kalshi_f5_spread_index(f5s_t)
     tt_idx = M.build_kalshi_team_total_index(tt_t)   # PHASE 1b: {stem: {(team,strike): KXMLBTEAMTOTAL ticker}} (route-only)
+    prop_idx = PROPS.build_prop_index(prop_t)        # Phase C: {series:{stem:[(player_code,strike,ticker)]}} (route-only, inert)
     for tk in game_t:               # the matcher's exact-strike gate is the real guard; carry the game tickers
         dates.add(tk)
     return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets, rfi_index=rfi_idx,
                                    f5_win_index=f5w_idx, f5_total_index=f5t_idx, f5_spread_index=f5s_idx,
-                                   team_total_index=tt_idx)
+                                   team_total_index=tt_idx, prop_index=prop_idx)
 
 
 async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketContext:
@@ -365,6 +372,13 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
     tt_t: list = []
     if getattr(cfg, "team_total_series", None):
         series_map.append((cfg.team_total_series, tt_t))
+    # Phase B (2026-09-22): player-prop series for THIS category (only nfl carries them in PROPS.PROP_SERIES; the
+    # other structural cats append nothing -> safe empty index). All prop series share one bucket; build_prop_index
+    # reads each ticker's series. ★ PERF FOLLOW-UP: fetched every cycle while INERT -> gate on an enabled-token check
+    # before any prop enable (same note as the MLB builder).
+    prop_t: list = []
+    for _ps in (s for s, c in PROPS.PROP_SERIES.items() if c == cfg.category):
+        series_map.append((_ps, prop_t))
     for series, bucket in series_map:
         for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
             # ★ PAGINATE OPEN too (2026-09-11 fix): OPEN was fetch_all=False -> a single limit=1000 page, so a
@@ -390,10 +404,11 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
     h1s_idx = SS.build_h1_spread_index(h1s_t, cfg)
     period_idx = SS.build_period_indices(period_buckets, cfg)   # {pk: {win/total/spread idx}} -- route-only per period
     tt_idx = SS.build_team_total_index(tt_t, cfg)               # {stem: {(team,strike): ticker}} for KX{X}TEAMTOTAL
+    prop_idx = PROPS.build_prop_index(prop_t)                   # Phase B: {series:{stem:[(player_code,strike,ticker)]}} (route-only, inert)
     dates = frozenset(k[0] for k in game_idx)          # ISO dates FROM THE GAME INDEX (never occurrence_datetime)
     return execution.MarketContext({}, total_idx, spread_idx, dates, markets, structural_index=game_idx,
                                    h1_win_index=h1w_idx, h1_total_index=h1t_idx, h1_spread_index=h1s_idx,
-                                   period_indices=period_idx, team_total_index=tt_idx)
+                                   period_indices=period_idx, team_total_index=tt_idx, prop_index=prop_idx)
 
 
 def _structural_ctx_builder(cfg):
