@@ -218,6 +218,7 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     f5w_t, f5t_t, f5s_t = [], [], []                      # F5 winner / total / spread ticker lists
     tt_t: list = []                                       # PHASE 1b: KXMLBTEAMTOTAL tickers (INERT until 'team_total' enabled)
     prop_t: list = []                                      # Phase C: KXMLB{KS,HR,OUTS,TB,HRR,HIT} player-prop tickers (INERT until a stat token enabled)
+    prop_titles: dict = {}                                 # Phase C: {ticker: yes_sub_title/title} -> full-name gate (wrong-team-bind close)
     iw_t: list = []                                        # Phase D: KXMLBINNINGWIN tickers (INERT until 'inning_winner' enabled)
     _MLB_PROP_SERIES = tuple(s for s, c in PROPS.PROP_SERIES.items() if c == "mlb")
     markets: dict = {}
@@ -249,6 +250,8 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
                     continue
                 per_series[series].append(tk)
                 markets[tk.upper()] = _market_quote_dict(m)
+                if series in _MLB_PROP_SERIES:           # Phase C: capture the full-name title for the wrong-team-bind gate
+                    prop_titles[tk] = getattr(m, "yes_sub_title", None) or getattr(m, "title", None)
     await _merge_raw_market_fields(client, markets, series_list=_fetch_series)   # incl KXMLBRFI (gates 3/6b need shard+size)
     game_idx = M.build_kalshi_game_index(game_t)
     total_idx = M.build_kalshi_total_index(total_t)
@@ -258,7 +261,7 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     f5t_idx = M.build_kalshi_f5_total_index(f5t_t)
     f5s_idx = M.build_kalshi_f5_spread_index(f5s_t)
     tt_idx = M.build_kalshi_team_total_index(tt_t)   # PHASE 1b: {stem: {(team,strike): KXMLBTEAMTOTAL ticker}} (route-only)
-    prop_idx = PROPS.build_prop_index(prop_t)        # Phase C: {series:{stem:[(player_code,strike,ticker)]}} (route-only, inert)
+    prop_idx = PROPS.build_prop_index(prop_t, prop_titles)   # Phase C: {series:{stem:[(pc,strike,ticker,name_key)]}} (route-only, inert; name_key = full-name gate)
     iw_idx = M.build_kalshi_inningwin_index(iw_t)    # Phase D: {stem: {(inning,side): KXMLBINNINGWIN ticker}} (route-only, inert)
     for tk in game_t:               # the matcher's exact-strike gate is the real guard; carry the game tickers
         dates.add(tk)
@@ -382,6 +385,7 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
     # reads each ticker's series. ★ PERF FOLLOW-UP: fetched every cycle while INERT -> gate on an enabled-token check
     # before any prop enable (same note as the MLB builder).
     prop_t: list = []
+    prop_titles: dict = {}                                 # Phase B: {ticker: yes_sub_title/title} -> full-name gate (wrong-team-bind close)
     for _ps in (s for s, c in PROPS.PROP_SERIES.items() if c == cfg.category):
         series_map.append((_ps, prop_t))
     for series, bucket in series_map:
@@ -400,6 +404,8 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
                     continue
                 markets[tk.upper()] = _market_quote_dict(m)
                 bucket.append(tk)
+                if bucket is prop_t:                     # Phase B: capture the full-name title for the wrong-team-bind gate
+                    prop_titles[tk] = getattr(m, "yes_sub_title", None) or getattr(m, "title", None)
     await _merge_raw_market_fields(client, markets, series_list=tuple(s for s, _ in series_map))   # exchange_index + size (SDK-dropped)
     game_idx = SS.build_game_index(game_t, cfg)
     total_idx = SS.build_total_index(total_t, cfg)      # {} when cfg has no total_series or the fetch was empty (safe)
@@ -409,7 +415,7 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
     h1s_idx = SS.build_h1_spread_index(h1s_t, cfg)
     period_idx = SS.build_period_indices(period_buckets, cfg)   # {pk: {win/total/spread idx}} -- route-only per period
     tt_idx = SS.build_team_total_index(tt_t, cfg)               # {stem: {(team,strike): ticker}} for KX{X}TEAMTOTAL
-    prop_idx = PROPS.build_prop_index(prop_t)                   # Phase B: {series:{stem:[(player_code,strike,ticker)]}} (route-only, inert)
+    prop_idx = PROPS.build_prop_index(prop_t, prop_titles)     # Phase B: {series:{stem:[(pc,strike,ticker,name_key)]}} (route-only, inert; name_key = full-name gate)
     dates = frozenset(k[0] for k in game_idx)          # ISO dates FROM THE GAME INDEX (never occurrence_datetime)
     return execution.MarketContext({}, total_idx, spread_idx, dates, markets, structural_index=game_idx,
                                    h1_win_index=h1w_idx, h1_total_index=h1t_idx, h1_spread_index=h1s_idx,
