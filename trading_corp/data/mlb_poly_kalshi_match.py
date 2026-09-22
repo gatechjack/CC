@@ -48,6 +48,10 @@ _POLY_SLUG_RE = re.compile(
 #   spread suffix: -spread-{home|away}-{W}pt{F}  -> anchor side + run-line W.F (all 161 observed = 1pt5)
 _POLY_TOTAL_RE  = re.compile(r"^-total-(?P<w>\d+)pt(?P<f>\d+)$")
 _POLY_SPREAD_RE = re.compile(r"^-spread-(?P<anchor>home|away)-(?P<w>\d+)pt(?P<f>\d+)$")
+# PHASE 1b (2026-09-22): team total -- '-team-total-{team}-{W}pt{F}' (title "{Team} Team Total: O/U W.F"). Established
+# from live Polymarket (mlb-tor-bal-2026-09-21: all half-point). Anchored to '$' -> a compound (e.g. '-1h-team-total-')
+# does NOT match here. Whole-number lines are refused at parse (Poly "equal to or exceeds" = push-on-Over hazard).
+_POLY_TEAMTOTAL_RE = re.compile(r"^-team-total-(?P<team>[a-z0-9]+)-(?P<w>\d+)pt(?P<f>\d+)$")
 
 
 def _poly_line(w: str, f: str) -> float:
@@ -262,6 +266,32 @@ def parse_poly_mlb_bet(slug: str, outcome: str, title: str = "", event_slug: str
             return ParsedPolyBet("f5_spread", date_iso, away_code, home_code, away_name, home_name,
                                  out_side, (away_name if out_side == "away" else home_name),
                                  raw=raw, line=line, leg=leg, anchor_side=anchor_side)
+        # ── PHASE 1b: TEAM TOTAL -- '-team-total-{team}-{W}pt{F}'. Team-anchored (anchor_side = which of THIS game's two
+        # teams); a team not in this game -> SAFE miss. Routed ONLY to KXMLBTEAMTOTAL (full-game total unreachable).
+        # Over->yes / Under->no. WHOLE-NUMBER line -> SAFE MISS (Poly "equal to or exceeds" = push-on-Over hazard). ──
+        _tt = _POLY_TEAMTOTAL_RE.match(suffix)
+        if _tt is not None:
+            tteam = _tt.group("team").upper()
+            line = _poly_line(_tt.group("w"), _tt.group("f")); o = (outcome or "").strip().lower()
+            leg = "yes" if o == "over" else "no" if o == "under" else None
+            if line is not None and float(line).is_integer():
+                return ParsedPolyBet("team_total", date_iso, away_code, home_code, away_name, home_name, None, None,
+                                     fail_reason=f"team_total_whole_number_line_push_hazard:{suffix!r}", raw=raw,
+                                     line=line, leg=leg)
+            if away_name is None or home_name is None:
+                miss = [c for c, n in ((away_code, away_name), (home_code, home_name)) if n is None]
+                return ParsedPolyBet("team_total", date_iso, away_code, home_code, away_name, home_name, None, None,
+                                     fail_reason=f"unrecognized_team_code:{miss}", raw=raw, line=line, leg=leg)
+            fr = None if leg else f"team_total_outcome_not_over_under:{outcome!r}"
+            if tteam == away_code:
+                anchor, tname = "away", away_name
+            elif tteam == home_code:
+                anchor, tname = "home", home_name
+            else:
+                return ParsedPolyBet("team_total", date_iso, away_code, home_code, away_name, home_name, None, None,
+                                     fail_reason=f"team_total_team_not_in_game:{tteam!r}", raw=raw, line=line, leg=leg)
+            return ParsedPolyBet("team_total", date_iso, away_code, home_code, away_name, home_name,
+                                 anchor, tname, fail_reason=fr, raw=raw, line=line, leg=leg, anchor_side=anchor)
         # prop / unknown suffix -> labelled non-moneyline (NEVER silently moneyline).
         return ParsedPolyBet("prop", date_iso, away_code, home_code, away_name, home_name,
                              None, None, raw=raw)
@@ -495,7 +525,8 @@ def match_poly_to_kalshi(parsed: ParsedPolyBet, kalshi_index: dict,
 #   game -- so we resolve the game via the moneyline index (date+teams) and JOIN totals/spreads by stem.
 # ══════════════════════════════════════════════════════════════════════════════
 
-COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread", "first_inning_run", "f5_winner", "f5_total", "f5_spread")
+COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread", "first_inning_run", "f5_winner", "f5_total", "f5_spread",
+                         "team_total")   # PHASE 1b (2026-09-22): MLB team totals (KXMLBTEAMTOTAL); own enable token
 _F5_TYPES = ("f5_winner", "f5_total", "f5_spread")   # one enable token 'f5' gates all three (see match_bet)
 
 _KALSHI_TOTAL_RE  = re.compile(r"^KXMLBTOTAL-(?P<stem>[A-Z0-9]+)-(?P<n>\d+)$")
@@ -574,6 +605,8 @@ def build_kalshi_rfi_index(rfi_tickers) -> dict:
 def build_kalshi_f5_win_index(tickers) -> dict:    return SG.build_win_index(tickers, "KXMLBF5")
 def build_kalshi_f5_total_index(tickers) -> dict:  return SG.build_total_index(tickers, "KXMLBF5TOTAL")
 def build_kalshi_f5_spread_index(tickers) -> dict: return SG.build_spread_index(tickers, "KXMLBF5SPREAD")
+# PHASE 1b: KXMLBTEAMTOTAL-{stem}-{TEAM}{N} (per-team, per-strike; N-0.5) -- SAME shape as spread, so reuse SG.
+def build_kalshi_team_total_index(tickers) -> dict: return SG.build_spread_index(tickers, "KXMLBTEAMTOTAL")
 
 
 def _resolve_unique_game(parsed: ParsedPolyBet, moneyline_index: dict, kalshi_dates: frozenset):
@@ -696,10 +729,35 @@ def _match_f5(parsed, moneyline_index, f5_win_index, f5_total_index, f5_spread_i
     return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line, market_type=mt, reason="f5_spread_stem_join")
 
 
+def _match_team_total(parsed, moneyline_index, team_total_index, kalshi_dates) -> MatchResult:
+    """PHASE 1b TEAM TOTAL: resolve the GAME via the moneyline index (date+teams), join KXMLBTEAMTOTAL by (this game's
+    Kalshi team code, EXACT strike). ★ ROUTE-ONLY: reads ONLY team_total_index -- a full-game total ticker is
+    UNREACHABLE ('Toronto over 4.5' vs 'game over 4.5' are different bets). TWO independent safe misses: a team not in
+    this game -> fail; a strike with no rung -> no_kalshi_strike. Over->yes / Under->no (leg from the outcome)."""
+    mt = "team_total"
+    if parsed.leg is None or parsed.line is None or parsed.anchor_side is None:
+        return MatchResult("fail", 0.0, reason=parsed.fail_reason or "team_total_leg_line_or_team_missing", market_type=mt)
+    game, miss = _resolve_unique_game(parsed, moneyline_index, kalshi_dates)
+    if miss is not None:
+        return miss
+    team_name = parsed.away_name if parsed.anchor_side == "away" else parsed.home_name
+    team_code = next((code for code, name in ((game.team_a_code, game.team_a_name),
+                                             (game.team_b_code, game.team_b_name)) if name == team_name), None)
+    if team_code is None:
+        return MatchResult("fail", 0.0, reason=f"team_total_team_not_in_kalshi_game:{team_name!r}", market_type=mt)
+    ticker = SG.join_spread(game.stem, team_code, parsed.line, team_total_index)   # {stem:{(team,strike):ticker}} shape
+    if ticker is None:
+        return MatchResult("no_kalshi_strike", 0.0, reason=f"no_team_total_strike_{team_code}_{parsed.line}",
+                           strike=parsed.line, market_type=mt)
+    return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line, market_type=mt,
+                       reason="team_total_stem_join")
+
+
 def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, spread_index: dict,
               kalshi_dates: frozenset,
               allowed_market_types=COPYABLE_MARKET_TYPES, rfi_index=None,
-              f5_win_index=None, f5_total_index=None, f5_spread_index=None) -> MatchResult:
+              f5_win_index=None, f5_total_index=None, f5_spread_index=None,
+              team_total_index=None) -> MatchResult:
     """Unified 3-dimension match. `allowed_market_types` = the sub-division's `market_types` (R1) -- a copyable
     type NOT in it is a LABELLED SKIP (`skip_market_type_excluded`), never an error; a non-copyable type
     (prop / futures / non-mlb) is `skip_non_ml` / `skip_non_game`. Moneyline DELEGATES to the unchanged
@@ -728,6 +786,8 @@ def match_bet(parsed: ParsedPolyBet, moneyline_index: dict, total_index: dict, s
         return _match_rfi(parsed, moneyline_index, rfi_index or {}, kalshi_dates)
     if mt in _F5_TYPES:
         return _match_f5(parsed, moneyline_index, f5_win_index or {}, f5_total_index or {}, f5_spread_index or {}, kalshi_dates)
+    if mt == "team_total":
+        return _match_team_total(parsed, moneyline_index, team_total_index or {}, kalshi_dates)
     return MatchResult("fail", 0.0, reason="unhandled_market_type:%s" % mt, market_type=mt)
 
 

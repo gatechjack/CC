@@ -215,12 +215,13 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     from pykalshi import MarketStatus
     game_t, total_t, spread_t, rfi_t = [], [], [], []
     f5w_t, f5t_t, f5s_t = [], [], []                      # F5 winner / total / spread ticker lists
+    tt_t: list = []                                       # PHASE 1b: KXMLBTEAMTOTAL tickers (INERT until 'team_total' enabled)
     markets: dict = {}
     dates: set = set()
     min_ts = int(now_ts) - _SETTLED_LOOKBACK_SEC
     per_series = {"KXMLBGAME": game_t, "KXMLBTOTAL": total_t, "KXMLBSPREAD": spread_t, "KXMLBRFI": rfi_t,
-                  "KXMLBF5": f5w_t, "KXMLBF5TOTAL": f5t_t, "KXMLBF5SPREAD": f5s_t}
-    _fetch_series = SERIES + ("KXMLBRFI", "KXMLBF5", "KXMLBF5TOTAL", "KXMLBF5SPREAD")   # RFI + F5 fetched alongside so
+                  "KXMLBF5": f5w_t, "KXMLBF5TOTAL": f5t_t, "KXMLBF5SPREAD": f5s_t, "KXMLBTEAMTOTAL": tt_t}
+    _fetch_series = SERIES + ("KXMLBRFI", "KXMLBF5", "KXMLBF5TOTAL", "KXMLBF5SPREAD", "KXMLBTEAMTOTAL")   # RFI + F5 + team-total alongside so
                                              # the indices are READY; both stay INERT until a sub enables the token.
     # ★ OPEN pagination is UNIVERSAL (2026-09-11): every ctx builder here now fetches OPEN with fetch_all=True (was
     # single-page for all but the structural builder). Measured 2026-09-11 (pm_ctx_allscan_ro): ONLY cfb total(2008)/
@@ -246,10 +247,12 @@ async def fetch_market_context(client, now_ts: int) -> execution.MarketContext:
     f5w_idx = M.build_kalshi_f5_win_index(f5w_t)      # F5 sub-game indices (route-only: read only by _match_f5 when enabled)
     f5t_idx = M.build_kalshi_f5_total_index(f5t_t)
     f5s_idx = M.build_kalshi_f5_spread_index(f5s_t)
+    tt_idx = M.build_kalshi_team_total_index(tt_t)   # PHASE 1b: {stem: {(team,strike): KXMLBTEAMTOTAL ticker}} (route-only)
     for tk in game_t:               # the matcher's exact-strike gate is the real guard; carry the game tickers
         dates.add(tk)
     return execution.MarketContext(game_idx, total_idx, spread_idx, frozenset(dates), markets, rfi_index=rfi_idx,
-                                   f5_win_index=f5w_idx, f5_total_index=f5t_idx, f5_spread_index=f5s_idx)
+                                   f5_win_index=f5w_idx, f5_total_index=f5t_idx, f5_spread_index=f5s_idx,
+                                   team_total_index=tt_idx)
 
 
 async def fetch_ufc_market_context(client, now_ts: int) -> execution.MarketContext:

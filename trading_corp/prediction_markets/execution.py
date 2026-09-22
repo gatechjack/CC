@@ -449,7 +449,7 @@ def _mlb_match(parsed, ctx, allowed_market_types):
     return M.match_bet(parsed, ctx.moneyline_index, ctx.total_index, ctx.spread_index, ctx.kalshi_dates,
                        allowed_market_types=allowed_market_types, rfi_index=ctx.rfi_index or {},
                        f5_win_index=ctx.f5_win_index or {}, f5_total_index=ctx.f5_total_index or {},
-                       f5_spread_index=ctx.f5_spread_index or {})
+                       f5_spread_index=ctx.f5_spread_index or {}, team_total_index=ctx.team_total_index or {})
 
 
 def _ufc_parse(slug, outcome, title=None):
