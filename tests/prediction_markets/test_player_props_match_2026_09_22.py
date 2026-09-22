@@ -70,7 +70,14 @@ NFL_TK = [
     "KXNFLREC-26SEP24ATLGB-GBTKRAFT85-9", "KXNFLFIRSTTD-26SEP24ATLGB-ATLAHOOPER81",
     "KXNFLANYTD-26SEP24ATLGB-GBKJOHNSON26",
 ]
-IDX = P.build_prop_index(NFL_TK)
+NFL_TITLES = {   # ladder series REQUIRE a title full-name; binary (FIRSTTD/ANYTD) don't
+    "KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50": "Kaleb Johnson: 50+ rushing yards",
+    "KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-90": "Kaleb Johnson: 90+ rushing yards",
+    "KXNFLRECYDS-26SEP24ATLGB-GBCBROOKS30-40": "Coby Brooks: 40+ receiving yards",
+    "KXNFLPASSYDS-26SEP24ATLGB-GBJLOVE10-350": "Jordan Love: 350+ passing yards",
+    "KXNFLREC-26SEP24ATLGB-GBTKRAFT85-9": "Tucker Kraft: 9+ receptions",
+}
+IDX = P.build_prop_index(NFL_TK, NFL_TITLES)
 STEM, TA, TB = "26SEP24ATLGB", "ATL", "GB"
 
 
@@ -103,16 +110,38 @@ def test_binary_anytime_td_match():
     assert tk == "KXNFLANYTD-26SEP24ATLGB-GBKJOHNSON26" and leg == "yes" and reason is None
 
 
-def test_same_name_collision_is_safe_miss():
+def test_same_surname_diff_first_binds_correct_player():
+    # two K.Johnson (one per team) at the same rung, DISTINCT first names, titled -> the whale's own player binds; the
+    # opponent is EXCLUDED by the full-name gate (NOT bound, NOT ambiguous). This is the cross-team wrong-bind close.
     idx = P.build_prop_index(["KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50",
-                              "KXNFLRSHYDS-26SEP24ATLGB-ATLKJOHNSON12-50"])   # two K.Johnson, one per team, same rung
+                              "KXNFLRSHYDS-26SEP24ATLGB-ATLKJOHNSON12-50"],
+                             {"KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50": "Kaleb Johnson: 50+",
+                              "KXNFLRSHYDS-26SEP24ATLGB-ATLKJOHNSON12-50": "Kevin Johnson: 50+"})
+    tk, leg, reason = P.match_prop(P.parse_prop_suffix("nfl", "-ryd-kaleb-johnson-49pt5", "Over"), STEM, TA, TB, idx)
+    assert tk == "KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50" and reason is None
+
+
+def test_identical_full_name_is_ambiguous():
+    # the (rare) genuine collision: two DIFFERENT player codes with the SAME full name at the wanted strike -> REFUSED
+    idx = P.build_prop_index(["KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50",
+                              "KXNFLRSHYDS-26SEP24ATLGB-ATLKJOHNSON12-50"],
+                             {"KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50": "Kaleb Johnson: 50+",
+                              "KXNFLRSHYDS-26SEP24ATLGB-ATLKJOHNSON12-50": "Kaleb Johnson: 50+"})
     tk, leg, reason = P.match_prop(P.parse_prop_suffix("nfl", "-ryd-kaleb-johnson-49pt5", "Over"), STEM, TA, TB, idx)
     assert tk is None and reason.startswith("ambiguous_same_name")
 
 
+def test_ladder_untitled_is_excluded():
+    # a LADDER ticker with NO title cannot be bound on the initial alone (closes the untitled fallback) -> safe miss
+    idx = P.build_prop_index(["KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50"])   # no titles
+    tk, leg, reason = P.match_prop(P.parse_prop_suffix("nfl", "-ryd-kaleb-johnson-49pt5", "Over"), STEM, TA, TB, idx)
+    assert tk is None and reason == "player_not_found"
+
+
 def test_mlb_end_to_end():
     tk_list = ["KXMLBKS-26SEP221305TBNYYG1-TBNMARTINEZ28-7", "KXMLBHR-26SEP221305TBNYYG1-TBJMATEO2-1"]
-    idx = P.build_prop_index(tk_list)
+    idx = P.build_prop_index(tk_list, {"KXMLBKS-26SEP221305TBNYYG1-TBNMARTINEZ28-7": "Nick Martinez: 7+ strikeouts?",
+                                       "KXMLBHR-26SEP221305TBNYYG1-TBJMATEO2-1": "Jorge Mateo: 1+ home runs?"})
     tk, leg, r = P.match_prop(P.parse_prop_suffix("mlb", "-k-nick-martinez-6pt5", "Over"), "26SEP221305TBNYYG1", "TB", "NYY", idx)
     assert tk == "KXMLBKS-26SEP221305TBNYYG1-TBNMARTINEZ28-7" and leg == "yes" and r is None
     tk, leg, r = P.match_prop(P.parse_prop_suffix("mlb", "-hr-kyle-schwarber-0pt5", "Over"), "26SEP221305TBNYYG1", "TB", "NYY", idx)

@@ -43,12 +43,21 @@ def test_caseA_both_titled_binds_only_the_named_one():
     assert tk == tk_g and reason is None                            # Kevin excluded by name -> not ambiguous, binds Kaleb
 
 
-# ── 3. Case B: both K.Johnson present, ASYMMETRIC strikes, UNTITLED -> distinct-pc ambiguity refuses
-def test_caseB_untitled_distinct_pc_is_ambiguous():
-    idx = P.build_prop_index(["KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-90",
-                              "KXNFLRSHYDS-26SEP24ATLGB-ATLKJOHNSON1-50"])   # no titles
-    tk, leg, reason = _m(idx, "-ryd-kaleb-johnson-49pt5", "Over")            # wants 50 -> only ATL has 50
-    assert tk is None and reason.startswith("ambiguous_same_name")           # was: matched ATL (the leak)
+# ── 3. Case B (titled): both K.Johnson present, ASYMMETRIC strikes -> the opponent (Kevin@50) is EXCLUDED by name, so
+#      the whale's Kaleb (only @90) has no rung at 50 -> no_kalshi_strike, NEVER the wrong-team ATL@50 (the old leak).
+def test_caseB_titled_excludes_wrong_team_at_wanted_strike():
+    tk_g = "KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-90"
+    tk_a = "KXNFLRSHYDS-26SEP24ATLGB-ATLKJOHNSON1-50"
+    idx = P.build_prop_index([tk_g, tk_a], {tk_g: "Kaleb Johnson: 90+", tk_a: "Kevin Johnson: 50+"})
+    tk, leg, reason = _m(idx, "-ryd-kaleb-johnson-49pt5", "Over")            # wants 50; Kaleb only has 90
+    assert tk is None and reason.startswith("no_kalshi_strike")              # was: matched ATL (the leak)
+
+
+# ── 3b. UNTITLED ladder cannot bind on the initial alone (closes the untitled fallback that re-opened Case A)
+def test_caseB_untitled_ladder_excluded():
+    idx = P.build_prop_index(["KXNFLRSHYDS-26SEP24ATLGB-ATLKJOHNSON1-50"])   # no titles -> unbindable ladder
+    tk, leg, reason = _m(idx, "-ryd-kaleb-johnson-49pt5", "Over")
+    assert tk is None and reason == "player_not_found"
 
 
 # ── 4. whole-number Poly line -> refused (push hazard), like team_total
@@ -70,13 +79,17 @@ def test_half_line_still_maps_to_n_plus_1():
     assert r["strike"] == 50 and r["leg"] == "yes"
 
 
-# ── 5. first-name compatibility
-def test_first_name_compatibility():
-    assert P._first_compatible("cam", "cameron") is True     # nickname prefix
-    assert P._first_compatible("cameron", "cam") is True
-    assert P._first_compatible("josh", "josh") is True
-    assert P._first_compatible("kaleb", "kevin") is False    # distinct players
-    assert P._first_compatible("j", "josh") is False         # <3-char requires equality
+# ── 5. exact-equality gate: a nickname-FORM mismatch is a safe MISS (not a wrong bind); distinct first -> excluded
+def test_exact_first_name_required():
+    tk = "KXNFLRSHYDS-26SEP24ATLGB-GBCSKATTEBO44-50"
+    # whale 'cam-skattebo' vs a Kalshi title 'Cameron Skattebo' -> NOT exact -> safe MISS (coverage trade for safety)
+    idx = P.build_prop_index([tk], {tk: "Cameron Skattebo: 50+"})
+    tk1, _l, r1 = _m(idx, "-ryd-cam-skattebo-49pt5", "Over")
+    assert tk1 is None and r1 == "player_not_found"
+    # exact form matches
+    idx2 = P.build_prop_index([tk], {tk: "Cam Skattebo: 50+"})
+    tk2, _l2, r2 = _m(idx2, "-ryd-cam-skattebo-49pt5", "Over")
+    assert tk2 == tk and r2 is None
 
 
 def test_poly_full_key():
