@@ -87,16 +87,10 @@ def _title_name_key(title: str):
     return (first, lastname)
 
 
-def _first_compatible(a: str, b: str) -> bool:
-    """Two folded first names are the SAME person's if equal, or one is a >=3-char prefix of the other (Cam/Cameron,
-    Alex/Alexander). Kaleb vs Kevin are NEITHER -> incompatible -> different players. A <3-char first requires equality
-    (so 'j' never matches 'josh')."""
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
-    return len(lo) >= 3 and hi.startswith(lo)
+# NOTE (2026-09-22, skeptic round 2): the ladder name gate requires EXACT (first, last) equality -- NOT a prefix
+# ("Alex" vs "Alexander" could be one person's nickname OR two different same-surname players in one game; a prefix
+# rule cannot tell them apart on a single listing, so it is unsafe). Exact-equality costs some nickname-form coverage
+# (a whale 'cam-...' vs a Kalshi title 'Cameron ...' -> safe MISS), which is the correct trade vs a wrong-team bind.
 
 
 def poly_player_key(player_slug: str):
@@ -207,12 +201,16 @@ def match_prop(parsed: dict, stem: str, team_a_code: str, team_b_code: str, prop
     """(ticker, leg, reason). reason is set ONLY on a miss (ticker None): unrecognised handled upstream. Misses:
     leg_unresolved | player_not_found | no_kalshi_strike:<rungs> | ambiguous_same_name. Exact-strike, code+NAME-bound.
 
-    Binding (2026-09-22 hardening): a candidate must match the code key (team-stripped initial+lastname) AND, when the
-    ticker carries a title-derived name_key (ladder, engine path), the whale's FULL first name must be compatible with
-    the ticker's full first name -- a titled entry with an incompatible first name is a DIFFERENT player and is EXCLUDED
-    (closes the wrong-team bind where only the opponent's same-surname player is listed). Additionally, if the surviving
-    candidates span >1 distinct player code, the bet is ambiguous and REFUSED (closes the both-listed asymmetric-strike
-    leak in the code-only fallback)."""
+    Binding (2026-09-22, hardened after 2 skeptic rounds):
+      * LADDER series (ryd/recyd/pyd/ptd/rec, k/hr/outs/tb/hrr/hits): a candidate must match the code key AND its
+        title-derived name_key must EXACTLY equal the whale's full (first, lastname). A ladder ticker with NO resolvable
+        title name is EXCLUDED (never bound on the initial alone) -- this closes BOTH the cross-team wrong-bind (initial
+        'K.Johnson' can't tell Kaleb from Kevin) AND the untitled fallback. The engine always supplies titles
+        (yes_sub_title); a missing/garbled title => safe miss, never a wrong bind.
+      * BINARY series (anytime-td/first-td): no player title to gate on (first-td is team D/ST; anytd has no live
+        supply), so these bind on the code key + the distinct-player-code ambiguity guard only -- a documented residual
+        (single unlisted-whale-player + same-name opponent) that does not occur while anytd is unlisted.
+      * If the surviving candidates span >1 distinct player code the bet is ambiguous and REFUSED."""
     if parsed is None:
         return (None, None, "not_a_prop")
     if parsed.get("leg") is None:
@@ -221,6 +219,7 @@ def match_prop(parsed: dict, stem: str, team_a_code: str, team_b_code: str, prop
     if pkey is None:
         return (None, None, "poly_player_unparseable:%r" % parsed["player_slug"])
     pfull = poly_full_key(parsed["player_slug"])
+    is_ladder = PROP_SERIES_KIND.get(parsed["series"]) == "ladder"
     entries = prop_index.get(parsed["series"], {}).get(stem, [])
     cand_codes = set()         # distinct player codes that survive code + name gating
     player_rungs = []          # every strike Kalshi lists for the surviving player(s) (for the miss table)
@@ -228,9 +227,9 @@ def match_prop(parsed: dict, stem: str, team_a_code: str, team_b_code: str, prop
     for pc, strike, t, name_key in entries:
         if kalshi_player_key(pc, team_a_code, team_b_code) != pkey:
             continue                                   # wrong surname/initial (or code not in this game)
-        if name_key is not None:                       # titled ladder ticker -> FULL-name gate
-            if pfull is None or not (_first_compatible(pfull[0], name_key[0]) and pfull[1] == name_key[1]):
-                continue                               # titled but a DIFFERENT player -> exclude (wrong-team close)
+        if is_ladder:                                  # LADDER -> MANDATORY exact title full-name match
+            if name_key is None or pfull is None or name_key != pfull:
+                continue                               # untitled OR a different full name -> EXCLUDE (wrong-team close)
         cand_codes.add(pc)
         player_rungs.append(strike)
         if strike == parsed["strike"]:

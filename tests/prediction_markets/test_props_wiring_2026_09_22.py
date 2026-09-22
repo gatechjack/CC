@@ -7,7 +7,9 @@ from trading_corp.data import player_props_match as P
 NFL = SS.LEAGUES["nfl"]
 GIDX = SS.build_game_index(["KXNFLGAME-26SEP24ATLGB-GB"], NFL)
 PIDX = P.build_prop_index(["KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50", "KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-90",
-                           "KXNFLANYTD-26SEP24ATLGB-GBKJOHNSON26"])
+                           "KXNFLANYTD-26SEP24ATLGB-GBKJOHNSON26"],
+                          {"KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-50": "Kaleb Johnson: 50+",   # ladder needs a title
+                           "KXNFLRSHYDS-26SEP24ATLGB-GBKJOHNSON26-90": "Kaleb Johnson: 90+"})
 DATES = {"2026-09-24"}
 
 
@@ -48,7 +50,9 @@ def test_nfl_binary_anytd():
 from trading_corp.data import mlb_poly_kalshi_match as M
 
 MGIDX = M.build_kalshi_game_index(["KXMLBGAME-26SEP061840ATLPHI-PHI"])
-MPIDX = P.build_prop_index(["KXMLBHR-26SEP061840ATLPHI-PHIKSCHWARBER12-1", "KXMLBKS-26SEP061840ATLPHI-PHIZWHEELER45-6"])
+MPIDX = P.build_prop_index(["KXMLBHR-26SEP061840ATLPHI-PHIKSCHWARBER12-1", "KXMLBKS-26SEP061840ATLPHI-PHIZWHEELER45-6"],
+                           {"KXMLBHR-26SEP061840ATLPHI-PHIKSCHWARBER12-1": "Kyle Schwarber: 1+",   # ladder needs a title
+                            "KXMLBKS-26SEP061840ATLPHI-PHIZWHEELER45-6": "Zack Wheeler: 6+"})
 MDATES = frozenset({"2026-09-06"})
 
 
