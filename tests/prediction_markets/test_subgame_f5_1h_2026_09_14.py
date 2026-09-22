@@ -296,15 +296,17 @@ def test_1h_one_token_gates_all_three():
 
 
 # ── THE -2h- FINDING: second half is a KNOWN UNSUPPORTED FAMILY -> skip, NEVER a 1H bind ──
-def test_2h_moneyline_is_non_moneyline_skip():
+def test_2h_moneyline_now_h2_winner_gated_by_token():
+    # PHASE 1 (2026-09-22) SUPERSEDES the old "2h unsupported" contract: -2h-moneyline now PARSES to h2_winner, and is
+    # gated by the 'h2' enable token. With 'h2' NOT enabled it is skip_market_type_excluded (NOT a silent non_moneyline).
     p, r = _fh_match("nfl-no-det-2026-09-13-2h-moneyline", "Lions", allowed=("first_half", "moneyline"))
-    assert p.market_type == "non_moneyline"          # -2h- falls through to the labelled skip, NOT first_half_winner
-    assert r.status == "skip_non_moneyline" and r.kalshi_ticker is None
+    assert p.market_type == "h2_winner"
+    assert r.status == "skip_market_type_excluded" and r.kalshi_ticker is None
 
 
-def test_2h_total_is_non_moneyline_skip():
+def test_2h_total_now_h2_total_gated_by_token():
     p, r = _fh_match("nfl-no-det-2026-09-13-2h-total-23pt5", "Over", allowed=("first_half", "total"))
-    assert p.market_type == "non_moneyline" and r.status == "skip_non_moneyline"
+    assert p.market_type == "h2_total" and r.status == "skip_market_type_excluded"
 
 
 def test_1h_moneyline_with_extra_segment_falls_through():

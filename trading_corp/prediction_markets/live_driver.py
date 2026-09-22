@@ -352,6 +352,16 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
         series_map.append((cfg.h1_total_series, h1t_t))
     if getattr(cfg, "h1_spread_series", None):
         series_map.append((cfg.h1_spread_series, h1s_t))
+    # PHASE 1 (2026-09-22): quarter/2H period series + team-total series -- fetched ALONGSIDE (INERT until a token is
+    # enabled per sub). period_buckets[pk][role] collects that period's tickers; empty cfg -> nothing appended (safe {}).
+    period_buckets = {pk: {"win": [], "total": [], "spread": []} for pk in (getattr(cfg, "period_series", {}) or {})}
+    for _pk, _series in (getattr(cfg, "period_series", {}) or {}).items():
+        for _role in ("win", "total", "spread"):
+            if _series.get(_role):
+                series_map.append((_series[_role], period_buckets[_pk][_role]))
+    tt_t: list = []
+    if getattr(cfg, "team_total_series", None):
+        series_map.append((cfg.team_total_series, tt_t))
     for series, bucket in series_map:
         for status, extra in ((MarketStatus.OPEN, {}), (MarketStatus.SETTLED, {"min_close_ts": min_ts})):
             # ★ PAGINATE OPEN too (2026-09-11 fix): OPEN was fetch_all=False -> a single limit=1000 page, so a
@@ -375,9 +385,12 @@ async def fetch_structural_market_context(client, now_ts: int, cfg) -> execution
     h1w_idx = SS.build_h1_win_index(h1w_t, cfg)         # first-half sub-game indices (route-only: read only by _match_first_half)
     h1t_idx = SS.build_h1_total_index(h1t_t, cfg)
     h1s_idx = SS.build_h1_spread_index(h1s_t, cfg)
+    period_idx = SS.build_period_indices(period_buckets, cfg)   # {pk: {win/total/spread idx}} -- route-only per period
+    tt_idx = SS.build_team_total_index(tt_t, cfg)               # {stem: {(team,strike): ticker}} for KX{X}TEAMTOTAL
     dates = frozenset(k[0] for k in game_idx)          # ISO dates FROM THE GAME INDEX (never occurrence_datetime)
     return execution.MarketContext({}, total_idx, spread_idx, dates, markets, structural_index=game_idx,
-                                   h1_win_index=h1w_idx, h1_total_index=h1t_idx, h1_spread_index=h1s_idx)
+                                   h1_win_index=h1w_idx, h1_total_index=h1t_idx, h1_spread_index=h1s_idx,
+                                   period_indices=period_idx, team_total_index=tt_idx)
 
 
 def _structural_ctx_builder(cfg):

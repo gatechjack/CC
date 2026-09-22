@@ -49,6 +49,20 @@ from . import subgame_match as SG   # shared sub-game (F5 / first-half) route-on
 COPYABLE_MARKET_TYPES = ("moneyline", "total", "spread",
                          "first_half_winner", "first_half_total", "first_half_spread")
 _FH_TYPES = ("first_half_winner", "first_half_total", "first_half_spread")   # one enable token 'first_half' gates all 3
+# ── PHASE 1 (2026-09-22): NFL quarters (1Q/2Q/3Q/4Q) + 2nd half (2H) + TEAM TOTALS. Each period/family routes ONLY to
+# its OWN Kalshi series via the shared subgame core (a 2Q total can NEVER bind a full-game or 1H strike -- route-only,
+# same proof as first_half). Poly slug period tokens matched EXACTLY (1q/2q/3q/4q/2h -- NOT q1/quarter/halftime); 1h
+# stays on the first_half path, untouched. Each period's 3 sub-types share ONE enable token (the period key); team_total
+# has its own. All ship INERT until a sub-division puts the token in its market_types column. ──
+_PERIOD_TOKENS = {"1q": "q1", "2q": "q2", "3q": "q3", "4q": "q4", "2h": "h2"}   # Poly slug period token -> period key
+_PERIOD_KEYS = ("q1", "q2", "q3", "q4", "h2")
+_PERIOD_TYPES = tuple("%s_%s" % (pk, m) for pk in _PERIOD_KEYS for m in ("winner", "total", "spread"))
+_PERIOD_MT_TO_KEY = {"%s_%s" % (pk, m): pk for pk in _PERIOD_KEYS for m in ("winner", "total", "spread")}
+COPYABLE_MARKET_TYPES = COPYABLE_MARKET_TYPES + _PERIOD_TYPES + ("team_total",)
+# Poly team-total slug suffix: '-team-total-{team}-{W}pt{F}' (title "{Team} Team Total: O/U {W}.{F}"). Anchored to '$'
+# so a compound like '-1h-team-total-...' does NOT match here (it lands in the non_moneyline skip -- a 1H team total
+# is a separate, unsupported compound, correctly skipped rather than mis-bound to a full-game team total).
+_POLY_TEAMTOTAL_RE = re.compile(r"^-team-total-(?P<team>[a-z0-9]+)-(?P<w>\d+)pt(?P<f>\d+)$")
 
 
 @dataclass(frozen=True)
@@ -69,6 +83,10 @@ class StructuralLeague:
     h1_win_series: str | None = None    # first-half WINNER series, e.g. "KXNFL1H" (3-way incl TIE); None = not built
     h1_total_series: str | None = None  # first-half TOTAL series, e.g. "KXNFL1HTOTAL" (None = not built)
     h1_spread_series: str | None = None # first-half SPREAD series, e.g. "KXNFL1HSPREAD" (None = not built)
+    # PHASE 1: quarter/2H sub-game series. period_series[pk] = {"win":.., "total":.., "spread":..} (any None = not
+    # built -> empty index -> SAFE miss). pk in _PERIOD_KEYS. team_total_series = KX{X}TEAMTOTAL. Empty -> INERT.
+    period_series: dict = field(default_factory=dict)
+    team_total_series: str | None = None
 
 
 @dataclass(frozen=True)
@@ -224,7 +242,77 @@ def parse_poly_bet(slug: str, outcome: str, cfg: StructuralLeague, title: str = 
             return ParsedBet("first_half_spread", date_iso, away_code, home_code, away_name, home_name,
                              out_side, (away_name if out_side == "away" else home_name),
                              raw=raw, line=line, leg=leg, anchor_side=anchor_side)
-        # prop / unknown suffix -> labelled non_moneyline (NEVER silently moneyline or a match). `-2h-*` lands here.
+        # ── PHASE 1: QUARTERS (1q/2q/3q/4q) + 2ND HALF (2h) -- SAME grammar as -1h-, each routed ONLY to its own
+        # period series. Token matched EXACTLY (dict lookup); an unknown period token falls through to the skip. ──
+        for _tok, _pk in _PERIOD_TOKENS.items():
+            _p = "-%s-" % _tok
+            if suffix == _p + "moneyline":                     # period WINNER: outcome = team (or tie) -> YES on that side
+                o = (outcome or "").strip().lower()
+                if o in ("tie", "draw"):
+                    return ParsedBet("%s_winner" % _pk, date_iso, away_code, home_code, away_name, home_name,
+                                     "draw", None, raw=raw, leg="yes")
+                if away_name is None or home_name is None:
+                    miss = [c for c, n in ((away_code, away_name), (home_code, home_name)) if n is None]
+                    return ParsedBet("%s_winner" % _pk, date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason="unrecognized_team_code:%s" % miss, raw=raw)
+                side = resolve_side(outcome, away_name, home_name)
+                if side is None:
+                    return ParsedBet("%s_winner" % _pk, date_iso, away_code, home_code, away_name, home_name,
+                                     None, None, fail_reason="%s_winner_outcome_unresolved:%r" % (_pk, outcome), raw=raw)
+                return ParsedBet("%s_winner" % _pk, date_iso, away_code, home_code, away_name, home_name,
+                                 side, (away_name if side == "away" else home_name), raw=raw, leg="yes")
+            if suffix.startswith(_p + "total") or suffix.startswith(_p + "spread"):
+                sub = suffix[len(_p) - 1:]                      # strip '-{tok}' -> reuse the full-game total/spread parsers
+                if sub.startswith("-total"):
+                    tm = _POLY_TOTAL_RE.match(sub)
+                    if tm is None:
+                        return ParsedBet("non_moneyline", date_iso, away_code, home_code, None, None, None, None,
+                                         fail_reason="unparseable_%s_total_suffix:%r" % (_pk, suffix), raw=raw)
+                    line = _poly_line(tm.group("w"), tm.group("f")); o = (outcome or "").strip().lower()
+                    leg = "yes" if o == "over" else "no" if o == "under" else None
+                    fr = None if leg else "%s_total_outcome_not_over_under:%r" % (_pk, outcome)
+                    return ParsedBet("%s_total" % _pk, date_iso, away_code, home_code, away_name, home_name, None, None,
+                                     fail_reason=fr, raw=raw, line=line, leg=leg)
+                sm = _POLY_SPREAD_RE.match(sub)
+                if sm is None:
+                    return ParsedBet("non_moneyline", date_iso, away_code, home_code, None, None, None, None,
+                                     fail_reason="unparseable_%s_spread_suffix:%r" % (_pk, suffix), raw=raw)
+                if away_name is None or home_name is None:
+                    miss = [c for c, n in ((away_code, away_name), (home_code, home_name)) if n is None]
+                    return ParsedBet("%s_spread" % _pk, date_iso, away_code, home_code, away_name, home_name, None, None,
+                                     fail_reason="unrecognized_team_code:%s" % miss, raw=raw)
+                line = _poly_line(sm.group("w"), sm.group("f")); anchor_side = sm.group("anchor")
+                out_side = resolve_side(outcome, away_name, home_name)
+                if out_side is None:
+                    return ParsedBet("%s_spread" % _pk, date_iso, away_code, home_code, away_name, home_name, None, None,
+                                     fail_reason="%s_spread_outcome_unresolved:%r" % (_pk, outcome), raw=raw,
+                                     line=line, anchor_side=anchor_side)
+                leg = "yes" if out_side == anchor_side else "no"
+                return ParsedBet("%s_spread" % _pk, date_iso, away_code, home_code, away_name, home_name,
+                                 out_side, (away_name if out_side == "away" else home_name),
+                                 raw=raw, line=line, leg=leg, anchor_side=anchor_side)
+        # ── PHASE 1: TEAM TOTAL -- '-team-total-{team}-{W}pt{F}'. Team-anchored (anchor_side = which of THIS game's two
+        # teams); a team not in this game -> SAFE miss. Routed ONLY to KX{X}TEAMTOTAL. Over->yes / Under->no. ──
+        _tt = _POLY_TEAMTOTAL_RE.match(suffix)
+        if _tt is not None:
+            tteam = _tt.group("team").upper()
+            line = _poly_line(_tt.group("w"), _tt.group("f")); o = (outcome or "").strip().lower()
+            leg = "yes" if o == "over" else "no" if o == "under" else None
+            fr = None if leg else "team_total_outcome_not_over_under:%r" % outcome
+            if away_name is None or home_name is None:
+                miss = [c for c, n in ((away_code, away_name), (home_code, home_name)) if n is None]
+                return ParsedBet("team_total", date_iso, away_code, home_code, away_name, home_name, None, None,
+                                 fail_reason="unrecognized_team_code:%s" % miss, raw=raw, line=line, leg=leg)
+            if tteam == away_code:
+                anchor, tname = "away", away_name
+            elif tteam == home_code:
+                anchor, tname = "home", home_name
+            else:
+                return ParsedBet("team_total", date_iso, away_code, home_code, away_name, home_name, None, None,
+                                 fail_reason="team_total_team_not_in_game:%r" % tteam, raw=raw, line=line, leg=leg)
+            return ParsedBet("team_total", date_iso, away_code, home_code, away_name, home_name,
+                             anchor, tname, fail_reason=fr, raw=raw, line=line, leg=leg, anchor_side=anchor)
+        # prop / unknown suffix -> labelled non_moneyline (NEVER silently moneyline or a match).
         return ParsedBet("non_moneyline", date_iso, away_code, home_code, None, None, None, None,
                          fail_reason="non_moneyline_suffix:%r" % suffix, raw=raw)
     if away_name is None or home_name is None:
@@ -373,6 +461,26 @@ def build_h1_total_index(tickers, cfg: StructuralLeague) -> dict:
 def build_h1_spread_index(tickers, cfg: StructuralLeague) -> dict:
     """{stem: {(team_code, strike): ticker}} for the first-half SPREAD series (KX{X}1HSPREAD); EXACT strike."""
     return SG.build_spread_index(tickers, cfg.h1_spread_series) if getattr(cfg, "h1_spread_series", None) else {}
+
+
+# ── PHASE 1 sub-game indices: quarters/2H + team total (delegate to the SHARED SG core; series names from cfg). ──
+def build_period_indices(period_buckets: dict, cfg: StructuralLeague) -> dict:
+    """{pk: {"win":idx,"total":idx,"spread":idx}} from per-period ticker buckets ({pk: {"win":[..],"total":[..],
+    "spread":[..]}}). Each role uses THIS period's series only (route-only); a None series or empty bucket -> {}."""
+    out: dict = {}
+    for pk, series in (getattr(cfg, "period_series", {}) or {}).items():
+        b = period_buckets.get(pk, {}) or {}
+        out[pk] = {
+            "win": SG.build_win_index(b.get("win") or [], series["win"]) if series.get("win") else {},
+            "total": SG.build_total_index(b.get("total") or [], series["total"]) if series.get("total") else {},
+            "spread": SG.build_spread_index(b.get("spread") or [], series["spread"]) if series.get("spread") else {},
+        }
+    return out
+
+
+def build_team_total_index(tickers, cfg: StructuralLeague) -> dict:
+    """{stem: {(team_code, strike): ticker}} for KX{X}TEAMTOTAL (same per-team/per-strike shape as spread; N-0.5)."""
+    return SG.build_spread_index(tickers, cfg.team_total_series) if getattr(cfg, "team_total_series", None) else {}
 
 
 def _prev_iso(date_iso):
@@ -532,9 +640,77 @@ def _match_first_half(parsed, game_index, kalshi_dates, cfg, h1_win_index, h1_to
     return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line, market_type=mt, reason="first_half_spread_stem_join")
 
 
+def _match_period(parsed, game_index, kalshi_dates, cfg, period_indices) -> MatchResult:
+    """PHASE 1 quarter/2H sub-game: resolve the GAME via the SHARED resolver, then join THIS PERIOD's KX{X}{period}*
+    series by the shared stem. ★ ROUTE-ONLY: reads ONLY period_indices[pk] -- a full-game OR different-period ticker
+    is UNREACHABLE (a 2Q total can never bind a full-game or 1Q strike). Winner 3-way (team/team/TIE); total/spread
+    EXACT-STRIKE. Mirrors _match_first_half exactly, parameterized by period key."""
+    mt = parsed.market_type
+    pk = _PERIOD_MT_TO_KEY[mt]
+    idxs = period_indices.get(pk) or {}
+    win_idx, tot_idx, spr_idx = (idxs.get("win") or {}), (idxs.get("total") or {}), (idxs.get("spread") or {})
+    if parsed.leg is None:
+        return MatchResult("fail", 0.0, reason=parsed.fail_reason or "%s_leg_missing" % pk, market_type=mt)
+    game, miss = _resolve_unique_game(parsed, game_index, kalshi_dates, cfg)
+    if miss is not None:
+        return miss
+    if mt.endswith("_winner"):
+        if parsed.side == "draw":
+            side_key = SG.TIE_KEY
+        else:
+            side_key = next((code for code, name in ((game.team_a_code, game.team_a_name),
+                                                     (game.team_b_code, game.team_b_name)) if name == parsed.side_name), None)
+            if side_key is None:
+                return MatchResult("fail", 0.0, reason="%s_winner_side_not_in_game:%r" % (pk, parsed.side_name), market_type=mt)
+        ticker = SG.join_win(game.stem, side_key, win_idx)
+        if ticker is None:
+            return MatchResult("no_kalshi_contract", 0.0, reason="no_%s_winner_%s_%s" % (pk, game.stem, side_key), market_type=mt)
+        return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, market_type=mt, reason="%s_winner_stem_join" % pk)
+    if mt.endswith("_total"):
+        ticker = SG.join_total(game.stem, parsed.line, tot_idx)
+        if ticker is None:
+            return MatchResult("no_kalshi_strike", 0.0, reason="no_%s_total_strike_%s" % (pk, parsed.line), strike=parsed.line, market_type=mt)
+        return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line, market_type=mt, reason="%s_total_stem_join" % pk)
+    # {pk}_spread
+    anchor_name = parsed.away_name if parsed.anchor_side == "away" else parsed.home_name
+    anchor_code = next((code for code, name in ((game.team_a_code, game.team_a_name),
+                                               (game.team_b_code, game.team_b_name)) if name == anchor_name), None)
+    if anchor_code is None:
+        return MatchResult("fail", 0.0, reason="%s_spread_anchor_not_in_game:%r" % (pk, anchor_name), market_type=mt)
+    ticker = SG.join_spread(game.stem, anchor_code, parsed.line, spr_idx)
+    if ticker is None:
+        return MatchResult("no_kalshi_strike", 0.0, reason="no_%s_spread_strike_%s_%s" % (pk, anchor_code, parsed.line), strike=parsed.line, market_type=mt)
+    return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line, market_type=mt, reason="%s_spread_stem_join" % pk)
+
+
+def _match_team_total(parsed, game_index, kalshi_dates, cfg, team_total_index) -> MatchResult:
+    """PHASE 1 TEAM TOTAL: resolve the GAME, then join KX{X}TEAMTOTAL by (this game's Kalshi team code, EXACT strike).
+    ★ ROUTE-ONLY: reads ONLY team_total_index -- a full-game total ticker is UNREACHABLE ('Yankees over 4.5' vs 'game
+    over 4.5' are different bets). TWO independent failure modes: a team not in this game -> fail; a strike with no
+    rung -> no_kalshi_strike. Over->yes / Under->no (leg from the outcome, set in parse)."""
+    mt = "team_total"
+    if parsed.leg is None or parsed.line is None or parsed.anchor_side is None:
+        return MatchResult("fail", 0.0, reason=parsed.fail_reason or "team_total_leg_line_or_team_missing", market_type=mt)
+    game, miss = _resolve_unique_game(parsed, game_index, kalshi_dates, cfg)
+    if miss is not None:
+        return miss
+    team_name = parsed.away_name if parsed.anchor_side == "away" else parsed.home_name
+    team_code = next((code for code, name in ((game.team_a_code, game.team_a_name),
+                                             (game.team_b_code, game.team_b_name)) if name == team_name), None)
+    if team_code is None:
+        return MatchResult("fail", 0.0, reason="team_total_team_not_in_kalshi_game:%r" % team_name, market_type=mt)
+    ticker = SG.join_spread(game.stem, team_code, parsed.line, team_total_index)   # {stem:{(team,strike):ticker}} shape
+    if ticker is None:
+        return MatchResult("no_kalshi_strike", 0.0, reason="no_team_total_strike_%s_%s" % (team_code, parsed.line),
+                           strike=parsed.line, market_type=mt)
+    return MatchResult("matched", 1.0, kalshi_ticker=ticker, leg=parsed.leg, strike=parsed.line, market_type=mt,
+                       reason="team_total_stem_join")
+
+
 def match_bet(parsed: ParsedBet, game_index: dict, kalshi_dates, cfg: StructuralLeague,
               allowed_market_types=COPYABLE_MARKET_TYPES, *, total_index=None, spread_index=None,
-              h1_win_index=None, h1_total_index=None, h1_spread_index=None) -> MatchResult:
+              h1_win_index=None, h1_total_index=None, h1_spread_index=None,
+              period_indices=None, team_total_index=None) -> MatchResult:
     """Structural match across moneyline + total + spread. Moneyline path is BYTE-IDENTICAL to rung 1
     (test_mlb_equivalence); total/spread are EXACT-STRIKE-ONLY and reproduce mlb's total/spread path
     (test_mlb_equivalence_total_spread). A non-copyable type (prop/non-sport) or a copyable type NOT in the
@@ -546,7 +722,12 @@ def match_bet(parsed: ParsedBet, game_index: dict, kalshi_dates, cfg: Structural
         if mt == "non_moneyline":
             return MatchResult("skip_non_moneyline", 0.0, reason=parsed.fail_reason or mt, market_type=mt)
         return MatchResult("skip_non_game", 0.0, reason=parsed.fail_reason or mt, market_type=mt)
-    enable_tok = "first_half" if mt in _FH_TYPES else mt   # the 3 first_half_* sub-types share ONE enable token
+    if mt in _FH_TYPES:
+        enable_tok = "first_half"                          # the 3 first_half_* sub-types share ONE enable token
+    elif mt in _PERIOD_MT_TO_KEY:
+        enable_tok = _PERIOD_MT_TO_KEY[mt]                 # each period's 3 sub-types share ONE token (q1/q2/q3/q4/h2)
+    else:
+        enable_tok = mt                                    # moneyline/total/spread/team_total gate on their own name
     if enable_tok not in allowed_market_types:
         return MatchResult("skip_market_type_excluded", 0.0,
                            reason="%s_not_in_subdivision_market_types" % enable_tok, market_type=mt)
@@ -557,6 +738,10 @@ def match_bet(parsed: ParsedBet, game_index: dict, kalshi_dates, cfg: Structural
     if mt in _FH_TYPES:
         return _match_first_half(parsed, game_index, kalshi_dates, cfg,
                                  h1_win_index or {}, h1_total_index or {}, h1_spread_index or {})
+    if mt in _PERIOD_TYPES:
+        return _match_period(parsed, game_index, kalshi_dates, cfg, period_indices or {})
+    if mt == "team_total":
+        return _match_team_total(parsed, game_index, kalshi_dates, cfg, team_total_index or {})
     # ── moneyline: exact (date,teams) + the -1-day night-game recovery (shared _resolve_structural_game). This block
     # is IDENTICAL to the DEPLOYED date-join file (rung date-join, box 572b3f9f) -- the rebase preserves it verbatim. ──
     if parsed.away_name is None or parsed.home_name is None:
@@ -602,7 +787,18 @@ LEAGUES: dict = {
                              total_series="KXMLBTOTAL", spread_series="KXMLBSPREAD"),   # oracle for the equivalence test
     "nfl":  StructuralLeague("nfl", "nfl", "KXNFLGAME", NFL_TEAMS,
                              total_series="KXNFLTOTAL", spread_series="KXNFLSPREAD",
-                             h1_win_series="KXNFL1H", h1_total_series="KXNFL1HTOTAL", h1_spread_series="KXNFL1HSPREAD"),
+                             h1_win_series="KXNFL1H", h1_total_series="KXNFL1HTOTAL", h1_spread_series="KXNFL1HSPREAD",
+                             # PHASE 1 (2026-09-22): winner series are KXNFL{1Q,2Q,3Q,4Q,2H} (the *WINNER variants are
+                             # dead/0-open, live-probed); spread/total = KXNFL{period}{SPREAD,TOTAL}; team total =
+                             # KXNFLTEAMTOTAL. All live-confirmed on the 26SEP21NYGLAR slate. Inert until token enabled.
+                             period_series={
+                                 "q1": {"win": "KXNFL1Q", "total": "KXNFL1QTOTAL", "spread": "KXNFL1QSPREAD"},
+                                 "q2": {"win": "KXNFL2Q", "total": "KXNFL2QTOTAL", "spread": "KXNFL2QSPREAD"},
+                                 "q3": {"win": "KXNFL3Q", "total": "KXNFL3QTOTAL", "spread": "KXNFL3QSPREAD"},
+                                 "q4": {"win": "KXNFL4Q", "total": "KXNFL4QTOTAL", "spread": "KXNFL4QSPREAD"},
+                                 "h2": {"win": "KXNFL2H", "total": "KXNFL2HTOTAL", "spread": "KXNFL2HSPREAD"},
+                             },
+                             team_total_series="KXNFLTEAMTOTAL"),
     "nba":  StructuralLeague("nba", "nba", "KXNBAGAME", NBA_TEAMS,   # h1 series exist but OFFSEASON now -> empty index -> INCONCLUSIVE (safe)
                              total_series="KXNBATOTAL", spread_series="KXNBASPREAD",
                              h1_win_series="KXNBA1HWINNER", h1_total_series="KXNBA1HTOTAL", h1_spread_series="KXNBA1HSPREAD"),
