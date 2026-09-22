@@ -105,6 +105,15 @@ def test_teamtotal_wrong_team_safe_miss():
     assert r.status == "fail" and "team_total_team_not_in_game" in (r.reason or "")
 
 
+def test_teamtotal_whole_number_line_safe_miss():
+    # Finding 1 (2026-09-22): Poly team totals resolve Over on "equal to OR exceeds" -> a whole-number line makes the
+    # push an Over win, which Kalshi's N+ rung does not mirror. A whole line (Npt0) is refused, never copied.
+    pb = SS.parse_poly_bet("nfl-nyg-lar-%s-team-total-nyg-17pt0" % DATE, "Over", cfg)
+    assert pb.market_type == "team_total" and "whole_number" in (pb.fail_reason or "")
+    _, r = _run("nfl-nyg-lar-%s-team-total-nyg-17pt0" % DATE, "Over")
+    assert r.status == "fail" and r.kalshi_ticker is None
+
+
 # ── ENABLE-TOKEN GATE: blank/legacy market_types never auto-enables a new token ──
 def test_blank_default_never_autoenables():
     for tok_type in ("1q-moneyline", "2h-total-7pt5", "team-total-nyg-17pt5"):

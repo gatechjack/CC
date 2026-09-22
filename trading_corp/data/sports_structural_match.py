@@ -298,6 +298,13 @@ def parse_poly_bet(slug: str, outcome: str, cfg: StructuralLeague, title: str = 
             tteam = _tt.group("team").upper()
             line = _poly_line(_tt.group("w"), _tt.group("f")); o = (outcome or "").strip().lower()
             leg = "yes" if o == "over" else "no" if o == "under" else None
+            # ★ WHOLE-NUMBER LINE = SAFE MISS (Finding 1, 2026-09-22): Poly team totals resolve Over on "equal to OR
+            # EXCEEDS", so a whole-number line makes the push an Over win, which Kalshi's N+ rung does not mirror. All
+            # observed lines are half-point; a whole line (e.g. Npt0) is refused, not copied onto a mismatched rung.
+            if line is not None and float(line).is_integer():
+                return ParsedBet("team_total", date_iso, away_code, home_code, away_name, home_name, None, None,
+                                 fail_reason="team_total_whole_number_line_push_hazard:%r" % suffix, raw=raw,
+                                 line=line, leg=leg)
             fr = None if leg else "team_total_outcome_not_over_under:%r" % outcome
             if away_name is None or home_name is None:
                 miss = [c for c, n in ((away_code, away_name), (home_code, home_name)) if n is None]
