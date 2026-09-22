@@ -55,6 +55,9 @@
     {{ betline(card.slots_by_kind.SPR, 'SPR', idx) }}
     {# RFI (first-inning-run) is MLB-only: render a 4th slot ONLY when present, so non-MLB cards are unaffected #}
     {%- if card.slots_by_kind.RFI %}{{ betline(card.slots_by_kind.RFI, 'RFI', idx) }}{% endif -%}
+    {# sub-game / team-total / period families (2026-09-22): ONE conditional line per held new-family position, so
+       none collides into TOT/SPR and none vanishes. Empty on an original-only card -> byte-identical to before. #}
+    {%- for s in card.extra_lines %}{{ betline(s, s.kind_label, idx) }}{% endfor -%}
   </div>
 {% endmacro %}
 

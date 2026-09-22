@@ -19,7 +19,9 @@ def test_kind_unchanged_for_the_other_families():
     assert LV._kind("KXMLBTOTAL-26SEP141945SFSTL-7") == "total"
     assert LV._kind("KXMLBSPREAD-26SEP141945SFSTL-STL3") == "spread"
     assert LV._kind("KXNFLGAME-26SEP14DENKC-KC") == "moneyline"
-    assert LV._kind("KXNFL1HSPREAD-26SEP14DENKC-KC8") == "spread"   # 1H spread still reads as spread (that's fine here)
+    # ★ 2026-09-22: 1H spread now reads as its OWN kind (first_half_spread), not "spread" -- the collision that
+    # shadowed the full-game spread is fixed. The generic game total/spread are unchanged (above).
+    assert LV._kind("KXNFL1HSPREAD-26SEP14DENKC-KC8") == "first_half_spread"
 
 
 def test_short_label_rfi_carries_side():

@@ -38,7 +38,30 @@ from . import feed_mlb, marks as marks_mod, milestones as milestones_mod   # (st
 from .. import leg_audit        # canonical leg-audit state constants (shared with the fill-watch runner -> no drift)
 
 KINDS = ("moneyline", "total", "spread", "first_inning_run")
-KIND_LABEL = {"moneyline": "ML", "total": "TOT", "spread": "SPR", "first_inning_run": "RFI"}
+KIND_LABEL = {"moneyline": "ML", "total": "TOT", "spread": "SPR", "first_inning_run": "RFI",
+              # ── sub-game / period / team-total families (2026-09-22) ───────────────────────────────────────────
+              # DISTINCT kinds so they no longer collapse (by "TOTAL"/"SPREAD" substring) into the game TOT/SPR slot
+              # -- which shadowed the game total/spread -- or fall through to a no-slot kind (the F5 winner vanished,
+              # the exact RFI failure). The MLB card renders these as CONDITIONAL extra lines; the NFL positions
+              # table + the trade drawer read the tag from HERE (format_market_label / _base_label), so a period /
+              # team-total row reads "1Q LAR" / "TEAM SD O 7.5", never a raw ticker.
+              "team_total": "TEAM",
+              "f5_winner": "F5", "f5_total": "F5 TOT", "f5_spread": "F5 SPR",
+              "first_half_winner": "1H", "first_half_total": "1H TOT", "first_half_spread": "1H SPR",
+              "q1_winner": "1Q", "q1_total": "1Q TOT", "q1_spread": "1Q SPR",
+              "q2_winner": "2Q", "q2_total": "2Q TOT", "q2_spread": "2Q SPR",
+              "q3_winner": "3Q", "q3_total": "3Q TOT", "q3_spread": "3Q SPR",
+              "q4_winner": "4Q", "q4_total": "4Q TOT", "q4_spread": "4Q SPR",
+              "h2_winner": "2H", "h2_total": "2H TOT", "h2_spread": "2H SPR"}
+# The card's FIXED slots (ML/TOT/SPR) + the RFI-conditional slot. slots_by_kind is built over these ONLY, so a card
+# holding just the original families renders BYTE-IDENTICAL; every other kind becomes a conditional extra line.
+_FIXED_CARD_KINDS = KINDS
+# A sub-game kind -> its (winner|total|spread) BASE, so _short_label reuses the existing directional shorthand logic.
+_SUBGAME_BASE = {}
+for _pfx in ("f5", "first_half", "q1", "q2", "q3", "q4", "h2"):
+    _SUBGAME_BASE["%s_winner" % _pfx] = "moneyline"
+    _SUBGAME_BASE["%s_total" % _pfx] = "total"
+    _SUBGAME_BASE["%s_spread" % _pfx] = "spread"
 # Item 2: SPORT (Kalshi series prefix, after KX and before the market-type) -> the team-code map. The structural
 # matcher (data/sports_structural_match.py LEAGUES) is the source of these; we reuse the SAME data-side maps so
 # pm_web's label decode can never diverge from the matcher's. Longest prefix wins (WNBA before NBA).
@@ -98,15 +121,38 @@ def game_key_from_ticker(ticker: str):
     return (date_iso, hhmm, game_no, frozenset({MLB_TEAMS[sp[0]], MLB_TEAMS[sp[1]]}))
 
 
+# Sub-game / period market prefixes (2026-09-22): the market segment AFTER the KX<SPORT> prefix. Matched BEFORE the
+# generic SPREAD/TOTAL substrings so KXMLBF5TOTAL reads as an F5 total (not a game total) and KXNFL1QSPREAD as a 1Q
+# spread (not a game spread) -- the collision that shadowed the game total/spread and dropped the F5 winner entirely.
+_SUBGAME_PREFIXES = (("F5", "f5"), ("1Q", "q1"), ("2Q", "q2"), ("3Q", "q3"), ("4Q", "q4"),
+                     ("1H", "first_half"), ("2H", "h2"))
+_KIND_SPORTS = ("NCAAF", "WNBA", "MLB", "NFL", "NBA", "NHL")   # longest-first so WNBA is stripped before NBA
+
+
 def _kind(ticker: str) -> str:
     series = str(ticker or "").upper().split("-", 1)[0]
-    if "SPREAD" in series:
+    body = series[2:] if series.startswith("KX") else series   # drop the KX so the market segment is isolable
+    for sport in _KIND_SPORTS:                                  # strip the sport token -> the market segment remains
+        if body.startswith(sport):
+            body = body[len(sport):]
+            break
+    if body.startswith("TEAMTOTAL"):          # per-team total (KX{X}TEAMTOTAL) -- BEFORE the generic TOTAL below
+        return "team_total"
+    for tok, key in _SUBGAME_PREFIXES:        # F5 / 1H / 1Q..4Q / 2H -> distinct winner|total|spread per sub-game
+        if body.startswith(tok):
+            rest = body[len(tok):]
+            if rest.startswith("SPREAD"):
+                return "%s_spread" % key
+            if rest.startswith("TOTAL"):
+                return "%s_total" % key
+            return "%s_winner" % key
+    if "SPREAD" in body:
         return "spread"
-    if "TOTAL" in series:
+    if "TOTAL" in body:
         return "total"
-    if "RFI" in series:                       # KXMLBRFI -- first-inning-run binary (MLB only); rendered as a 4th slot
+    if "RFI" in body:                         # KXMLBRFI -- first-inning-run binary (MLB only); rendered as a 4th slot
         return "first_inning_run"
-    if "GAME" in series or "MONEY" in series:
+    if "GAME" in body or "MONEY" in body:
         return "moneyline"
     return series.lower()
 
@@ -150,6 +196,18 @@ def _short_label(ticker: str, kind: str, held_leg: str | None) -> str:
     parts = str(ticker or "").split("-")
     suffix = parts[2] if len(parts) > 2 else ""
     leg = str(held_leg).lower() if held_leg else None
+    if kind == "team_total":                  # KX{X}TEAMTOTAL-{stem}-{TEAM}{N} -> "SD O 7.5" / "SD U 7.5" (strike N-0.5)
+        ms = re.match(r"^([A-Z]{2,})(\d+)$", suffix)
+        if ms:
+            team, n = ms.group(1), int(ms.group(2))
+            strike = "%.1f" % (n - 0.5)
+            if leg == "yes":
+                return "%s O %s" % (team, strike)             # Over that team's total (YES)
+            if leg == "no":
+                return "%s U %s" % (team, strike)             # Under (NO)
+            return "%s O/U %s" % (team, strike)               # settled/unknown -> line without a fabricated side
+        return suffix or "—"
+    kind = _SUBGAME_BASE.get(kind, kind)      # f5_/1h_/period_ -> reuse the winner|total|spread directional logic below
     if kind == "first_inning_run":            # binary, no strike: leg carries the side (Kalshi RFI YES = a run scored)
         return "Run 1st" if leg == "yes" else "No Run 1st" if leg == "no" else "1st-inn run"
     if kind == "total":
@@ -417,6 +475,7 @@ def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker,
     whales_by_ticker = whales_by_ticker or {}
     slots = []
     by_kind = {}
+    extra = []                                          # sub-game / team-total / period lines (no fixed slot)
     for tk in sorted(tickers):
         kind = _kind(tk)
         # whale set: net-open holders for a live slot; the entry-fill copiers for a settled slot (its net-open set
@@ -426,18 +485,40 @@ def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker,
         slot = _build_slot(tk, kind, open_by_ticker.get(tk),
                            settle_by_ticker.get(tk), (marks or {}).get(tk),
                            _settled_leg(orders_by_ticker.get(tk)), whales)
-        if slot is not None and kind not in by_kind:   # one slot per kind on the card
-            by_kind[kind] = slot
-            slots.append(slot)
-    n_settled = sum(1 for s in slots if s["settled"])
-    n_live = sum(1 for s in slots if not s["settled"])
-    open_cost = sum((s["cost"] or 0.0) for s in slots if not s["settled"])
-    open_vals = [s["current_value"] for s in slots if not s["settled"]]
+        if slot is None:
+            continue
+        if kind in _FIXED_CARD_KINDS:
+            if kind not in by_kind:                     # one fixed slot per kind (ML/TOT/SPR/RFI) -- byte-unchanged
+                by_kind[kind] = slot
+                slots.append(slot)
+        else:                                           # EVERY new-family position gets its OWN conditional line
+            extra.append(slot)
+    extra.sort(key=lambda s: (s["kind"], s["ticker"]))  # deterministic order -- never an alphabetical-ticker accident
+    all_disp = slots + extra
+    # ★ MONEY IS POSITION-BASED, NOT SLOT-BASED (2026-09-22): sum over EVERY held/settled ticker of the game, so a
+    # position that fails to earn a card line STILL counts in the card's cost/value/realized (and therefore in the
+    # page P&L, which is card-derived). A rendering gap can now cost only a LINE, never a money figure. For an
+    # original-only card every ticker already had a slot, so these equal the prior slot-based numbers -> byte-identical.
+    n_live = n_settled = 0
+    open_cost = realized = 0.0
+    open_vals = []
+    for tk in sorted(tickers):                          # sorted like the lines -> deterministic float-sum order
+        op = open_by_ticker.get(tk)
+        st = settle_by_ticker.get(tk)
+        if op is not None:
+            n_live += 1
+            open_cost += (op.get("cost_basis_usd") or 0.0)
+            bid = marks_mod.bid_for_leg((marks or {}).get(tk), op.get("held_leg"))
+            c = op.get("contracts")
+            open_vals.append((c * bid) if (bid is not None and c is not None) else None)
+        elif st is not None:
+            n_settled += 1
+            realized += (st.get("realized") or 0.0)
     value_known = any(v is not None for v in open_vals)
     open_value = sum(v for v in open_vals if v is not None) if value_known else None
-    realized = sum((s["realized"] or 0.0) for s in slots if s["settled"])
-    complete = bool(slots) and all(s["settled"] for s in slots)
-    anchor = _retain_anchor_ts(slots, gs)
+    n_open_priced = sum(1 for v in open_vals if v is not None)   # position-based mark coverage (pairs with n_live)
+    complete = bool(all_disp) and n_live == 0 and n_settled > 0
+    anchor = _retain_anchor_ts(all_disp, gs)
     drops_in_h = None
     if complete and anchor:
         drops_in_h = max(0, round((anchor + RETENTION_HOURS * 3600 - now_ts) / 3600.0))
@@ -454,13 +535,15 @@ def _card(game_key, tickers, orders_by_ticker, open_by_ticker, settle_by_ticker,
         time_mismatch = {"ticker": _fmt_et_datetime(tk_date, tk_hhmm),
                          "feed": _fmt_et_datetime(feed_date, feed_hhmm), "source": gs.source}
     return {"key": list(game_key), "feed": _feed_block(gs, now_ts),
-            "slots_by_kind": {KIND_LABEL[k]: by_kind.get(k) for k in KINDS},
+            "slots_by_kind": {KIND_LABEL[k]: by_kind.get(k) for k in _FIXED_CARD_KINDS},
+            "extra_lines": extra,                        # conditional per-position lines for the new MLB families
             "matchup_away": away_code, "matchup_home": home_code,
             "start_hhmm": _et_hhmm_from_key(game_key[1]), "date_iso": game_key[0],
             "start_display": start_display, "time_mismatch": time_mismatch,
             "n_settled": n_settled, "n_live": n_live, "mixed": n_settled > 0 and n_live > 0,
             "complete": complete, "drops_in_h": drops_in_h,
             "open_cost": open_cost, "open_value": open_value, "value_known": value_known,
+            "n_open_priced": n_open_priced,
             "realized": realized, "anchor_ts": anchor}
 
 
@@ -800,10 +883,13 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
         live_cost = sum(c["open_cost"] for c in cards)
         live_val_known = any(c["value_known"] for c in cards)
         live_val = sum((c["open_value"] or 0.0) for c in cards if c["value_known"]) if live_val_known else None
-        # mark COVERAGE (always shown, per Jack): how many OPEN bet-slots across the board have a bid vs the total.
-        open_slots = [s for c in cards for s in c["slots_by_kind"].values() if s and not s["settled"]]
-        unsettled_total = len(open_slots)
-        unsettled_priced = sum(1 for s in open_slots if s["value_known"])
+        # mark COVERAGE (always shown, per Jack): how many OPEN positions across the board have a bid vs the total.
+        # ★ POSITION-based, like the money (2026-09-22): a lineless open position (a second strike of the same fixed
+        # kind on one game -> no card line) still counts in the denominator, so "N of M priced" can never claim full
+        # coverage while an unpriced open position is silently absent from unsettled_value. Equals the old
+        # line-derived count whenever lines and positions are 1:1 (every card today).
+        unsettled_total = sum(c["n_live"] for c in cards)
+        unsettled_priced = sum(c["n_open_priced"] for c in cards)
         today = _et_date(now_ts)
         realized_today = sum(c["realized"] for c in cards if c["date_iso"] == today)
         settled_today = sum(c["n_settled"] for c in cards if c["date_iso"] == today)
