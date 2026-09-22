@@ -11,10 +11,12 @@ never diverge into two transforms) + a reader that aggregates the rows for a pag
   UNEVALUATED (leg_audit == 'unchecked' or an unknown verdict) -- the audit RAN but could not decide. Fail-safe: shown,
               never treated as a pass.
 And the clean / out-of-scope:
-  CLEAN       (leg_audit in {'ok','na','ok:code_alias'}) -- 'ok' verified by subsequence; 'na' = no independent leg
-              check applies (structural moneyline/spread are code-anchored in the matcher); 'ok:code_alias' = the
-              subsequence failed but a VENUE-VERIFIED ticker-code alias cleared it (kept a DISTINCT verdict so
-              alias-cleared rows stay queryable). Not a concern; NOT surfaced.
+  CLEAN       (leg_audit in {'ok','na','ok:code_alias','ok:code_pad'}) -- 'ok' verified by subsequence; 'na' = no
+              independent leg check applies (structural moneyline/spread are code-anchored in the matcher);
+              'ok:code_alias' = the subsequence failed but a VENUE-VERIFIED ticker-code alias cleared it;
+              'ok:code_pad' = the subsequence failed but the narrow ITF trailing-X pad rule cleared it (Kalshi pads a
+              two-letter surname to a 3-char code with a trailing X, e.g. Oz->OZX -- live_driver._audit_leg_independent).
+              Each keeps a DISTINCT verdict so cleared rows stay queryable by HOW they cleared. Not a concern; NOT surfaced.
   LEGACY      (leg_audit IS NULL)              -- pre-migration-021 rows (the audit did not exist yet) or dry-run. This
               is DISTINCT from UNEVALUATED: legacy = before-the-check; unevaluated = the-check-could-not-decide.
 
@@ -25,7 +27,7 @@ from __future__ import annotations
 STATE_INVERSION = "inversion"      # REVIEW: a real leg/side inversion -- the loud one
 STATE_SOFT = "soft"                # code_review: name-family code-vs-outcome soft flag
 STATE_UNEVALUATED = "unevaluated"  # unchecked / unknown verdict -- audit could not decide (NOT a pass)
-STATE_CLEAN = "clean"              # ok | na | ok:code_alias
+STATE_CLEAN = "clean"              # ok | na | ok:code_alias | ok:code_pad
 STATE_LEGACY = "legacy"            # NULL leg_audit (pre-021 / dry-run) -- out of the audit's scope
 
 # the three states a page-top strip surfaces, most-severe first
@@ -55,8 +57,8 @@ def classify_leg_audit(leg_audit):
         return STATE_SOFT
     if v == "unchecked":
         return STATE_UNEVALUATED
-    if v in ("ok", "na", "ok:code_alias"):   # 'ok:code_alias' = subsequence failed but a VENUE-VERIFIED code alias
-        return STATE_CLEAN                   # cleared it (live_driver._LEG_AUDIT_CODE_ALIASES); kept a distinct verdict
+    if v in ("ok", "na", "ok:code_alias", "ok:code_pad"):   # code_alias = venue-verified per-player abbreviation;
+        return STATE_CLEAN                                  # code_pad = the ITF trailing-X surname pad rule (Oz->OZX).
     return STATE_UNEVALUATED   # unknown non-null verdict -> could-not-decide, fail-safe (never a silent pass)
 
 

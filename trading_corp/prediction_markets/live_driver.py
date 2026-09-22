@@ -858,6 +858,20 @@ def _audit_leg_independent(category, signal_outcome, ticker, leg, signal_slug=No
             return "ok"                                          # code IS an ordered subsequence of the outcome
         if c and _LEG_AUDIT_CODE_ALIASES.get(c) == n:            # venue-verified legit abbreviation -> VISIBLE auto-clear
             return "ok:code_alias"                               # (the `c and` guards an empty code from ever hitting the table)
+        # ITF trailing-X pad rule (2026-09-22): Kalshi pads a TWO-letter surname to a 3-char code with a trailing X
+        # (Oz->OZX). 93/113 X-terminal tennis codes are <surname>+X across the 4 series; a per-player alias would never
+        # end (18+ current ITF cases: Xu/Wu/Ma/Li/Hu/Oh...), so the CONVENTION gets a rule -- consulted ONLY here, after
+        # BOTH the subsequence and the alias checks have failed (the same position the alias table occupies). STRICTER
+        # than the check it relaxes: ITF ONLY (ATP/WTA codes derive from the FIRST name -- RIG<-Rigele, YIB<-Yibing --
+        # a different scheme this must never touch), the code is EXACTLY 3 chars and ENDS IN X, and the outcome's LAST
+        # TOKEN folded must EQUAL code[:2] folded (EQUALITY, not subsequence). Fails in the SAFE direction: a
+        # surname-first outcome ("Xu Yifan") has last token "yifan" != "xu" -> stays FLAGGED (a false flag, never a
+        # false clear); the opponent on the same market ("...Lew Yan Foon") -> last "foon" != "oz" -> stays FLAGGED.
+        if category == "itf" and len(code) == 3 and code[-1:].lower() == "x":
+            _toks = _fold(oc).split()
+            _last = re.sub(r"[^a-z0-9]", "", _toks[-1]) if _toks else ""
+            if _last and _last == c[:2]:
+                return "ok:code_pad"                             # ITF 2-letter-surname trailing-X pad, outcome-surname-verified
         return "code_review:code_not_in_outcome:%s!<%s" % (code, oc[:24])
     if category in _AUDIT_SOCCER_CATS:                            # Yes->yes / No->no (a disagreeing leg = inversion)
         exp = "yes" if oc == "Yes" else "no" if oc == "No" else None
