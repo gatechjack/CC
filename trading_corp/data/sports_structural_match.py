@@ -42,6 +42,7 @@ from .mlb_poly_kalshi_match import (  # noqa: F401
 from .sports_team_mapping import MLB_TEAMS, NBA_TEAMS, NHL_TEAMS, NFL_TEAMS, WNBA_TEAMS
 from .cfb_teams import CFB_TEAMS   # US college football: 269 real two-venue codes -> 151 schools (built, not hand-typed)
 from . import subgame_match as SG   # shared sub-game (F5 / first-half) route-only core (written once, applied twice)
+from . import player_props_match as PROPS   # Phase B (2026-09-22): shared player-prop core (parse + Kalshi index + code-bind)
 
 # Rung "spread/total" (2026-09-10): totals + spreads generalized from mlb's own 3-type matcher, series-
 # parameterized. moneyline path stays BYTE-IDENTICAL (test_mlb_equivalence); totals/spreads are EXACT-STRIKE-ONLY
@@ -58,7 +59,7 @@ _PERIOD_TOKENS = {"1q": "q1", "2q": "q2", "3q": "q3", "4q": "q4", "2h": "h2"}   
 _PERIOD_KEYS = ("q1", "q2", "q3", "q4", "h2")
 _PERIOD_TYPES = tuple("%s_%s" % (pk, m) for pk in _PERIOD_KEYS for m in ("winner", "total", "spread"))
 _PERIOD_MT_TO_KEY = {"%s_%s" % (pk, m): pk for pk in _PERIOD_KEYS for m in ("winner", "total", "spread")}
-COPYABLE_MARKET_TYPES = COPYABLE_MARKET_TYPES + _PERIOD_TYPES + ("team_total",)
+COPYABLE_MARKET_TYPES = COPYABLE_MARKET_TYPES + _PERIOD_TYPES + ("team_total", "prop")   # 'prop' gates PER-STAT (below)
 # Poly team-total slug suffix: '-team-total-{team}-{W}pt{F}' (title "{Team} Team Total: O/U {W}.{F}"). Anchored to '$'
 # so a compound like '-1h-team-total-...' does NOT match here (it lands in the non_moneyline skip -- a 1H team total
 # is a separate, unsupported compound, correctly skipped rather than mis-bound to a full-game team total).
@@ -319,6 +320,13 @@ def parse_poly_bet(slug: str, outcome: str, cfg: StructuralLeague, title: str = 
                                  fail_reason="team_total_team_not_in_game:%r" % tteam, raw=raw, line=line, leg=leg)
             return ParsedBet("team_total", date_iso, away_code, home_code, away_name, home_name,
                              anchor, tname, fail_reason=fr, raw=raw, line=line, leg=leg, anchor_side=anchor)
+        # ── Phase B (2026-09-22): PLAYER PROPS. A recognised stat token (ryd/recyd/pyd/ptd/rec/anytime-td/first-td)
+        # -> market_type 'prop' carrying the parsed prop dict in raw; the game resolves via the shared game index and
+        # the PLAYER binds by code in match_bet. An unrecognised token returns None -> the non_moneyline skip below. ──
+        _pp = PROPS.parse_prop_suffix(cfg.category, suffix, outcome, title)
+        if _pp is not None:
+            return ParsedBet("prop", date_iso, away_code, home_code, away_name, home_name, None, None,
+                             raw={**raw, "prop": _pp}, line=_pp.get("line"), leg=_pp.get("leg"))
         # prop / unknown suffix -> labelled non_moneyline (NEVER silently moneyline or a match).
         return ParsedBet("non_moneyline", date_iso, away_code, home_code, None, None, None, None,
                          fail_reason="non_moneyline_suffix:%r" % suffix, raw=raw)
@@ -717,7 +725,7 @@ def _match_team_total(parsed, game_index, kalshi_dates, cfg, team_total_index) -
 def match_bet(parsed: ParsedBet, game_index: dict, kalshi_dates, cfg: StructuralLeague,
               allowed_market_types=COPYABLE_MARKET_TYPES, *, total_index=None, spread_index=None,
               h1_win_index=None, h1_total_index=None, h1_spread_index=None,
-              period_indices=None, team_total_index=None) -> MatchResult:
+              period_indices=None, team_total_index=None, prop_index=None) -> MatchResult:
     """Structural match across moneyline + total + spread. Moneyline path is BYTE-IDENTICAL to rung 1
     (test_mlb_equivalence); total/spread are EXACT-STRIKE-ONLY and reproduce mlb's total/spread path
     (test_mlb_equivalence_total_spread). A non-copyable type (prop/non-sport) or a copyable type NOT in the
@@ -733,6 +741,8 @@ def match_bet(parsed: ParsedBet, game_index: dict, kalshi_dates, cfg: Structural
         enable_tok = "first_half"                          # the 3 first_half_* sub-types share ONE enable token
     elif mt in _PERIOD_MT_TO_KEY:
         enable_tok = _PERIOD_MT_TO_KEY[mt]                 # each period's 3 sub-types share ONE token (q1/q2/q3/q4/h2)
+    elif mt == "prop":
+        enable_tok = (parsed.raw.get("prop") or {}).get("stat")   # Phase B: each stat family its OWN token (ryd/rec/hr/...)
     else:
         enable_tok = mt                                    # moneyline/total/spread/team_total gate on their own name
     if enable_tok not in allowed_market_types:
@@ -749,6 +759,17 @@ def match_bet(parsed: ParsedBet, game_index: dict, kalshi_dates, cfg: Structural
         return _match_period(parsed, game_index, kalshi_dates, cfg, period_indices or {})
     if mt == "team_total":
         return _match_team_total(parsed, game_index, kalshi_dates, cfg, team_total_index or {})
+    if mt == "prop":                                       # Phase B: game via the shared resolver, PLAYER by code
+        pp = parsed.raw.get("prop") or {}
+        game, miss = _resolve_unique_game(parsed, game_index, kalshi_dates, cfg)
+        if miss is not None:
+            return miss
+        tk, leg, reason = PROPS.match_prop(pp, game.stem, game.team_a_code, game.team_b_code, prop_index or {})
+        if tk is None:
+            st = "no_kalshi_strike" if str(reason).startswith("no_kalshi_strike") else "skip_prop"
+            return MatchResult(st, 0.0, reason=reason, strike=pp.get("strike"), market_type="prop")
+        return MatchResult("matched", 1.0, kalshi_ticker=tk, leg=leg, strike=pp.get("strike"),
+                           market_type="prop", reason="exact_prop_%s" % pp.get("stat"))
     # ── moneyline: exact (date,teams) + the -1-day night-game recovery (shared _resolve_structural_game). This block
     # is IDENTICAL to the DEPLOYED date-join file (rung date-join, box 572b3f9f) -- the rebase preserves it verbatim. ──
     if parsed.away_name is None or parsed.home_name is None:
