@@ -210,4 +210,44 @@ NOT az exit); **engine `trading-corp` PID + NRestarts unchanged before/after eve
 RO runners used (in `C:\Users\AA Incorporado\cc`): `pm_roster_boxshas_ro`, `pm_tables_step0_status_ro`,
 `pm_p1_tieout_ro`, `pm_p2_tieout_ro`, `pm_p3_tieout_ro`.
 
-**STOP — no deploy, no restart. Awaiting "deploy phase 1".**
+---
+
+## DEPLOY 17 (2026-09-25) — PHASE 1 LIVE ON PROD-LIVE
+
+Board-authorized. pm_web-only, engine untouched. Deploy target **`6eb797d0`** (branch `pm-tables-p1-2026-09-25`,
+off prod-live `558fc143`). Shipped exactly the 5 Phase-1 files (no new file, no CSS, no cache-bust, no
+subdivision.py/db.py/migration/engine). `pm_sort.js` left in place (still served, unreferenced by the two tables).
+
+**Pre-deploy (1-4):** prod-live still `558fc143`; **box == prod-live 48/48** (CR-stripped sha16). Engine `trading-corp`
+MainPID **534581** / NRestarts **0**; pm_web `prediction-markets-web` MainPID **523799** / NRestarts 0; schema head 24.
+No `arm` table / armed column (pm_web read-only → arm state structurally immune); heartbeat tables engine-owned (immune
+to a pm_web restart). `/farm/mlb` before: 200, pinned=0, candidate=0, KX=0, pm_desk.css sha `0b50095b62c5e7b1`;
+watchlist(34) + prospects(48) default order recorded.
+
+**Backup gate (3):** `/home/azureuser/pm_d17_backup_20260925T201753Z` — all 5 files, each backup sha == box
+(bcece565 / e3df1e2b / c784369f / 1f0d66b7 / 678c9bf5). No file created → no rm-on-rollback.
+
+**Graft (5):** staged git-archive of `6eb797d0`; drift-gate box==prod-live BEFORE, applied, **VERIFY AFTER == target** —
+app.py `bcece565→f1dce3a9`, live_view.py `e3df1e2b→60106828`, pm_prospects_rows.html `c784369f→89ebed73`,
+pm_watchlist_rows.html `1f0d66b7→a94440f4`, pm_farm_category.html `678c9bf5→fbfd3790`. py_compile OK. **Import gate**
+(service venv, fresh process): IMPORT_OK routes=25 post_routes=8, analyze+farm routes present, **forbidden_modules=[]**.
+Diff: no new POST route, no forbidden imports.
+
+**Restart (6):** `az … systemctl restart prediction-markets-web` (pm_web ONLY). pm_web MainPID **523799 → 569065**,
+ActiveEnter 2026-09-25 20:21:57 UTC, active/running. Engine `trading-corp` **534581 / NRestarts 0 UNCHANGED**.
+
+**Post-deploy (7-13):** `/farm/mlb`, nfl, nba, splits, /live, /live detail (both tabs), /, all 4 account pages → **200
++ styled**. Watchlist + Prospects **default order UNCHANGED** vs before (34==34, 48==48). URL sort: `?wsort=roi&wdir=desc`
++ `?wsort=netpnl&wdir=asc` reorder (and differ), nfl watchlist sorts too; `?psort=n&pdir=desc` reorders; sort links
+present. (Column key is `netpnl`; the header link emits `?wsort=netpnl` — the brief's "net_pnl" is the display name.)
+Analyze: unscored **Analyze**; scored **View result** + **Re-analyze** + **scored Nd ago**. Vocab pinned=0, candidate=0,
+KX=0. Static assets all **200** (incl `pm_sort.js`); pm_desk.css sha `0b50095b62c5e7b1` unchanged. **journalctl -p err
+since restart: pm_web 0, engine 0.** Engine 534581/0 unchanged throughout; order_count 2683 (engine trades on — pm_web
+cannot write orders).
+
+**Wrap (14-15):** FF prod-live `558fc143 → 6eb797d0` (FF valid); tag `pm-tables-deploy17-p1-2026-09-25`; **box ==
+prod-live 48/48** re-verified at 6eb797d0. Rebase p2/p3 = **no-op** (already stacked on 6eb797d0); p2 full suite
+**592 passed / 24 pre-existing**. No rollback condition at any step. Runners: `pm_d17_predeploy_ro`, `pm_d17_graft`,
+`pm_d17_importgate_ro`, `pm_d17_restart`, `pm_d17_postrestart_ro`, `pm_d17_postdeploy_ro`.
+
+**STOP — Phase 1 LIVE. Awaiting "deploy phase 2".**
