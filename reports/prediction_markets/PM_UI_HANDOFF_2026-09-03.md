@@ -649,3 +649,20 @@ pm_web MainPID 523799 → 569065; box == prod-live 48/48; backup `/home/azureuse
 - **Phases 2 + 3 are BUILT + pushed, awaiting their deploys** (stacked on p1): `pm-tables-p2-2026-09-25` (splits
   Whale-Grid header — live highlight + accounts-on-hover + paper W-L) and `pm-tables-p3-2026-09-25` (non-MLB live
   Active/Complete flat sortable tables + trade-drawer series-tag floor). Deploys go 1 → 2 → 3, FF prod-live each time.
+
+## DEPLOY 18 (2026-09-25): TABLES — PHASE 2 (splits Whale-Grid header) LIVE
+
+Second table pass (full record: `PM_TABLES_BUILD_2026-09-25.md` §DEPLOY 18). Deploy target `a5db434b`; prod-live FF
+`507053f6 → a5db434b`; tag `pm-tables-deploy18-p2-2026-09-25`. pm_web-only (3 files: app.py, live_view.py,
+pm_farm_splits.html); engine `trading-corp` never restarted (534581/NRestarts 0 throughout); pm_web MainPID
+569065 → 569992; box == prod-live 48/48; backup `/home/azureuser/pm_d18_backup_20260925T205926Z`.
+
+- **The /farm/{category}/splits Whale-Grid header (`?view=grid`) now carries, per whale:** (a) a **LIVE highlight**
+  (`th.live`, green top-accent) for a whale that is live-copied (attached active=1 on any account), with the copying
+  **account(s) on hover** (the `<th title>`); (b) the whale's **paper W-L + win%** from the SAME reader the Farm
+  Watchlist uses (`farm.farm_rows(PINNED)` → pm_paper_category_stats), **"—" at 0 closed, THIN under 50**. Grid CELLS
+  are unchanged (header-only change). CSS lives in the template's inline `<style>` (no `pm_desk.css`, no cache-bust).
+- Note: the highlight applies only to a live whale that is currently a **grid column** (has an open parsed position);
+  a live whale with no open position isn't rendered in the grid, so it isn't highlighted (correct/honest).
+- **Phase 3 remains BUILT + pushed, awaiting Deploy 19:** `pm-tables-p3-2026-09-25` @ `f84ec75c` (rebased; = a5db434b
+  + phase-3) — non-MLB /live Active/Complete flat sortable tables + trade-drawer series-tag floor. FF prod-live next.
