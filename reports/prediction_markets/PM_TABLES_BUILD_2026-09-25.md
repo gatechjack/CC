@@ -251,3 +251,49 @@ prod-live 48/48** re-verified at 6eb797d0. Rebase p2/p3 = **no-op** (already sta
 `pm_d17_importgate_ro`, `pm_d17_restart`, `pm_d17_postrestart_ro`, `pm_d17_postdeploy_ro`.
 
 **STOP — Phase 1 LIVE. Awaiting "deploy phase 2".**
+
+---
+
+## DEPLOY 18 (2026-09-25) — PHASE 2 LIVE ON PROD-LIVE
+
+Board-authorized. pm_web-only, engine untouched. Deploy target **`a5db434b`** (branch `pm-tables-p2-2026-09-25`,
+off prod-live `507053f6`). Shipped exactly the 3 Phase-2 files (app.py, live_view.py, pm_farm_splits.html); no new
+file, no CSS, no cache-bust, no subdivision.py/db.py/migration/engine.
+
+**Pre-deploy (1-4):** prod-live still `507053f6`; **box == prod-live 48/48**. Engine `trading-corp` MainPID **534581**
+/ NRestarts **0**; pm_web `prediction-markets-web` MainPID **569065** / NRestarts 0; schema head 24. Before-state for
+mlb (the live-attached category): **4 live-copied whales** (0x2dc13c, 0x684baa, 0x5674f6, 0x41b4cd — all 4 accounts)
+via pm_subdivision_attachment active=1; each pinned whale's farm_rows W-L recorded; splits `?view=grid` 200, th.live=0
+(pre-Phase-2), pinned=0, candidate=0, KX=0, grid tbody sha `3c0f2c83fa0f4e64`, css `0b50095b62c5e7b1`.
+
+**Backup gate (3):** `/home/azureuser/pm_d18_backup_20260925T205926Z` — all 3 files, each backup sha == box
+(f1dce3a9 / 60106828 / f2a756ad). No file created.
+
+**Graft (5):** staged git-archive of `a5db434b`; drift-gate box==prod-live BEFORE, applied, **VERIFY AFTER == target**
+— app.py `f1dce3a9→6f46fea6`, live_view.py `60106828→8c826501`, pm_farm_splits.html `f2a756ad→7478094c`. py_compile OK.
+**Import gate** (service venv): IMPORT_OK routes=25 post_routes=8, **forbidden_modules=[]**. Diff: no new POST route.
+
+**Restart (6):** `az … systemctl restart prediction-markets-web` (pm_web ONLY). pm_web MainPID **569065 → 569992**,
+ActiveEnter 2026-09-25 21:00:09 UTC, active/running. Engine `trading-corp` **534581 / NRestarts 0 UNCHANGED**.
+
+**Post-deploy (7-13):** splits `?view=grid` 200 — the **1 live whale that is currently a grid column (0x684baa)** is
+highlighted (`th.live`) with **"LIVE on Jack, Karen, Marc, Trey"** on hover; the other 3 live wallets have **0 open mlb
+positions** (verified) so they are not grid columns and correctly not highlighted; no non-live header highlighted →
+th.live count (1) == live-wallets-that-are-columns (1). Header **W-L == farm_rows** (0x684baa 65–47·58%; SDTrading
+172–143·55%; THIN only under 50 closed). **Grid cells unchanged by the deploy** — the local template diff shows only the
+`<th>` header cell + 3 CSS rules changed (the split_row/tbody body is byte-identical); the tbody sha moved
+`3c0f2c83→96efd60b` purely from the **paper poller updating open positions** (max last_observed_ts 4.4 min old; two
+consecutive reads now stable at `96efd60b`). `?mode=trusted` / `?view=splits` / `?view=heatmap` render; nfl grid 200;
+atp shows **"NO STRUCTURAL DECODE"**. Vocab pinned=0, candidate=0, KX=0. **Phase 1 intact**: `/farm/mlb?wsort=roi&wdir=desc`
+reorders; default order unchanged; Analyze states (43 Analyze / 39 View result / 39 Re-analyze). `/live` both tabs,
+/live detail, /, account pages all **200**. Static assets all **200**; pm_desk.css sha `0b50095b62c5e7b1` unchanged.
+**journalctl -p err since restart: pm_web 0, engine 0.** Engine 534581/0 unchanged; order_count 2683 → **2686** (3
+attributable engine fills — pm_web cannot write orders).
+
+**Wrap (14-15):** FF prod-live `507053f6 → a5db434b` (FF valid); tag `pm-tables-deploy18-p2-2026-09-25`; **box ==
+prod-live 48/48** re-verified at a5db434b. Rebase p3 onto the new tip = **no-op** (p3 already contains a5db434b — D17's
+parallel rebases produced the identical p2 commit); p3 full suite **604 passed / 24 pre-existing**. No rollback
+condition. Runners: `pm_d18_predeploy_ro`, `pm_d18_graft`, `pm_d17_importgate_ro`, `pm_d17_restart`,
+`pm_d17_postrestart_ro`, `pm_d18_postdeploy_ro`.
+
+**STOP — Phase 2 LIVE. Awaiting "deploy phase 3".**
