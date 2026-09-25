@@ -181,27 +181,42 @@
    basis, current value at contracts x BID or 'no mark', status, and the copied whale(s). Value uses the SAME
    bid-valuation + coverage the MLB cards use -- never $0 for an unpriced position, never cost standing in for
    value. Active = still open; Complete = settled / exited / opposed. ---------- #}
-{% macro posrow(p) %}
+{# FLAT sortable positions table (2026-09-25, Phase 3 / OQ-3/4/5): one row per position, GAME is a sortable column
+   (no game grouping). Sort in the URL (?psort/?pdir), JS-off safe; the link preserves the tab + the roster table's
+   ?sort/?dir/?whales so one table's sort never disturbs the other's tab. Columns differ by tab: Active shows
+   fill/cost/value(+mark age); Complete shows settled(ET) + realized (net of fees). A raw ticker never renders. #}
+{% macro possorth(col, label, tab, cls='') -%}
+  {%- set active = (psort|default('')) == col -%}
+  {%- set nextdir = 'asc' if (active and (pdir|default('')) == 'desc') else 'desc' -%}
+  <th class="{{ cls }}{% if active %} pm-sorted{% endif %}"><a
+     class="pm-sortable{% if active %}{{ ' pm-sort-desc' if pdir == 'desc' else ' pm-sort-asc' }}{% endif %}"
+     href="{{ request.url.path }}?psort={{ col }}&pdir={{ nextdir }}{% if tab == 'complete' %}&tab=complete{% endif %}{% if roster_view and roster_view.sort %}&sort={{ roster_view.sort }}&dir={{ roster_view.dir }}{% endif %}{% if roster_view and roster_view.show_all %}&whales=all{% endif %}"
+     title="Sort by {{ label }}. Click to sort.">{{ label|safe }}</a></th>
+{%- endmacro %}
+
+{% macro posrow_flat(p, tab) %}
   {%- set cls = ('won' if p.won else 'lost') if p.settled else 'live' -%}
   <tr class="prow {{ cls }}">
-    {# Item 2.2: SHORTHAND first (ML KAN / SPR -6.5 MIZZ / TOT +51.5), the Kalshi title (or matchup) as the secondary
-       line; the bare SIDE column is dropped (the sign in the shorthand already carries the held direction). #}
+    <td>{{ p.placed_ts|etdt }}</td>
+    {% if tab == 'complete' %}<td>{{ p.settled_at|etdt }}</td>{% endif %}
+    <td>{% if p.matchup %}{{ p.matchup }}{% if p.game_key and p.game_key[1] %} <span class="dim">&middot; {{ p.game_key[1] }}</span>{% endif %}{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+    {# Bet = SHORTHAND first (ML KAN / SPR -6.5 MIZZ / TOT +51.5); the Kalshi title (or matchup) is the secondary line. #}
     <td class="pdesc"><span class="pt" title="{{ p.ticker }}">{{ p.desc }}</span>{% if p.sub %}<span class="psub">{{ p.sub }}</span>{% endif %}</td>
     <td class="pnum">{{ '%g'|format(p.contracts) if p.contracts is not none else '&mdash;'|safe }}</td>
-    <td class="pnum">{% if p.settled %}&mdash;{% else %}{{ p.cost|money if p.cost is not none else '&mdash;'|safe }}{% endif %}</td>
+    {% if tab != 'complete' %}
+    <td class="pnum">{{ '%.2f'|format(p.avg_fill) if p.avg_fill is not none else '&mdash;'|safe }}</td>
+    <td class="pnum">{{ p.cost|money if p.cost is not none else '&mdash;'|safe }}</td>
     <td class="pnum pval">
-      {%- if p.settled -%}
-        {%- if p.value_known -%}<span class="{{ 'won' if p.won else 'lost' }}">{{ p.current_value|money }}</span>{%- else -%}<span class="dim">unresolved</span>{%- endif -%}
-      {%- elif p.value_known -%}
-        {# Item 3: the last known bid-value, banded by its OWN mark age (amber past stale) -- the merge keeps a prior
-           mark, so a series that failed THIS poll still shows its value with an honest age, never blank. #}
+      {%- if p.value_known -%}
+        {# Item 3: last known bid-value, banded by its OWN mark age (amber past stale); a failed poll keeps the prior
+           mark + honest age, never blank. #}
         {{ p.current_value|money }}{% if p.age_sec is not none %} {{ agechip(p.age_sec, 180) }}{% endif %}
-      {%- elif warming -%}
-        <span class="dim">marks loading</span>
-      {%- else -%}
-        <span class="dim">no mark</span>
-      {%- endif -%}
+      {%- elif warming -%}<span class="dim">marks loading</span>
+      {%- else -%}<span class="dim">no mark</span>{%- endif -%}
     </td>
+    {% else %}
+    <td class="pnum">{% if p.realized is not none %}<span class="{{ 'won' if p.realized >= 0 else 'lost' }}">{{ p.realized|money }}</span>{% elif p.status == 'opposed' %}<span class="dim" title="a real P&amp;L the engine does not book">not booked</span>{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+    {% endif %}
     <td class="pstat">
       {%- if p.status == 'open' -%}<span class="badge live">OPEN</span>
       {%- elif p.status == 'settled' -%}<span class="badge {{ 'won' if p.won else 'lost' }}">{{ 'WON' if p.won else 'LOST' }}</span>
@@ -209,20 +224,26 @@
       {%- else -%}<span class="badge">EXITED</span>{%- endif -%}
     </td>
     <td class="pwh">{% if p.whale_tag %}{{ whaletag(p.whale_tag) }}{% else %}<span class="dim">&mdash;</span>{% endif %}</td>
+    <td class="pnum"><span class="dim">{{ p.order_id if p.order_id is not none else '&mdash;'|safe }}</span></td>
   </tr>
 {% endmacro %}
 
-{# Item 2.1: GROUP the non-MLB table BY GAME -- one "AWAY @ HOME - date - start|unavailable" header per matchup, then
-   that game's rows. A row with no decodable matchup (tennis/ufc/fed) is header-less (single row). #}
-{% macro postable(groups) %}
+{% macro postbl(rows, tab) %}
   <div class="panel" style="margin-top:12px;overflow-x:auto">
     <table class="postbl">
-      <thead><tr><th>Market</th><th class="pnum">Contracts</th><th class="pnum">Cost</th><th class="pnum">Value</th><th>Status</th><th>Whale</th></tr></thead>
+      <thead><tr>
+        {{ possorth('placed', 'Placed&nbsp;ET', tab) }}
+        {% if tab == 'complete' %}{{ possorth('settled', 'Settled&nbsp;ET', tab) }}{% endif %}
+        {{ possorth('game', 'Game', tab) }}
+        {{ possorth('bet', 'Bet', tab) }}
+        {{ possorth('contracts', 'Contracts', tab, 'pnum') }}
+        {% if tab != 'complete' %}{{ possorth('fill', 'Fill', tab, 'pnum') }}{{ possorth('cost', 'Cost', tab, 'pnum') }}{{ possorth('value', 'Value', tab, 'pnum') }}{% else %}{{ possorth('realized', 'Realized', tab, 'pnum') }}{% endif %}
+        {{ possorth('status', 'Status', tab) }}
+        {{ possorth('whale', 'Whale', tab) }}
+        {{ possorth('order', 'Order', tab, 'pnum') }}
+      </tr></thead>
       <tbody>
-      {% for g in groups %}
-        {% if g.matchup %}<tr class="pgame"><td colspan="6"><span class="pgm">{{ g.matchup }}</span>{% if g.date %} <span class="dim">&middot; {{ g.date }}</span>{% endif %} <span class="dim">&middot; {% if g.start %}{{ g.start|ettime }}{% else %}start time unavailable{% endif %}</span></td></tr>{% endif %}
-        {% for p in g.rows %}{{ posrow(p) }}{% endfor %}
-      {% endfor %}
+      {% for p in rows %}{{ posrow_flat(p, tab) }}{% endfor %}
       </tbody>
     </table>
   </div>
@@ -322,7 +343,6 @@
   {# ---------- non-MLB POSITIONS view (item 2/4): a positions table, NO scoreboard / diamond / inning text ---------- #}
   {% set pv = positions_view or {'active': [], 'complete': [], 'n_active': 0, 'n_complete': 0, 'active_groups': [], 'complete_groups': []} %}
   {% set shown_pos = pv.complete if tab == 'complete' else pv.active %}
-  {% set shown_groups = pv.complete_groups if tab == 'complete' else pv.active_groups %}
   <div style="display:flex;align-items:center;gap:16px;margin:32px 0 12px;flex-wrap:wrap">
     <div class="toggle">
       <a class="tgl" href="{{ request.url.path }}" role="button" aria-pressed="{{ 'true' if tab != 'complete' else 'false' }}">Active ({{ pv.n_active }})</a>
@@ -332,7 +352,7 @@
   </div>
 
   {% if shown_pos %}
-    {{ postable(shown_groups) }}
+    {{ postbl(shown_pos, tab) }}
   {% else %}
   <div class="panel pad"><p class="caveat" style="margin:0">{% if tab == 'complete' %}No completed {{ category|upper }} positions right now.{% elif not feed_meta.ready %}No positions yet &mdash; the poller has not run, or this sub-division holds nothing open.{% else %}No open {{ category|upper }} positions right now.{% endif %}</p></div>
   {% endif %}

@@ -554,7 +554,8 @@ def _dropped(card, now_ts: int) -> bool:
 
 
 # ── trade drawer rows (one per ENTRY fill; realized attributed pro-rata across a copy's entries) ─────────────
-def _trade_rows(orders: list, agg: dict, marks: dict, slate_games: dict, mismatch_by_gk: dict, now_ts: int) -> list:
+def _trade_rows(orders: list, agg: dict, marks: dict, slate_games: dict, mismatch_by_gk: dict, now_ts: int,
+                titles: dict | None = None, category: str | None = None) -> list:
     rows = []
     for o in orders:
         if o.get("is_exit") or o.get("outcome_status") != "filled":
@@ -582,11 +583,20 @@ def _trade_rows(orders: list, agg: dict, marks: dict, slate_games: dict, mismatc
         kind = _kind(tk)
         matchup = ("%s @ %s" % (gs.away.abbr, gs.home.abbr)) if gs else market_matchup(tk)
         short = _short_label(tk, kind, leg)
-        label, _ = format_market_label(matchup, kind, short, None)
+        # 3c (2026-09-25): thread the persisted title + apply the _base_label FLOOR so a non-structural drawer row
+        # (tennis/ufc/fed -> matchup None) shows "<CATEGORY> <TYPE>" (or the title), NEVER the raw series tag
+        # (KXATPMATCH...); structural rows keep the shorthand primary byte-unchanged. `desc` (the Market field) floors
+        # the same way when describe_market's fallback would embed the raw ticker (the same guard used at ~line 1122),
+        # so BOTH drawer columns are ticker-free -- the same fix the positions floor uses.
+        ptitle = (titles or {}).get(tk)
+        primary, _sec = format_market_label(matchup, kind, short, ptitle)
+        label = primary if matchup else (ptitle or _base_label(tk, kind, category))
+        _md = describe_market(tk, leg)
+        desc = _md if (_md and _md != "-" and str(tk) not in _md) else (ptitle or _base_label(tk, kind, category))
         rows.append({
             "order_id": o.get("id"), "ticker": tk, "kind": kind,
             "kind_label": KIND_LABEL.get(kind, kind.upper()),
-            "desc": describe_market(tk, leg), "matchup": matchup,
+            "desc": desc, "matchup": matchup,
             "short": short, "label": label,
             "whale_wallet": o.get("wallet"), "whale_name": o.get("user_name"),
             "whale_label": o.get("user_name") or o.get("wallet"),
@@ -738,11 +748,28 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
     titles = titles or {}
     active, complete = [], []
     all_tickers = {o.get("ticker") for o in (orders or []) if o.get("ticker")}
+    # PLACEMENT (2026-09-25, Phase 3a): the position's EARLIEST entry fill -> its placed timestamp + a representative
+    # order id, for the flat table's "Placed (ET)" + "Order" columns. Per ticker, the min submitted_ts across entry
+    # fills (is_exit=0, filled); None -> the template shows "--".
+    _entry_by_tk: dict = {}
+    for _o in (orders or []):
+        if _o.get("is_exit") or _o.get("outcome_status") != "filled" or not _o.get("ticker"):
+            continue
+        _entry_by_tk.setdefault(_o["ticker"], []).append(_o)
+
+    def _placed(tk):
+        es = _entry_by_tk.get(tk) or []
+        if not es:
+            return (None, None)
+        e0 = min(es, key=lambda o: (o.get("submitted_ts") or o.get("response_ts") or 0))
+        return (e0.get("submitted_ts") or e0.get("response_ts"), e0.get("id"))
+
     for tk in sorted(all_tickers):
         kind = _kind(tk)
         whales = whales_by_ticker.get(tk, [])
         ptitle = titles.get(tk)                          # PERSISTED title (never evicted) -- survives a failed poll
         mu = market_matchup(tk); gkey = structural_game_key(tk)   # Item 2: ticker-derived matchup + game grouping
+        p_ts, p_id = _placed(tk)                                   # Phase 3a: placed (ET) + representative order id
         op = open_by_ticker.get(tk)
         if op is not None:
             leg = op.get("held_leg"); mk = (marks or {}).get(tk)
@@ -759,6 +786,7 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
                            "avg_fill": op.get("avg_price"), "fee": op.get("fees_usd"), "current_value": value,
                            "value_known": value is not None, "bid": bid, "as_of": mk_as_of, "age_sec": age_sec,
                            "ever_priced": bool(ptitle) or value is not None, "settled": False, "status": "open",
+                           "placed_ts": p_ts, "order_id": p_id,
                            "whales": whales, "whale_tag": _whale_tag(whales)})
             continue
         # not open -> a terminal (settled / exit / opposed) row, if any close exists for it
@@ -786,6 +814,7 @@ def _positions_view(orders, open_by_ticker, settle_by_ticker, agg, marks, whales
                          "current_value": payout, "value_known": payout is not None, "bid": None, "settled": True,
                          "won": won, "realized": (settle.get("realized") if settle else None),
                          "settled_at": (settle.get("settled_ts") if settle else None),
+                         "placed_ts": p_ts, "order_id": p_id,
                          "status": status, "whales": cw, "whale_tag": _whale_tag(cw)})
     active.sort(key=lambda r: r["ticker"]); complete.sort(key=lambda r: r["ticker"])
     return {"active": active, "complete": complete, "n_active": len(active), "n_complete": len(complete),
@@ -905,7 +934,8 @@ def build_live_context(*, orders: list, open_positions: list, open_positions_by_
                                          whales_by_ticker, titles=titles, category=category, now_ts=now_ts)
         summary = _journal_summary(open_positions or [], orders or [], marks, now_ts)
 
-    trades = _trade_rows(orders or [], agg, marks, slate_games, mismatch_by_gk, now_ts)
+    trades = _trade_rows(orders or [], agg, marks, slate_games, mismatch_by_gk, now_ts,
+                         titles=titles, category=category)      # 3c: floor the drawer label/desc (no raw series tag)
 
     # MARK-POLL STATUS (Item 3.3): distinct from the SPORTS-feed status. `marks_ok` is THIS poll's result; a failed or
     # partial mark poll (marks_ok False / mark_error set) drives the "refresh failed Nm ago - showing last mark" note
@@ -1648,6 +1678,65 @@ def sort_prospects(rows, sort=None, direction=None):
     """Server-side sort the Prospects rows in place (default cost-ROI desc). Returns (sort, dir)."""
     return _farm_sort(rows, sort or _PROSPECTS_DEFAULT[0], direction or _PROSPECTS_DEFAULT[1],
                       PROSPECTS_SORT_COLUMNS, _PROSPECTS_NUM_KEY, _PROSPECTS_DEFAULT)
+
+
+# ── LIVE SUB-DIVISION detail: server-side URL sort for the FLAT non-MLB Active/Complete tables (2026-09-25, P3) ──
+# OQ-4 defaults: Active = event date ASC; Complete = settle date DESC (newest first). OQ-5: flat tables, game is a
+# sortable column (by EVENT DATE, undated rows -- tennis/ufc/fed -- always last). ?psort/?pdir in the URL, JS-off
+# safe; namespaced apart from the roster table's ?sort/?dir on the same page. A None numeric ALWAYS sorts last.
+POSITIONS_SORT_COLUMNS = ("placed", "settled", "game", "bet", "contracts", "fill", "cost", "value",
+                          "realized", "status", "whale", "order")
+_POS_DEFAULT = {"active": ("game", "asc"), "complete": ("settled", "desc")}
+_POS_NUM_KEY = {
+    "placed":    lambda r: r.get("placed_ts"),
+    "settled":   lambda r: r.get("settled_at"),
+    "contracts": lambda r: r.get("contracts"),
+    "fill":      lambda r: r.get("avg_fill"),
+    "cost":      lambda r: r.get("cost"),
+    "value":     lambda r: r.get("current_value"),
+    "realized":  lambda r: r.get("realized"),
+    "order":     lambda r: r.get("order_id"),
+}
+_POS_TEXT_KEY = {
+    "bet":    lambda r: str(r.get("short") or r.get("desc") or "").lower(),
+    "status": lambda r: str(r.get("status") or "").lower(),
+    "whale":  lambda r: str(r.get("whale_tag") or "").lower(),
+}
+
+
+def _pos_event_date(r):
+    """The row's event DATE (game_key[1]) or None -- the 'game' column's chronological sort key; None = undated."""
+    gk = r.get("game_key")
+    return gk[1] if (gk and gk[1]) else None
+
+
+def sort_positions(rows, sort, direction, *, tab):
+    """Sort the flat Active/Complete position rows IN PLACE by a server-side URL column (JS-off safe). Returns the
+    (sort, direction) applied (an unknown column -> the tab's default). None numerics + undated 'game' rows ALWAYS
+    sort last, both directions."""
+    default = _POS_DEFAULT.get(tab, _POS_DEFAULT["active"])
+    if sort not in POSITIONS_SORT_COLUMNS:
+        sort, direction = default
+    direction = "asc" if str(direction).lower() == "asc" else "desc"
+    desc = direction == "desc"
+    if sort == "game":                                            # chronological by event date; undated rows last
+        dated = [r for r in rows if _pos_event_date(r) is not None]
+        undated = [r for r in rows if _pos_event_date(r) is None]
+        dated.sort(key=lambda r: (_pos_event_date(r), str(r.get("matchup") or "")), reverse=desc)
+        rows[:] = dated + undated
+        return sort, direction
+    if sort in _POS_TEXT_KEY:
+        rows.sort(key=_POS_TEXT_KEY[sort], reverse=desc)
+        return sort, direction
+    keyfn = _POS_NUM_KEY.get(sort) or _POS_NUM_KEY["placed"]
+
+    def ordk(r):
+        v = keyfn(r)
+        if v is None:
+            return (1, 0.0)                                       # missing -> last (both directions)
+        return (0, (-float(v) if desc else float(v)))
+    rows.sort(key=ordk)
+    return sort, direction
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════════

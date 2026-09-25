@@ -1385,7 +1385,8 @@ def _load_live_list(active_account: str | None = None, identity: str | None = No
 def _load_live_subdivision(account_id: str, category: str, now_ts: int,
                            identity: str | None = None, is_admin_flag: bool = False,
                            roster_sort: str | None = None, roster_dir: str | None = None,
-                           roster_show_all: bool = False):
+                           roster_show_all: bool = False,
+                           psort: str | None = None, pdir: str | None = None, tab: str = "active"):
     """Per-sub-division read for the GAME-CARD view (UI rewrite): its config + copied whales + the journal, joined
     to the cached sports feed + Kalshi marks into game cards. None -> 404; `_FORBIDDEN` -> 403 (the account exists
     but is not this identity's -- R6 fail-closed scoping; scoping the tile page while leaving this route open would
@@ -1434,6 +1435,17 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
     ctx = live_view.build_from_cache(orders=orders, open_positions=open_positions,
                                      open_positions_by_whale=positions_by_whale,
                                      cache=ui_cache.cache(), now_ts=now_ts, category=category)
+    # POSITIONS TABLE SORT (2026-09-25, Phase 3b): the flat non-MLB Active/Complete tables sort SERVER-SIDE by
+    # ?psort/?pdir (JS-off safe), defaults per tab (Active = event date asc, Complete = settle date desc). Sort the
+    # SHOWN tab by the URL params; the other tab keeps its own default. MLB (cards) has no positions_view -> no-op.
+    pv = ctx.get("positions_view")
+    p_sort, p_dir = psort, pdir
+    if pv:
+        a_s, a_d = live_view.sort_positions(pv.get("active") or [], psort if tab == "active" else None,
+                                            pdir if tab == "active" else None, tab="active")
+        c_s, c_d = live_view.sort_positions(pv.get("complete") or [], psort if tab == "complete" else None,
+                                            pdir if tab == "complete" else None, tab="complete")
+        p_sort, p_dir = (c_s, c_d) if tab == "complete" else (a_s, a_d)
     can_detach = authz.can_act_on_account(identity, is_admin_flag, acct)   # R6: owner-or-admin (UI hint; the POST route is the gate)
     # ROSTER TABLE view (2026-09-20): PURE assembler -- enriches whale_records with derived columns (win%, ROI(cost),
     # tenure days), sorts server-side (default Realized $ desc, JS-off safe) + filters on-roster/All + footer totals.
@@ -1443,6 +1455,8 @@ def _load_live_subdivision(account_id: str, category: str, now_ts: int,
     return {"sub": sub, "attached": attached, "n_live_trades": n_live_trades,
             "copies_by_whale": copies_by_whale, "thin_floor": floor, "now_ts": now_ts,
             "account_id": account_id, "category": category,
+            "tab": tab, "psort": p_sort, "pdir": p_dir,   # Phase 3b: positions-table tab + applied sort state
+
             "whale_records": whale_records, "roster_view": roster_view, "can_detach": can_detach,
             # SIZING: `can_size` = owner-or-admin (may LOWER; the change link shows only for them); `viewer_is_admin`
             # gates the RAISE affordance. The POST/GET routes are the true boundary (server-side R1), not these hints.
@@ -1497,7 +1511,8 @@ async def live_list_page(request: Request, account: str | None = None):
 
 @app.get("/live/{account_id}/{category}", response_class=HTMLResponse)
 async def live_subdivision_page(request: Request, account_id: str, category: str, tab: str | None = None,
-                                whales: str | None = None, sort: str | None = None, dir: str | None = None):
+                                whales: str | None = None, sort: str | None = None, dir: str | None = None,
+                                psort: str | None = None, pdir: str | None = None):
     """One Account-Category sub-division as the GAME-CARD page: a card per game we hold, with the box score
     (cached sports feed), three fixed bet slots valued at contracts x BID (cached Kalshi marks), and a trade
     drawer. `?tab=complete` shows settled cards (server-rendered so it works JS-off). The roster table above reads
@@ -1507,15 +1522,15 @@ async def live_subdivision_page(request: Request, account_id: str, category: str
     category = (category or "").strip().lower()
     identity, is_admin_flag = authz.current_identity(request), authz.is_admin(request)
     show_all = (whales or "").strip().lower() == "all"
+    tab_val = "complete" if (tab or "").strip().lower() == "complete" else "active"
     data = await asyncio.to_thread(_load_live_subdivision, account_id, category, int(time.time()),
-                                   identity, is_admin_flag, sort, dir, show_all)
+                                   identity, is_admin_flag, sort, dir, show_all, psort, pdir, tab_val)
     if data is None:
         return templates.TemplateResponse(
             request, "pm_live_404.html",
             {"request": request, "account_id": account_id, "category": category}, status_code=404)
     if data is _FORBIDDEN:
         return PlainTextResponse("forbidden: not your account", status_code=403)
-    data["tab"] = "complete" if (tab or "").strip().lower() == "complete" else "active"
     return templates.TemplateResponse(request, "pm_live_subdivision.html", {"request": request, **data})
 
 
