@@ -1204,3 +1204,32 @@ OPEN BACKLOG (verbatim from the handoff): extract the soccer / tennis / UFC / CS
       (file not yet supplied -- wire-in is a one-file static add + cache-bust bump when it arrives).
 NOTHING deployed, restarted, or written to the box in this close-out -- housekeeping only (RO box reads
       + git docs on this log's own branch).
+
+----------------------------------------------------------------------------------------------------
+2026-09-25 -- DEPLOY 17: TABLES PHASE 1 (Farm watchlist/prospects server-side sort + Analyze states)
+----------------------------------------------------------------------------------------------------
+WHAT LANDED: the /farm/{category} page's TWO tables (Watchlist + Prospects) now sort SERVER-SIDE from the
+      URL (?wsort/?wdir and ?psort/?pdir), so a click reorders via a plain link and it works with JavaScript
+      off. The old client-side sorter (pm_sort.js) is no longer used by these two tables (its <script> line
+      was removed from pm_farm_category.html); the file itself is left on the box (still served, harmless).
+      Also: on Prospects, the Analyze button is now state-aware -- an un-analyzed whale shows "Analyze"; an
+      analyzed one shows "View result" (free, cached) + "Re-analyze" (paid re-run) + how old the score is.
+COMMIT: prod-live 558fc143 -> 6eb797d0 (the 5 code/template files) -> 507053f6 (this handoff-docs commit).
+      Tag pm-tables-deploy17-p1-2026-09-25 -> 6eb797d0. Five files only: web/app.py, web/live_view.py,
+      templates/partials/pm_prospects_rows.html, templates/partials/pm_watchlist_rows.html,
+      templates/pm_farm_category.html. No new file, no CSS, no migration, no engine file.
+HOW: git-archive of 6eb797d0 -> tar -> scp -> a box .sh that drift-gated (box==prod-live BEFORE), backed up
+      to /home/azureuser/pm_d17_backup_20260925T201753Z (verified), applied, verified each file's CR-sha ==
+      target, py_compile, auto-rollback on any miss. Then ONE `systemctl restart prediction-markets-web`.
+SERVICES: pm_web MainPID 523799 -> 569065 (ActiveEnter 2026-09-25 20:21:57 UTC, active/running). Engine
+      trading-corp MainPID 534581 / NRestarts 0 -- UNCHANGED before and after every step (never touched).
+      box == prod-live 48/48 before and after. journalctl -p err since the restart: pm_web 0, engine 0.
+CHECKED ON PROD (read-only): /farm/mlb + nfl + nba + splits + /live + a /live detail + / + all 4 account
+      pages all 200 and styled. Watchlist + Prospects DEFAULT order unchanged (34 and 48 rows, byte-for-
+      byte vs before). URL sort reorders both tables (and a second category). Analyze states render.
+      "pinned"/"candidate" = 0 in the served HTML; raw tickers = 0. Static assets all 200; pm_desk.css
+      unchanged (0b50095b). Engine kept trading (order count moved -- pm_web cannot write orders).
+STILL TO COME (built + pushed, awaiting their own deploys, stacked on p1): Deploy 18 = Phase 2 (splits
+      Whale-Grid header: live-copied highlight + accounts on hover + paper W-L), branch
+      pm-tables-p2-2026-09-25; Deploy 19 = Phase 3 (non-MLB /live Active/Complete flat sortable tables +
+      trade-drawer series-tag floor), branch pm-tables-p3-2026-09-25. Deploys go 1 -> 2 -> 3, FF each time.
