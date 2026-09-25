@@ -1233,3 +1233,30 @@ STILL TO COME (built + pushed, awaiting their own deploys, stacked on p1): Deplo
       Whale-Grid header: live-copied highlight + accounts on hover + paper W-L), branch
       pm-tables-p2-2026-09-25; Deploy 19 = Phase 3 (non-MLB /live Active/Complete flat sortable tables +
       trade-drawer series-tag floor), branch pm-tables-p3-2026-09-25. Deploys go 1 -> 2 -> 3, FF each time.
+
+----------------------------------------------------------------------------------------------------
+2026-09-25 -- DEPLOY 18: TABLES PHASE 2 (splits Whale-Grid header: live highlight + accounts + paper W-L)
+----------------------------------------------------------------------------------------------------
+WHAT LANDED: the /farm/{category}/splits "Whale Grid" (?view=grid) column headers now show, per whale: a green
+      LIVE highlight if we live-copy that whale (with the account names on hover), and the whale's paper win-loss
+      record + win% (same numbers as the Farm Watchlist), with "--" when nothing has closed and a THIN mark under
+      50 closed. The grid CELLS (who is on which side) are unchanged -- header-only.
+COMMIT: prod-live 507053f6 -> a5db434b (the 3 files) -> 8e450210 (this handoff-docs commit). Tag
+      pm-tables-deploy18-p2-2026-09-25 -> a5db434b. Three files: web/app.py, web/live_view.py,
+      templates/pm_farm_splits.html. No new file, no CSS, no migration, no engine file.
+HOW: same as Deploy 17 -- git-archive of a5db434b -> tar -> scp -> box .sh (drift-gate box==prod-live BEFORE,
+      backup to /home/azureuser/pm_d18_backup_20260925T205926Z, apply, verify each CR-sha == target, py_compile,
+      auto-rollback on any miss) -> ONE `systemctl restart prediction-markets-web`.
+SERVICES: pm_web MainPID 569065 -> 569992 (ActiveEnter 2026-09-25 21:00:09 UTC). Engine trading-corp MainPID
+      534581 / NRestarts 0 -- UNCHANGED before/after every step. box == prod-live 48/48 before and after.
+      journalctl -p err since restart: pm_web 0, engine 0.
+CHECKED ON PROD (read-only): mlb grid -- of our 4 live-copied whales, ONE (0x684baa) currently holds an open mlb
+      position so it is the one grid column, and it is highlighted with "LIVE on Jack, Karen, Marc, Trey"; the
+      other 3 have no open mlb position so they are not columns (correctly not highlighted). Header W-L matches
+      farm_rows (e.g. 65-47 58%). Grid cells: the body template is byte-unchanged (only the header <th> + 3 CSS
+      rules changed); the cells' hash moved only because the paper poller updated open positions ~4 min earlier.
+      mode=trusted / view=splits / view=heatmap render; nfl grid renders; atp shows "NO STRUCTURAL DECODE".
+      "pinned"/"candidate" = 0; raw tickers = 0. Phase 1 still works (?wsort sort + Analyze states). /live both
+      tabs, a /live detail, /, the account pages all 200 and styled. Static all 200; pm_desk.css unchanged.
+STILL TO COME: Deploy 19 = Phase 3 (non-MLB /live Active/Complete flat sortable tables + trade-drawer series-tag
+      floor), branch pm-tables-p3-2026-09-25 @ 60bbe750 (rebased onto the new prod-live). FF prod-live next.
