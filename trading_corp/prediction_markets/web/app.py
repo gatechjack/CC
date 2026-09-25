@@ -615,8 +615,14 @@ def _load_watchlist_splits(category: str, now_ts: int) -> dict | None:
         for r in pinned:
             w = r["wallet"]
             cell = _score_cell(score_map.get(w), now_ts)
+            # tier/name for the grid header + the paper W-L record (2026-09-25, Phase 2 / OQ-6). The pinned rows come
+            # from the SAME reader the Farm Watchlist uses -- farm.farm_rows(PINNED) -> pm_paper_category_stats -- so
+            # n_closed/wins/losses/win_rate are the identical figures (no new source). THIN under 50 / "--" at 0 closed
+            # are decided at render.
             scores_by_wallet[w] = {"tier": cell.get("tier"), "analyzed": bool(cell.get("analyzed")),
-                                   "name": (r["user_name"] if "user_name" in r.keys() else None)}
+                                   "name": (r["user_name"] if "user_name" in r.keys() else None),
+                                   "n_closed": r.get("n_closed"), "wins": r.get("wins"),
+                                   "losses": r.get("losses"), "win_rate": r.get("win_rate")}
         trusted_by_wallet: dict = {}
         try:
             for a in conn.execute("SELECT wallet, account_id FROM pm_subdivision_attachment "

@@ -191,7 +191,9 @@
         {% set flat = O.flat if O.group=='flat' else (O.games|map(attribute='markets')|sum(start=[])) if O.group=='game' else (O.buckets|map(attribute='rows')|sum(start=[])) %}
         {% set colwallets = [] %}
         {% for r in flat %}{% for p in r.positions %}{% if p.wallet not in colwallets %}{% set _ = colwallets.append(p.wallet) %}{% endif %}{% endfor %}{% endfor %}
-        {% for wid in colwallets %}{% set nm = (flat|map(attribute='positions')|sum(start=[])|selectattr('wallet','equalto',wid)|first) %}<th title="{{ nm.name }}">{{ nm.name if nm.name|length <= 12 else nm.name[:11] ~ '…' }}<div class="th2">{{ (nm.tier[:5] if nm.tier else 'n/a') }}{{ ' &middot; LIVE'|safe if nm.trusted }}</div></th>{% endfor %}
+        {# each whale header: name + tier + (Phase 2 / OQ-6) a LIVE highlight with the copying account(s) on hover,
+           and the whale's paper W-L record (same reader as the Farm Watchlist) -- "--" at 0 closed, THIN under 50. #}
+        {% for wid in colwallets %}{% set nm = (flat|map(attribute='positions')|sum(start=[])|selectattr('wallet','equalto',wid)|first) %}<th{% if nm.trusted %} class="live"{% endif %} title="{{ nm.name }}{% if nm.trusted and nm.copied_by %} &mdash; LIVE on {{ nm.copied_by|join(', ') }}{% endif %}">{{ nm.name if nm.name|length <= 12 else nm.name[:11] ~ '…' }}<div class="th2">{{ (nm.tier[:5] if nm.tier else 'n/a') }}{{ ' &middot; LIVE'|safe if nm.trusted }}</div><div class="th3">{% if nm.n_closed and nm.n_closed > 0 %}{{ nm.wins if nm.wins is not none else 0 }}&ndash;{{ nm.losses if nm.losses is not none else 0 }}{% if nm.win_rate is not none %} &middot; {{ '%.0f'|format(nm.win_rate * 100) }}%{% endif %}{% if nm.n_closed < 50 %} &middot; thin{% endif %}{% else %}&mdash;{% endif %}</div></th>{% endfor %}
       </tr></thead>
       <tbody>
         {% for r in flat %}{% set d = r.trusted if O.mode=='trusted' else r.all %}
@@ -308,6 +310,9 @@
 .wls table.gg thead th{background:var(--wbg);padding:7px;font-weight:400;color:var(--wdim);font-size:9.5px;text-align:center;white-space:nowrap;vertical-align:bottom}
 .wls table.gg th.rowhd,.wls table.gg td.rowhd{text-align:left;position:sticky;left:0;background:var(--wbg);z-index:2;min-width:230px;padding:6px 9px}
 .wls table.gg .th2{color:#42566d;font-size:8px}
+.wls table.gg .th3{color:#4a5d74;font-size:8px;margin-top:1px}
+.wls table.gg th.live{background:#0e1a14;box-shadow:inset 0 2px 0 0 #4f9e77}
+.wls table.gg th.live .th2{color:#5fae86}
 .wls table.gg td.rowhd .g{color:var(--wtext)}.wls table.gg td.rowhd .m{color:#4a5d74;font-size:9px}
 .wls .cell{height:32px;display:flex;align-items:center;justify-content:center;font-size:9.5px}
 .wls .cell.A{background:var(--sAd);color:var(--sAt);box-shadow:inset 0 -2px 0 0 var(--sA)}

@@ -1786,6 +1786,10 @@ def build_watchlist_splits(paper_rows, whales, trusted_by_wallet, scores_by_wall
                                "analyzed": bool(sc.get("analyzed")),
                                "side": side, "shares": w_size, "price": w_px, "cost": w_size * w_px,
                                "trusted": bool(copied_by), "copied_by": copied_by,
+                               # paper W-L record for the grid header (2026-09-25, Phase 2 / OQ-6): same figures as
+                               # the Farm Watchlist (farm.farm_rows PINNED); rendered "--" at 0 closed, THIN under 50.
+                               "n_closed": sc.get("n_closed"), "wins": sc.get("wins"),
+                               "losses": sc.get("losses"), "win_rate": sc.get("win_rate"),
                                "age_sec": (int(now_ts) - int(lt)) if lt is not None else None})
 
     def _row(m):
