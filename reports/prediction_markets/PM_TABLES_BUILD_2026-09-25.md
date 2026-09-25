@@ -138,6 +138,60 @@ roster resets the positions sort to its default. Independent-per-table; not requ
 
 ---
 
+## RENDER PASS (2026-09-25, before deploy) — every changed page viewed
+
+Harness: Playwright chromium + FastAPI TestClient against seeded fixture DBs (the Deploy 12–15 pattern; `pm.css`
++ `pm_desk.css` inlined, `<script src>` stripped → the render IS the JS-off view), pointed at the p3 worktree, via
+`.venv-webtest`. Runners (in `C:\Users\AA Incorporado\cc`): `pm_p1_render.py`, `pm_p2_render.py`, `pm_p3_render.py`.
+PNGs committed under `reports/prediction_markets/renders/`. **I viewed every PNG; no defect found — no fix needed.**
+
+**Leak grep on every rendered HTML:**
+- Farm (`/farm/mlb`) + Splits (`/farm/mlb/splits`): **0** KX series tags, **0** "pinned"/"candidate".
+- Live (`/live/...`): **0** "pinned"/"candidate"; **0** KX rendered as a Type/Market/Bet **label**. KX appears ONLY
+  in (a) the Bet-cell `title=` ticker hover and (b) the drawer's dedicated, labeled **"Ticker"** detail field
+  (`pm_trade_drawer.html:39`) — both pre-existing, deliberate (the raw ticker as a hover/labeled field, never a
+  market label). 3c verified: the drawer Type = `ATP` and Market = `ATP` (floored), never `KXATPMATCH…`.
+
+### Phase 1 — /farm/mlb (7 Watchlist, 6 Prospects)
+- `renders/p1_R1_R4_default.png` (R1/R4): default page. Watchlist default = display-name asc; Prospects default =
+  cost-ROI desc. All 3 Analyze states on one page — unscored → **Analyze**; scored → **View result** + **Re-analyze**
+  + age (**scored 5d / 2d ago**); just-analyzed → **scored 0d ago**. Judge badges + honesty caveat render. No defect.
+- `renders/p1_R2_watchlist_roi_desc.png` (R2): Watchlist by ROI desc = +31.0, +20.0, +15.0, +2.0, −5.0, −8.0, — (None
+  last); roi header shows the active-sort affordance. No defect.
+- `renders/p1_R2b_watchlist_netpnl_asc.png` (R2): Watchlist by Net PnL asc (−90 first → +900). No defect.
+- `renders/p1_R3_prospects_n_desc.png` (R3): Prospects by N desc = 200, 90, 70, 55, 40, 3 — confirms server-side
+  sort replaced pm_sort.js. No defect.
+- `renders/p1_R5_jsoff_watchlist_roi_desc.png` (R5): the R2 URL rendered with scripts stripped — **byte-identical**
+  served HTML to R2, so JS-off order == JS-on order (sort is server-side). No defect.
+- `renders/p1_R6_default_phone.png` (R6): phone (390px). Both tables render; default orders correct; judge + the
+  un-analyzed Analyze controls visible; wide tables scroll horizontally (pre-existing `pm-table-scroll`, not new). No defect.
+
+### Phase 2 — /farm/mlb/splits?view=grid (2 live + 3 non-live)
+- `renders/p2_R7_grid_1280.png` (R7): the 2 live whales (Kingfish, domer-1848) show the green `th.live` highlight;
+  hover titles carry the accounts ("LIVE on Jack", "LIVE on Jack, Karen"); per-whale W-L = 40–20·67%, 30–25·55%,
+  **6–4·60%·thin**, 38–42·48%, **—** (zero closed); grid cells unchanged; the money strip names the 2 copied whales. No defect.
+- `renders/p2_R8_grid_phone.png` (R8): phone. Summary + controls stack; grid scrolls horizontally (as designed);
+  the live highlight is still visible; heatmap not shown (grid view). No defect.
+
+### Phase 3 — /live/kalshi_jack/{nfl,atp,mlb}
+- `renders/p3_R9_nfl_active_default.png` (R9): flat Active table, **all columns** — Placed ET · Game (matchup+date) ·
+  Bet (shorthand + matchup secondary) · Contracts · Fill · Cost · Value (with mark-age chips incl. amber "3m ago·stale")
+  · Status · Whale · Order; one row reads **"no mark"** (KC@LV). Default = **event date asc** (SEP14, SEP14, SEP21, OCT05). No defect.
+- `renders/p3_R10_nfl_active_cost_desc.png` (R10): Active by Cost desc ($4.00, $3.00, $2.50, $2.00). No defect.
+- `renders/p3_R11_nfl_complete_default.png` (R11): flat Complete table with a **Settled ET** column + **Realized**
+  (net of fees); all four statuses present — **WON** (+$8.40), **LOST** (−$5.20), **OPPOSED** ("not booked"),
+  **EXITED** (—). Default = **settle date newest-first** (09-24, 09-23, then the un-settled opposed/exited last). No defect.
+- `renders/p3_R12_nfl_complete_realized_asc.png` (R12): Complete by Realized asc (−5.20, +8.40, then None last). No defect.
+- `renders/p3_R13_atp_drawer.png` (R13): ATP page, trade drawer **expanded**. Positions Bet cell = **"ATP"** (floored,
+  not KXATPMATCH); drawer **Type = "ATP"**, **Market = "ATP"** (both floored). The raw ticker shows only in the
+  drawer's labeled "Ticker" field. No series tag in Type or Market. No defect.
+- `renders/p3_R14_mlb_cards_regression.png` (R14): MLB page renders the **game card** (diamond, PREVIEW SD @ CIN, bet
+  slots incl. TOT +8.5 $3.60 FROM Alpha) — unchanged; MLB stays cards (out of scope). Regression check PASS.
+- `renders/p3_R15_nfl_complete_phone.png` (R15): phone Complete tab. Money strip + roster stack (Deploy-12 phone
+  treatment); the Complete table wraps readably; all four statuses + settle-desc order visible. No defect.
+
+---
+
 ## DEPLOY SHAPE (per phase — Board action; NOT run here)
 Deploys go **1 → 2 → 3**, each fast-forwarding prod-live before the next ships (a phase never depends on a later one).
 Per phase, pm_web-only: (1) re-verify box==prod-live + baseline (differential empty) + engine/pm_web PID; (2) the
