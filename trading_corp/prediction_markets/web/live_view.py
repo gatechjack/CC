@@ -1982,8 +1982,22 @@ def splits_ordered(ctx, *, mode="all", sort="divergence", group="game"):
     keyf = splits_sort_key(mode, sort)
     rows = sorted(rows, key=keyf, reverse=True)
     out = {"mode": mode, "sort": sort, "group": group}
+
+    def _col_order(seq):
+        """Grid COLUMN order across the shown rows (2026-09-25, Jack): live-copied (trusted) whales FIRST, then
+        the rest, each in first-seen order. Whales are columns; this decides their left-to-right order."""
+        seen_w, trusted_of = [], {}
+        for r in seq:
+            for p in r["positions"]:
+                w = p["wallet"]
+                if w not in trusted_of:
+                    trusted_of[w] = bool(p["trusted"])
+                    seen_w.append(w)
+        return [w for w in seen_w if trusted_of[w]] + [w for w in seen_w if not trusted_of[w]]
+
     if group == "flat":
         out["flat"] = rows
+        out["col_order"] = _col_order(rows)
         return out
     if group == "shape":
         buckets = [("SPLIT", "Split - no consensus"), ("LEAN", "Lean"), ("CONSENSUS", "Consensus"),
@@ -1992,6 +2006,7 @@ def splits_ordered(ctx, *, mode="all", sort="divergence", group="game"):
         out["buckets"] = [{"key": k, "title": t, "rows": [r for r in rows if shape_of(r) == k]}
                           for k, t in buckets]
         out["buckets"] = [b for b in out["buckets"] if b["rows"]]
+        out["col_order"] = _col_order([r for b in out["buckets"] for r in b["rows"]])
         return out
     # group == game: order games by their best (max) row sort-key, markets already type-ordered within
     seen = {}
@@ -2010,6 +2025,7 @@ def splits_ordered(ctx, *, mode="all", sort="divergence", group="game"):
         g["stake"] = sum(r["all"]["stake"] for r in g["markets"])
     games.sort(key=lambda g: -g["score"])
     out["games"] = games
+    out["col_order"] = _col_order([m for g in games for m in g["markets"]])
     return out
 
 

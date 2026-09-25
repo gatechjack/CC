@@ -92,3 +92,22 @@ def test_served_grid_paper_wl_thin_and_zero(tmp_path, monkeypatch):
     assert '<div class="th3">40&ndash;20 &middot; 67%</div>' in b            # w1: 60 closed -> W-L + win%, NOT thin
     assert '<div class="th3">6&ndash;4 &middot; 60% &middot; thin</div>' in b   # w2: 10 closed -> THIN under 50
     assert '<div class="th3">&mdash;</div>' in b                            # w3: 0 closed -> "--"
+
+
+# ── column order (2026-09-25, Jack): live-copied (trusted) whales are the FIRST columns, all group modes ──
+def test_col_order_live_whales_first():
+    slug = "mlb-sd-cin-2026-09-21"
+    rows = [_row("w2", slug, "Padres"), _row("w1", slug, "Reds"), _row("w3", slug, "Reds")]  # w2 untrusted, first-seen
+    def _sc():
+        return {"tier": None, "analyzed": False, "name": None,
+                "n_closed": 0, "wins": 0, "losses": 0, "win_rate": None}
+    scores = {"w1": _sc(), "w2": _sc(), "w3": _sc()}
+    trusted = {"w1": ["Jack"], "w3": ["Karen"]}                                              # w1, w3 are live-copied
+    ctx = LV.build_watchlist_splits(rows, [{"wallet": "w1"}, {"wallet": "w2"}, {"wallet": "w3"}],
+                                    trusted, scores, category="mlb", now_ts=NOW)
+    for group in ("game", "flat", "shape"):
+        O = LV.splits_ordered(ctx, mode="all", sort="divergence", group=group)
+        order = O["col_order"]
+        assert set(order) == {"w1", "w2", "w3"}, (group, order)
+        tr = [order.index(w) for w in ("w1", "w3")]
+        assert max(tr) < order.index("w2"), (group, order)                                   # every live col precedes untrusted

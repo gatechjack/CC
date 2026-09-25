@@ -186,11 +186,9 @@
     {% set ws = whales_grid if whales_grid is defined else [] %}
     <div class="gwrap"><table class="gg">
       <thead><tr><th class="rowhd">Game &middot; market</th>
-        {% set cols = [] %}
-        {% for r in O.flat if False %}{% endfor %}
         {% set flat = O.flat if O.group=='flat' else (O.games|map(attribute='markets')|sum(start=[])) if O.group=='game' else (O.buckets|map(attribute='rows')|sum(start=[])) %}
-        {% set colwallets = [] %}
-        {% for r in flat %}{% for p in r.positions %}{% if p.wallet not in colwallets %}{% set _ = colwallets.append(p.wallet) %}{% endif %}{% endfor %}{% endfor %}
+        {# grid columns are whales; ORDER = live-copied whales first (server-side, O.col_order), then the rest (2026-09-25, Jack) #}
+        {% set colwallets = O.col_order %}
         {# each whale header: name + tier + (Phase 2 / OQ-6) a LIVE highlight with the copying account(s) on hover,
            and the whale's paper W-L record (same reader as the Farm Watchlist) -- "--" at 0 closed, THIN under 50. #}
         {% for wid in colwallets %}{% set nm = (flat|map(attribute='positions')|sum(start=[])|selectattr('wallet','equalto',wid)|first) %}<th{% if nm.trusted %} class="live"{% endif %} title="{{ nm.name }}{% if nm.trusted and nm.copied_by %} &mdash; LIVE on {{ nm.copied_by|join(', ') }}{% endif %}">{{ nm.name if nm.name|length <= 12 else nm.name[:11] ~ '…' }}<div class="th2">{{ (nm.tier[:5] if nm.tier else 'n/a') }}{{ ' &middot; LIVE'|safe if nm.trusted }}</div><div class="th3">{% if nm.n_closed and nm.n_closed > 0 %}{{ nm.wins if nm.wins is not none else 0 }}&ndash;{{ nm.losses if nm.losses is not none else 0 }}{% if nm.win_rate is not none %} &middot; {{ '%.0f'|format(nm.win_rate * 100) }}%{% endif %}{% if nm.n_closed < 50 %} &middot; thin{% endif %}{% else %}&mdash;{% endif %}</div></th>{% endfor %}
