@@ -1571,6 +1571,85 @@ def build_roster_table(whale_records, booked_cost=None, *, now_ts, sort=None, di
     }
 
 
+# ── FARM CATEGORY PAGE: server-side URL sort for the Watchlist + Prospects tables (2026-09-25, OQ-1) ──────────
+# Deploy-12 pattern (JS-off safe): the loader sorts each list by its OWN url params (?wsort/?wdir for the Watchlist,
+# ?psort/?pdir for the Prospects table -- two tables on one page, so the params are namespaced) and the template
+# renders <a href> header links. This RETIRES the client pm_sort.js (which sorted ASCENDING on the first click and
+# needed the JUDGE column's -sort_value NEGATION hack to float PROMOTE to the top). DEFAULTS reproduce the prior load
+# order EXACTLY: Watchlist = display-name asc (the farm.farm_rows order); Prospects = cost-ROI desc. A None numeric
+# ALWAYS sorts last, both directions. JUDGE sorts by the tier-capped composite (scoring.score_sort_key via
+# _score_cell.sort_value), so a first (desc) click floats PROMOTE to the top -- the negation hack is no longer needed.
+WATCHLIST_SORT_COLUMNS = ("whale", "judge", "open", "closed", "stale", "void", "winpct", "roi", "netpnl", "cost")
+_WATCHLIST_DEFAULT = ("whale", "asc")
+_WATCHLIST_NUM_KEY = {
+    "judge":  lambda r: (r.get("score") or {}).get("sort_value"),
+    "open":   lambda r: r.get("n_open"),
+    "closed": lambda r: r.get("n_closed"),
+    "stale":  lambda r: r.get("n_stale"),
+    "void":   lambda r: r.get("n_void"),
+    "winpct": lambda r: r.get("win_rate"),
+    "roi":    lambda r: r.get("roi"),
+    "netpnl": lambda r: r.get("net_paper_pnl"),
+    "cost":   lambda r: r.get("cost_basis"),
+}
+
+# Prospects: the columns that were client-sortable, migrated to the server (plus 'whale', for parity with the
+# Watchlist). win% stays DELIBERATELY non-sortable (the completed-trade API under-reports losses -> win% is not the
+# rank key and must not be sorted-on to mislead; the caveat rides on the header). Same for the n/a-bearing
+# two-sided%/single-game%/avg-win-px/flags columns, unchanged as plain headers.
+PROSPECTS_SORT_COLUMNS = ("whale", "judge", "n", "roi", "netpnl", "updated", "sample")
+_PROSPECTS_DEFAULT = ("roi", "desc")
+_PROSPECTS_NUM_KEY = {
+    "judge":   lambda r: (r.get("score") or {}).get("sort_value"),
+    "n":       lambda r: r.get("n_resolved"),
+    "roi":     lambda r: r.get("roi"),
+    "netpnl":  lambda r: r.get("net_realized_pnl"),
+    "updated": lambda r: (r.get("last_refresh") or {}).get("ts"),
+    "sample":  lambda r: 1 if r.get("thin_sample") else 0,
+}
+
+
+def _farm_name_key(r):
+    """The farm.farm_rows default order: rows WITH a display name first (alphabetical), rows without a name last
+    (by wallet). Reproduced here so a default 'whale asc' sort == the loader's existing watchlist order."""
+    name = r.get("user_name")
+    return (name is None, str(name or "").lower(), str(r.get("wallet") or "").lower())
+
+
+def _farm_sort(rows, sort, direction, columns, num_key, default):
+    """Sort `rows` IN PLACE by a server-side URL column (JS-off safe). Returns the (sort, direction) actually applied
+    (an unknown column falls back to the table's default). A None numeric ALWAYS sorts last, both ways. 'whale' uses
+    the farm_rows name key (names first alpha, nameless last)."""
+    if sort not in columns:
+        sort, direction = default
+    direction = "asc" if str(direction).lower() == "asc" else "desc"
+    if sort == "whale":
+        rows.sort(key=_farm_name_key, reverse=(direction == "desc"))
+        return sort, direction
+    keyfn = num_key.get(sort) or num_key[default[0]]
+    desc = direction == "desc"
+
+    def ordk(r):
+        v = keyfn(r)
+        if v is None:
+            return (1, 0.0)                            # missing -> last (ascending places (1,..) after (0,..))
+        return (0, (-float(v) if desc else float(v)))
+    rows.sort(key=ordk)
+    return sort, direction
+
+
+def sort_watchlist(rows, sort=None, direction=None):
+    """Server-side sort the Watchlist rows in place (default display-name asc = farm.farm_rows order). (sort, dir)."""
+    return _farm_sort(rows, sort or _WATCHLIST_DEFAULT[0], direction or _WATCHLIST_DEFAULT[1],
+                      WATCHLIST_SORT_COLUMNS, _WATCHLIST_NUM_KEY, _WATCHLIST_DEFAULT)
+
+
+def sort_prospects(rows, sort=None, direction=None):
+    """Server-side sort the Prospects rows in place (default cost-ROI desc). Returns (sort, dir)."""
+    return _farm_sort(rows, sort or _PROSPECTS_DEFAULT[0], direction or _PROSPECTS_DEFAULT[1],
+                      PROSPECTS_SORT_COLUMNS, _PROSPECTS_NUM_KEY, _PROSPECTS_DEFAULT)
+
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════════
 # WATCHLIST SPLITS (2026-09-21): the pinned-whale PAPER positions of a category, decoded into
 # game x market-type x side and drawn as a stake-vs-headcount split. SOURCE = pm_paper_trade

@@ -519,7 +519,8 @@ def _load_farm_league() -> dict:
 PROSPECTS_MIN_RESOLVED = 1
 
 
-def _load_farm_category(category: str, now_ts: int) -> dict | None:
+def _load_farm_category(category: str, now_ts: int, wsort: str | None = None, wdir: str | None = None,
+                        psort: str | None = None, pdir: str | None = None) -> dict | None:
     """Per-category read. Returns None when `category` is NOT a league category (not in the allowlist: deactivated
     / unknown / nonexistent) so the route can 404 -- a deactivated category must not be reachable by URL. Existence
     is `farm.is_league_category` = allowlist membership (Jack 2026-08-30), NOT pinned rows: an allowlist category
@@ -541,10 +542,9 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
         board = stats.query_scoreboard(conn, category=category,                         # completed-basis ranker (F-4)
                                        min_resolved=PROSPECTS_MIN_RESOLVED)             # thin-inclusive (2026-09-15 floor override)
         prospects = [r for r in board if r["wallet"] in cand_wallets]                   # ranked, candidates only (incl. thin)
-        # R4 DEFAULT ORDER = cost-ROI DESCENDING (Jack ruled): the first view is what gets looked at most. The
-        # ranker's own ORDER BY leads with score; here the SCREEN's default axis is cost-ROI (roi-None sorts last).
-        # The client-side column sort re-orders on demand; this only sets the LOAD order.
-        prospects.sort(key=lambda r: (r.get("roi") is None, -(r.get("roi") or 0.0)))
+        # R4 DEFAULT ORDER = cost-ROI DESCENDING (Jack ruled). Applied SERVER-SIDE after enrichment now (2026-09-25,
+        # OQ-1): live_view.sort_prospects(...) below sorts by ?psort/?pdir (default cost-ROI desc) -- the JS-off-safe
+        # replacement for the retired client pm_sort.js. Moved after enrichment so JUDGE/updated/sample can sort too.
         lg_map = _load_loss_grounding_map(conn, category)                               # per-whale omission cache (Analyze-fed)
         score_map = _load_whale_score_map(conn, category)                               # per-whale stored score (Analyze-fed, mig 023)
         for r in prospects:
@@ -581,8 +581,14 @@ def _load_farm_category(category: str, now_ts: int) -> dict | None:
                     (now_ts - int(a["added_ts"])) if a["added_ts"] is not None else None)
         except Exception:   # noqa: BLE001 -- absent table (pre-migration-010) -> honest-empty, never a 500
             live_attach = {}
+    # SERVER-SIDE URL SORT (2026-09-25, OQ-1): sort each table by its namespaced params AFTER enrichment (so the
+    # JUDGE/last-updated/sample columns can sort). Defaults reproduce the prior load order exactly (watchlist =
+    # display-name asc; prospects = cost-ROI desc). The returned (sort, dir) drive the header <a> active state.
+    w_sort, w_dir = live_view.sort_watchlist(watchlist, wsort, wdir)
+    p_sort, p_dir = live_view.sort_prospects(prospects, psort, pdir)
     return {"category": category, "watchlist": watchlist, "prospects": prospects, "refresh": refresh,
-            "live_accounts": live_accounts, "live_attach": live_attach}
+            "live_accounts": live_accounts, "live_attach": live_attach,
+            "wsort": w_sort, "wdir": w_dir, "psort": p_sort, "pdir": p_dir}
 
 
 def _account_label(account_id: str) -> str:
@@ -818,12 +824,13 @@ async def farm_league_page(request: Request):
 
 
 @app.get("/farm/{category}", response_class=HTMLResponse)
-async def farm_league_category(request: Request, category: str):
+async def farm_league_category(request: Request, category: str, wsort: str | None = None,
+                               wdir: str | None = None, psort: str | None = None, pdir: str | None = None):
     """The per-category page: Watchlist (paper) on top, Prospects (completed) below. A category NOT in the active
-    tile set (removed / unknown / nonexistent) is NOT reachable -> 404, never a fabricated page. (Phase 3 repointed
-    this from /farm-league/{category} onto /farm/{category}.)"""
+    tile set (removed / unknown / nonexistent) is NOT reachable -> 404, never a fabricated page. Column sort for
+    BOTH tables lives in the URL (?wsort/?wdir, ?psort/?pdir), JS-off safe (2026-09-25, OQ-1)."""
     category = (category or "").strip().lower()
-    data = await asyncio.to_thread(_load_farm_category, category, int(time.time()))
+    data = await asyncio.to_thread(_load_farm_category, category, int(time.time()), wsort, wdir, psort, pdir)
     if data is None:
         return templates.TemplateResponse(
             request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)

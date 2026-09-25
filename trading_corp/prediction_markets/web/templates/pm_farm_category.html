@@ -48,7 +48,7 @@
 {% endblock %}
 
 {% block scripts %}
-{# Client-side column SORT (progressive enhancement): JS-off keeps the server's default cost-ROI-desc order.
-   Re-binds after every htmx swap (a Refresh re-renders the table), so sorting survives a refresh. #}
-<script src="/static/pm_sort.js" defer></script>
+{# Column sort is SERVER-SIDE now (2026-09-25, OQ-1): both tables' sort lives in the URL (?wsort/?wdir for the
+   Watchlist, ?psort/?pdir for Prospects), rendered as <a href> header links -- JS-off safe, and it no longer
+   depends on the client pm_sort.js (retired for this page; the static file is left in place but unreferenced). #}
 {% endblock %}

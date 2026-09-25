@@ -44,12 +44,18 @@ def test_score_cell_mirage_flagged_and_sorts_below_promote():
     assert app._score_cell(None, 1000)["sort_value"] < m["sort_value"]   # un-analyzed is the very bottom
 
 
-def test_dom_sort_value_ascending_puts_best_first():
-    # ★ the shared client sorter (pm_sort.js) sorts ASCENDING on the first click; the JUDGE <td> emits -sort_value,
-    # so ascending = best-first. Verify the DOM values order PROMOTE < mirage(INSUF) < un-analyzed (so an ascending
-    # click surfaces PROMOTE at the top, the 88.5% mirage in the INSUF band, un-analyzed at the very bottom).
-    dom = lambda sc: -app._score_cell(sc, 1000)["sort_value"]
-    assert dom(_PROMOTE) < dom(_MIRAGE) < dom(None)
+def test_judge_column_sorts_promote_first_server_side():
+    # ★ Server-side sort (2026-09-25, OQ-1): the JUDGE column sorts by the tier-capped composite (score_sort_key via
+    # _score_cell.sort_value) with a desc-first click, so PROMOTE floats to the TOP, the 88.5% INSUFFICIENT_DATA mirage
+    # sits in its band, and un-analyzed sinks to the BOTTOM -- replacing the retired pm_sort.js/-sort_value negation.
+    from trading_corp.prediction_markets.web import live_view
+    rows = [
+        {"wallet": "0xu", "user_name": "U", "score": app._score_cell(None, 1000)},
+        {"wallet": "0xm", "user_name": "M", "score": app._score_cell(_MIRAGE, 1000)},
+        {"wallet": "0xp", "user_name": "P", "score": app._score_cell(_PROMOTE, 1000)},
+    ]
+    live_view.sort_prospects(rows, "judge", "desc")
+    assert [r["wallet"] for r in rows] == ["0xp", "0xm", "0xu"]   # PROMOTE, then INSUF mirage, then un-analyzed last
 
 
 # ── macro rendering (bare Jinja env, no TestClient) ──

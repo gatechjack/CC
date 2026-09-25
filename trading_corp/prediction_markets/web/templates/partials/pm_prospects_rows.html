@@ -1,8 +1,21 @@
 {% from "pm_macros.html" import whale_label, flag_badges, omission_cell, score_cell %}
 {# PROSPECTS rows -- COMPLETED basis (pm_category_stats via the F-4 repurposed query_scoreboard ranker, filtered
-   to this category's candidates). DEFAULT ORDER cost-ROI desc; columns sortable (client-side, progressive
-   enhancement -- JS-off keeps the default order). Every aggregate drills through to its rows via the EXISTING
-   completed /whale detail. Empty until Search runs -> honest "no search yet", never fabricated rows. #}
+   to this category's candidates). DEFAULT ORDER cost-ROI desc; columns sortable SERVER-SIDE via url params
+   (?psort/?pdir), JS-off safe (2026-09-25, OQ-1 -- retires the client pm_sort.js + its JUDGE negation hack). Every
+   aggregate drills through to its rows via the EXISTING completed /whale detail. Empty until Search runs -> honest
+   "no search yet", never fabricated rows. #}
+{# Server-side sortable header (?psort/?pdir), preserving the Watchlist table's params (?wsort/?wdir). Base is
+   /farm/{category} (no `request` dependency -> the bare-Jinja render tests stay green). First click on a NEW column =
+   desc (best first: for JUDGE that floats PROMOTE to the top -- the tier-capped composite, no negation needed);
+   clicking the ACTIVE column flips. Reuses the pm-sortable / pm-sort-asc|desc glyphs. #}
+{% macro psorth(col, label, tip='', cls='') -%}
+  {%- set active = (psort|default('')) == col -%}
+  {%- set nextdir = 'asc' if (active and (pdir|default('')) == 'desc') else 'desc' -%}
+  <th class="{{ cls }}{% if active %} pm-sorted{% endif %}"><a
+     class="pm-sortable{% if active %}{{ ' pm-sort-desc' if pdir == 'desc' else ' pm-sort-asc' }}{% endif %}"
+     href="/farm/{{ category }}?psort={{ col }}&pdir={{ nextdir }}{% if wsort %}&wsort={{ wsort }}&wdir={{ wdir }}{% endif %}"
+     title="{{ tip if tip else 'Sort by ' ~ label }} Click to sort.">{{ label|safe }}</a></th>
+{%- endmacro %}
 
 {# ★ F-1 LOSS-OMISSION CAVEAT -- VISIBLE at the TOP of the section (not buried in a footnote). Everything here
    comes from /closed-positions, which UNDER-REPORTS held losses wallet-dependently -> a ranked table implies a
@@ -20,45 +33,40 @@
     the Watchlist), ranked by cost-ROI.</div>
 {% else %}
 <div class="pm-table-scroll">
-<table class="pm-table pm-farm-table pm-sortable-table" id="pm-prospects-table">
+<table class="pm-table pm-farm-table" id="pm-prospects-table">
   <thead>
     <tr>
-      <th>whale</th>
-      {# ★ THE STORED ANALYZE VERDICT (migration 023 pm_whale_score): TIER + the sort number. Sorted TIER-FIRST,
-         then ROI within a tier -- a PROMOTE outranks an INSUFFICIENT_DATA whatever the number (the tier caps the
-         number). Un-analyzed sorts LAST and reads "not analyzed", never a 0. The td's data-sort-value is the
-         scoring.score_sort_key composite, so the single-column client sort honours the cap. #}
-      <th class="pm-sortable pm-judge-col" data-sort="num" title="The stored ANALYZE verdict: TIER + cost-ROI (the sort number). Sorted by TIER first, then the number within a tier -- a PROMOTE ranks above an INSUFFICIENT_DATA whatever the ROI (the tier CAPS the number). Un-analyzed sorts last and reads 'not analyzed', never a 0. Click to sort best-first (PROMOTE at top).">judge <span class="pm-th-sub">(tier &middot; score)</span></th>
-      <th class="pm-num pm-sortable" data-sort="num" title="Scoreable resolved (completed) rows. Click to sort.">n</th>
+      {{ psorth('whale', 'whale') }}
+      {# ★ THE STORED ANALYZE VERDICT (migration 023 pm_whale_score): TIER + the sort number. ?psort=judge sorts
+         TIER-FIRST then ROI within a tier (scoring.score_sort_key composite) -- a PROMOTE outranks an
+         INSUFFICIENT_DATA whatever the number (the tier caps the number). Un-analyzed sorts LAST. Server-side desc
+         click puts PROMOTE at the top (no negation hack). #}
+      {{ psorth('judge', 'judge <span class="pm-th-sub">(tier &middot; score)</span>', "The stored ANALYZE verdict: TIER + cost-ROI (the sort number). Sorted by TIER first, then the number within a tier -- a PROMOTE ranks above an INSUFFICIENT_DATA whatever the ROI (the tier CAPS the number). Un-analyzed sorts last and reads 'not analyzed', never a 0. Click to sort best-first (PROMOTE at top).", 'pm-judge-col') }}
+      {{ psorth('n', 'n', "Scoreable resolved (completed) rows. Click to sort.", 'pm-num') }}
       {# WIN% is NOT sortable (never the rank key -- ROI-denominator ruling) and the caveat rides ON THE HEADER,
          so it cannot be sorted-on to mislead. #}
       <th class="pm-num pm-muted pm-nosort" title="Win rate = a CHALK indicator, NOT the rank key and NOT sortable. The completed-trade API under-reports held losses, so win% is OPTIMISTIC.">win%<sup>*</sup> <span class="pm-th-caveat">(optimistic, not the rank)</span></th>
-      <th class="pm-num pm-primary pm-sortable pm-sort-default" data-sort="num" title="Cost-based ROI = net / cost_basis -- THE ranked metric + the default sort. Click to sort.">roi&nbsp;(cost)</th>
-      <th class="pm-num pm-sortable" data-sort="num" title="Net realized PnL over scoreable rows. Click to sort.">net&nbsp;pnl</th>
-      <th class="pm-sortable" data-sort="num" title="How fresh THIS whale's data is (last on-demand refresh). Click to sort by staleness.">last&nbsp;updated</th>
-      <th class="pm-sortable" data-sort="num" title="THIN-SAMPLE = surfaced via the fewer-than-10 top-10 fallback (n below the N&ge;50 floor), NOT a full-sample qualifier. Click to sort.">sample</th>
+      {{ psorth('roi', 'roi&nbsp;(cost)', "Cost-based ROI = net / cost_basis -- THE ranked metric + the default sort. Click to sort.", 'pm-num pm-primary') }}
+      {{ psorth('netpnl', 'net&nbsp;pnl', "Net realized PnL over scoreable rows. Click to sort.", 'pm-num') }}
+      {{ psorth('updated', 'last&nbsp;updated', "How fresh THIS whale's data is (last on-demand refresh). Click to sort by staleness.") }}
+      {{ psorth('sample', 'sample', "THIN-SAMPLE = surfaced via the fewer-than-10 top-10 fallback (n below the N>=50 floor), NOT a full-sample qualifier. Click to sort.") }}
       <th class="pm-num" title="two-sided condition_ids / condition_ids. GRAIN = per (wallet, category).">two-sided%</th>
       <th class="pm-num" title="single-game rows / all rows. HEURISTIC; n/a for non-sports (fed) -- never 0%.">single-game%</th>
       <th class="pm-num" title="Average winning price. CHALK &ge; 0.85 (favorites); CONTESTED &lt; 0.70.">avg&nbsp;win&nbsp;px</th>
       <th title="Data-quality + status flags -- same tokens as the CLI report.">flags</th>
-      <th title="Analyze (run the promotion judge), Promote to Watchlist (begin paper-trading), or Refresh (re-pull this whale's history on demand).">action</th>
+      <th title="Analyze / View result / Re-analyze the promotion judge, Promote to Watchlist, or Refresh this whale's history on demand.">action</th>
     </tr>
   </thead>
   <tbody>
   {% for r in prospects %}
     <tr>
       <td class="pm-wcell">{{ whale_label(r.user_name, r.wallet, href='/whale/' ~ r.wallet ~ '/' ~ r.category) }}</td>
-      {# JUDGE cell. data-sort-value is the tier-then-number composite (r.score.sort_value), NEGATED ON PURPOSE.
-         ★★ DO NOT "simplify" the minus away -- it is load-bearing. The shared client sorter (pm_sort.js) sorts
-         ASCENDING on the first click (its OWN "first click = descending" comment is WRONG -- the code does ascending).
-         Our composite is higher=better, so WITHOUT this negation a first click on JUDGE floats INSUFFICIENT_DATA (the
-         loss-omission MIRAGES) and un-analyzed rows to the TOP of the very list used to pick whales -- the exact
-         inversion the tier-cap exists to prevent, and it would look like it was working. The minus contains the fix
-         to THIS column instead of flipping the shared sorter's global direction (owned by another workstream). With
-         it, an ascending click puts the best tier (PROMOTE) at the top and un-analyzed at the bottom, every click; the
-         tier still caps the number. If pm_sort.js is ever fixed to descending-first, drop this minus AND re-verify. #}
-      <td class="pm-judge-col" data-sort-value="{{ -r.score.sort_value }}">{{ score_cell(r.score, r.wallet, r.category) }}</td>
-      <td class="pm-num" data-sort-value="{{ r.n_resolved or 0 }}">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
+      {# JUDGE cell. Server-side sort now (2026-09-25, OQ-1): ?psort=judge sorts by the tier-capped composite
+         (scoring.score_sort_key via _score_cell.sort_value) with a desc-first click, so PROMOTE floats to the top and
+         un-analyzed sits at the bottom -- the tier still caps the number. The old client -sort_value negation hack
+         (which existed only to counter pm_sort.js's ascending-first click) is retired with pm_sort.js. #}
+      <td class="pm-judge-col">{{ score_cell(r.score, r.wallet, r.category) }}</td>
+      <td class="pm-num">{% if r.n_resolved is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable">{{ r.n_resolved }}</a>{% else %}&mdash;{% endif %}</td>
       {# ★ win% + its per-whale F-1 omission caveat, IN THE SAME CELL (the caveat travels with the number). When the
          whale is UN-analyzed the caveat IS an [Analyze] control (omission_cell macro) -- the instruction is
          actionable where it appears; once analyzed the figure replaces it in place (OOB from the result). #}
@@ -66,27 +74,39 @@
         <span class="pm-winpct{% if r.win_rate is not none and (not r.loss_omission.known or (r.loss_omission.omission_pct is not none and r.loss_omission.omission_pct > 0)) %} pm-winpct-caveated{% endif %}">{% if r.win_rate is not none %}{{ '%.0f'|format(r.win_rate * 100) }}%{% else %}&mdash;{% endif %}</span>
         {{ omission_cell(r.loss_omission, r.wallet, r.category) }}
       </td>
-      <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}" data-sort-value="{{ r.roi if r.roi is not none else -999 }}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
-      <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}" data-sort-value="{{ r.net_realized_pnl if r.net_realized_pnl is not none else -1000000000000 }}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
-      {# LAST-UPDATED per whale: band + age; a NULL ts is RED "never" -- staleness visible, never silent. sort by ts. #}
-      <td data-sort-value="{{ r.last_refresh.ts or 0 }}">
+      <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
+      <td class="pm-num {% if r.net_realized_pnl is not none and r.net_realized_pnl >= 0 %}pm-gain{% elif r.net_realized_pnl is not none %}pm-loss{% endif %}">{% if r.net_realized_pnl is not none %}{{ '%+.0f'|format(r.net_realized_pnl) }}{% else %}&mdash;{% endif %}</td>
+      {# LAST-UPDATED per whale: band + age; a NULL ts is RED "never" -- staleness visible, never silent. #}
+      <td>
         <span class="pm-freshdot pm-band-{{ r.last_refresh.band }}" title="{% if r.last_refresh.iso %}last refresh {{ r.last_refresh.iso }} ({{ '%.1f'|format(r.last_refresh.age_days) }}d old){% else %}{{ r.last_refresh.note }}{% endif %}">{% if r.last_refresh.ts %}{{ '%.0f'|format(r.last_refresh.age_days) }}d{% else %}never{% endif %}</span></td>
-      {# THIN-SAMPLE flag: VISIBLE badge (not inferable), sort by the 0/1. #}
-      <td data-sort-value="{{ 1 if r.thin_sample else 0 }}">{% if r.thin_sample %}<span class="pm-badge pm-badge-thin" data-flag="THIN-SAMPLE" title="Surfaced via the fewer-than-10 top-10 fallback -- n_resolved is below the N&ge;{{ thin_sample_floor }} floor. Under-evidenced; Analyze is the judge.">THIN</span>{% else %}<span class="pm-na" title="Full-sample qualifier (n &ge; the floor).">full</span>{% endif %}</td>
+      {# THIN-SAMPLE flag: VISIBLE badge (not inferable). #}
+      <td>{% if r.thin_sample %}<span class="pm-badge pm-badge-thin" data-flag="THIN-SAMPLE" title="Surfaced via the fewer-than-10 top-10 fallback -- n_resolved is below the N&ge;{{ thin_sample_floor }} floor. Under-evidenced; Analyze is the judge.">THIN</span>{% else %}<span class="pm-na" title="Full-sample qualifier (n &ge; the floor).">full</span>{% endif %}</td>
       <td class="pm-num">{% if r.n_condition_ids and r.n_condition_ids > 0 %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=two_sided">{{ '%.0f'|format(r.two_sided_pct * 100) }}%</a>{% else %}&mdash;{% endif %}</td>
       <td class="pm-num">{% if r.category in non_single_game_categories %}<span class="pm-na" title="Not applicable for this category (no single-game notion).">n/a</span>{% elif r.single_game_pct is none %}&mdash;{% else %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=single_game">{{ '%.0f'|format(r.single_game_pct * 100) }}%</a>{% endif %}</td>
       <td class="pm-num">{% if r.avg_win_price is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=won">{{ '%.2f'|format(r.avg_win_price) }}</a>{% if r.chalk %} <span class="pm-badge pm-badge-chalk">CHALK</span>{% elif r.contested %} <span class="pm-badge pm-badge-contested">CONTESTED</span>{% endif %}{% else %}&mdash;{% endif %}</td>
       <td class="pm-flags">{{ flag_badges(r.flags) }}</td>
       <td class="pm-actioncell">
-        {# ANALYZE (item 6, 2026-09-15): the persistent judge control -- IDENTICAL route/target to the Watchlist
-           button. score_cell shows [Analyze] only while a row is UN-analyzed; this makes Analyze available on
-           EVERY prospect row (re-analyze an already-graded whale too), and the JUDGE column stays as-is. The
-           result's OOB fragment (#pm-score-{w}-{c}, emitted by score_cell) swaps the JUDGE cell in place.
+        {# ANALYZE -- STATE-AWARE (2026-09-25, OQ-2): un-scored -> [Analyze]; scored -> [View result] (cached, $0) +
+           [Re-analyze] (?force=1, an LLM call against the $20/day cap) + the analysis AGE. Same route/target as the
+           Watchlist button; the result's OOB fragment (#pm-score-{w}-{c}, from score_cell) swaps the JUDGE cell in
+           place. The JUDGE/win% cells KEEP their own un-analyzed [Analyze] readout so that state stays clear (OQ-2).
            Uppercase category in the tooltip (F-3 casing), lowercase slug in the hx-post URL. #}
+        {% if r.score and r.score.analyzed %}
+        <button class="pm-btn pm-btn-sm pm-analyze-btn"
+           title="View the stored Analyze result for {{ r.category|upper }} (cached -- no cost)."
+           hx-post="/farm/analyze/{{ r.wallet }}/{{ r.category }}" hx-target="#pm-analyze-panel" hx-swap="innerHTML"
+           hx-disabled-elt="this">View result</button>
+        <button class="pm-btn pm-btn-sm pm-btn-reanalyze"
+           title="Re-analyze {{ r.category|upper }}: re-run the promotion judge (LLM call, against the $20/day cap)."
+           hx-post="/farm/analyze/{{ r.wallet }}/{{ r.category }}?force=1" hx-target="#pm-analyze-panel"
+           hx-swap="innerHTML" hx-disabled-elt="this">Re-analyze</button>
+        {% if r.score.age_days is not none %}<span class="pm-analyze-age pm-muted" title="Age of the stored Analyze verdict.">scored {{ '%.0f'|format(r.score.age_days) }}d&nbsp;ago</span>{% endif %}
+        {% else %}
         <button class="pm-btn pm-btn-sm pm-analyze-btn"
            title="Analyze {{ r.category|upper }}: LLM narration over this whale's RESOLVED positions (the deterministic promotion-judge report always renders)."
            hx-post="/farm/analyze/{{ r.wallet }}/{{ r.category }}" hx-target="#pm-analyze-panel" hx-swap="innerHTML"
            hx-disabled-elt="this">Analyze</button>
+        {% endif %}
         {# PROMOTE-TO-WATCHLIST (R6): candidate -> pinned. POST form (never GET -- a crawler must not promote);
            idempotent server-side; PRG 303 back to this page so the whale appears under Watchlist. Does NOT
            auto-paper-trade -- the poller seeds paper on pinned rows on its own cadence. #}
