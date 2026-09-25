@@ -625,3 +625,27 @@ UNTOUCHED**. Post-check **154 OK / 0 defect**. Full record: `PM_WATCHLIST_SPLITS
   - `C:\Users\AA Incorporado\cc-watchlist-splits-wt` — branch `pm-watchlist-splits-2026-09-21` @ `8a23e1e8` (Deploy 15).
   - `C:\Users\AA Incorporado\CC\.claude\worktrees\jackslog-2026-09-17` — branch `pm-docs-jackslog-2026-09-12`
     (the running jacks-log; its own branch, deliberately NOT on prod-live).
+
+## DEPLOY 17 (2026-09-25): TABLES — PHASE 1 (Farm sort + Analyze states) LIVE
+
+First of three stacked "table passes" (full record: `PM_TABLES_BUILD_2026-09-25.md`; plan + rulings:
+`PM_TABLES_PLAN_2026-09-25.md`). Deploy target `6eb797d0`; prod-live FF `558fc143 → 6eb797d0`; tag
+`pm-tables-deploy17-p1-2026-09-25`. pm_web-only (5 files: app.py, live_view.py, pm_prospects_rows.html,
+pm_watchlist_rows.html, pm_farm_category.html); engine `trading-corp` never restarted (534581/NRestarts 0 throughout);
+pm_web MainPID 523799 → 569065; box == prod-live 48/48; backup `/home/azureuser/pm_d17_backup_20260925T201753Z`.
+
+- **Both Farm tables now sort SERVER-SIDE via the URL** (Deploy-12 pattern), JS-off safe: the **Watchlist** table
+  (`?wsort=<col>&wdir=<asc|desc>`) and the **Prospects** table (`?psort=<col>&pdir=…`). Namespaced so one table's sort
+  never disturbs the other. The client `pm_sort.js` is **retired for these two tables** (the `<script>` include was
+  removed from `pm_farm_category.html`); the file is left in place (still served 200, may load elsewhere). The JUDGE
+  column's `-sort_value` negation hack is **gone** (server sort is desc-first → PROMOTE floats to the top). Defaults
+  unchanged (Watchlist display-name asc; Prospects cost-ROI desc). **win% stays deliberately non-sortable on Prospects**
+  (the completed-trade API under-reports losses — the honesty rule). Column keys live in `live_view.py`
+  (`WATCHLIST_SORT_COLUMNS` / `PROSPECTS_SORT_COLUMNS`, `sort_watchlist` / `sort_prospects`); **note the net-pnl key is
+  `netpnl` (no underscore)**.
+- **Prospects Analyze button is state-aware:** unscored → **Analyze**; scored → **View result** ($0, cached) +
+  **Re-analyze** (`?force=1`) + the analysis **age** ("scored Nd ago"). The JUDGE/win% cells keep their own
+  un-analyzed [Analyze] readout (state stays clear). The Watchlist Analyze button is unchanged.
+- **Phases 2 + 3 are BUILT + pushed, awaiting their deploys** (stacked on p1): `pm-tables-p2-2026-09-25` (splits
+  Whale-Grid header — live highlight + accounts-on-hover + paper W-L) and `pm-tables-p3-2026-09-25` (non-MLB live
+  Active/Complete flat sortable tables + trade-drawer series-tag floor). Deploys go 1 → 2 → 3, FF prod-live each time.
