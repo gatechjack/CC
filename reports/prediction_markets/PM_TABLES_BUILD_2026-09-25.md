@@ -297,3 +297,75 @@ condition. Runners: `pm_d18_predeploy_ro`, `pm_d18_graft`, `pm_d17_importgate_ro
 `pm_d17_postrestart_ro`, `pm_d18_postdeploy_ro`.
 
 **STOP — Phase 2 LIVE. Awaiting "deploy phase 3".**
+
+---
+
+## DEPLOY 19 (2026-09-25) -- PHASE 3 LIVE ON PROD-LIVE
+
+Board-authorized. pm_web-only, engine untouched. Deploy target **`60bbe750`** (branch `pm-tables-p3-2026-09-25`,
+off prod-live `8e450210`). Shipped exactly the 3 Phase-3 files (app.py, live_view.py, pm_live_subdivision.html); no
+new file, no CSS, no cache-bust, no subdivision.py/db.py/migration/engine. This is the largest phase (every non-MLB
+`/live` detail page), so the post-check is proportionally longer.
+
+**Pre-deploy (1-4):** prod-live `8e450210`; **box == prod-live 48/48**. Engine `trading-corp` MainPID **534581** /
+NRestarts **0**; pm_web `prediction-markets-web` MainPID **569992** / NRestarts 0; schema head 24. Journal baselines
+captured RO from prod-live DB: **NFL jack** active 4 (order ids 2417/2421/2422/2660), complete 79 (66 settled),
+`SUM(realized_pnl over settlement) = 9.9285`; **tennis jack/atp** active 0, complete 30 (21 settled),
+`realized = -6.7264`; atp non-structural tickers e.g. `KXATPMATCH-26SEP03ZVEHAL-HAL`. css sha `0b50095b62c5e7b1`.
+
+**Backup gate (3):** `/home/azureuser/pm_d19_backup_20260925T225031Z` -- all 3 files, each backup sha == box before any
+write. No file created (all 3 pre-exist), so no rollback-rm path needed.
+
+**Graft (5):** staged git-archive of `60bbe750`; drift-gate box==prod-live BEFORE, applied, **VERIFY AFTER == target**
+-- app.py `911d4d17`, live_view.py `005d2cf9`, pm_live_subdivision.html `5f8621a6` (CR-stripped sha16). py_compile OK;
+rollback-on-any-fail armed. Diff: query-param reads only (no new POST route, no engine import).
+
+**Restart (6):** `az ... systemctl restart prediction-markets-web` (pm_web ONLY, run under standing pm_web restart
+authority; verified by MainPID + ActiveEnter, not the az exit code). pm_web MainPID **569992 -> 571194**, ActiveEnter
+2026-09-25 22:51:19 UTC, active/running. Engine `trading-corp` **534581 / NRestarts 0 / boot 2026-09-22 21:11:47 UTC
+UNCHANGED**.
+
+**Post-deploy (7-16) -- all served-HTML, waited one poll cycle before judging marks:**
+
+- **NFL Complete:** row count **79 == baseline**; the 79 order ids are **identical** to the baseline set; **realized
+  column ties to the journal per row to the cent** -- the rendered column sums to **9.87**, which equals the journal's
+  **sum-of-per-row-rounded-to-2dp** (9.87); the unrounded journal total is 9.9285, so the 6-cent visual delta is
+  purely `_money` 2dp per-row display rounding (PROVEN by `pm_d19_reconcile_ro`: `sum(round(v,2)) = 9.87`,
+  `sum(v) = 9.9285`). Rows ordered **settled newest-first** (`settled_desc_ok`). Statuses: WON / LOST / **OPPOSED ->
+  "not booked" (x12)** / **EXITED -> "--" (x1)**. Placed (ET) + Settled (ET) columns present, format `MM-DD HH:MM ET`.
+- **NFL Active:** row count **4 == baseline**; order ids **2417/2421/2422/2660 == baseline**; ordered **event date
+  ascending** (all 2026-09-27); cost column sum **$21.50**; "no mark" placeholder present (marks per cadence).
+- **URL sort:** `?psort=cost&pdir=desc` reorders Active + the header link carries `psort=cost`; `?psort=realized&pdir=asc`
+  reorders Complete + keeps the Complete tab. **Positions sort is namespaced `?psort/?pdir`** (distinct from the roster's
+  `?sort/?dir`); the brief's `?sort=/&dir=` example is the roster convention -- the positions header links emit `?psort/?pdir`.
+- **Tennis jack/atp:** Complete **30 == baseline**, realized **-6.72** (journal -6.7264, 2dp rounding); Active **0 ==
+  baseline**; settled newest-first.
+- **DRAWER FLOOR (atp):** Type cell KX-series hits **0**, Market field KX hits **0**, floored **`<td>ATP</td>` x33**;
+  the raw `KXATPMATCH` series tag appears ONLY in the **33 labelled Ticker provenance fields**. No leak into any
+  human-facing Type/Market label.
+- **MLB regression:** `/live/kalshi_jack/mlb` keeps **game cards** (`mlb_has_cards`), **no flat positions table**
+  (`mlb_has_postbl=false`) -- non-MLB-only ruling (OQ-3) honored; roster intact.
+- **Full live sweep:** **90 active sub-divisions x 2 tabs = 180 fetches, ALL 200** (`live_non200=[]`).
+- **Phase 1 intact:** `/farm/mlb?wsort=roi&wdir=desc` reorders the watchlist. **Phase 2 intact:** splits `?view=grid`
+  `th.live` count **1** (the single live wallet that is a grid column).
+- **Vocab:** pinned=0, candidate=0 across live pages. **Static** all 200; **pm_desk.css sha `0b50095b62c5e7b1`
+  UNCHANGED** (no CSS shipped); double-escape (`&amp;amp;`) = 0.
+- **journalctl -p err since restart: pm_web 0, engine 0**; **0 template/jinja errors** across the 180-page sweep.
+- **Engine 534581 / NRestarts 0 / boot 2026-09-22 21:11:47 UTC UNCHANGED** throughout.
+
+**Wrap (17-18):** FF prod-live `8e450210 -> 60bbe750` (FF valid); tag `pm-tables-deploy19-p3-2026-09-25`; **box ==
+prod-live 0 mismatches** re-verified at 60bbe750 (the 3 P3 files match their AFTER shas; engine-shared
+subdivision.py/db.py/scoring.py/sizing.py and the Phase-1/2 files unchanged). **Three-phase table workstream CLOSED
+(Deploys 17-18-19 all live).** No rollback condition at any step.
+
+**Backlog (filed at wrap):**
+- Tennis/UFC/fed have no structural player-code -> full-name map, so the drawer/floor shows the category floor
+  ("ATP"/"TENNIS") rather than a human matchup. Add a data-only player-code map (like `sports_structural_match`) to
+  give these categories a real bet label.
+- The roster sort (`?sort/?dir`) and the positions sort (`?psort/?pdir`) share the `/live/{acct}/{cat}` URL but do not
+  compose: re-sorting the roster does not carry the positions sort, and a positions header link does not carry the
+  roster sort -- each resets the other to its default. Minor; both work independently.
+
+Runners: `pm_d19_predeploy_ro`, `pm_d19_graft`, `pm_d19_post_a_ro`, `pm_d19_post_b_ro`, `pm_d19_reconcile_ro`.
+
+**STOP -- Phase 3 LIVE. Three-phase table workstream complete.**

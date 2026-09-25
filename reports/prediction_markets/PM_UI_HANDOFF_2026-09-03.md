@@ -1,7 +1,9 @@
 # PM UI — HANDOFF for the next UI code agent
 
-**STATUS: CURRENT — last updated 2026-09-20 (DEPLOY 13: LIVE-tile simplify). prod-live tip = `0023e5a7`, tag
-`pm-live-tile-simplify-deploy13-2026-09-20`.** (This handoff lives ON prod-live.)
+**STATUS: CURRENT — last updated 2026-09-25 (DEPLOY 19: tables Phase 3 — the three-phase table workstream is now
+CLOSED, Deploys 17·18·19 all live). prod-live tip = `60bbe750`, tag `pm-tables-deploy19-p3-2026-09-25`.** (This handoff
+lives ON prod-live. For the full table-pass record see `PM_TABLES_BUILD_2026-09-25.md` and the DEPLOY 17/18/19 sections
+below.)
 
 **★★ DEPLOY 13 (2026-09-20) — LIVE TILE SIMPLIFY. prod-live `9ff6060c -> 0023e5a7` (FF), after ONE rolled-back
 attempt (a nested-anchor defect) + a fix.** The `/live` tile page's LIVE tile is no longer the Deploy-10 2×2
@@ -666,3 +668,32 @@ pm_farm_splits.html); engine `trading-corp` never restarted (534581/NRestarts 0 
   a live whale with no open position isn't rendered in the grid, so it isn't highlighted (correct/honest).
 - **Phase 3 remains BUILT + pushed, awaiting Deploy 19:** `pm-tables-p3-2026-09-25` @ `f84ec75c` (rebased; = a5db434b
   + phase-3) — non-MLB /live Active/Complete flat sortable tables + trade-drawer series-tag floor. FF prod-live next.
+## DEPLOY 19 (2026-09-25): TABLES -- PHASE 3 (non-MLB live Active/Complete tables + drawer floor) LIVE
+
+Third and final table pass -- **the three-phase table workstream is now CLOSED** (full record:
+`PM_TABLES_BUILD_2026-09-25.md` §DEPLOY 19). Deploy target `60bbe750`; prod-live FF `8e450210 -> 60bbe750`; tag
+`pm-tables-deploy19-p3-2026-09-25`. pm_web-only (3 files: app.py, live_view.py, pm_live_subdivision.html); engine
+`trading-corp` never restarted (534581 / NRestarts 0 / boot 2026-09-22 21:11:47Z throughout); pm_web MainPID
+569992 -> 571194; box == prod-live 0 mismatches; backup `/home/azureuser/pm_d19_backup_20260925T225031Z`.
+
+- **Every NON-MLB `/live/{acct}/{cat}` detail page now renders Active/Complete as flat sortable tables** (the
+  group-by-game layout is gone for non-MLB; game becomes a column with matchup + event date). Columns: Placed(ET),
+  [Settled(ET) on Complete], Game, Bet, Contracts, [Fill/Cost/Value on Active | Realized on Complete], Status, Whale,
+  Order. **Complete defaults to settled newest-first; Active defaults to event-date ascending** (OQ-4). Sort is
+  server-side via the URL, **namespaced `?psort=<col>&pdir=<asc|desc>`** so it does not collide with the roster's
+  `?sort/?dir`. A mandatory placement timestamp (`submitted_ts` of the earliest entry order) + the order id are on
+  every row.
+- **Trade-drawer series-tag FLOOR (3c):** for non-structural sports (tennis/UFC/fed) the drawer's Type + Market labels
+  no longer leak the raw Kalshi series tag -- they fall back to the category floor ("ATP"/"TENNIS") via the same
+  `_base_label` floor the positions table uses. The raw `KXATPMATCH...` string appears ONLY in the labelled **Ticker**
+  provenance field (verified on atp: Type/Market KX hits 0; `<td>ATP</td>` x33; KX only in the 33 Ticker fields).
+- **MLB is unchanged (OQ-3): MLB keeps its game cards, no flat positions table** -- Phase 3 is non-MLB only.
+- **Realized tie-out honesty:** the Complete realized COLUMN sums to the journal's sum-of-per-row-rounded-to-2dp
+  (NFL 9.87), while the journal's unrounded total is 9.9285 -- the visual delta is `_money` 2dp per-row display
+  rounding, not a data error (each row ties to the cent). Same for atp (-6.72 col vs -6.7264 unrounded).
+- Post-deploy sweep: **90 sub-divisions x 2 tabs = 180 pages all 200**; Phases 1 + 2 intact; vocab pinned/candidate 0;
+  pm_desk.css sha unchanged (no CSS shipped); pm_web + engine journal errors 0; 0 template errors across the sweep.
+- **Backlog (new):** (a) tennis/UFC/fed have no structural player-code map, so the drawer/floor shows the category
+  floor instead of a human matchup -- add a data-only player-code -> full-name map (like `sports_structural_match`).
+  (b) the roster sort (`?sort/?dir`) and the positions sort (`?psort/?pdir`) share the `/live` URL but do not compose --
+  re-sorting one resets the other to its default (each works independently). Minor.
