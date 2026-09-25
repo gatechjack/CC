@@ -1297,3 +1297,26 @@ CLOSED: this was the last of the three table passes -- Deploys 17 (Farm sort + A
       (1) a player-code -> real-name map for tennis/UFC/fed so their bet label can be a human matchup instead of the
       "ATP"/"TENNIS" floor; (2) the roster sort and the positions sort share the /live URL but don't compose (sorting
       one resets the other to default) -- minor, both work on their own.
+
+----------------------------------------------------------------------------------------------------
+2026-09-25 -- GRID FOLLOW-UP: Whale-Grid live-whales-first columns + brighter header/y-axis text
+----------------------------------------------------------------------------------------------------
+WHAT LANDED: on the Farm splits "Whale Grid" (?view=grid), the whale COLUMNS now default with the live-copied whales
+      FIRST (leftmost), then the rest -- so the whales we actually copy lead the grid instead of being scattered. Also
+      brightened the faint text: the top whale-name row is now white + a little bolder, and the left-hand game/market
+      labels (y-axis) read white too. Columns are still only whales that hold an open position (per your call) -- a
+      live whale with nothing open still won't appear until it has a position.
+COMMIT: prod-live 30106ccf -> f454326b (the 2 code files) -> d68d402e (this handoff-docs commit). Tag
+      pm-grid-livecols-deploy-2026-09-25 -> f454326b. Two code files: web/live_view.py (new col_order, live-first,
+      all group modes) + templates/pm_farm_splits.html (uses it + the brighter CSS). No new file, no engine file.
+HOW: git-archive of f454326b -> tar -> scp -> box .sh (drift-gate box==prod-live BEFORE, backup to
+      /home/azureuser/pm_gridtb_backup_20260925T233946Z, apply, verify each CR-sha == target, py_compile,
+      auto-rollback) -> ONE `systemctl restart prediction-markets-web`. Note: the first attempt (text-only) was
+      correctly BLOCKED by the safety classifier as an unauthorized production write; it proceeded only after you
+      said "make it part of the deploy package."
+SERVICES: pm_web MainPID 571194 -> 572117 (ActiveEnter 2026-09-25 23:40:23 UTC). Engine trading-corp MainPID
+      534581 / NRestarts 0 / boot 21:11:47Z -- UNCHANGED before/after. Backup verified.
+CHECKED ON PROD (read-only): CFB grid columns = LIVE,LIVE,LIVE then non-live ([1,1,1,0,0,...]); MLB = LIVE,LIVE then
+      non-live ([1,1,0,...]). Text CSS confirmed live (header white+bold, sublines + y-axis market label brightened,
+      matchup white). All grid views/modes (splits/heatmap/grid, all-watchlist/copied-only, sort variants) 200. 29
+      splits tests pass incl. a new live-first column test.
