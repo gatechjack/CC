@@ -1260,3 +1260,40 @@ CHECKED ON PROD (read-only): mlb grid -- of our 4 live-copied whales, ONE (0x684
       tabs, a /live detail, /, the account pages all 200 and styled. Static all 200; pm_desk.css unchanged.
 STILL TO COME: Deploy 19 = Phase 3 (non-MLB /live Active/Complete flat sortable tables + trade-drawer series-tag
       floor), branch pm-tables-p3-2026-09-25 @ 60bbe750 (rebased onto the new prod-live). FF prod-live next.
+
+----------------------------------------------------------------------------------------------------
+2026-09-25 -- DEPLOY 19: TABLES PHASE 3 (non-MLB /live Active/Complete tables + trade-drawer floor) -- WORKSTREAM CLOSED
+----------------------------------------------------------------------------------------------------
+WHAT LANDED: every NON-MLB /live sub-division detail page (nfl, atp, wta, nba, nhl, ufc, cfb, ... -- 90 subs across
+      the 4 accounts) now shows its Active and Complete positions as real flat SORTABLE tables instead of the old
+      group-by-game blocks. Game is a column (matchup + event date); every row has a placement time (ET) + order id.
+      Complete defaults to settled newest-first (the "random" order you saw was alphabetical-by-ticker -- fixed);
+      Active defaults to event date ascending. Click any column header to sort (it is in the URL, works with JS off).
+      Also: the trade drawer no longer leaks the raw Kalshi series tag (KXATPMATCH...) as the bet name for tennis/UFC/
+      fed -- those now show a clean "ATP"/"TENNIS" floor, and the raw tag survives ONLY in the drawer's labelled
+      "Ticker" provenance field. MLB is untouched (it keeps its game cards).
+COMMIT: prod-live 8e450210 -> 60bbe750 (the 3 code files + the build report + render PNGs) -> 30106ccf (this
+      handoff-docs commit). Tag pm-tables-deploy19-p3-2026-09-25 -> 60bbe750. Three code files: web/app.py,
+      web/live_view.py, templates/pm_live_subdivision.html. No new file, no CSS, no migration, no engine file.
+HOW: same as Deploy 17/18 -- git-archive of 60bbe750 -> tar -> scp -> box .sh (drift-gate box==prod-live BEFORE,
+      backup to /home/azureuser/pm_d19_backup_20260925T225031Z, apply, verify each CR-sha == target, py_compile,
+      auto-rollback on any miss) -> ONE `systemctl restart prediction-markets-web`.
+SERVICES: pm_web MainPID 569992 -> 571194 (ActiveEnter 2026-09-25 22:51:19 UTC, active/running). Engine trading-corp
+      MainPID 534581 / NRestarts 0 / boot 2026-09-22 21:11:47 UTC -- UNCHANGED before and after every step (never
+      touched). box == prod-live re-verified 0 mismatches. journalctl -p err since restart: pm_web 0, engine 0.
+CHECKED ON PROD (read-only, waited a poll cycle first): NFL jack Complete = 79 rows (== the journal), all 79 order
+      ids present, ordered settled newest-first, OPPOSED rows show "not booked" (12), whale-exit rows show "--" (1);
+      the realized column sums to 9.87 which is exactly the journal's per-row-2dp sum (the journal's unrounded total
+      is 9.9285 -- the 6-cent look is just each row shown to the cent, proven with a reconcile query). NFL Active = 4
+      rows (== journal), event-date ascending, cost $21.50, order ids 2417/2421/2422/2660. URL sort reorders both
+      tabs (?psort=cost&pdir=desc, ?psort=realized&pdir=asc). Tennis jack/atp Complete = 30 (== journal, realized
+      -6.72 col / -6.7264 unrounded), Active = 0. Drawer floor on atp: 0 raw tags in the Type or Market labels, 33
+      floored "ATP" Type cells, raw KXATPMATCH only in the 33 Ticker fields. MLB still shows cards (no table).
+      FULL SWEEP: all 90 sub-divisions x 2 tabs = 180 pages returned 200. Phase 1 + Phase 2 still work. "pinned"/
+      "candidate" = 0; pm_desk.css unchanged (no CSS shipped); 0 template errors across the whole 180-page sweep.
+      Engine kept trading throughout.
+CLOSED: this was the last of the three table passes -- Deploys 17 (Farm sort + Analyze states), 18 (splits grid
+      header), 19 (live tables + drawer floor) are all live on prod-live. Two small follow-ups filed to backlog:
+      (1) a player-code -> real-name map for tennis/UFC/fed so their bet label can be a human matchup instead of the
+      "ATP"/"TENNIS" floor; (2) the roster sort and the positions sort share the /live URL but don't compose (sorting
+      one resets the other to default) -- minor, both work on their own.
