@@ -697,3 +697,21 @@ Third and final table pass -- **the three-phase table workstream is now CLOSED**
   floor instead of a human matchup -- add a data-only player-code -> full-name map (like `sports_structural_match`).
   (b) the roster sort (`?sort/?dir`) and the positions sort (`?psort/?pdir`) share the `/live` URL but do not compose --
   re-sorting one resets the other to its default (each works independently). Minor.
+
+## GRID FOLLOW-UP (2026-09-25): Whale-Grid live-columns-first + brighter header/y-axis text
+
+Post-Deploy-19 tweak (Jack, from the CFB/MLB grid). prod-live FF `30106ccf -> f454326b`; tag
+`pm-grid-livecols-deploy-2026-09-25`. pm_web-only (2 files: live_view.py, templates/pm_farm_splits.html); engine
+`trading-corp` never touched (534581 / NRestarts 0 / boot 21:11:47Z); pm_web MainPID 571194 -> 572117; backup
+`/home/azureuser/pm_gridtb_backup_20260925T233946Z`.
+
+- **Grid COLUMN default order = live-copied (trusted) whales FIRST**, then the rest, each first-seen. New pure
+  `live_view.splits_ordered` -> `out["col_order"]` (computed for all three group modes: game/flat/shape); the template
+  reads `O.col_order` instead of deriving column order from first-seen positions. Verified live-first on prod: CFB
+  `[1,1,1,0...]`, MLB `[1,1,0...]`. **Columns are still positions-only** (a whale with no open decodable position is not
+  a column -- Jack's explicit pick; the grid is a position-split matrix, empty columns were declined).
+- **Text brightened** (the header was too faint): x-axis whale-name header -> `--wtext` white + weight 600 (bolder);
+  tier/LIVE (`th2`), W-L (`th3`) sublines and the y-axis market label (`td.rowhd .m`) lifted `#42566d/#4a5d74 -> --wdim`;
+  the y-axis matchup (`.g`) was already `--wtext` white. Live whales keep the green LIVE subline. CSS is inline in the
+  template (no pm_desk.css, no cache-bust).
+- 29 splits tests pass (incl. a new `test_col_order_live_whales_first`, all group modes); all grid views/modes 200.
