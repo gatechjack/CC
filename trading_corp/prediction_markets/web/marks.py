@@ -112,6 +112,50 @@ def fetch_series_marks(series_ticker: str, *, now_ts: int, http_get=_http_get_js
     return marks
 
 
+# The single-market endpoint (public, key-less, SAME host + stance as the series list). Pricing BY HELD TICKER
+# means a huge series (e.g. the 2000+-market KXNCAAFGAME cfb slate) is never paginated just to value a couple of
+# held cfb tickers. Response shape is {"market": {...}} (singular), so we reuse parse_markets by wrapping the one
+# market in a page. A non-existent ticker returns HTTP 404 (raises HTTPError -> the aggregator records + skips it).
+_MARKET = "https://api.elections.kalshi.com/trade-api/v2/markets/%s"
+
+
+def fetch_ticker_mark(ticker: str, *, now_ts: int, http_get=_http_get_json) -> Mark | None:
+    """One HELD ticker's current mark via GET /markets/{ticker}. Returns the Mark, or None when the response
+    carries no market object. Raises on transport/parse error (the caller aggregates + decides ok/degrade)."""
+    page = http_get(_MARKET % ticker)
+    m = (page or {}).get("market")
+    if not m:
+        return None
+    got = parse_markets({"markets": [m]}, now_ts=now_ts)
+    return got[0] if got else None
+
+
+def fetch_marks_by_ticker(tickers, *, now_ts: int, http_get=_http_get_json) -> MarksResult:
+    """Current marks for exactly the HELD tickers -- one single-market GET each, merged into {ticker: Mark}. This
+    is O(held) instead of O(series catalog): a category with a 2000+-market slate (cfb) is priced by its handful
+    of held tickers, never by paginating the whole series (the mark-poller scoping fix, 2026-09-27). NEVER raises:
+    a per-ticker failure (incl a 404) is skipped + recorded; ok is False only when EVERY ticker errored and nothing
+    was collected (then every value degrades to no-mark). Empty tickers -> ok=True, empty map (nothing held needs a
+    mark). Duplicate tickers are de-duped so a ticker stacked by several whales is fetched once."""
+    merged: dict = {}
+    errors = []
+    seen = set()
+    for t in (tickers or []):
+        tk = str(t or "").strip()
+        if not tk or tk in seen:
+            continue
+        seen.add(tk)
+        try:
+            mk = fetch_ticker_mark(tk, now_ts=now_ts, http_get=http_get)
+            if mk is not None:
+                merged[mk.ticker] = mk
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError, OSError) as exc:
+            errors.append("%s:%s" % (tk, type(exc).__name__))
+            log.warning("pm marks: ticker %s fetch failed (%s)", tk, type(exc).__name__)
+    ok = bool(merged) or not errors
+    return MarksResult(marks=merged, ok=ok, as_of=now_ts, error=";".join(errors) or None)
+
+
 def fetch_marks(series=MLB_SERIES, *, now_ts: int, http_get=_http_get_json) -> MarksResult:
     """Fetch current marks for the given series and merge into one {ticker: Mark}. NEVER raises: if EVERY series
     fails, ok=False with an empty map (every current-value surface degrades to no-mark). A partial success (some

@@ -170,11 +170,22 @@ templates.env.filters["etdt"] = _etdt
 _poller_task = None
 
 
+def _held_ticker_provider():
+    """Every ticker we CURRENTLY HOLD across all sub-divisions -- the poller prices these one-by-one via the
+    single-market endpoint (GET /markets/{ticker}), so a 2000+-market series (cfb KXNCAAFGAME) is never paginated
+    just to value a couple of held tickers (the 2026-09-27 mark-poller scoping fix). Short-lived read connection;
+    returns () on any DB blip so the poller falls back to its by-series MLB default (cold-start priming). Runs
+    inside the poller's synchronous refresh pass (already off the event loop), so a blocking DB read is fine."""
+    try:
+        with connect() as conn:
+            return subdivision.held_tickers(conn)
+    except Exception:   # noqa: BLE001 -- a held-ticker read blip must not sink the refresh; MLB default takes over
+        return ()
+
+
 def _held_series_provider():
-    """The Kalshi series the mark poller should fetch, derived from every ticker we CURRENTLY HOLD across all
-    sub-divisions (item 3) -- so ATP/UFC/WTA get priced the same as MLB, never a hardcoded MLB list. A short-lived
-    read connection; returns () on any DB blip so the poller falls back to its MLB default. Runs inside the
-    poller's synchronous refresh pass (already off the event loop), so a blocking DB read is fine here."""
+    """RETAINED as the poller's fallback series path (superseded by _held_ticker_provider for the primary marks
+    fetch). The Kalshi series derived from every held ticker -- returns () on any DB blip. Read-only."""
     try:
         with connect() as conn:
             return subdivision.traded_series(conn)
@@ -187,7 +198,7 @@ async def _start_poller() -> None:
     global _poller_task
     if _poller_task is None or _poller_task.done():
         _poller_task = asyncio.create_task(
-            poller.poll_loop(ui_cache.cache(), series_provider=_held_series_provider))
+            poller.poll_loop(ui_cache.cache(), ticker_provider=_held_ticker_provider))
         log.info("pm_web: feed/marks poller started")
 
 

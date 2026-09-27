@@ -60,7 +60,9 @@ def _enrich_last_play(slate, now_ts: int, http_get=feed_mlb._http_get_json):
 
 def refresh_once(cache: ui_cache.UICache, *, now_ts: int,
                  fetch_slate=feed_mlb.fetch_slate, fetch_marks=marks_mod.fetch_marks,
-                 enrich=True, series_provider=None, fetch_starts=milestones_mod.fetch_starts) -> None:
+                 fetch_marks_by_ticker=marks_mod.fetch_marks_by_ticker,
+                 enrich=True, ticker_provider=None, series_provider=None,
+                 fetch_starts=milestones_mod.fetch_starts) -> None:
     """One synchronous refresh pass (runs off the loop via asyncio.to_thread from poll_loop). Fetches slates for
     the ET date window + current marks and swaps them into the cache. NEVER raises -- a failure still writes a
     snapshot (empty/degraded) so the render shows honest unavailable, not a stale value.
@@ -86,8 +88,20 @@ def refresh_once(cache: ui_cache.UICache, *, now_ts: int,
         except Exception as exc:   # noqa: BLE001 -- a bad slate must not sink the whole refresh
             errors.append("feed:%s:%s" % (d, type(exc).__name__))
             log.warning("pm poller: slate %s failed (%s)", d, type(exc).__name__)
+    # Marks: price BY HELD TICKER (single-market GETs) so a 2000+-market series (cfb KXNCAAFGAME) is never
+    # paginated just to value a couple of held tickers (the 2026-09-27 scoping fix). ticker_provider yields the
+    # held tickers; on empty/failure we fall back to the by-series MLB default so a cold start / DB blip still
+    # primes the slate. series_provider stays supported (tests / explicit callers) as the fallback path.
+    tickers = None
+    if ticker_provider is not None:
+        try:
+            got = ticker_provider() or ()
+            tickers = tuple(got) or None     # empty -> None -> fall back to series/MLB default below
+        except Exception as exc:   # noqa: BLE001 -- a held-ticker read blip falls back, never sinks the refresh
+            errors.append("tickers:%s" % type(exc).__name__)
+            log.warning("pm poller: ticker provider failed (%s) -- fallback", type(exc).__name__)
     series = None
-    if series_provider is not None:
+    if tickers is None and series_provider is not None:
         try:
             got = series_provider() or ()
             series = tuple(got) or None      # empty -> None -> fetch_marks default (MLB)
@@ -95,7 +109,12 @@ def refresh_once(cache: ui_cache.UICache, *, now_ts: int,
             errors.append("series:%s" % type(exc).__name__)
             log.warning("pm poller: series provider failed (%s) -- MLB default", type(exc).__name__)
     try:
-        mk = fetch_marks(now_ts=now_ts) if series is None else fetch_marks(series, now_ts=now_ts)
+        if tickers is not None:
+            mk = fetch_marks_by_ticker(tickers, now_ts=now_ts)
+        elif series is None:
+            mk = fetch_marks(now_ts=now_ts)
+        else:
+            mk = fetch_marks(series, now_ts=now_ts)
         if not mk.ok:
             errors.append("marks:%s" % (mk.error or "empty"))
     except Exception as exc:   # noqa: BLE001
@@ -148,15 +167,16 @@ def refresh_once(cache: ui_cache.UICache, *, now_ts: int,
 
 
 async def poll_loop(cache: ui_cache.UICache, *, interval: int = POLL_INTERVAL_SECONDS,
-                    series_provider=None) -> None:
+                    ticker_provider=None, series_provider=None) -> None:
     """The forever loop: refresh immediately, then every `interval`s. Resilient -- a raised cycle is logged and
     the loop continues (a transient feed/network blip must not kill the poller). Cancels cleanly on shutdown.
-    `series_provider` is threaded through to refresh_once so the marks fetch covers every held series (item 3)."""
+    `ticker_provider` is threaded through to refresh_once so marks are priced by HELD TICKER (never by paginating a
+    huge series); `series_provider` remains as the fallback path."""
     log.info("pm poller: starting (interval=%ss)", interval)
     while True:
         try:
             await asyncio.to_thread(refresh_once, cache, now_ts=int(time.time()),
-                                    series_provider=series_provider)
+                                    ticker_provider=ticker_provider, series_provider=series_provider)
         except asyncio.CancelledError:
             log.info("pm poller: cancelled -- stopping")
             raise
