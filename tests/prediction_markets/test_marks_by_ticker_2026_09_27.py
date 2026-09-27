@@ -75,6 +75,27 @@ def test_fetch_marks_by_ticker_empty_is_ok_empty():
     assert res.ok is True and res.marks == {}
 
 
+def test_zero_of_n_logs_warning(caplog):
+    # requested 2, priced 0 (both return no market object) -> the 0-of-N total-outage WARNING must fire
+    import logging
+    with caplog.at_level(logging.WARNING, logger="trading_corp.prediction_markets.web.marks"):
+        res = marks_mod.fetch_marks_by_ticker(["KXA-1", "KXB-2"], now_ts=NOW, http_get=lambda url: {"market": None})
+    assert res.marks == {}
+    assert any("0 of 2 requested tickers returned a mark" in r.getMessage() for r in caplog.records)
+
+
+def test_partial_success_does_not_log_zero_of_n(caplog):
+    import logging
+
+    def http(url):
+        return _mkt(url.rsplit("/", 1)[-1]) if url.endswith("KXA-1") else {"market": None}
+
+    with caplog.at_level(logging.WARNING, logger="trading_corp.prediction_markets.web.marks"):
+        res = marks_mod.fetch_marks_by_ticker(["KXA-1", "KXB-2"], now_ts=NOW, http_get=http)
+    assert set(res.marks.keys()) == {"KXA-1"}
+    assert not any("0 of" in r.getMessage() for r in caplog.records)
+
+
 def _slate_ok(d, *, now_ts):
     return feed_mlb.SlateResult(date_iso=d, games={}, ok=True, source="test", as_of=now_ts, error=None)
 

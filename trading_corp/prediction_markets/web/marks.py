@@ -140,6 +140,7 @@ def fetch_marks_by_ticker(tickers, *, now_ts: int, http_get=_http_get_json) -> M
     merged: dict = {}
     errors = []
     seen = set()
+    n_skipped = 0   # returned None (no market object -- a legitimate per-ticker skip, e.g. settled/delisted), NOT an error
     for t in (tickers or []):
         tk = str(t or "").strip()
         if not tk or tk in seen:
@@ -149,9 +150,18 @@ def fetch_marks_by_ticker(tickers, *, now_ts: int, http_get=_http_get_json) -> M
             mk = fetch_ticker_mark(tk, now_ts=now_ts, http_get=http_get)
             if mk is not None:
                 merged[mk.ticker] = mk
+            else:
+                n_skipped += 1
         except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TimeoutError, OSError) as exc:
             errors.append("%s:%s" % (tk, type(exc).__name__))
             log.warning("pm marks: ticker %s fetch failed (%s)", tk, type(exc).__name__)
+    # 0-of-N signal: we requested at least one ticker and priced NONE. A total fetch outage (every ticker errored)
+    # must never present as marks quietly going stale (the R6 stale-shown-as-current failure class), and it is
+    # distinct from a full slate that legitimately skipped (all settled/delisted -> n_skipped, 0 errors). Log it
+    # LOUD either way; the errored-vs-skipped split says which case it is. (Additive: ok/error semantics unchanged.)
+    if seen and not merged:
+        log.warning("pm marks: 0 of %d requested tickers returned a mark (%d errored, %d skipped) -- "
+                    "total mark outage or full slate delisted", len(seen), len(errors), n_skipped)
     ok = bool(merged) or not errors
     return MarksResult(marks=merged, ok=ok, as_of=now_ts, error=";".join(errors) or None)
 
