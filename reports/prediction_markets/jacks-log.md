@@ -1320,3 +1320,41 @@ CHECKED ON PROD (read-only): CFB grid columns = LIVE,LIVE,LIVE then non-live ([1
       non-live ([1,1,0,...]). Text CSS confirmed live (header white+bold, sublines + y-axis market label brightened,
       matchup white). All grid views/modes (splits/heatmap/grid, all-watchlist/copied-only, sort variants) 200. 29
       splits tests pass incl. a new live-first column test.
+
+----------------------------------------------------------------------------------------------------
+2026-09-27 -- FULL-DAY PM BACKLOG: Phase 0 validation -> Band A (10 read-only) -> Band B (config) -> Band C (deploy)
+----------------------------------------------------------------------------------------------------
+WHAT RAN: a full day on the PM backlog. Phase 0 validated the proposed band plan against the box before any work;
+      Band A ran 10 read-only investigations; Band B was one config write; Band C was a pm_web code deploy. Two
+      branches: pm-backlog-audit-2026-09-27 (the read-only audit + Band A) and pm-markpoller-scope-2026-09-27
+      (code b464b729, post-deploy record 6952b0af).
+WHAT CHANGED ON PROD:
+      - Mark-poller now prices BY HELD TICKER (GET /markets/{ticker}) instead of paginating whole series -- removes
+        the 2000-market KXNCAAFGAME catalog pull that was happening just to value a couple of held tickers. Plus a
+        0-of-N WARNING so a total mark-fetch outage can't present as silently stale marks (the R6 stale-shown-as-
+        current shape).
+      - prod-live d68d402e -> b464b729 (fast-forward), tag pm-markpoller-scope-deploy-2026-09-27.
+      - pm_web 572117 -> 586747 @ 2026-09-27 23:44:22Z (postdates the file mtime 22:49:15Z), 0 tracebacks, /healthz 200.
+      - 4 ITF sub-divisions per_order_usd_cap NULL -> $50 (config only, no restart, effective next cycle).
+      - Engine untouched all day: trading-corp 534581 / NRestarts 0 / boot 2026-09-22 21:11:47Z.
+DECISIONS: inning_winner stays ARMED on a verified grammar (5 of 5 real Poly slugs, all three away/home/draw
+      branches; fails closed, route-only, token-gated). Band D not live. The mlb docstring fix stays with you (az-root).
+CORRECTIONS TO THE WRITTEN RECORD (the day's real yield):
+      - Props / per-inning were NOT inert as the backlog claimed -- enabled on 8 subs (4 MLB, 4 NFL), 0 orders.
+      - Item B shipped a week ago as migration 024 (pm_subdivision_attachment_event, 67 events) and was about to be
+        rebuilt as "migration 025".
+      - The spread leg_audit was an abandoned tautology (ruled 2026-09-22, 6e07c1a6, never deployed) carried in the
+        backlog as an open ~12-line item -- with its own self-grading check quoted as validation.
+      - Boxing and F1 are coded and paper-trading, NOT live -- no sub-division exists, 0 tokens, 0 orders ever.
+      - Real counts are 90 created / 80 armed / 71 attached; the long-standing "44" matches nothing.
+      - Loss-omission% shipped and renders on Prospects; the "not started" line was stale.
+NOT VERIFIED (do not read as done):
+      - The mark-poller fix has NOT been live-observed. cfb-without-the-catalog-pull is code-confirmed and
+        unit-tested only; Sunday's held set was MLS/NFL with 0 cfb tickers. INCONCLUSIVE on the live axis.
+      - The "+1 requests/cycle" figure is situational, not structural -- 7 per-ticker GETs vs 6 by-series
+        page-requests, measured in the lightest case. Per-ticker cost scales with holdings; by-series scales with
+        catalog size.
+      - Both close with ONE Saturday session that has cfb in the held set -- same measurement, so one item.
+CARRIED FORWARD: the Saturday cfb repro + requests/cycle re-measure (one item); w1 0x4956f69a...2ee2c7 re-backfill;
+      UI mark-age band (the R6 shape); F1 gap-plan revision down (1,058 closed against a race_winner-only matcher);
+      the mlb docstring fix (yours).
