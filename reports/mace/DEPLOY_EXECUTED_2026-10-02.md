@@ -34,5 +34,15 @@ the empty-response loop at the open; an `open` rung hits the now-live guard.
 
 ## Ledger
 Box-truth is now **branch mace-leg-sanity-guard-2026-10-02** (box runs strategy 50dd6984 / execution
-5b2307bc / manager b0e9e879; config_hash 931a8214be50). MACE-scoped, box-only, no FF-push (per task
-scope). Rollback: `~/mace_legsanity_graft_backup_20261002T200126Z` (3 files) + restart.
+5b2307bc / manager b0e9e879; config_hash 931a8214be50). Rollback:
+`~/mace_legsanity_graft_backup_20261002T200126Z` (3 files) + restart.
+
+## WRAP + PUSH (2026-10-02, post-deploy)
+- Final RO state re-confirmed GREEN (mace_wrapconfirm_ro): PID 619011, LIVE, config_hash 931a8214be50,
+  md5s == target, XLE 10-30 = 3 open rungs, 0 tracebacks since restart. ET 16:40 Fri.
+- **FF-push mace-leg-sanity-guard-2026-10-02 (4ec0e46c) -> origin/prod-live: REJECTED (non-fast-forward).**
+  origin/prod-live before = after = **b464b729** (pm-markpoller 9/27); it + the MACE branch diverged at
+  2362db46 (prod-live carries PM commits the MACE line lacks). NOT forced. The fix is LIVE ON THE BOX but
+  NOT on origin/prod-live -- advancing prod-live needs a merge/cherry-pick reconcile (Jack's call).
+- jacks-log appended: reports/prediction_markets/jacks-log.md @ pm-docs-jackslog-2026-09-12 (bb37c6e6).
+- MACE closed for the weekend. Acceptance deferred to Mon 2026-10-05 ~09:35 ET.
