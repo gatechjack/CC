@@ -487,21 +487,18 @@ class MaceExecutor:
             self._audit("mace_mark_unavailable", symbol=spec.symbol, error=str(exc))
             return None
 
-    async def mark_with_legs(
-        self, spec: CondorSpec,
-    ) -> "tuple[Optional[float], dict[str, Optional[float]]]":
-        """Cost-to-close mid (IDENTICAL to `mark()`) AND the four per-leg mids, so the PT mark-trust
-        guard can run its intra-condor leg-sanity check (2026-10-02). Returns (mid, {sp,lp,sc,lc}).
-        Same None-tolerance as `mark()`: a broker outage -> (None, {}) + benign audit, so the guard
-        simply skips the leg check (a None mid also means PT is not eligible this tick)."""
+    async def leg_mids(self, spec: CondorSpec) -> "dict[str, Optional[float]]":
+        """The four per-leg mids {sp,lp,sc,lc} for the PT mark-trust guard's intra-condor leg-sanity
+        check (2026-10-02). Fetched by the guard ONLY on a PT-eligible tick (keeps the hot manage
+        path untouched). None-tolerant: a broker outage / missing leg -> that key is None (the guard
+        skips the inverted-wing comparison for a None leg), mirroring `mark()`'s fail-safe so a quote
+        miss never sinks the manage loop."""
         try:
             q = await self._fresh_quotes(spec)
-            mid = self._credit_mid(q)
-            legs = {k: (v.mid if v is not None else None) for k, v in q.items()}
-            return mid, legs
+            return {k: (v.mid if v is not None else None) for k, v in q.items()}
         except Exception as exc:  # noqa: BLE001 — a broker outage must not sink the manage loop
             self._audit("mace_mark_unavailable", symbol=spec.symbol, error=str(exc))
-            return None, {}
+            return {"sp": None, "lp": None, "sc": None, "lc": None}
 
     async def _poll_until_terminal(self, order_id: str) -> Optional[OrderResult]:
         """Poll `order_status` to a terminal state. Returns the terminal

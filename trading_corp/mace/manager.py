@@ -417,7 +417,7 @@ class MaceManager:
         if rung.status == "closing":
             return await self.executor.close_rung(rung, rung.exit_reason or "manual")
 
-        mark, leg_mids = await self.executor.mark_with_legs(rung.spec)
+        mark = await self.executor.mark(rung.spec)
         if rung.symbol not in spot_cache:
             spot_cache[rung.symbol] = await self._spot(rung.symbol)
         spot = spot_cache[rung.symbol]
@@ -458,7 +458,7 @@ class MaceManager:
         # (that would misreport a close that never happened). stop/time/exdiv are unguarded (they must
         # fire — risk-reducing). The deployed close_rung/deferral is untouched.
         if decision.exit_reason == EXIT_PT:
-            if not await self._pt_mark_guard(rung, mark, now, prior_persisted_mark, leg_mids):
+            if not await self._pt_mark_guard(rung, mark, now, prior_persisted_mark):
                 return None
         self._audit("mace_manage_exit", rung_id=rung.rung_id,
                     reason=decision.exit_reason, detail=decision.detail,
@@ -475,8 +475,7 @@ class MaceManager:
             trigger_mid=mark)
 
     async def _pt_mark_guard(self, rung: RungState, mark: Optional[float], now: datetime,
-                             prior_persisted_mark: Optional[float],
-                             leg_marks: Optional[dict] = None) -> bool:
+                             prior_persisted_mark: Optional[float]) -> bool:
         """PT mark-trust guard (2026-09-18). Returns True if the PT-eligible `mark` is TRUSTED
         (fire the profit-target close), False to HOLD the rung. Fetches the fresh marks of any
         same-strike shorter-dated sibling rungs (the arbitrage lower bound), tracks the per-rung
@@ -492,6 +491,11 @@ class MaceManager:
             except Exception as exc:  # noqa: BLE001 — a sibling quote miss must not sink the guard
                 self._audit("mace_pt_sibling_mark_error", rung_id=rung.rung_id,
                             sibling=s.rung_id, error=str(exc))
+
+        # Intra-condor leg-sanity (2026-10-02): fetch the rung's own per-leg mids so the pure guard
+        # can reject an arbitrage-impossible inverted wing (a corrupted illiquid long-wing mark).
+        # Fetched ONLY here on the PT-eligible path; leg_mids is None-tolerant (never raises).
+        leg_marks = await self.executor.leg_mids(rung.spec)
 
         stt = self._pt_mark_trust.get(rung.rung_id)
         # Cold start (first touch / post-restart) falls back to the persisted prior mark so the frozen
