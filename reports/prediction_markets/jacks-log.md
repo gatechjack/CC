@@ -1397,3 +1397,25 @@ NOT VERIFIED (do not read as done): the guard's live HOLD is NOT yet observed --
 CARRIED FORWARD: Mon 09:35 ET acceptance (guard HOLDS the reset rung); prod-live reconcile to carry the MACE fix
       (FF-rejected -- needs merge, DO NOT force); the RH "empty response" combo-submission failure itself is
       unaddressed (the guard prevents the false PT, not RH's rejection of a genuine close).
+
+----------------------------------------------------------------------------------------------------
+2026-10-02 -- MACE -> prod-live RECONCILE LANDED (the FF-rejection above, resolved same day)
+----------------------------------------------------------------------------------------------------
+WHAT RAN: RO scoping pass established the earlier FF-rejection was NOT new drift -- just the box-only MACE
+      deploys (guard + leg-sanity) coming due for a fold. VERDICT: three clean cherry-picks, not a reconcile
+      round -- the MACE line is DISJOINT from prod-live's 56 post-fork PM commits (0 mace-file overlap;
+      dry-run cherry-pick rc=0; result ==box). trigmid was already on prod-live (2362db46, folded 9/18).
+WHAT CHANGED ON PROD-LIVE (git only; box/engine NEVER touched -- the box already ran this):
+      - origin/prod-live **b464b729 -> 2ce0b5c2** (clean FF, +8 commits, 46 files 100% mace-exclusive:
+        mace/{config,strategy,execution,manager}.py + config/mace.yaml + reports/mace/* + tests/test_mace_*).
+        Jack ran the push; agent built the ready branch reconcile-mace-legsanity-2026-10-02 + verified.
+      - THREE-WAY PROVEN: fresh box read == new prod-live == expected (config_hash 931a8214be50; mace md5s
+        config 01117cca / strategy 50dd6984 / execution 5b2307bc / manager b0e9e879). Engine untouched
+        (trading-corp 619011, boot 2026-10-02 20:08:06Z). PM/other prod-live files unchanged (verified).
+SEPARATE DEBT (NOT this fold, flagged for a future pass): (1) main (1d9bdf06) is on the OLDER 9/11
+      time-exit-cap MACE base -- leg-sanity won't cherry-pick clean onto it; bigger reconcile, Jack's call.
+      (2) 5 PM-props box-ahead files never folded to prod-live (prediction_markets/{live_driver,execution}.py,
+      data/{sports_structural_match,mlb_poly_kalshi_match,player_props_match}.py) -- separate PM reconcile.
+CARRIED FORWARD: Mon 09:35 ET MACE acceptance (guard HOLDS the reset rung); the main MACE delta; the PM-props
+      prod-live fold; the RH "empty response" combo-submission issue (guard-independent). Report:
+      reports/mace/MACE_PRODLIVE_CHERRYPICK_SCOPING_2026-10-02.md.
