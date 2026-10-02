@@ -1358,3 +1358,42 @@ NOT VERIFIED (do not read as done):
 CARRIED FORWARD: the Saturday cfb repro + requests/cycle re-measure (one item); w1 0x4956f69a...2ee2c7 re-backfill;
       UI mark-age band (the R6 shape); F1 gap-plan revision down (1,058 closed against a race_winner-only matcher);
       the mlb docstring fix (yours).
+
+----------------------------------------------------------------------------------------------------
+2026-10-02 -- MACE: leg-sanity PT-guard fix (deployed + bootverify GREEN) + orphan adopt + stuck-rung reset
+----------------------------------------------------------------------------------------------------
+WHAT RAN: MACE division (first MACE entry in this PM log, by request). Built + box-scratch-tested + deployed the
+      intra-condor leg-sanity guard that closes the 2026-10-02 XLE 60/59/70/71 false-PT gap: a dead long wing
+      marked ABOVE the short it protects made the condor mark falsely cheap -> false PT -> RH "empty response"
+      close-loop. Branch mace-leg-sanity-guard-2026-10-02 off box-truth mace-pt-mark-guard-2026-09-18 (NOT prod-live).
+WHAT CHANGED ON PROD:
+      - CODE (graft, box-only, drift-gated + backup + rollback): strategy.py 69eef994 -> 50dd6984, execution.py
+        66dba55a -> 5b2307bc, manager.py 1d4334d7 -> b0e9e879. config.py UNTOUCHED (01117cca); config_hash
+        UNCHANGED 931a8214be50 (code-only -- reused the existing sane_epsilon_usd knob). assess_pt_mark_trust now
+        rejects leg_inversion (long wing mark >= the short it protects) INDEPENDENT of any sibling. Backup
+        ~/mace_legsanity_graft_backup_20261002T200126Z.
+      - RESTART (post-close, Jack-authorized): trading-corp MainPID 534581 -> 619011, boot 2026-10-02 20:08:06
+        UTC. Bootverify GREEN: on-box md5s == target, config_hash unchanged, 4 loops online, /mace 200, 0
+        tracebacks since restart, LIVE RH.
+      - DB CHANGES ARE RUNTIME, NOT GIT ARTIFACTS: (1) ORPHAN ADOPT -- inserted the untracked live XLE 10-30
+        59.5/58/70/71.5 x2 condor (opened 2026-09-16, order 6aaaf21e, credit 0.45, mr 210) as status=open so MACE
+        manages it; backup ~/mace_orphan_adopt_pre_20261002T201653Z.json. (2) STUCK-RUNG RESET -- XLE 10-30
+        60/59/70/71 closing -> open (exit fields NULL preserved); backup ~/mace_xle_reset_backup_20261002T201711Z.json.
+      - XLE 10-30 now = 3 open rungs (orphan / reset / B), all defined-risk, OTM, ~28 DTE, dormant into the weekend.
+PUSH TO PROD-LIVE -- REJECTED (not forced): FF-push mace-leg-sanity-guard-2026-10-02 (4ec0e46c) -> origin/prod-live
+      was REJECTED (non-fast-forward). prod-live = b464b729 (the 9/27 PM markpoller deploy); it and the MACE branch
+      diverged at 2362db46 -- prod-live carries PM commits the MACE box-truth line does not. NOT forced (a force
+      would clobber the PM deploys). prod-live UNCHANGED at b464b729. The MACE fix is LIVE ON THE BOX (grafted)
+      but is NOT on origin/prod-live; advancing prod-live needs a reconcile (merge / cherry-pick the MACE commits
+      onto the prod-live line) -- Jack's call, not auto-resolved.
+DECISIONS: reset-to-open was REQUIRED (not "leave it") -- a closing rung runs close_rung BEFORE the PT guard and
+      reconcile never reopens closing, so the guard can only protect an OPEN rung. Orphan adopt sequenced AFTER the
+      guard went live (else MACE could immediately false-PT it on the same XLE-10-30 dead-wing risk).
+NOT VERIFIED (do not read as done): the guard's live HOLD is NOT yet observed -- market closed Fri post-15:55;
+      manage_tick runs only weekday 09:35-15:55 ET (loops.py:118). First tick Mon 2026-10-05 ~09:35 ET should mark
+      the reset rung ~0.135 -> leg_inversion reject (mace_pt_mark_reject + "PT held"), NO exit_error loop; orphan
+      (mark ~0.32 > PT target) managed normally. Post-close RO poller already confirmed the rung stays open, no
+      loop. Re-run reports/mace/mace_accept_ro.ps1 (RO) Mon to capture the hold.
+CARRIED FORWARD: Mon 09:35 ET acceptance (guard HOLDS the reset rung); prod-live reconcile to carry the MACE fix
+      (FF-rejected -- needs merge, DO NOT force); the RH "empty response" combo-submission failure itself is
+      unaddressed (the guard prevents the false PT, not RH's rejection of a genuine close).
