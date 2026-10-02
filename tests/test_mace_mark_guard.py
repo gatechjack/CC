@@ -156,6 +156,27 @@ async def test_manager_pt_suppressed_on_arbitrage_mark_holds_and_alerts():
 
 
 @pytest.mark.asyncio
+async def test_manager_pt_held_on_inverted_wing_no_sibling_2026_10_02():
+    # The 2026-10-02 XLE close-loop shape: an OPEN 60/59/70/71 rung whose long 71C marks 0.22 > short
+    # 70C 0.15 (zero-bid far-OTM wing, stale wide mid) -> condor mark 0.135 (PT-eligible at credit 0.30
+    # -> target 0.15), but that inverted wing is arbitrage-impossible. NO shorter-dated sibling is
+    # seeded (today the 10-16 sibling had time-closed) so the pre-fix sibling/fallback path missed it;
+    # the intra-condor leg check now HOLDS the rung (stays OPEN, no close) + alerts (leg_inversion).
+    conn = _conn(); port = FakePort(); chan = RecChannel()
+    store, mgr, audits = _build(conn, port, chan)
+    cand = _seed_open(store, CAND_EXP, credit=0.30)          # pt_target 0.15; NO sibling seeded
+    _quotes(port, CAND_EXP, 0.675, 0.47, 0.15, 0.22)         # mark 0.135; long 71C 0.22 > short 70C 0.15
+
+    await mgr.manage_tick(NOW)
+
+    assert all(pc.direction != bp.DIR_DEBIT for pc in port.place_calls)   # no close placed
+    assert store.get(cand).status == "open"                              # rung HELD open (not looping)
+    assert chan.any("PT held")                                            # Telegram alert
+    assert any(k == "mace_pt_mark_reject" and p.get("reason") == "leg_inversion"
+               for k, p in audits)                                       # reason = leg_inversion
+
+
+@pytest.mark.asyncio
 async def test_manager_pt_fires_on_trusted_mark():
     # Trusted: candidate net mid 0.14 (<= target 0.15) and >= the shorter-dated sibling 0.12 ->
     # PT fires -> a DIR_DEBIT close is placed for the candidate expiry; no suppression audit.

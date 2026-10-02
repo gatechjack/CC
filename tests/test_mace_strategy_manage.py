@@ -181,10 +181,11 @@ def _xle(expiry, credit=0.30, sp=60.0, lp=59.0, sc=70.0, lc=71.0, width=1.0):
                      credit_actual=credit)
 
 
-def _assess(rung, mark, *, sibling_marks=(), unchanged_repeat=1, last_trusted=None, dte=42, cfg=CFG):
+def _assess(rung, mark, *, sibling_marks=(), unchanged_repeat=1, last_trusted=None, dte=42,
+            cfg=CFG, leg_marks=None):
     return st.assess_pt_mark_trust(rung, mark, cfg, sibling_marks=list(sibling_marks),
                                    unchanged_repeat=unchanged_repeat,
-                                   last_trusted_mark=last_trusted, dte=dte)
+                                   last_trusted_mark=last_trusted, dte=dte, leg_marks=leg_marks)
 
 
 def test_guard_9_18_replay_sibling_arbitrage_rejects():
@@ -258,6 +259,54 @@ def test_guard_disabled_is_passthrough():
             CFG.management, mark_guard=dataclasses.replace(CFG.management.mark_guard, enabled=False)))
     t = _assess(r, 0.13, sibling_marks=[0.205], cfg=cfg_off)   # would be arbitrage if enabled
     assert t.trusted and not t.alert
+
+
+# ── intra-condor leg-sanity (2026-10-02 XLE close-loop fix) ───────────────────
+# The 10-02 incident: long 71C marked 0.22 > short 70C 0.15 (zero-bid far-OTM wing, stale wide mid)
+# -> condor mark falsely cheap 0.135 -> false PT. No shorter-dated sibling existed (it had time-closed),
+# so the pre-fix guard did NOT catch it. The leg check rejects it INDEPENDENT of any sibling.
+_LEGS_1002 = {"sp": 0.675, "lp": 0.47, "sc": 0.15, "lc": 0.22}   # mark = (0.675-0.47)+(0.15-0.22)=0.135
+
+
+def test_guard_leg_inversion_call_rejects_even_with_no_sibling():
+    # Today's exact shape: inverted CALL wing, NO sibling, NO baseline -> rejected as leg_inversion
+    # + alert (NOT the silent no_baseline hold). This is the gap the fix closes.
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.135, sibling_marks=[], last_trusted=None, dte=28, leg_marks=_LEGS_1002)
+    assert (not t.trusted) and t.reason == "leg_inversion" and t.alert
+
+
+def test_guard_leg_inversion_put_rejects():
+    # Inverted PUT wing (long put dearer than short put) -> leg_inversion.
+    r = _xle(date(2026, 10, 30))
+    legs = {"sp": 0.10, "lp": 0.16, "sc": 0.10, "lc": 0.04}
+    t = _assess(r, 0.12, sibling_marks=[0.05], dte=42, leg_marks=legs)
+    assert (not t.trusted) and t.reason == "leg_inversion" and t.alert
+
+
+def test_guard_clean_legs_do_not_false_flag():
+    # A structurally-sane condor (each long cheaper than its short) + trusted mark -> PT still fires.
+    r = _xle(date(2026, 10, 30))
+    legs = {"sp": 0.10, "lp": 0.04, "sc": 0.12, "lc": 0.04}   # mark 0.14
+    t = _assess(r, 0.14, sibling_marks=[0.12], dte=42, leg_marks=legs)
+    assert t.trusted and t.reason == "ok" and not t.alert
+
+
+def test_guard_worthless_condor_not_flagged_as_inversion():
+    # Deep-OTM near-worthless legs (long <= short, both tiny) = a legit MAX-PROFIT winner, NOT an
+    # inversion -> must NOT be leg_inversion (the PT should be allowed to proceed).
+    r = _xle(date(2026, 10, 30))
+    legs = {"sp": 0.03, "lp": 0.02, "sc": 0.02, "lc": 0.01}   # mark 0.02
+    t = _assess(r, 0.02, sibling_marks=[0.01], dte=42, leg_marks=legs)
+    assert t.reason != "leg_inversion" and t.trusted
+
+
+def test_guard_leg_marks_absent_is_backward_compatible():
+    # No leg_marks (the pre-fix call shape) -> the leg check is skipped; prior behaviour preserved
+    # (no sibling + no baseline -> silent no_baseline hold, exactly as before).
+    r = _xle(date(2026, 10, 30))
+    t = _assess(r, 0.135, sibling_marks=[], last_trusted=None, dte=28, leg_marks=None)
+    assert (not t.trusted) and t.reason == "no_baseline" and not t.alert
 
 
 def test_shorter_dated_same_strike_siblings_finder():

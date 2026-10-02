@@ -417,7 +417,7 @@ class MaceManager:
         if rung.status == "closing":
             return await self.executor.close_rung(rung, rung.exit_reason or "manual")
 
-        mark = await self.executor.mark(rung.spec)
+        mark, leg_mids = await self.executor.mark_with_legs(rung.spec)
         if rung.symbol not in spot_cache:
             spot_cache[rung.symbol] = await self._spot(rung.symbol)
         spot = spot_cache[rung.symbol]
@@ -458,7 +458,7 @@ class MaceManager:
         # (that would misreport a close that never happened). stop/time/exdiv are unguarded (they must
         # fire — risk-reducing). The deployed close_rung/deferral is untouched.
         if decision.exit_reason == EXIT_PT:
-            if not await self._pt_mark_guard(rung, mark, now, prior_persisted_mark):
+            if not await self._pt_mark_guard(rung, mark, now, prior_persisted_mark, leg_mids):
                 return None
         self._audit("mace_manage_exit", rung_id=rung.rung_id,
                     reason=decision.exit_reason, detail=decision.detail,
@@ -475,7 +475,8 @@ class MaceManager:
             trigger_mid=mark)
 
     async def _pt_mark_guard(self, rung: RungState, mark: Optional[float], now: datetime,
-                             prior_persisted_mark: Optional[float]) -> bool:
+                             prior_persisted_mark: Optional[float],
+                             leg_marks: Optional[dict] = None) -> bool:
         """PT mark-trust guard (2026-09-18). Returns True if the PT-eligible `mark` is TRUSTED
         (fire the profit-target close), False to HOLD the rung. Fetches the fresh marks of any
         same-strike shorter-dated sibling rungs (the arbitrage lower bound), tracks the per-rung
@@ -504,7 +505,7 @@ class MaceManager:
 
         trust = st.assess_pt_mark_trust(
             rung, mark, self.cfg, sibling_marks=sib_marks, unchanged_repeat=unchanged_repeat,
-            last_trusted_mark=last_trusted, dte=dte)
+            last_trusted_mark=last_trusted, dte=dte, leg_marks=leg_marks)
 
         # Seed last_trusted on a trusted mark OR a no_baseline hold (so the next tick has a baseline).
         new_trusted = mark if (trust.trusted or trust.reason == "no_baseline") else last_trusted

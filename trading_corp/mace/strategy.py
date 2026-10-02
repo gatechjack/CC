@@ -866,7 +866,7 @@ def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
 @dataclass(frozen=True)
 class MarkTrust:
     trusted: bool
-    reason: str          # ok | frozen | arbitrage | structural | no_baseline
+    reason: str          # ok | frozen | arbitrage | structural | no_baseline | leg_inversion
     alert: bool          # True -> emit the untrusted alert; False -> silent one-cycle hold (no_baseline)
     detail: str = ""
 
@@ -899,6 +899,7 @@ def assess_pt_mark_trust(
     rung: RungState, mark: float | None, cfg: MaceConfig, *,
     sibling_marks: Sequence[float | None], unchanged_repeat: int,
     last_trusted_mark: float | None, dte: int,
+    leg_marks: Mapping[str, float | None] | None = None,
 ) -> MarkTrust:
     """PURE. Decide whether a PT-eligible `mark` (cost-to-close mid that just satisfied the synthetic
     PT) is trustworthy enough to FIRE the profit-target close.
@@ -907,13 +908,18 @@ def assess_pt_mark_trust(
                 consecutive PT-eligible ticks (`unchanged_repeat`, tracked by the caller): a frozen
                 upstream quote.
       SANE    — structural: reject a nonsensical mark (< 0 or >= width; arbitrage-impossible for a
-                defined-risk short condor being bought back). Sibling (PRIMARY): reject if
-                `mark < max(sibling_marks) - epsilon` (longer-dated same-strike cannot be cheaper).
-                Fallback (no sibling): reject if `dte > time_exit_dte` AND
-                `mark < last_trusted_mark * (1 - max_cycle_drop_pct)` (an implausibly fast single-cycle
-                collapse far from the time-exit window). No sibling AND no baseline -> fail-closed
-                HOLD for one tick (silent, alert=False); the caller seeds the baseline and PT fires
-                next tick (Board-accepted one-cycle delay; PT is not deadline-driven).
+                defined-risk short condor being bought back). LEG (2026-10-02): reject if a LONG wing
+                is marked >= the SHORT it protects (long put >= short put, or long call >= short call,
+                beyond sane_epsilon_usd) -- the vertical would have <= 0 cost-to-close, which is
+                arbitrage-impossible; catches a corrupted illiquid-wing mark INDEPENDENT of any
+                sibling (fires even with none). Needs leg_marks (keys sp/lp/sc/lc); skipped when
+                absent. Sibling (PRIMARY): reject if `mark < max(sibling_marks) - epsilon`
+                (longer-dated same-strike cannot be cheaper). Fallback (no sibling): reject if
+                `dte > time_exit_dte` AND `mark < last_trusted_mark * (1 - max_cycle_drop_pct)` (an
+                implausibly fast single-cycle collapse far from the time-exit window). No sibling AND
+                no baseline -> fail-closed HOLD for one tick (silent, alert=False); the caller seeds
+                the baseline and PT fires next tick (Board-accepted one-cycle delay; PT is not
+                deadline-driven).
 
     Returns MarkTrust(trusted, reason, alert, detail)."""
     mg = cfg.management.mark_guard
@@ -930,6 +936,25 @@ def assess_pt_mark_trust(
     if mark is None or mark < 0.0 or mark >= rung.width_dollars:
         return MarkTrust(False, "structural", True,
                          f"mark {mark} outside [0, width {rung.width_dollars})")
+
+    # SANE — intra-condor leg sanity (2026-10-02). A LONG wing cannot be marked dearer than the SHORT
+    # it protects: the vertical it forms would have <= 0 cost-to-close = arbitrage-impossible. Catches
+    # a corrupted/illiquid wing mark (e.g. a zero-bid far-OTM long whose stale wide-midpoint inverts
+    # the structure and makes the whole condor look falsely cheap -- the 2026-10-02 XLE 60/59/70/71
+    # incident: long 71C marked 0.22 > short 70C 0.15) INDEPENDENT of any sibling, so it fires even
+    # when no shorter-dated sibling exists. Skipped when leg marks are unavailable.
+    if leg_marks:
+        eps = mg.sane_epsilon_usd
+        sp, lp = leg_marks.get("sp"), leg_marks.get("lp")
+        sc, lc = leg_marks.get("sc"), leg_marks.get("lc")
+        if sp is not None and lp is not None and lp > sp + eps:
+            return MarkTrust(False, "leg_inversion", True,
+                             f"long put mark {lp:.2f} >= short put {sp:.2f} (+{eps}) "
+                             f"-- arbitrage-impossible inverted wing")
+        if sc is not None and lc is not None and lc > sc + eps:
+            return MarkTrust(False, "leg_inversion", True,
+                             f"long call mark {lc:.2f} >= short call {sc:.2f} (+{eps}) "
+                             f"-- arbitrage-impossible inverted wing")
 
     # SANE — sibling arbitrage (primary).
     sibs = [s for s in (sibling_marks or []) if s is not None]
