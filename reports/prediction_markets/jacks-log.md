@@ -1419,3 +1419,25 @@ SEPARATE DEBT (NOT this fold, flagged for a future pass): (1) main (1d9bdf06) is
 CARRIED FORWARD: Mon 09:35 ET MACE acceptance (guard HOLDS the reset rung); the main MACE delta; the PM-props
       prod-live fold; the RH "empty response" combo-submission issue (guard-independent). Report:
       reports/mace/MACE_PRODLIVE_CHERRYPICK_SCOPING_2026-10-02.md.
+
+----------------------------------------------------------------------------------------------------
+2026-10-02 -- PM-PROPS -> prod-live RECONCILE LANDED (prod-live now git-truth-PRISTINE for all deployed code)
+----------------------------------------------------------------------------------------------------
+WHAT RAN: RO scoping of the 5 PM-props box-ahead files (the props Phase-B/C/D graft of 2026-09-22, engine
+      restarted but prod-live never folded). VERDICT: clean fold. The 5 engine files == local branch
+      pm-props-perinning-2026-09-22 @ b4b2c089 (NOT on origin until today), loaded in the live engine
+      (mtime 2026-09-22T20:01:58Z < boot 2026-10-02 20:08:06Z); prod-live had NOT touched them since the
+      558fc143 fork; dry-run cherry-pick rc=0 / 0 conflicts / result ==box.
+WHAT CHANGED ON PROD-LIVE (git only; box/engine NEVER touched -- box already ran this since 9/22):
+      - Jack pushed the provenance branch **pm-props-perinning-2026-09-22** to origin (was local-only).
+      - origin/prod-live **2ce0b5c2 -> 074ef365** (clean FF, +8 commits, 10 files = 5 engine + 5 tests, nothing
+        else). THREE-WAY PROVEN: prod-live 074ef365 == fresh box == b4b2c089 (player_props e3f85ba977e0db3c /
+        sports b787d1f11b63af61 / mlb 83881fc73f6543dd / execution a8a03b59e422a8a2 / live_driver 4bbe3023610aaadc).
+      - Engine untouched (trading-corp 619011, boot 2026-10-02 20:08:06Z). Schema head 24 (prediction_markets.db),
+        props add NO migration. main.py 16.7 intact (196/119/116, b7cc5dd7c7dd == box).
+      - ★★ FULL-TREE WALK vs 074ef365: DRIFT = EMPTY. prod-live now == box for EVERY deployed code/config file.
+        Only box-vs-git remainders are the documented config/Lets exclusion + 6 never-deployed dev files.
+STATE: both 2026-10-02 debts folded (MACE 2ce0b5c2 + PM-props 074ef365). prod-live git-truth-pristine.
+CARRIED FORWARD: Mon 09:35 ET MACE acceptance; the `main` divergence (older MACE+PM base, separate debt);
+      PM-props live-firing dormancy is record-stated (0 fills ever) but NOT re-audited this pass (fold was
+      behavior-neutral). Report: reports/prediction_markets/PM_PROPS_FOLD_SCOPING_2026-10-02.md.
