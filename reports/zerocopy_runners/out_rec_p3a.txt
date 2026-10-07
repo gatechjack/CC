@@ -1,0 +1,31 @@
+KEY_VAULT_URI present: yes
+===== 3.1 READ-ONLY RECONCILE PROOF (boot_reconcile.compare per account; NO latch, NO write) =====
+kalshi_jack    journal_tickers=0 kalshi_tickers=0 DIFFS=0
+    UFC ticker: journal_signed=0 kalshi_signed=0 AGREE
+kalshi_karen   journal_tickers=0 kalshi_tickers=0 DIFFS=0
+    UFC ticker: journal_signed=0 kalshi_signed=0 AGREE
+kalshi_marc    journal_tickers=0 kalshi_tickers=0 DIFFS=0
+    UFC ticker: journal_signed=0 kalshi_signed=0 AGREE
+kalshi_trey    journal_tickers=0 kalshi_tickers=0 DIFFS=0
+    UFC ticker: journal_signed=0 kalshi_signed=0 AGREE
+RECONCILE_ALL_CLEAN: True
+===== 3.2-PREP: can the pre-latch ARMED set be reconstructed? (legacy RO) =====
+legacy tables with arm/audit/hist in name:
+    agent_state
+    audit_event
+    bitunix_bar_history
+    bitunix_bar_history_bak_20260625
+    bitunix_funding_history
+    kalshi_equity_history
+    mace_iv_history
+    poly_kalshi_mark_history
+    polymarket_equity_history
+audit_event cols: ['id', 'ts', 'actor', 'kind', 'payload_json']
+audit_event rows actor='pm_live': 0
+audit_event kinds mentioning arm:
+    mace_ui_arm 19
+-- agent_state pm_live arm rows: armed/latched/updated_ts (full) --
+   total 93 armed=True 1 armed!=True&latched 92 disarmed&NOT latched 0
+   sample latched full keys: ['armed', 'auto_trigger', 'by', 'latched', 'manual_exit_required', 'reason', 'source', 'ts'] -> {'armed': False, 'latched': True, 'auto_trigger': 'boot_reconcile_mismatch', 'manual_exit_required': False, 'reason': 'boot-reconcile mismatch on kalshi_jack: 1 ticker(s) disagree: KXUFCFIGHT-26SEP29BULVIS-VIS j=5 k=0 [journal_only]', 'source': 'auto_disarm', 'by': None, 'ts': '2026-10-06T02:57:03.934325+00:00'}
+===== 3.2-PREP: journal arm-set enumeration search (bounded 2026-10-05 12:00 .. 10-06 02:58) =====
+===== DONE p3a =====

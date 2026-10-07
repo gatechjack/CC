@@ -108,5 +108,43 @@ Opened ONLY `prediction_markets.db` (RO for backup/snapshot, RW for the 4 INSERT
 **HALT. Did NOT re-reconcile, did NOT clear any latch, did NOT arm anything.** Phase 3 is a separate
 authorization; the re-reconcile gate there still applies.
 
-## PHASE 3 — re-reconcile, clear latch, re-arm prior set — PENDING AUTH
-## PHASE 4 — verify fills resume — PENDING
+## PHASE 3 — RE-RECONCILE (3.1 PASS) + CLEAR/RE-ARM (3.2 STOPPED, armed set unreconstructable)
+
+Runners `pm_rec_p3a` (RO reconcile proof + armed-set probe) + `pm_rec_p3b` (RO decision aid). No write,
+no latch cleared, no arm. `pm_cli live-arm` surface established from code: per-scope
+`--account X --category Y [--clear-latch] [--by]` (no bulk flag); arming clears the latch; the arm path
+does NOT re-reconcile. boot_reconcile is boot-only (no CLI) -> 3.1 done by faithfully replicating
+`boot_reconcile.journal_signed_positions` + `kalshi_signed_positions` + the pure `compare()` (never latches).
+
+### 3.1 RECONCILE PROOF -- CLEAN (gate satisfied; latch SAFE to clear)
+All four accounts, read-only, full-book:
+- kalshi_jack / karen / marc / trey: `journal_tickers=0, kalshi_tickers=0, DIFFS=0`.
+- `KXUFCFIGHT-26SEP29BULVIS-VIS`: journal_signed 0 vs venue position_fp 0 -> **AGREE** on every account.
+- `RECONCILE_ALL_CLEAN: True`. After the Phase-2 booking the journal is net-flat and the venue holds 0
+  open contracts on all four. The mismatch is proven gone. (Venue reads succeeded; no read-failure
+  INCONCLUSIVE.)
+
+### 3.2 STOP -- the pre-latch armed set (80 of 92) is NOT reconstructable from any persisted source
+- `arm.py auto_disarm` OVERWROTE each armed row with `{armed:False, latched:True, ...}` -- **no
+  prior-armed field** (sample latched keys: armed, auto_trigger, by, latched, manual_exit_required,
+  reason, source, ts).
+- `set_agent_state` is a plain UPSERT (no history). **`audit_event` has 0 `actor='pm_live'` rows** (only
+  `mace_ui_arm`, a different division). No arm-history table. Journal has no arm-set enumeration.
+- All 92 sub keys are `latched=True`; **0 are "disarmed & not-latched"** -> current state cannot separate
+  the 80 armed from the ~12 deliberately disarmed.
+- Decision aid (activity != arm, a LOWER BOUND): **55 subs ever placed a live entry** (definitely armed);
+  80 were armed -> **~25 armed-but-never-filled are invisible**, and **~12 of 92 were never armed** but
+  indeterminate. Never-traded (e_all=0): jack {boxing,f1,fed,fl1,nba,nhl,sea,soccer,tennis,uel};
+  karen {fed,fl1,nba,nhl,sea,uel}; marc {bra,bun,epl,fed,fl1,nba,nhl,sea,ucl,uel,wta};
+  trey {bra,bun,epl,fed,fl1,nba,nhl,sea,ucl,uel}. "Arm the 55" misses 25; "arm all 90 except boxing/f1"
+  arms 10 deliberately-off subs. Neither equals 80.
+
+**HALT. I did NOT clear any latch or arm anything.** Need from Jack: the exact 80 (account, category)
+pairs to arm (jack/boxing + jack/f1 excluded regardless -- NULL cap, paper). Given the list I will run
+`pm_cli live-arm --account A --category C --clear-latch --by claude` per scope (looped in one runner),
+then verify (`arm:global` armed, per-sub armed/not-latched for the set, PID/NRestarts unchanged).
+
+## PHASE 4 — verify fills resume — BLOCKED on 3.2 (no subs armed yet)
+Will run immediately after the armed set is restored: placed vs rejected per cycle (is_exit=0 only,
+excluding the 4 settlement_scalar closes), first real fill as evidence, gate any non-placed signals die
+at, and the attachment timeline (when the 71->156 landed).
