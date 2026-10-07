@@ -1,0 +1,84 @@
+=== A) triggering UFC position in order journal ===
+<stdin>:4: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+-- pm_subdivision_order rows for KXUFCFIGHT-26SEP29BULVIS-VIS --
+kalshi_jack   exit=0 leg=yes st=filled   cnt=5 fill=5.0 close=None sub=2026-09-29 22:33:49Z resp=2026-09-29 22:33:49Z settled=None pnl=None
+    cid=0xea1e918e792ea3759a3f5a3d3c486b61383837d4cd8091b06ad029b44c9612af slug=ufc-ilibul-erivis-2026-09-29
+kalshi_karen  exit=0 leg=yes st=filled   cnt=5 fill=5.0 close=None sub=2026-09-29 22:33:45Z resp=2026-09-29 22:33:45Z settled=None pnl=None
+    cid=0xea1e918e792ea3759a3f5a3d3c486b61383837d4cd8091b06ad029b44c9612af slug=ufc-ilibul-erivis-2026-09-29
+kalshi_marc   exit=0 leg=yes st=filled   cnt=1 fill=1.0 close=None sub=2026-09-29 22:33:37Z resp=2026-09-29 22:33:37Z settled=None pnl=None
+    cid=0xea1e918e792ea3759a3f5a3d3c486b61383837d4cd8091b06ad029b44c9612af slug=ufc-ilibul-erivis-2026-09-29
+kalshi_trey   exit=0 leg=yes st=filled   cnt=1 fill=1.0 close=None sub=2026-09-29 22:33:37Z resp=2026-09-29 22:33:37Z settled=None pnl=None
+    cid=0xea1e918e792ea3759a3f5a3d3c486b61383837d4cd8091b06ad029b44c9612af slug=ufc-ilibul-erivis-2026-09-29
+-- net per account (entries filled minus exits) --
+    kalshi_jack entry_filled= 5.0 exit_filled= 0 net_open= 5.0
+    kalshi_karen entry_filled= 5.0 exit_filled= 0 net_open= 5.0
+    kalshi_marc entry_filled= 1.0 exit_filled= 0 net_open= 1.0
+    kalshi_trey entry_filled= 1.0 exit_filled= 0 net_open= 1.0
+-- closed_position match for these condition_ids --
+    0xea1e918e79 won= 0 cur_price= 0.425 resolved= 1790731635 end= 2026-09-30 title= Dana White's Contender Series: Ilias Bul
+-- any order rows with is_exit=1 close_source for these cids --
+    0xea1e918e79 is_exit=1 rows: 0
+=== B) journal single-scan grep (since 2026-10-02 12:00) ===
+matched lines:
+31 /tmp/tcj_656059.txt
+file size:
+-rw-rw-r-- 1 azureuser azureuser 7072 Oct  7 02:14 /tmp/tcj_656059.txt
+--- first 8 matched ---
+2026-10-04T01:12:20+0000 tc-prod-vm xvfb-run[619024]: Traceback (most recent call last):
+2026-10-04T01:12:21+0000 tc-prod-vm xvfb-run[619024]: Traceback (most recent call last):
+2026-10-05T01:55:40+0000 tc-prod-vm xvfb-run[619024]: 2026-10-05 01:55:40,382 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-05T17:28:28+0000 tc-prod-vm xvfb-run[619024]: 2026-10-05 17:28:28,390 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-05T17:30:29+0000 tc-prod-vm xvfb-run[619024]: 2026-10-05 17:30:29,484 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-06T02:56:39+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:39,417 INFO trading_corp.agents.strategies.coinbase_btc_donchian_agent: CoinbaseBTCDonchianAgent: persisted state present (state=btc, cost_basis=71870.11) — skipping broker reconcile. Board-driven broker deltas will be observed via record_balance_snapshot per bar.
+2026-10-06T02:56:42+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:42,634 INFO trading_corp.agents.pmcc_approval_reconciler: pmcc approval reconcile loop starting (interval=300s grace=90min canary=180min)
+2026-10-06T02:56:47+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:47,893 INFO trading_corp.main: Robinhood MACE wired (execution_mode=live, config_hash=931a8214be50; 4 loops online; gating: divisions.yaml standby + /mace halt latch + strategies.yaml auto_execute).
+--- reconcile/latch/mismatch (first 25) ---
+2026-10-05T01:55:40+0000 tc-prod-vm xvfb-run[619024]: 2026-10-05 01:55:40,382 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-05T17:28:28+0000 tc-prod-vm xvfb-run[619024]: 2026-10-05 17:28:28,390 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-05T17:30:29+0000 tc-prod-vm xvfb-run[619024]: 2026-10-05 17:30:29,484 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-06T02:56:39+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:39,417 INFO trading_corp.agents.strategies.coinbase_btc_donchian_agent: CoinbaseBTCDonchianAgent: persisted state present (state=btc, cost_basis=71870.11) — skipping broker reconcile. Board-driven broker deltas will be observed via record_balance_snapshot per bar.
+2026-10-06T02:56:42+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:42,634 INFO trading_corp.agents.pmcc_approval_reconciler: pmcc approval reconcile loop starting (interval=300s grace=90min canary=180min)
+2026-10-06T02:56:47+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:47,893 INFO trading_corp.main: Robinhood MACE wired (execution_mode=live, config_hash=931a8214be50; 4 loops online; gating: divisions.yaml standby + /mace halt latch + strategies.yaml auto_execute).
+2026-10-06T02:56:48+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:48,270 INFO trading_corp.main: PEAD deferred-fill reconciler online.
+2026-10-06T02:56:48+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:48,435 INFO mace.loops: MACE reconcile scheduler online.
+2026-10-06T02:56:59+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:59,173 INFO trading_corp.main: bitunix position-state reconciler [bitunix_futures] at startup: clean (0 matched live rows)
+2026-10-06T02:56:59+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:59,174 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bitunix position-state sanity poll: starting (interval=60.000s)
+2026-10-06T02:56:59+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:59,696 INFO trading_corp.main: bitunix position-state reconciler [bitunix_sfp] at startup: clean (0 matched live rows)
+2026-10-06T02:56:59+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:59,794 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bitunix position-state sanity poll: starting (interval=60.000s)
+2026-10-06T02:56:59+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:59,795 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bitunix_position_reconciler: starting (interval=60s, trail_atr_mult=1.50, timeframe=3m)
+2026-10-06T02:57:01+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:01,145 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_karen reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+2026-10-06T02:57:01+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:01,239 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_trey reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+2026-10-06T02:57:02+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:02,745 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_marc reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+2026-10-06T02:57:03+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:03,962 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_jack reconciled=False latched=True latched_categories=('atp', 'boxing', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'f1', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'soccer', 'tennis', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+2026-10-06T03:15:05+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 03:15:05,397 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-06T09:34:08+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 09:34:08,732 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-06T09:36:09+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 09:36:09,597 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-06T18:01:29+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 18:01:29,689 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-06T18:01:29+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 18:01:29,689 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-06T18:03:30+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 18:03:30,753 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-06T23:34:56+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 23:34:56,764 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-07T02:02:14+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 02:02:14,649 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+--- reconcile/latch/mismatch (LAST 10) ---
+2026-10-06T02:57:03+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:03,962 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_jack reconciled=False latched=True latched_categories=('atp', 'boxing', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'f1', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'soccer', 'tennis', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+2026-10-06T03:15:05+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 03:15:05,397 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-06T09:34:08+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 09:34:08,732 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-06T09:36:09+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 09:36:09,597 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-06T18:01:29+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 18:01:29,689 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-06T18:01:29+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 18:01:29,689 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-06T18:03:30+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 18:03:30,753 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-06T23:34:56+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 23:34:56,764 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+2026-10-07T02:02:14+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 02:02:14,649 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bracket SL-move: BTC/USDT.P absent/closed at SL-modify time — post-close no-op, skipping (no open position to trail)
+2026-10-07T02:04:15+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 02:04:15,494 INFO trading_corp.agents.divisions.bitunix_position_reconciler: reconcile_position_state: _halt_new_orders RELEASED (two consecutive clean reconcile ticks)
+--- BULVIS / KXUFCFIGHT ---
+--- scalar/void/refund ---
+--- Traceback/CRITICAL ---
+2026-10-04T01:12:20+0000 tc-prod-vm xvfb-run[619024]: Traceback (most recent call last):
+2026-10-04T01:12:21+0000 tc-prod-vm xvfb-run[619024]: Traceback (most recent call last):
+2026-10-07T01:12:38+0000 tc-prod-vm xvfb-run[642887]: Traceback (most recent call last):
+2026-10-07T01:12:39+0000 tc-prod-vm xvfb-run[642887]: Traceback (most recent call last):
+2026-10-07T01:12:40+0000 tc-prod-vm xvfb-run[642887]: Traceback (most recent call last):
+=== C) distinct reconcile-mismatch timestamps (coarse) ===
+      2 2026-10-06T02:57:01+0000
+      1 2026-10-06T02:57:02+0000
+      1 2026-10-06T02:57:03+0000
+=== DONE diag2 ===

@@ -1,0 +1,194 @@
+<stdin>:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+===== S1 pm_shard_balance_snapshot continuity (driver-alive instrument) =====
+-- snapshots per day per account (last 8d) --
+   kalshi_jack    2026-09-29 n=260
+   kalshi_jack    2026-09-30 n=287
+   kalshi_jack    2026-10-01 n=287
+   kalshi_jack    2026-10-02 n=289
+   kalshi_jack    2026-10-03 n=287
+   kalshi_jack    2026-10-04 n=287
+   kalshi_jack    2026-10-05 n=288
+   kalshi_jack    2026-10-06 n=288
+   kalshi_jack    2026-10-07 n=27
+   kalshi_karen   2026-09-29 n=260
+   kalshi_karen   2026-09-30 n=287
+   kalshi_karen   2026-10-01 n=287
+   kalshi_karen   2026-10-02 n=289
+   kalshi_karen   2026-10-03 n=287
+   kalshi_karen   2026-10-04 n=287
+   kalshi_karen   2026-10-05 n=288
+   kalshi_karen   2026-10-06 n=288
+   kalshi_karen   2026-10-07 n=27
+   kalshi_marc    2026-09-29 n=260
+   kalshi_marc    2026-09-30 n=287
+   kalshi_marc    2026-10-01 n=287
+   kalshi_marc    2026-10-02 n=289
+   kalshi_marc    2026-10-03 n=287
+   kalshi_marc    2026-10-04 n=287
+   kalshi_marc    2026-10-05 n=288
+   kalshi_marc    2026-10-06 n=288
+   kalshi_marc    2026-10-07 n=27
+   kalshi_trey    2026-09-29 n=260
+   kalshi_trey    2026-09-30 n=287
+   kalshi_trey    2026-10-01 n=287
+   kalshi_trey    2026-10-02 n=289
+   kalshi_trey    2026-10-03 n=287
+   kalshi_trey    2026-10-04 n=287
+   kalshi_trey    2026-10-05 n=288
+   kalshi_trey    2026-10-06 n=288
+   kalshi_trey    2026-10-07 n=27
+-- LARGEST inter-snapshot gap per account in last 8d --
+   kalshi_jack    n=2300 maxgap=5.1 min  from 2026-10-03 06:14:53Z -> 2026-10-03 06:20:00Z
+   kalshi_karen   n=2300 maxgap=5.1 min  from 2026-10-03 06:14:54Z -> 2026-10-03 06:20:00Z
+   kalshi_marc    n=2300 maxgap=5.1 min  from 2026-10-03 06:14:54Z -> 2026-10-03 06:20:00Z
+   kalshi_trey    n=2300 maxgap=5.1 min  from 2026-10-03 06:14:54Z -> 2026-10-03 06:20:00Z
+-- snapshots straddling the Phase-1 window (2026-10-02 18:00 .. 2026-10-06 03:30), jack, sampled --
+   jack snapshots in window: 977 first 2026-10-02 18:02:39Z last 2026-10-06 03:26:51Z
+
+===== S2 pm_subdivision_order WRITE timeline (entries vs exits) per day last 8d =====
+   2026-09-29 exit=0 filled    n=27
+   2026-09-29 exit=0 no_fill   n=17
+   2026-09-29 exit=1 filled    n=89
+   2026-09-29 exit=1 no_fill   n=1
+   2026-09-30 exit=0 filled    n=76
+   2026-09-30 exit=0 no_fill   n=23
+   2026-09-30 exit=1 filled    n=54
+   2026-10-01 exit=0 filled    n=95
+   2026-10-01 exit=0 no_fill   n=13
+   2026-10-01 exit=1 error     n=10
+   2026-10-01 exit=1 filled    n=43
+   2026-10-01 exit=1 no_fill   n=2
+   2026-10-02 exit=0 filled    n=102
+   2026-10-02 exit=0 no_fill   n=42
+   2026-10-02 exit=1 error     n=1
+   2026-10-02 exit=1 filled    n=99
+   2026-10-02 exit=1 no_fill   n=5
+   2026-10-03 exit=1 filled    n=52
+   2026-10-04 exit=1 filled    n=40
+
+===== S3 approx OPEN exposure per account (gate-6 proxy, journal-based) =====
+   kalshi_jack    open_legs=2 approx_open_usd=$2.9  (max_open_usd cap=350)
+   kalshi_karen   open_legs=1 approx_open_usd=$2.3  (max_open_usd cap=350)
+   kalshi_marc    open_legs=1 approx_open_usd=$0.46  (max_open_usd cap=350)
+   kalshi_trey    open_legs=1 approx_open_usd=$0.46  (max_open_usd cap=350)
+   NOTE: journal-based approximation; gate 6 uses LIVE venue exposure, not this. Treat as indicative only.
+
+===== S4 last entry vs last exit write per account =====
+   kalshi_jack    last_entry=2026-10-02 19:50:05Z  last_exit(settlement/close)=2026-10-04 07:26:42Z
+   kalshi_karen   last_entry=2026-10-02 19:49:58Z  last_exit(settlement/close)=2026-10-04 07:23:13Z
+   kalshi_marc    last_entry=2026-10-02 19:38:40Z  last_exit(settlement/close)=2026-10-04 06:15:49Z
+   kalshi_trey    last_entry=2026-10-02 19:38:38Z  last_exit(settlement/close)=2026-10-04 06:15:49Z
+DONE diag3-db
+===== S5 journal: PM-driver activity DURING Phase 1 (2026-10-02 20:00 .. 2026-10-06 02:55) =====
+PM-driver matched lines in Phase-1 window:
+322077 /tmp/pmj_656257.txt
+-- first 5 --
+2026-10-03T20:23:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-03 20:23:51,621 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: 5 confirmed whale-EXIT(s) for 0x91feec8af2 (mex; reductions=5 sells=13)
+2026-10-03T20:23:55+0000 tc-prod-vm xvfb-run[619024]: 2026-10-03 20:23:55,218 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: 5 confirmed whale-EXIT(s) for 0x91feec8af2 (mex; reductions=5 sells=13)
+2026-10-03T20:23:58+0000 tc-prod-vm xvfb-run[619024]: 2026-10-03 20:23:58,535 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: 5 confirmed whale-EXIT(s) for 0x91feec8af2 (mex; reductions=5 sells=13)
+2026-10-03T20:23:59+0000 tc-prod-vm xvfb-run[619024]: 2026-10-03 20:23:59,631 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: 5 confirmed whale-EXIT(s) for 0x91feec8af2 (epl; reductions=5 sells=13)
+2026-10-03T20:23:59+0000 tc-prod-vm xvfb-run[619024]: 2026-10-03 20:23:59,646 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: 5 confirmed whale-EXIT(s) for 0x91feec8af2 (epl; reductions=5 sells=13)
+-- last 5 --
+2026-10-06T02:54:55+0000 tc-prod-vm xvfb-run[619024]: 2026-10-06 02:54:55,975 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0xd202bf6d89 (ucl): positions[0xd202bf6d…, limit=500, offset=0]: HTTP 429
+2026-10-06T02:54:55+0000 tc-prod-vm xvfb-run[619024]: 2026-10-06 02:54:55,986 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x9e161cf455 (ucl): positions[0x9e161cf4…, limit=500, offset=0]: HTTP 429
+2026-10-06T02:54:55+0000 tc-prod-vm xvfb-run[619024]: 2026-10-06 02:54:55,997 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x9f15613ebf (uel): positions[0x9f15613e…, limit=500, offset=0]: HTTP 429
+2026-10-06T02:54:56+0000 tc-prod-vm xvfb-run[619024]: 2026-10-06 02:54:56,138 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0xd6966eb1ae (wta): positions[0xd6966eb1…, limit=500, offset=2000]: HTTP 429
+2026-10-06T02:54:56+0000 tc-prod-vm xvfb-run[619024]: 2026-10-06 02:54:56,179 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x9f15613ebf (uel): positions[0x9f15613e…, limit=500, offset=500]: HTTP 429
+-- hourly histogram of PM-driver log lines (Phase 1) --
+    610 2026-10-03T20
+   2865 2026-10-03T21
+   2634 2026-10-03T22
+   4245 2026-10-03T23
+   6972 2026-10-04T00
+   7663 2026-10-04T01
+   7560 2026-10-04T02
+   6154 2026-10-04T03
+   6460 2026-10-04T04
+   3587 2026-10-04T05
+   8011 2026-10-04T06
+   9609 2026-10-04T07
+   9396 2026-10-04T08
+   9790 2026-10-04T09
+   7718 2026-10-04T10
+   6056 2026-10-04T11
+   7028 2026-10-04T12
+   8185 2026-10-04T13
+   5944 2026-10-04T14
+   4891 2026-10-04T15
+   3335 2026-10-04T16
+   1703 2026-10-04T17
+   2012 2026-10-04T18
+   2597 2026-10-04T19
+   2541 2026-10-04T20
+   4299 2026-10-04T21
+   6633 2026-10-04T22
+   5830 2026-10-04T23
+   7937 2026-10-05T00
+   5287 2026-10-05T01
+  10127 2026-10-05T02
+  11316 2026-10-05T03
+   9148 2026-10-05T04
+   4139 2026-10-05T05
+   6933 2026-10-05T06
+   7136 2026-10-05T07
+  10573 2026-10-05T08
+   8942 2026-10-05T09
+   7586 2026-10-05T10
+   7006 2026-10-05T11
+   4558 2026-10-05T12
+   2624 2026-10-05T13
+   4534 2026-10-05T14
+   2531 2026-10-05T15
+   3748 2026-10-05T16
+   3444 2026-10-05T17
+   1848 2026-10-05T18
+   2016 2026-10-05T19
+   3958 2026-10-05T20
+   6357 2026-10-05T21
+   3453 2026-10-05T22
+   6813 2026-10-05T23
+   8803 2026-10-06T00
+   9051 2026-10-06T01
+   7881 2026-10-06T02
+===== S6 the 10-04 01:12 traceback context =====
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,171 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x12508466…, limit=500, offset=500]: 140 rows in 278ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,199 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=5000]: 437 rows in 280ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,329 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=0]: 500 rows in 463ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,345 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xf3a6ac44…, limit=500, offset=0]: 175 rows in 165ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,349 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_karen/cfb -- 0 NEWLY-contested; flattened 2 held leg(s) + skipped incoming both sides; new_cids=[]
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,522 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xdb859a55…, limit=500, offset=0]: 500 rows in 349ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,538 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xdb859a55…, limit=500, offset=0]: 500 rows in 208ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,558 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xf059aff5…, limit=500, offset=0]: 500 rows in 38ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,569 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xdb859a55…, limit=500, offset=500]: 117 rows in 25ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,581 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xdb859a55…, limit=500, offset=500]: 117 rows in 52ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,591 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xf059aff5…, limit=500, offset=500]: 186 rows in 25ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,600 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=500]: 500 rows in 261ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,617 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=0]: 500 rows in 32ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,632 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=0]: 500 rows in 41ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,646 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x91feec8a…, limit=500, offset=0]: 500 rows in 46ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,660 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=500]: 500 rows in 32ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,675 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=500]: 500 rows in 33ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,689 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x91feec8a…, limit=500, offset=500]: 344 rows in 34ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,721 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x52f454c4…, limit=500, offset=0]: 66 rows in 13ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,744 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=0]: 500 rows in 16ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,769 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=500]: 500 rows in 15ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,795 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=1000]: 500 rows in 16ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,824 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=1500]: 500 rows in 19ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,852 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=2000]: 500 rows in 17ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,887 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=2500]: 500 rows in 24ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,907 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=1000]: 500 rows in 221ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,918 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=1000]: 500 rows in 305ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,930 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=1000]: 500 rows in 259ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,946 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=3000]: 500 rows in 49ms
+2026-10-04T01:11:50+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:50,978 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=3500]: 500 rows in 20ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,006 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=4000]: 500 rows in 17ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,037 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=4500]: 500 rows in 17ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,063 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x21f33330…, limit=500, offset=5000]: 437 rows in 16ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,191 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=1500]: 500 rows in 273ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,203 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=1500]: 500 rows in 261ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,216 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=1500]: 500 rows in 285ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,407 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x1d2efa18…, limit=500, offset=0]: 276 rows in 231ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,467 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=2000]: 269 rows in 256ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,479 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=2000]: 269 rows in 255ms
+2026-10-04T01:11:51+0000 tc-prod-vm xvfb-run[619024]: 2026-10-04 01:11:51,491 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0xd6966eb1…, limit=500, offset=2000]: 269 rows in 291ms
+===== DONE diag3 =====

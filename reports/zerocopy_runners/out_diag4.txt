@@ -1,0 +1,106 @@
+matched lines:
+496536 /tmp/pmj2_656359.txt
+-rw-rw-r-- 1 azureuser azureuser 124970998 Oct  7 02:24 /tmp/pmj2_656359.txt
+===== RESTARTS: boot-reconcile + MACE-wired markers (each boot) =====
+2026-10-06T02:56:47+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:56:47,893 INFO trading_corp.main: Robinhood MACE wired (execution_mode=live, config_hash=931a8214be50; 4 loops online; gating: divisions.yaml standby + /mace halt latch + strategies.yaml auto_execute).
+2026-10-06T02:57:01+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:01,145 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_karen reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+2026-10-06T02:57:01+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:01,239 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_trey reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+2026-10-06T02:57:02+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:02,745 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_marc reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+2026-10-06T02:57:03+0000 tc-prod-vm xvfb-run[642887]: 2026-10-06 02:57:03,962 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_jack reconciled=False latched=True latched_categories=('atp', 'boxing', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'f1', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'soccer', 'tennis', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+===== boot-reconcile LATCH results (latched=True/False) =====
+account=kalshi_karen reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+account=kalshi_trey reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+account=kalshi_marc reconciled=False latched=True latched_categories=('atp', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+account=kalshi_jack reconciled=False latched=True latched_categories=('atp', 'boxing', 'bra', 'bun', 'cfb', 'cs2', 'epl', 'f1', 'fed', 'fl1', 'itf', 'lal', 'mex', 'mlb', 'mls', 'nba', 'nfl', 'nhl', 'sea', 'soccer', 'tennis', 'ucl', 'uel', 'ufc', 'wnba', 'wta')
+===== HTTP 429 per hour =====
+    289 2026-10-03T20
+   2239 2026-10-03T21
+   2039 2026-10-03T22
+   3825 2026-10-03T23
+   6589 2026-10-04T00
+   7272 2026-10-04T01
+   7155 2026-10-04T02
+   5540 2026-10-04T03
+   5758 2026-10-04T04
+   3003 2026-10-04T05
+   7772 2026-10-04T06
+   9547 2026-10-04T07
+   9336 2026-10-04T08
+   9724 2026-10-04T09
+   7662 2026-10-04T10
+   5955 2026-10-04T11
+   6863 2026-10-04T12
+   8051 2026-10-04T13
+   5833 2026-10-04T14
+   4809 2026-10-04T15
+   3271 2026-10-04T16
+   1615 2026-10-04T17
+   1942 2026-10-04T18
+   2479 2026-10-04T19
+   2442 2026-10-04T20
+   4231 2026-10-04T21
+   6554 2026-10-04T22
+   5744 2026-10-04T23
+   7871 2026-10-05T00
+   5230 2026-10-05T01
+  10045 2026-10-05T02
+  11240 2026-10-05T03
+   9095 2026-10-05T04
+   4082 2026-10-05T05
+   6883 2026-10-05T06
+   7084 2026-10-05T07
+  10516 2026-10-05T08
+   8885 2026-10-05T09
+   7491 2026-10-05T10
+   6943 2026-10-05T11
+   4487 2026-10-05T12
+   2580 2026-10-05T13
+   4491 2026-10-05T14
+   2497 2026-10-05T15
+   3715 2026-10-05T16
+   3401 2026-10-05T17
+   1814 2026-10-05T18
+   1993 2026-10-05T19
+   3885 2026-10-05T20
+   6301 2026-10-05T21
+   3405 2026-10-05T22
+   6750 2026-10-05T23
+   8731 2026-10-06T00
+   8967 2026-10-06T01
+   9001 2026-10-06T02
+  12521 2026-10-06T03
+  10547 2026-10-06T04
+   5749 2026-10-06T05
+   8984 2026-10-06T06
+  13313 2026-10-06T07
+  12885 2026-10-06T08
+  12051 2026-10-06T09
+  11587 2026-10-06T10
+  10854 2026-10-06T11
+   7335 2026-10-06T12
+   7248 2026-10-06T13
+   4124 2026-10-06T14
+   4559 2026-10-06T15
+   3566 2026-10-06T16
+   4671 2026-10-06T17
+   3709 2026-10-06T18
+   3631 2026-10-06T19
+   3538 2026-10-06T20
+   4850 2026-10-06T21
+   5630 2026-10-06T22
+   6305 2026-10-06T23
+   8219 2026-10-07T00
+   9612 2026-10-07T01
+    882 2026-10-07T02
+===== HTTP 429 first + last =====
+2026-10-03T20:28:21+0000 tc-prod-vm xvfb-run[619024]: 2026-10-03 20:28:21,918 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x21f333307a (bun): positions[0x21f33330…, limit=500, offset=2500]: HTTP 429
+...
+2026-10-07T02:22:49+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 02:22:49,938 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x9f15613ebf (uel): positions[0x9f15613e…, limit=500, offset=0]: HTTP 429
+429 total:
+491292
+===== whale-ENTRY confirmations: count + last 6 =====
+0
+===== new_cids with REAL content (new copyable opens detected): count + last 6 =====
+0
+===== last ENTRY-side activity timestamp before restart =====
+===== DONE diag4 =====
