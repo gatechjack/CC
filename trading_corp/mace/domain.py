@@ -237,6 +237,13 @@ class RungState:
     exit_debit: float | None = None
     realized_pnl: float | None = None
     entry_iso_week: str | None = None
+    # Parsed mace_rung.extra_json (2026-10-09 exit-redesign): a small dict of
+    # out-of-band disposition state that does NOT warrant its own column --
+    # {"closing": {"since", "redrives", "parked"}} (un-latch bookkeeping),
+    # {"exit_order_id","exit_order_limit","exit_order_reason"} (crash-recovery of
+    # an in-flight close), {"disposition": "riding", "ride": {...}} (ride-to-expiry),
+    # and the legacy {"abandon_detail"}. None when the column is NULL/unparseable.
+    extra: dict | None = None
 
 
 @dataclass(frozen=True)

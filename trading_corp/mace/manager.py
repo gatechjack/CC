@@ -32,7 +32,10 @@ from trading_corp.mace import ivr_provider as ivr
 from trading_corp.mace import strategy as st
 from trading_corp.mace.config import MaceConfig
 from trading_corp.mace.disposition import disposition_line, exit_disposition_line
-from trading_corp.mace.domain import EXIT_PT, EXIT_TIME, EvalResult, RungState
+from trading_corp.mace.domain import (
+    EXIT_EXDIV, EXIT_GAP, EXIT_MANUAL, EXIT_PT, EXIT_STOP, EXIT_TIME,
+    EvalResult, RungState,
+)
 from trading_corp.mace.execution import EntryOutcome, ExitOutcome, MaceExecutor, RungStore
 from trading_corp.mace.notify import MaceNotifier
 from trading_corp.utils.time import now_et, now_utc
@@ -42,6 +45,13 @@ _LOG = logging.getLogger("mace.manager")
 # Statuses whose rungs the management loop marks (open positions + those mid-close
 # so a crash-interrupted exit keeps being driven).
 _MANAGED_STATUSES = ("open", "closing")
+
+# CLOSING re-drive bounds (2026-10-09 exit-redesign; Commit 2 moves these onto CloseabilityConfig).
+# A committed close (stop/exdiv/gap) that cannot fill was previously re-driven EVERY manage tick
+# forever (the ~15-min XLE loop). Cap the tight re-drive, then PARK (single URGENT alert + an
+# occasional pulse) so a genuinely-stuck close surfaces once instead of flooding.
+_MAX_CLOSING_REDRIVES = 8      # ~40 min of 5-attempt ladders before parking
+_PARK_RETRY_TICKS = 12         # while parked, pulse one re-drive every N ticks (~hourly at 300s)
 
 
 @dataclass
@@ -86,6 +96,10 @@ class MaceManager:
         # frozen (timeliness) + fallback-baseline checks. In-memory (resets on restart — benign:
         # the sibling/structural checks are stateless; frozen also seeds off persisted mace_rung_live).
         self._pt_mark_trust: dict[str, dict] = {}
+        # CLOSING-park pulse counters (2026-10-09): per-rung tick count while a committed close is
+        # PARKED, so a parked rung re-drives only every _PARK_RETRY_TICKS ticks. In-memory (resets
+        # on restart -> a parked rung simply gets one more re-drive attempt post-restart; benign).
+        self._park_ticks: dict[str, int] = {}
         # PT-held alert de-dupe (2026-10-05): rung_ids CURRENTLY in a held (alert-worthy) episode.
         # Throttles the Telegram push ONLY -- one alert when a rung ENTERS held, suppressed while it
         # stays held (incl leg_inversion<->frozen flips on the same dead wing = one episode), and a
@@ -420,9 +434,12 @@ class MaceManager:
         sym_cfg = self.cfg.symbols.get(rung.symbol)
         if sym_cfg is None:
             return None
-        # A rung already CLOSING (a prior exit exhausted) keeps being driven toward close.
+        # A rung already CLOSING (a prior exit exhausted/latched). 2026-10-09: no longer a blind
+        # infinite re-drive -- _drive_closing caps committed re-drives (park) and UN-LATCHES a
+        # winner-class/legacy CLOSING rung with no booked fill + no working order (the self-heal
+        # for the wedged XLE rung; Commit 2 adds the executable-closeability gate -> ride).
         if rung.status == "closing":
-            return await self.executor.close_rung(rung, rung.exit_reason or "manual")
+            return await self._drive_closing(rung, now)
 
         mark = await self.executor.mark(rung.spec)
         if rung.symbol not in spot_cache:
@@ -480,6 +497,71 @@ class MaceManager:
         return await self.executor.close_rung(
             rung, decision.exit_reason, pricing=pricing, defer_on_unfilled=defer,
             trigger_mid=mark)
+
+    async def _drive_closing(self, rung: RungState, now: datetime) -> Optional[ExitOutcome]:
+        """Drive a rung in status=CLOSING (2026-10-09 un-latch). Replaces the old blind
+        `close_rung(rung, exit_reason or 'manual')` that re-drove EVERY tick forever.
+
+          COMMITTED (stop/exdiv/gap): a genuine risk close MUST keep trying, but the re-drive is
+          now CAPPED (_MAX_CLOSING_REDRIVES) then PARKED -- a single URGENT alert + an occasional
+          pulse, instead of a ~15-min alert/exit_error flood.
+          WINNER-class (pt/time) or a LEGACY NULL-reason wedge: a profit close that cannot fill
+          must not loop. With NO booked fill and NO working close order, REOPEN the rung to `open`
+          (self-heals the wedged XLE rung: next tick re-evaluates it via the normal guarded path;
+          Commit 2's closeability gate then routes a dead-wing winner to RIDE instead of re-closing).
+          A persisted in-flight order / a working {rid}-x* order -> drive close_rung ONCE so its
+          crash-recovery preamble reconciles the live order (never reopen underneath a live close).
+
+        A rung whose exit fields are already set is a booked close mislabelled `closing` (anomaly) ->
+        audit + no-op (never destructive)."""
+        rid = rung.rung_id
+        reason = rung.exit_reason
+        extra = rung.extra or {}
+        if rung.exit_ts is not None or rung.exit_debit is not None or rung.realized_pnl is not None:
+            self._audit("mace_closing_anomaly", rung_id=rid, reason=reason,
+                        detail="CLOSING rung carries booked exit fields; left untouched")
+            return None
+
+        if reason in (EXIT_STOP, EXIT_EXDIV, EXIT_GAP):
+            blk = extra.get("closing") or {}
+            if blk.get("parked"):
+                n = self._park_ticks.get(rid, 0) + 1
+                self._park_ticks[rid] = n
+                if n % _PARK_RETRY_TICKS != 0:
+                    return None
+                return await self.executor.close_rung(rung, reason)
+            count = self.store.bump_closing_redrive(
+                rid, self._now_utc().isoformat(timespec="seconds"))
+            if count > _MAX_CLOSING_REDRIVES:
+                self.store.set_closing_parked(rid, self._now_utc().isoformat(timespec="seconds"))
+                self._audit("mace_close_parked", rung_id=rid, reason=reason, redrives=count)
+                self.notifier.breaker(
+                    condition=f"{rung.symbol} CLOSE BLOCKED — {count} re-drives unfilled",
+                    lines=[f"rung {rid}", f"reason {reason}"],
+                    suggested_action="manual close needed; auto re-drive PARKED (hourly pulse)")
+                return None
+            return await self.executor.close_rung(rung, reason)
+
+        # winner-class (pt/time) OR legacy NULL-reason wedge.
+        if extra.get("exit_order_id"):
+            # An in-flight close is persisted -> let close_rung's preamble reconcile it (drive once).
+            return await self.executor.close_rung(rung, reason or EXIT_MANUAL)
+        working = await self.executor._working_exit_order(rid)   # None | OpenOrder | sentinel
+        if working is None:
+            if self.store.reopen_from_closing(rid):
+                self._audit("mace_closing_reopen", rung_id=rid, reason=reason,
+                            detail="winner-class/legacy CLOSING, no booked fill + no working order "
+                                   "-> reopened to open (re-evaluated next tick)")
+                self.notifier.breaker(
+                    condition=f"{rung.symbol} CLOSING rung reopened (no fill, no working order)",
+                    lines=[f"rung {rid}", f"reason {reason or 'none'}"],
+                    suggested_action="back to OPEN; re-evaluated next manage tick", urgent=False)
+                return None
+            # reopen guard refused (exit fields set between load and now) -> anomaly, no-op.
+            self._audit("mace_closing_reopen_refused", rung_id=rid, reason=reason)
+            return None
+        # a working close order exists (or the sweep errored) -> drive once; preamble owns it.
+        return await self.executor.close_rung(rung, reason or EXIT_MANUAL)
 
     async def _pt_mark_guard(self, rung: RungState, mark: Optional[float], now: datetime,
                              prior_persisted_mark: Optional[float]) -> bool:

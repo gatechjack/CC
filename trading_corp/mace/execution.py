@@ -87,6 +87,10 @@ class MaceRiskRejected(Exception):
 # no fill and no working order is abandoned + alerted (plan § Reconcile loop).
 _ABANDON_HORIZON_SESSIONS = 2
 
+# Sentinel: an open-orders sweep could not be read (broker error). The caller treats
+# "unknown" as "assume a working order might exist" -> the conservative (fail-closed) branch.
+_SWEEP_UNKNOWN = object()
+
 
 # ── tick rounding ─────────────────────────────────────────────────────────
 
@@ -155,10 +159,24 @@ def _spec_from_legs_json(legs_json_str: Optional[str], symbol: str,
                       width_dollars=float(width_dollars))
 
 
+def _parse_extra(extra_json_str: Optional[str]) -> Optional[dict]:
+    """Parse mace_rung.extra_json into a dict (RungState.extra). A NULL column,
+    empty string, non-dict, or unparseable JSON -> None (callers treat as {});
+    a parse error must never sink a rung load."""
+    if not extra_json_str:
+        return None
+    try:
+        obj = json.loads(extra_json_str)
+        return obj if isinstance(obj, dict) else None
+    except Exception:  # noqa: BLE001 — a malformed extra_json must not sink the load
+        return None
+
+
 _RUNG_COLS = (
     "rung_id, symbol, status, expiry, legs_json, width_dollars, contracts, "
     "credit_actual, max_risk_usd, entry_ts, entry_order_id, pt_order_id, "
-    "pt_debit, exit_ts, exit_reason, exit_debit, realized_pnl, entry_iso_week"
+    "pt_debit, exit_ts, exit_reason, exit_debit, realized_pnl, entry_iso_week, "
+    "extra_json"
 )
 
 
@@ -186,6 +204,7 @@ class RungStore:
             exit_ts=r["exit_ts"], exit_reason=r["exit_reason"],
             exit_debit=_f(r["exit_debit"]), realized_pnl=_f(r["realized_pnl"]),
             entry_iso_week=r["entry_iso_week"],
+            extra=_parse_extra(r["extra_json"]),
         )
 
     def get(self, rung_id: str) -> Optional[RungState]:
@@ -320,10 +339,45 @@ class RungStore:
             "UPDATE mace_rung SET pt_order_id=NULL WHERE rung_id=?", (rung_id,)
         )
 
-    def mark_closing(self, rung_id: str) -> None:
+    def _read_extra(self, rung_id: str) -> dict:
+        r = self.conn.execute(
+            "SELECT extra_json FROM mace_rung WHERE rung_id=?", (rung_id,)
+        ).fetchone()
+        return (_parse_extra(r["extra_json"]) or {}) if r is not None else {}
+
+    def _merge_extra(self, rung_id: str, patch: dict) -> None:
+        """Read-modify-write a shallow merge into mace_rung.extra_json. A key set to
+        None in `patch` is DELETED (so the JSON stays small); other keys overwrite.
+        Autocommit + single-threaded manage/reconcile loop -> no lost-update race.
+        Preserves unrelated keys (e.g. abandon_detail coexists with a closing block)."""
+        cur = self._read_extra(rung_id)
+        for k, v in patch.items():
+            if v is None:
+                cur.pop(k, None)
+            else:
+                cur[k] = v
         self.conn.execute(
-            "UPDATE mace_rung SET status=? WHERE rung_id=?", (RUNG_CLOSING, rung_id)
+            "UPDATE mace_rung SET extra_json=? WHERE rung_id=?",
+            (json.dumps(cur) if cur else None, rung_id),
         )
+
+    def mark_closing(self, rung_id: str, *, exit_reason: Optional[str] = None,
+                     ts: Optional[str] = None) -> None:
+        """Latch a rung CLOSING (committed marketable close in progress; crash-recoverable).
+        2026-10-09: now PERSISTS exit_reason (COALESCE -- a provided reason sets it, None keeps
+        the existing so an idempotent re-latch never wipes it) so a re-driven CLOSING rung is no
+        longer relabelled 'manual' (reason-amnesia fix), and stamps a one-time closing bookkeeping
+        block {since, redrives:0} used by the capped re-drive. The block is written ONLY on the
+        FIRST latch (absent-guarded) so _exit_exhausted's idempotent re-calls never reset redrives."""
+        if exit_reason is not None:
+            self.conn.execute(
+                "UPDATE mace_rung SET status=?, exit_reason=? WHERE rung_id=?",
+                (RUNG_CLOSING, exit_reason, rung_id))
+        else:
+            self.conn.execute(
+                "UPDATE mace_rung SET status=? WHERE rung_id=?", (RUNG_CLOSING, rung_id))
+        if ts is not None and "closing" not in self._read_extra(rung_id):
+            self._merge_extra(rung_id, {"closing": {"since": ts, "redrives": 0}})
 
     def mark_closed(self, rung_id: str, *, exit_reason: str, exit_debit: float,
                     realized_pnl: float, exit_ts: str) -> None:
@@ -335,9 +389,60 @@ class RungStore:
 
     def mark_abandoned(self, rung_id: str, detail: str) -> None:
         self.conn.execute(
-            "UPDATE mace_rung SET status=?, extra_json=? WHERE rung_id=?",
-            (RUNG_ABANDONED, json.dumps({"abandon_detail": detail}), rung_id),
-        )
+            "UPDATE mace_rung SET status=? WHERE rung_id=?", (RUNG_ABANDONED, rung_id))
+        self._merge_extra(rung_id, {"abandon_detail": detail})
+
+    # -- CLOSING un-latch bookkeeping (2026-10-09 exit-redesign) --------------
+    def bump_closing_redrive(self, rung_id: str, ts: str) -> int:
+        """Increment and return the CLOSING re-drive counter for a committed close that
+        couldn't fill. Initialises the block for a legacy wedged rung that predates it.
+        The manager parks the rung once this exceeds max_closing_redrives (bounds the
+        pre-2026-10-09 infinite ~15-min re-drive loop)."""
+        cur = self._read_extra(rung_id)
+        blk = dict(cur.get("closing") or {})
+        blk["redrives"] = int(blk.get("redrives") or 0) + 1
+        if "since" not in blk:
+            blk["since"] = ts
+        self._merge_extra(rung_id, {"closing": blk})
+        return blk["redrives"]
+
+    def set_closing_parked(self, rung_id: str, ts: str) -> None:
+        """Mark a CLOSING rung PARKED (re-drive cap hit): the manager stops the tight
+        re-drive and only pulses occasionally, with a single URGENT operator alert."""
+        cur = self._read_extra(rung_id)
+        blk = dict(cur.get("closing") or {})
+        blk["parked"] = ts
+        self._merge_extra(rung_id, {"closing": blk})
+
+    def set_exit_order(self, rung_id: str, order_id: str, limit: float,
+                       reason: str) -> None:
+        """Persist an in-flight exit order id the instant _place returns it (crash-recovery:
+        the entry ladder already does this for entries; the exit ladder did not, so a crash
+        between place and cancel-confirm orphaned a live close order the DB didn't know about).
+        close_rung's preamble polls/cancels a persisted exit order before laddering again."""
+        self._merge_extra(rung_id, {"exit_order_id": order_id,
+                                    "exit_order_limit": limit, "exit_order_reason": reason})
+
+    def clear_exit_order(self, rung_id: str) -> None:
+        self._merge_extra(rung_id, {"exit_order_id": None, "exit_order_limit": None,
+                                    "exit_order_reason": None})
+
+    def reopen_from_closing(self, rung_id: str) -> bool:
+        """Transition a CLOSING rung back to OPEN -- the un-latch (2026-10-09). Guarded in SQL
+        exactly like reports/mace/mace_xle_reset.py: ONLY a rung still `closing` with NO booked
+        close (exit_ts / exit_debit / realized_pnl all NULL) is eligible, so a genuinely-closed
+        rung can never be reopened. Clears exit_reason + the closing/exit_order bookkeeping.
+        Returns True iff exactly one row transitioned (the manager guards the WHEN -- dead wing,
+        no working order -- this guards the INVARIANT). Caller sets the riding disposition."""
+        cur = self.conn.execute(
+            "UPDATE mace_rung SET status=?, exit_reason=NULL WHERE rung_id=? AND status=? "
+            "AND exit_ts IS NULL AND exit_debit IS NULL AND realized_pnl IS NULL",
+            (RUNG_OPEN, rung_id, RUNG_CLOSING))
+        if cur.rowcount == 1:
+            self._merge_extra(rung_id, {"closing": None, "exit_order_id": None,
+                                        "exit_order_limit": None, "exit_order_reason": None})
+            return True
+        return False
 
     def delete_submitting(self, rung_id: str) -> None:
         """Remove a `submitting` anchor after a CLEAN stand-down (every attempt
@@ -844,6 +949,32 @@ class MaceExecutor:
             # PT confirmed dead -> proceed.
             self.store.clear_pt(rung_id)
 
+        # 1b) CRASH-RECOVERY (2026-10-09): a persisted in-flight CLOSE order from a prior tick
+        # that crashed between place and cancel-confirm. Poll it BEFORE laddering a fresh order
+        # (mirrors the resting-PT preamble above): filled -> book + stop; not-provably-dead ->
+        # ABORT this tick (a live order must never be doubled); dead -> clear + fresh ladder.
+        prior_oid = (rung.extra or {}).get("exit_order_id")
+        if prior_oid:
+            try:
+                await self.port.cancel(prior_oid)
+            except Exception as exc:  # noqa: BLE001
+                self._audit("mace_exit_cancel_error", rung_id=rung_id, order_id=prior_oid, error=str(exc))
+            pconf = await self._poll_until_terminal(prior_oid)
+            if pconf is not None and pconf.is_filled:
+                lim = (rung.extra or {}).get("exit_order_limit")
+                preason = (rung.extra or {}).get("exit_order_reason") or reason
+                self.store.clear_exit_order(rung_id)
+                return self._book_exit_fill(rung, preason, lim if lim is not None else 0.0)
+            if pconf is None or not pconf.is_terminal:
+                self.notifier.breaker(
+                    condition=f"{spec.symbol} EXIT ABORTED — prior close order not confirmed",
+                    lines=[f"rung {rung_id}", f"order {prior_oid}", f"reason {reason}"],
+                    suggested_action="verify/cancel the in-flight close before re-driving; will retry")
+                self._audit("mace_exit_abort_prior_unconfirmed", rung_id=rung_id,
+                            order_id=prior_oid, reason=reason)
+                return ExitOutcome(rung_id, False, reason=reason, aborted=True)
+            self.store.clear_exit_order(rung_id)  # prior order confirmed dead -> fresh ladder
+
         # 2) Pricing mode (GDX P1 fix 2026-09-11). WINNER (time-exit>floor / PT) prices at
         # MID and caps the debit at mid + exit_winner_band -- never cross the whole spread
         # on a profitable close. A resting PT (pt_order_id set) is a committed close ->
@@ -858,9 +989,11 @@ class MaceExecutor:
         winner_anchor = trigger_mid if winner else None
         ceiling = spec.width_dollars * x.exit_hard_ceiling_mult_of_width
         # mark CLOSING (crash-recoverable) ONLY on the committed marketable path; a
-        # winner-defer stays OPEN so the next manage tick re-evaluates it.
+        # winner-defer stays OPEN so the next manage tick re-evaluates it. 2026-10-09:
+        # persist exit_reason + the closing bookkeeping block (reason-amnesia fix + capped re-drive).
         if not winner:
-            self.store.mark_closing(rung_id)
+            self.store.mark_closing(rung_id, exit_reason=reason, ts=self._utc_iso())
+        saw_reject = False   # a DEFINITIVE broker reject (MaceOrderRejected) happened on some attempt
         self._audit("mace_exit_start", rung_id=rung_id, reason=reason, symbol=spec.symbol,
                     pricing=("winner" if winner else "marketable"),
                     trigger_mid=(round(winner_anchor, 4) if winner_anchor is not None else None),
@@ -901,43 +1034,87 @@ class MaceExecutor:
                 # fail-safe -> stay CLOSING + URGENT, never place.
                 self._audit("mace_exit_risk_reject", rung_id=rung_id, attempt=k, detail=str(rej))
                 return self._exit_exhausted(spec, rung_id, reason, k)
+            except bp.MaceOrderRejected as rej:
+                # DEFINITIVE broker reject on THIS attempt -- no order id came back, so NOTHING is
+                # resting at the broker (e.g. RH "empty response" on a dead-wing/no-market combo).
+                # This is the 2026-10-05 latch mechanism's ROOT: previously it fell to the generic
+                # `except` below and immediately _exit_exhausted -> mark_closing, latching EVEN a
+                # winner-defer. Now -- mirroring the entry ladder's MaceOrderRejected arm -- the
+                # attempt is spent and the ladder CONTINUES; on exhaustion the winner path DEFERS
+                # (rung stays OPEN) and the committed path stays CLOSING + capped re-drive. No latch.
+                saw_reject = True
+                self._audit("mace_exit_rejected", rung_id=rung_id, attempt=k, detail=str(rej))
+                continue
             except Exception as exc:  # noqa: BLE001
-                # FAKE-FILL GUARD: never book. An in-flight order can't be safely
-                # superseded -> stay CLOSING + URGENT manual backstop.
+                # FAKE-FILL GUARD: an AMBIGUOUS error (network/timeout/lost response) -- the order
+                # MIGHT be live -> never book, never place another; stay CLOSING + URGENT backstop.
                 self._audit("mace_exit_error", rung_id=rung_id, attempt=k, error=str(exc))
                 self.notifier.error(loop="exit", exc=exc)
                 return self._exit_exhausted(spec, rung_id, reason, k)
 
             if res.is_filled:
+                self.store.clear_exit_order(rung_id)
                 return self._book_exit_fill(rung, reason, limit)
             if self._is_partial(res):
                 return self._exit_partial(spec, rung_id, reason, k, res)
 
             oid = res.order_id
             if oid is not None:
+                # Persist the in-flight exit order BEFORE cancelling (crash-recovery: a crash here
+                # must leave a durable pointer so the next tick's preamble cancels/books it rather
+                # than orphaning a live close order the DB never knew about -- the entry ladder has
+                # always done this; the exit ladder did not).
+                self.store.set_exit_order(rung_id, oid, limit, reason)
                 try:
                     await self.port.cancel(oid)
                 except Exception as exc:  # noqa: BLE001
                     self._audit("mace_exit_cancel_error", rung_id=rung_id, order_id=oid, error=str(exc))
                 confirmed = await self._poll_until_terminal(oid)
                 if confirmed is not None and confirmed.is_filled:
+                    self.store.clear_exit_order(rung_id)
                     return self._book_exit_fill(rung, reason, limit)
                 if confirmed is not None and self._is_partial(confirmed):
+                    self.store.clear_exit_order(rung_id)
                     return self._exit_partial(spec, rung_id, reason, k, confirmed)
                 if confirmed is None or not confirmed.is_terminal:
-                    # unconfirmed -> may still be live; do NOT place another.
+                    # unconfirmed -> may still be live; do NOT place another. Leave the persisted
+                    # exit_order_id so the next tick's preamble reconciles it (crash-recovery).
                     self._audit("mace_exit_unconfirmed", rung_id=rung_id, attempt=k, order_id=oid)
                     return self._exit_exhausted(spec, rung_id, reason, k)
-                # confirmed dead -> next attempt.
+                # confirmed dead -> clear the persisted pointer, next attempt.
+                self.store.clear_exit_order(rung_id)
             # no order id -> next attempt.
 
-        # Clean ladder exhaustion (every attempt placed + cancelled-confirmed-dead; nothing
-        # filled/unconfirmed -> no live order remains). WINNER-defer: leave the rung OPEN and
-        # retry next tick (TIME walks DTE to the floor; PT retries, no floor). MARKETABLE:
-        # stays CLOSING + URGENT.
+        # Ladder exhausted. WINNER-defer: leave the rung OPEN + retry next tick. But if the ladder
+        # only ever REJECTED (reject arm, no live order left by design) AND we are deferring, guard
+        # the rare "empty response that was actually placed" (robinhood's no-id branch skips the
+        # 401/429 reconcile sweep): if a working {rung_id}-x* order is in fact resting, do NOT leave
+        # the rung OPEN (PT could re-fire and double-close) -> persist it + exhaust->CLOSING so the
+        # preamble/reconcile owns it. Clean sweep -> safe to DEFER. MARKETABLE: stays CLOSING.
+        if saw_reject and defer_on_unfilled:
+            working = await self._working_exit_order(rung_id)
+            if working is not None:
+                if working is not _SWEEP_UNKNOWN:
+                    self.store.set_exit_order(rung_id, working.order_id, limit, reason)
+                return self._exit_exhausted(spec, rung_id, reason, x.exit_max_attempts)
         if defer_on_unfilled:
             return self._exit_deferred(spec, rung_id, reason)
         return self._exit_exhausted(spec, rung_id, reason, x.exit_max_attempts)
+
+    async def _working_exit_order(self, rung_id: str):
+        """A working (non-terminal) close order resting on the account for this rung
+        (ref_id prefix '{rung_id}-x'), else None. A broker error -> _SWEEP_UNKNOWN sentinel
+        (caller treats unknown as 'assume one might exist' -> conservative fail-closed)."""
+        try:
+            ords = await self.port.open_orders()
+        except Exception as exc:  # noqa: BLE001
+            self._audit("mace_exit_sweep_error", rung_id=rung_id, error=str(exc))
+            return _SWEEP_UNKNOWN
+        pref = f"{rung_id}-x"
+        for o in ords or []:
+            if o.ref_id and o.ref_id.startswith(pref) and str(o.state).lower() not in bp.TERMINAL_STATES:
+                return o
+        return None
 
     def _exit_deferred(self, spec: CondorSpec, rung_id: str, reason: str) -> ExitOutcome:
         # WINNER (TIME>floor / PT) could not fill within mid+band -- DEFER rather than force a
@@ -955,7 +1132,9 @@ class MaceExecutor:
         # Committed close (marketable, or a winner that hit an error/unconfirmed placement):
         # ensure CLOSING (idempotent -- marketable already marked it; a winner error path did
         # not) so it is crash-recoverable + re-driven. Operator manual action is the backstop.
-        self.store.mark_closing(rung_id)
+        # 2026-10-09: persist exit_reason + the closing block (reason-amnesia fix + capped re-drive;
+        # idempotent -- COALESCE keeps an already-set reason, the block is only stamped once).
+        self.store.mark_closing(rung_id, exit_reason=reason, ts=self._utc_iso())
         self.notifier.close_exhausted(symbol=spec.symbol, expiry=spec.expiry.isoformat(),
                                       contracts=self._contracts_of(rung_id), attempts=attempts)
         self._audit("mace_exit_exhausted", rung_id=rung_id, reason=reason, attempts=attempts)
