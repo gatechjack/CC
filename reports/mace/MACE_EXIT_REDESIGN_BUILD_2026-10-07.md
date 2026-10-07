@@ -45,7 +45,12 @@ Byte-parity is also proven at the source: `git diff e37fb3cd HEAD -- execution.p
 
 **Full local suite: `348 passed, 4 failed`.** The 4 are PRE-EXISTING stale asserts (config `max_contracts==1` vs box's 2; sizing/entry `SIZING_BASE_BP_PCT`) — identical on pristine 10-02, **0 new**. (The build also *fixed* a 5th pre-existing failure, `test_p14`, a stale `_MarkExec.close_rung` stub.) New tests: `test_mace_exit_unlatch` 11, `test_mace_closeability` 18, `test_mace_ride_expiry` 7, `test_mace_exit_redesign_replays` 5 = **41**.
 
-Local env: a dedicated py3.12 venv (`.venv-macetest`, matches box). The 6 web-layer mace tests (`*_web_*`, `halt_button`, `pulse`, `view_enrich`, `division_shell`) need the full web/broker stack absent from the source-only snapshot lineage; they are out of the exit/close blast radius and run on **box-scratch** (full tree) as the Friday gate's final step.
+Local env: a dedicated py3.12 venv (`.venv-macetest`, matches box). The 6 web-layer mace tests (`*_web_*`, `halt_button`, `pulse`, `view_enrich`, `division_shell`) need the full web/broker stack absent from the source-only snapshot lineage; they run on box-scratch (full tree).
+
+**BOX-SCRATCH (the real gate — run 2026-10-07 on tc-prod-vm, py3.12.13 service venv, `-p no:pytest_ethereum`, live tree untouched, throwaway `/tmp`):**
+- The **4 new redesign test files pass ALL GREEN on the box (41 tests, exit 0)**.
+- config loads on the box: `config_hash 931a8214be50`, `CloseabilityConfig` defaults.
+- Full mace suite on the box: **5 failures — all PRE-EXISTING stale** (config `max_contracts`, sizing, strategy_entry ×2, migration standalone-script test). The **BASE (`a2c838a0`) box-scratch in the same env shows the identical set PLUS `p14`** → the redesign has **0 new failures** and additionally **fixes `p14`** (a stale `_MarkExec.close_rung` stub). (An earlier scratch run flagged a `test_mace_exdiv` collection error — traced to the scratch *tar* over-excluding the `trading_corp.data` code package, not a code regression; fixed in the scratch tar and re-confirmed clean.)
 
 ---
 
