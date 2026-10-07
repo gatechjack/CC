@@ -56,6 +56,35 @@ class _FakePort:
         return st.ChainView(sym, None, (), {})
 
 
+class _SnapShim:
+    """Minimal QuoteSnapshot stand-in for the manage-path fakes (2026-10-09): mark/stop_mark ==
+    the fake's mark_val, and CLOSEABLE wings so the new closeability gate is a no-op pass for these
+    orthogonal tests (live-state write / p14 time / halt). The gate's real dead-wing behaviour is
+    covered by test_mace_closeability / test_mace_exit_redesign with real one-sided quotes."""
+    def __init__(self, mark):
+        self._mark = mark
+
+    @property
+    def mark(self):
+        return self._mark
+
+    @property
+    def stop_mark(self):
+        return self._mark
+
+    @property
+    def wings_two_sided(self):
+        return True
+
+    @property
+    def natural_debit(self):
+        return 0.05 if self._mark is None else self._mark
+
+    @property
+    def leg_mids(self):
+        return {"sp": None, "lp": None, "sc": None, "lc": None}
+
+
 class _MarkExec:
     """Manage-path fake: benign mark (no exit), records any close."""
     def __init__(self, mark_val=0.71):
@@ -65,7 +94,10 @@ class _MarkExec:
     async def mark(self, spec):
         return self.mark_val
 
-    async def close_rung(self, rung, reason):
+    async def quote_snapshot(self, spec):
+        return _SnapShim(self.mark_val)
+
+    async def close_rung(self, rung, reason, **kw):
         self.closed.append((rung.rung_id, reason))
         return ex.ExitOutcome(rung.rung_id, True, reason=reason)
 

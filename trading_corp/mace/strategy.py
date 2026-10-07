@@ -31,7 +31,7 @@ from trading_corp.mace.domain import (
     SKIP_IVR, SKIP_NO_DELTA_STRIKE, SKIP_NO_EQUITY_SNAPSHOT, SKIP_NO_EXPIRY,
     SKIP_NO_WING, SKIP_RESERVE, SKIP_RISK_BAND, SKIP_RISK_REJECT,
     SKIP_STRIKE_COLLISION, SKIP_WEEKLY_BUDGET,
-    BreakerState, CondorSpec, EvalResult, OptionQuote, RungState, iso_week,
+    BreakerState, CondorSpec, EvalResult, OptionQuote, QuoteSnapshot, RungState, iso_week,
 )
 
 # Rung statuses that occupy a capacity slot (submitting/open/closing are live).
@@ -816,7 +816,7 @@ class ManageDecision:
 
 def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
                         now_et: datetime, cfg: MaceConfig, symbol_cfg: SymbolConfig,
-                        *, exdiv_within: bool) -> ManageDecision:
+                        *, exdiv_within: bool, stop_mark: float | None = None) -> ManageDecision:
     """Precedence: stop > PT > time > exdiv. `mark` = cost-to-close at mid (net
     debit to exit). The 09:35 tick IS the gap rule (no separate branch).
     `exdiv_within` is the calendar side (caller uses mace.exdiv.MaceExDiv).
@@ -828,13 +828,20 @@ def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
     target, the ladder's natural debit is already at/under target, so the close
     books at/inside the profit target. stop (a loss) and PT (a win) are mutually
     exclusive on `mark`; PT is ordered before time/exdiv so a hit target closes
-    favorably regardless of DTE, and the exit is labelled `pt` (not `time`)."""
+    favorably regardless of DTE, and the exit is labelled `pt` (not `time`).
+
+    `stop_mark` (2026-10-09): the STOP basis only. Defaults to `mark` (unchanged behaviour). When
+    the caller passes QuoteSnapshot.stop_mark (shorts @ mid, wings floored to bid-or-0), a garbage/
+    dead wing mid can no longer DEFLATE the mark and hide a stop -- stop_mark >= mark always, so a
+    stop fires no later and is never blinded on a dead-wing condor. PT still uses `mark` (a win must
+    not fire on the conservative basis)."""
     m = cfg.management
-    # stop: mark >= stop_multiple x credit received
-    if mark is not None and rung.credit_actual is not None:
-        if mark >= m.stop_multiple * rung.credit_actual:
+    # stop: stop_basis >= stop_multiple x credit received (stop_mark when supplied, else mark).
+    stop_basis = stop_mark if stop_mark is not None else mark
+    if stop_basis is not None and rung.credit_actual is not None:
+        if stop_basis >= m.stop_multiple * rung.credit_actual:
             return ManageDecision(rung.rung_id, EXIT_STOP,
-                                  f"mark {mark:.2f} >= {m.stop_multiple}x credit "
+                                  f"mark {stop_basis:.2f} >= {m.stop_multiple}x credit "
                                   f"{rung.credit_actual:.2f}")
     # PT (T9 synthetic): mark <= pt_pct_of_credit x credit received -> lock the win.
     if mark is not None and rung.credit_actual is not None:
@@ -975,6 +982,65 @@ def assess_pt_mark_trust(
                          f"mark {mark:.2f} collapsed > {mg.max_cycle_drop_pct:.0%} vs last-trusted "
                          f"{last_trusted_mark:.2f} at DTE {dte} > {cfg.management.time_exit_dte}")
     return MarkTrust(True, "ok", False, f"mark {mark:.2f} within fallback bound")
+
+
+# ── closeability gate (2026-10-09 exit-redesign) ─────────────────────────
+# The PT mark-trust guard above is a BLACKLIST of corrupt-mid signatures (frozen / inverted /
+# collapsed) -- a wiggling dead-wing quote eventually presents a tick matching none of them, and a
+# winning condor's far-OTM wing decays to garbage BY CONSTRUCTION, so a mid-based trust check is the
+# wrong root. This is the POSITIVE complement: price the close on EXECUTABLE values (natural = buy
+# shorts @ ask, sell wings @ bid) and ask "can this actually fill?". A dead wing (no bid) fails
+# `wings_two_sided` DETERMINISTICALLY every tick -- no wiggle-through. The mark-trust guard STAYS
+# (defense-in-depth for a corrupt SHORT-leg mid, which this gate does not see).
+
+@dataclass(frozen=True)
+class Closeability:
+    closeable: bool
+    reason: str          # ok | wings_one_sided | shorts_unpriceable | natural_above_cap | disabled
+    natural: float | None = None
+    detail: str = ""
+
+
+def assess_closeability(rung: RungState, snap: QuoteSnapshot, cfg: MaceConfig, *,
+                        exit_reason: str, target_debit: float | None) -> Closeability:
+    """PURE. Can a PT/TIME close actually fill, priced on EXECUTABLE values? Governs the winner
+    commit (and, liveness-only, the CLOSING re-drive). STOP/EXDIV are NOT gated (risk reduction
+    trumps fill quality -- they price off stop_natural, wings given away).
+
+      enabled      — kill-switch; False -> closeable (pre-redesign behaviour).
+      wings_two_sided — BOTH long wings have a real bid (can be SOLD). A dead/one-sided wing fails
+                     here every tick -> `wings_one_sided`. THE positive check.
+      natural      — the executable cost-to-close must be computable; None (a short has no ask)
+                     -> `shorts_unpriceable`.
+      at-cap (winner only, target_debit not None) — the winner ladder HARD-CAPS at
+                     target + exit_winner_band; if the immediately-fillable `natural` exceeds that
+                     by more than slack, the ladder can NEVER fill -> `natural_above_cap` (the
+                     dead-wing false-PT: mid says cheap, natural says unfillably dear). target None
+                     = liveness-only (marketable re-drive): two-sided wings + computable natural is
+                     enough; the marketable ladder may pay up to width.
+    Returns Closeability(closeable, reason, natural, detail)."""
+    cc = cfg.management.closeability
+    if not cc.enabled:
+        return Closeability(True, "disabled", None, "closeability gate disabled")
+    if not snap.wings_two_sided:
+        return Closeability(False, "wings_one_sided", None,
+                            "a long wing has no real bid -> cannot be sold -> uncloseable (ride)")
+    nat = snap.natural_debit
+    if nat is None:
+        return Closeability(False, "shorts_unpriceable", None,
+                            "natural debit uncomputable (a short leg has no ask)")
+    if target_debit is not None:
+        cap = target_debit + cfg.management.exit_winner_band + cc.slack_usd
+        if nat > cap:
+            return Closeability(False, "natural_above_cap", nat,
+                                f"natural {nat:.2f} > cap {cap:.2f} (target {target_debit:.2f} + "
+                                f"band {cfg.management.exit_winner_band} + slack {cc.slack_usd}) "
+                                f"-- winner ladder can never fill")
+    # Observability only (never blocks): a wide mid-vs-natural gap flags an ugly/one-sided market.
+    div = ""
+    if snap.mark is not None:
+        div = f"; mid {snap.mark:.2f} vs natural {nat:.2f} (div {abs(nat - snap.mark):.2f})"
+    return Closeability(True, "ok", nat, f"natural {nat:.2f} fillable{div}")
 
 
 # ── breakers (alert-only) ────────────────────────────────────────────────

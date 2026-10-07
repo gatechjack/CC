@@ -183,8 +183,7 @@ async def test_committed_redrive_caps_and_parks_once():
 
 
 def _park_cap() -> int:
-    from trading_corp.mace import manager as mgrmod
-    return mgrmod._MAX_CLOSING_REDRIVES
+    return CFG.management.closeability.max_closing_redrives
 
 
 # ── 5. REOPEN SELF-HEAL (the wedged-XLE shape) ──

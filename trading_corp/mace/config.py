@@ -78,6 +78,22 @@ class MarkGuardConfig:
 
 
 @dataclass(frozen=True)
+class CloseabilityConfig:
+    """Closeability gate + CLOSING un-latch knobs (2026-10-09 exit-redesign). Optional-with-defaults
+    (mirrors MarkGuardConfig) so the shipped code needs NO config/mace.yaml change -> config_hash
+    931a8214be50 is preserved for the deploy. The gate decides, on EXECUTABLE prices, whether a
+    PT/TIME winner close can actually fill; an uncloseable dead-wing OTM condor RIDES to expiry
+    instead of looping an unfillable close. `enabled=False` restores pre-redesign trigger behaviour
+    (a boot-time SELECTIVE revert -- NOT a live switch; the /mace Halt stops ENTRIES only)."""
+    enabled: bool = True             # kill-switch: False -> PT/TIME fire as before (no gate, no ride)
+    slack_usd: float = 0.05          # natural may exceed (target + exit_winner_band) by this and still attempt
+    revive_ticks: int = 3            # consecutive closeable ticks to auto-revive a riding rung (~15 min)
+    max_closing_redrives: int = 8    # committed-CLOSING re-drive cap before parking (~40 min)
+    park_retry_ticks: int = 12       # while parked, pulse one re-drive every N ticks (~hourly at 300s)
+    ride_shorts_buffer_pct: float = 0.02  # a short within this % of spot -> drop ride, re-manage (pin risk)
+
+
+@dataclass(frozen=True)
 class ManagementConfig:
     check_interval_sec: int
     window_et: tuple[str, str]
@@ -89,6 +105,7 @@ class ManagementConfig:
     exit_winner_band: float          # winner (time/PT) close cap = mid + this (GDX P1 2026-09-11)
     time_exit_defer_floor_dte: int   # time-exit defers above this DTE, forces natural at/below
     mark_guard: MarkGuardConfig = MarkGuardConfig()   # PT mark-trust guard (2026-09-18)
+    closeability: CloseabilityConfig = CloseabilityConfig()  # closeability gate + un-latch (2026-10-09)
 
 
 @dataclass(frozen=True)
@@ -363,6 +380,27 @@ def load_mace_config(
               if "sane_epsilon_usd" in mg else 0.01)
     mg_drop = (num(mg, "max_cycle_drop_pct", "management.mark_guard", lo=0.0, hi=1.0,
                    lo_excl=True, hi_excl=True) if "max_cycle_drop_pct" in mg else 0.35)
+    # Closeability gate + CLOSING un-latch (2026-10-09) — optional-with-defaults (mirrors mark_guard);
+    # absent block -> CloseabilityConfig() defaults, so the shipped config needs NO change.
+    cc = m.get("closeability")
+    if cc is None:
+        cc = {}
+    elif not isinstance(cc, dict):
+        errs.append(f"management.closeability: expected a mapping, got {cc!r}")
+        cc = {}
+    cc_enabled = cc.get("enabled", True)
+    if not isinstance(cc_enabled, bool):
+        errs.append(f"management.closeability.enabled: missing or not a bool: {cc_enabled!r}")
+    cc_slack = (num(cc, "slack_usd", "management.closeability", lo=0.0)
+                if "slack_usd" in cc else 0.05)
+    cc_revive = (num(cc, "revive_ticks", "management.closeability", typ=int, lo=1)
+                 if "revive_ticks" in cc else 3)
+    cc_maxrd = (num(cc, "max_closing_redrives", "management.closeability", typ=int, lo=1)
+                if "max_closing_redrives" in cc else 8)
+    cc_parkrt = (num(cc, "park_retry_ticks", "management.closeability", typ=int, lo=1)
+                 if "park_retry_ticks" in cc else 12)
+    cc_buf = (num(cc, "ride_shorts_buffer_pct", "management.closeability", lo=0.0, hi=1.0,
+                  hi_excl=True) if "ride_shorts_buffer_pct" in cc else 0.02)
 
     x = sect("execution")
     start_off = num(x, "entry_start_offset_usd", "execution", lo=0.0)
@@ -524,6 +562,14 @@ def load_mace_config(
                 frozen_cycles=int(mg_frozen),
                 sane_epsilon_usd=float(mg_eps),
                 max_cycle_drop_pct=float(mg_drop),
+            ),
+            closeability=CloseabilityConfig(
+                enabled=bool(cc_enabled),
+                slack_usd=float(cc_slack),
+                revive_ticks=int(cc_revive),
+                max_closing_redrives=int(cc_maxrd),
+                park_retry_ticks=int(cc_parkrt),
+                ride_shorts_buffer_pct=float(cc_buf),
             ),
         ),
         execution=ExecutionConfig(

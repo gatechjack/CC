@@ -62,7 +62,7 @@ from trading_corp.mace import broker_port as bp
 from trading_corp.mace.broker_port import OpenOrder, OptionsBrokerPort, OrderResult
 from trading_corp.mace.config import MaceConfig
 from trading_corp.mace.domain import (
-    CondorSpec, OptionQuote, RungState, iso_week,
+    CondorSpec, OptionQuote, QuoteSnapshot, RungState, iso_week,
     RUNG_ABANDONED, RUNG_CLOSED, RUNG_CLOSING, RUNG_OPEN, RUNG_SUBMITTING,
     EXIT_PT,
 )
@@ -568,13 +568,44 @@ class MaceExecutor:
     @staticmethod
     def _natural_debit(q: dict[str, Optional[OptionQuote]]) -> Optional[float]:
         """Net natural debit to close = buy shorts @ ask, sell wings @ bid. None
-        if any required side is missing."""
+        if any required side is missing. STRICT (a no-bid wing -> None): this is the gate's
+        executable-closeability basis, so a dead wing must read as uncloseable, not be given away."""
         sp, lp, sc, lc = q["sp"], q["lp"], q["sc"], q["lc"]
         if sp is None or lp is None or sc is None or lc is None:
             return None
         if sp.ask is None or sc.ask is None or lp.bid is None or lc.bid is None:
             return None
         return (sp.ask + sc.ask) - (lp.bid + lc.bid)
+
+    @staticmethod
+    def _natural_debit_floored(q: dict[str, Optional[OptionQuote]]) -> Optional[float]:
+        """Marketable-EXECUTION natural: buy shorts @ ask, sell wings @ (bid or 0). A dead wing
+        (no bid) is GIVEN AWAY at 0 rather than making the close unpriceable, so a COMMITTED close
+        (stop/exdiv/gap, or a gated time-floor close) can always price + fill -- the stop-liveness
+        fix (2026-10-09). Byte-identical to _natural_debit when both wings are two-sided. None only
+        when a SHORT ask is missing (can't buy the short back at all). The STRICT _natural_debit
+        remains the gate's basis; only the committed marketable ladder floors."""
+        sp, lp, sc, lc = q["sp"], q["lp"], q["sc"], q["lc"]
+        if sp is None or sc is None or sp.ask is None or sc.ask is None:
+            return None
+        lp_bid = lp.bid if (lp is not None and lp.bid is not None) else 0.0
+        lc_bid = lc.bid if (lc is not None and lc.bid is not None) else 0.0
+        return (sp.ask + sc.ask) - (lp_bid + lc_bid)
+
+    async def quote_snapshot(self, spec: CondorSpec) -> QuoteSnapshot:
+        """ONE fresh 4-leg quote fetch per manage tick (2026-10-09). The manager derives mark,
+        per-leg mids (guard), and natural/wings (closeability gate) from this SINGLE snapshot, so
+        the trigger and the guard can never disagree across two fetches (the old mark()-vs-leg_mids()
+        race) and the hot path makes 4 broker calls per rung instead of 8. None-tolerant: a broker
+        outage returns an all-None snapshot (+ benign audit), mirroring mark() -- mark becomes None
+        (stop/PT skipped, time/exdiv still fire) and the gate reads uncloseable (holds, never closes
+        on missing data)."""
+        try:
+            q = await self._fresh_quotes(spec)
+            return QuoteSnapshot(sp=q["sp"], lp=q["lp"], sc=q["sc"], lc=q["lc"])
+        except Exception as exc:  # noqa: BLE001 — a broker outage must not sink the manage loop
+            self._audit("mace_mark_unavailable", symbol=spec.symbol, error=str(exc))
+            return QuoteSnapshot(None, None, None, None)
 
     async def mark(self, spec: CondorSpec) -> Optional[float]:
         """Per-contract cost-to-close at mid, for the management loop's stop
@@ -1014,8 +1045,11 @@ class MaceExecutor:
                 raw = min(mid + (k - 1) * winner_step, winner_anchor + band)
                 limit = round_to_tick(raw, x.entry_tick_usd, mode="up")
             else:
-                # MARKETABLE: natural (cross-the-spread), walk UP by tick. natural None -> skip.
-                natural = self._natural_debit(quotes)
+                # MARKETABLE (committed: stop/exdiv/gap, or a gated time-floor close): natural
+                # (cross-the-spread), wings FLOORED to bid-or-0 so a dead wing is given away rather
+                # than blocking the close (stop-liveness, 2026-10-09). Walk UP by tick. None (a short
+                # has no ask) -> skip.
+                natural = self._natural_debit_floored(quotes)
                 if natural is None:
                     self._audit("mace_exit_unpriceable", rung_id=rung_id, attempt=k)
                     continue

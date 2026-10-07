@@ -46,12 +46,9 @@ _LOG = logging.getLogger("mace.manager")
 # so a crash-interrupted exit keeps being driven).
 _MANAGED_STATUSES = ("open", "closing")
 
-# CLOSING re-drive bounds (2026-10-09 exit-redesign; Commit 2 moves these onto CloseabilityConfig).
-# A committed close (stop/exdiv/gap) that cannot fill was previously re-driven EVERY manage tick
-# forever (the ~15-min XLE loop). Cap the tight re-drive, then PARK (single URGENT alert + an
-# occasional pulse) so a genuinely-stuck close surfaces once instead of flooding.
-_MAX_CLOSING_REDRIVES = 8      # ~40 min of 5-attempt ladders before parking
-_PARK_RETRY_TICKS = 12         # while parked, pulse one re-drive every N ticks (~hourly at 300s)
+# NOTE (2026-10-09): the CLOSING re-drive cap + park-pulse cadence are config knobs on
+# CloseabilityConfig (management.closeability.max_closing_redrives / park_retry_ticks), read in
+# _drive_closing. They bound the pre-redesign infinite ~15-min re-drive loop.
 
 
 @dataclass
@@ -441,7 +438,12 @@ class MaceManager:
         if rung.status == "closing":
             return await self._drive_closing(rung, now)
 
-        mark = await self.executor.mark(rung.spec)
+        # ONE fresh 4-leg snapshot per tick (2026-10-09): mark (triggers), stop_mark (stop basis),
+        # leg_mids (PT mark-trust guard) and natural/wings (closeability gate) all derive from it,
+        # so trigger + guard + gate can never disagree across two fetches (the old mark()-vs-leg_mids
+        # race) and the hot path makes 4 broker calls per rung, not 8.
+        snap = await self.executor.quote_snapshot(rung.spec)
+        mark = snap.mark
         if rung.symbol not in spot_cache:
             spot_cache[rung.symbol] = await self._spot(rung.symbol)
         spot = spot_cache[rung.symbol]
@@ -474,15 +476,32 @@ class MaceManager:
                 self._audit("mace_exdiv_error", symbol=rung.symbol, error=str(exc))
 
         decision = st.evaluate_management(rung, mark, spot, now, self.cfg, sym_cfg,
-                                          exdiv_within=exdiv_within)
+                                          exdiv_within=exdiv_within, stop_mark=snap.stop_mark)
         if not decision.should_exit:
             return None
         # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.
         # An untrusted mark HOLDS the rung (return None) + alerts; it does NOT log mace_manage_exit
         # (that would misreport a close that never happened). stop/time/exdiv are unguarded (they must
-        # fire — risk-reducing). The deployed close_rung/deferral is untouched.
+        # fire — risk-reducing). Fed the SAME snapshot's leg_mids (no second fetch -> no race).
         if decision.exit_reason == EXIT_PT:
-            if not await self._pt_mark_guard(rung, mark, now, prior_persisted_mark):
+            if not await self._pt_mark_guard(rung, mark, now, prior_persisted_mark,
+                                             leg_marks=snap.leg_mids):
+                return None
+        # CLOSEABILITY GATE (2026-10-09): a PT/TIME winner close must be EXECUTABLE -- long wings
+        # two-sided (sellable) + a natural debit within the ladder's cap. A dead-wing OTM condor
+        # fails deterministically -> do NOT attempt an unfillable close (the 10/02+10/05 loop); HOLD
+        # (Commit 3 turns this hold into a first-class RIDE-to-expiry). STOP/EXDIV are risk-reducing
+        # -> NEVER gated (they price off stop_natural, dead wings given away). The mark-trust guard
+        # above stays as defense-in-depth for a corrupt SHORT-leg mid the gate cannot see.
+        if decision.exit_reason in (EXIT_PT, EXIT_TIME):
+            target = self._closeability_target(decision.exit_reason, rung, snap, now)
+            gate = st.assess_closeability(rung, snap, self.cfg,
+                                          exit_reason=decision.exit_reason, target_debit=target)
+            if not gate.closeable:
+                self._audit("mace_close_blocked", rung_id=rung.rung_id, symbol=rung.symbol,
+                            reason=decision.exit_reason, gate=gate.reason,
+                            natural=(round(gate.natural, 4) if gate.natural is not None else None),
+                            detail=gate.detail)
                 return None
         self._audit("mace_manage_exit", rung_id=rung.rung_id,
                     reason=decision.exit_reason, detail=decision.detail,
@@ -522,17 +541,18 @@ class MaceManager:
                         detail="CLOSING rung carries booked exit fields; left untouched")
             return None
 
+        cc = self.cfg.management.closeability
         if reason in (EXIT_STOP, EXIT_EXDIV, EXIT_GAP):
             blk = extra.get("closing") or {}
             if blk.get("parked"):
                 n = self._park_ticks.get(rid, 0) + 1
                 self._park_ticks[rid] = n
-                if n % _PARK_RETRY_TICKS != 0:
+                if n % cc.park_retry_ticks != 0:
                     return None
                 return await self.executor.close_rung(rung, reason)
             count = self.store.bump_closing_redrive(
                 rid, self._now_utc().isoformat(timespec="seconds"))
-            if count > _MAX_CLOSING_REDRIVES:
+            if count > cc.max_closing_redrives:
                 self.store.set_closing_parked(rid, self._now_utc().isoformat(timespec="seconds"))
                 self._audit("mace_close_parked", rung_id=rid, reason=reason, redrives=count)
                 self.notifier.breaker(
@@ -563,14 +583,34 @@ class MaceManager:
         # a working close order exists (or the sweep errored) -> drive once; preamble owns it.
         return await self.executor.close_rung(rung, reason or EXIT_MANUAL)
 
+    def _closeability_target(self, reason: str, rung: RungState, snap, now: datetime):
+        """Target debit for the closeability gate's winner at-cap check. PT -> the synthetic PT
+        debit (the ladder caps at pt_debit + band). TIME above the defer floor -> the trigger mid
+        (winner cap anchor); TIME at/below the floor (forced marketable) -> None = liveness-only
+        (the marketable ladder may pay up to width, so only wings-two-sided + computable matter)."""
+        m = self.cfg.management
+        if reason == EXIT_PT:
+            if rung.pt_debit is not None:
+                return rung.pt_debit
+            return (m.pt_pct_of_credit * rung.credit_actual
+                    if rung.credit_actual is not None else None)
+        dte = (rung.expiry - now.date()).days
+        return snap.mark if dte > m.time_exit_defer_floor_dte else None
+
     async def _pt_mark_guard(self, rung: RungState, mark: Optional[float], now: datetime,
-                             prior_persisted_mark: Optional[float]) -> bool:
+                             prior_persisted_mark: Optional[float], *,
+                             leg_marks: "dict | None" = None) -> bool:
         """PT mark-trust guard (2026-09-18). Returns True if the PT-eligible `mark` is TRUSTED
         (fire the profit-target close), False to HOLD the rung. Fetches the fresh marks of any
         same-strike shorter-dated sibling rungs (the arbitrage lower bound), tracks the per-rung
         frozen/trust state, calls the PURE `strategy.assess_pt_mark_trust`, and on an untrusted mark
         emits the reuse alert (Activity Pulse audit + Telegram) — except the silent fail-closed
-        no-baseline one-cycle hold. Never raises into the manage tick."""
+        no-baseline one-cycle hold. Never raises into the manage tick.
+
+        2026-10-09: `leg_marks` (the rung's per-leg mids for the intra-condor leg-sanity check) is
+        now passed IN from the manager's single tick snapshot (QuoteSnapshot.leg_mids) rather than
+        re-fetched here -- killing the old mark()-vs-leg_mids() two-snapshot race. Falls back to a
+        fetch only if not supplied (defensive; the manager always supplies it)."""
         all_rungs = self.store.load_all()
         sibs = st.shorter_dated_same_strike_siblings(all_rungs, rung)
         sib_marks: list[Optional[float]] = []
@@ -581,10 +621,8 @@ class MaceManager:
                 self._audit("mace_pt_sibling_mark_error", rung_id=rung.rung_id,
                             sibling=s.rung_id, error=str(exc))
 
-        # Intra-condor leg-sanity (2026-10-02): fetch the rung's own per-leg mids so the pure guard
-        # can reject an arbitrage-impossible inverted wing (a corrupted illiquid long-wing mark).
-        # Fetched ONLY here on the PT-eligible path; leg_mids is None-tolerant (never raises).
-        leg_marks = await self.executor.leg_mids(rung.spec)
+        if leg_marks is None:   # defensive fallback (manager supplies from the shared snapshot)
+            leg_marks = await self.executor.leg_mids(rung.spec)
 
         stt = self._pt_mark_trust.get(rung.rung_id)
         # Cold start (first touch / post-restart) falls back to the persisted prior mark so the frozen

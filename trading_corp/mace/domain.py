@@ -139,6 +139,81 @@ class OptionQuote:
 
 
 @dataclass(frozen=True)
+class QuoteSnapshot:
+    """The four fresh leg quotes of one condor, fetched ONCE per manage tick (2026-10-09
+    exit-redesign) and shared by the trigger (mark), the PT mark-trust guard (leg_mids), and the
+    closeability gate (natural_debit / wings_two_sided) -- so they can never disagree across two
+    separate fetches (the pre-redesign mark()-vs-leg_mids() race). The derived properties mirror
+    execution._credit_mid / _natural_debit EXACTLY (the ladder still refetches per attempt)."""
+
+    sp: "OptionQuote | None"
+    lp: "OptionQuote | None"
+    sc: "OptionQuote | None"
+    lc: "OptionQuote | None"
+
+    @staticmethod
+    def _wing_bid(q: "OptionQuote | None") -> float:
+        """A long wing is SOLD at its bid to close; a dead wing (no bid) is given away at 0 --
+        never a blocker for a risk close, and never an inflated mid."""
+        return q.bid if (q is not None and q.bid is not None) else 0.0
+
+    @property
+    def mark(self) -> float | None:
+        """Cost-to-close at MID = (short mids) - (long mids). None if any leg is unpriceable.
+        Byte-identical to execution._credit_mid -- the management MARK used by the triggers."""
+        legs = (self.sp, self.lp, self.sc, self.lc)
+        if any(x is None or x.mid is None for x in legs):
+            return None
+        return (self.sp.mid - self.lp.mid) + (self.sc.mid - self.lc.mid)
+
+    @property
+    def natural_debit(self) -> float | None:
+        """Executable cost-to-close = buy shorts @ ask, sell wings @ bid. None if any required
+        side is missing (a dead wing with no bid -> None). Byte-identical to _natural_debit."""
+        if None in (self.sp, self.lp, self.sc, self.lc):
+            return None
+        if self.sp.ask is None or self.sc.ask is None or self.lp.bid is None or self.lc.bid is None:
+            return None
+        return (self.sp.ask + self.sc.ask) - (self.lp.bid + self.lc.bid)
+
+    @property
+    def stop_natural(self) -> float | None:
+        """Executable cost-to-close for a RISK close: shorts @ ask, wings @ (bid or 0). A dead
+        wing is given away (floored to 0) so a stop is NEVER un-fillable on a no-bid wing. None
+        only when a SHORT ask is missing (can't buy the short back at all)."""
+        if self.sp is None or self.sc is None or self.sp.ask is None or self.sc.ask is None:
+            return None
+        return (self.sp.ask + self.sc.ask) - (self._wing_bid(self.lp) + self._wing_bid(self.lc))
+
+    @property
+    def stop_mark(self) -> float | None:
+        """Conservative STOP basis: shorts @ mid, wings @ (bid or 0). A garbage/dead wing mid can
+        only DEFLATE the plain `mark` and HIDE a stop (the latent dead-wing bug); flooring wings to
+        their real bid removes that -> stop_mark >= mark always, so a stop fires no later and is
+        never blinded. None only when a SHORT mid is missing (a threatened condor's near-money
+        shorts are liquid, so it is computable exactly when it matters)."""
+        if self.sp is None or self.sc is None or self.sp.mid is None or self.sc.mid is None:
+            return None
+        return (self.sp.mid - self._wing_bid(self.lp)) + (self.sc.mid - self._wing_bid(self.lc))
+
+    @property
+    def wings_two_sided(self) -> bool:
+        """Both long wings have a REAL bid -> the protective wings can actually be SOLD to close.
+        A dead wing (RH bid 0 -> None) fails this deterministically every tick -- no wiggle-through
+        (the positive closeability check that the point-in-time mid-inversion guard could not be)."""
+        return (self.lp is not None and self.lp.bid is not None
+                and self.lc is not None and self.lc.bid is not None)
+
+    @property
+    def leg_mids(self) -> dict:
+        """{sp,lp,sc,lc} per-leg mids for the PT mark-trust guard's intra-condor leg-sanity check."""
+        return {"sp": self.sp.mid if self.sp is not None else None,
+                "lp": self.lp.mid if self.lp is not None else None,
+                "sc": self.sc.mid if self.sc is not None else None,
+                "lc": self.lc.mid if self.lc is not None else None}
+
+
+@dataclass(frozen=True)
 class CondorLeg:
     opt_type: str        # "put" | "call"
     strike: float
