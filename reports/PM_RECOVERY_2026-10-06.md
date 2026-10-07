@@ -248,6 +248,16 @@ the SAME gate stack, so the gates do NOT silently block; the pre-latch zero was 
 (whales net-exiting, new_cids=[], early-Oct/overnight lull + the 429 degradation), not a second blocking
 cause. The latch was the whole story for Phase 2; Phase 1 is closed.
 
+## LEG-AUDIT INVESTIGATION 2026-10-07 (jack/cs2 code_review x2) -- BENIGN, no fire-first
+Flag: KXCS2GAME-26OCT070800M80TS-TS leg=yes, whale outcome Spirit, `code_review:code_not_in_outcome:TS!<Spirit`,
+2 rows (1 FILLED 1 ERROR). Verified (RO authenticated GET /markets): title "Spirit wins", **yes_sub_title=Spirit**,
+result=**yes** (finalized). Whale=Spirit, we hold yes=Spirit -> **CORRECT bind** (Kalshi code "TS"=Team Spirit, an
+abbreviation that is not a subsequence of "Spirit" -> subsequence check false-flagged; same class as ITF pad-X).
+Journal: id4699 FILLED 5@0.87 (17:52Z, the copy), id4721 ERROR 404 market_not_found (20:24Z re-attempt after the
+match closed -- no fill), id4722 settlement 5@1.00 (WON). Position was the correct side and WON (+~$0.65 gross).
+**Fire-first NOT triggered** (filled leg confirmed correct, not an inversion). Carry-forward: add a CS2 team-code
+rule to leg_audit (like ITF pad-X) so abbreviated codes stop raising code_review. Runner pm_cs2_audit.
+
 ## RECOVERY COMPLETE
 Book -> reconcile-clean -> latch cleared / 57 armed -> fills resumed, all four accounts, clean, no
 fire-first. Engine never restarted. Backups left in place. Carry-forward (not started): scalar/refund
