@@ -86,8 +86,10 @@ sits harmless until a restart adjudicates it.
   02:56:24Z**, NRestarts 0, WorkingDirectory `/home/azureuser/trading_corp`.
 - **Running code = b4b2c089** (engine untouched): box `execution.py` csha16 `a8a03b59`, `live_driver.py`
   `4bbe3023`, `settlement.py` `a1abe0e3`, `arm.py` `b542e9ff` — all byte-match local b4b2c089; file mtimes
-  2026-09-22 << boot 2026-10-06 (trap 7 satisfied). (`player_props_match.py` absent on box AND in b4b2c089
-  — consistent, not a divergence.)
+  2026-09-22 << boot 2026-10-06 (trap 7 satisfied). (`player_props_match.py` IS present — it lives at
+  `trading_corp/data/`, imported by live_driver.py:65 `from ..data import player_props_match as PROPS`,
+  props route-only/inert; my initial Runner-0 stat used the wrong dir `prediction_markets/` — corrected,
+  no divergence.)
 - `pm_driver_task_heartbeat`: all 4 accounts last_cycle **02:06Z (age 0.0h)** — loop alive.
 - `pm_driver_heartbeat` (73 rows, all evaluated 02:06Z): per-account **union-across-categories** (trap 8):
   jack sum_sig **972** plc 0 err 0; karen **615**/0/0; marc **593**/0/0; trey **592**/0/0;
