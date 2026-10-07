@@ -21,7 +21,7 @@ from trading_corp.mace.domain import EXIT_EXPIRED, RUNG_CLOSED, RUNG_OPEN
 
 # Manager-side ride harness (expiry/strike-keyed counting port + builder).
 from tests.test_mace_closeability import (
-    _CountPort, _build, _seed, _put, EXP, EXP_TIME, NOW, NOW_LATE, CC,
+    _CountPort, _build, _seed, _put, EXP_TIME, NOW, NOW_LATE,
 )
 # Executor-side expiry harness.
 from tests.test_mace_execution import (
@@ -72,38 +72,40 @@ async def test_ride_escapes_when_short_threatened():
 
 
 @pytest.mark.asyncio
-async def test_ride_revives_after_consecutive_closeable_ticks():
+async def test_ride_resolves_by_closing_when_gate_passes_again():
+    # The ride is sticky: it clears only by RESOLVING the position. When the wing market returns and
+    # a TIME winner is now executable (gate passes), the close proceeds and the ride is cleared
+    # (mace_ride_cleared) -- no intermediate liveness-"revive" (which would flap on a tiny-bid wing).
     port = _CountPort()
     store, mgr, audits, chan = _build(port)
-    rid = _seed(store, credit=0.30)                       # EXP (dte 42, no time); benign mark
-    store.set_riding(rid, why="wings_one_sided", ts="t")
-    # Closeable, two-sided, BENIGN (no PT/stop/time) quotes: mark ~0.34 (0.15<..<0.60), wings sellable.
-    _put(port, 60.0, "put", 0.20, 0.22)
-    _put(port, 59.0, "put", 0.03, 0.05)
-    _put(port, 70.0, "call", 0.20, 0.22)
-    _put(port, 71.0, "call", 0.03, 0.05)
-    for _ in range(CC.revive_ticks - 1):
-        await mgr.manage_tick(NOW)
-        assert (store.get(rid).extra or {}).get("disposition") == "riding"  # not yet revived
-    await mgr.manage_tick(NOW)                             # the revive_ticks-th closeable tick
-    assert any(a[0] == "mace_ride_revive" for a in audits)
-    assert (store.get(rid).extra or {}).get("disposition") != "riding"    # revived -> managed again
+    rid = _seed(store, credit=0.30, expiry=EXP_TIME)      # dte 18 -> TIME due at 15:45
+    store.set_riding(rid, why="natural_above_cap", ts="t")
+    _put(port, 60.0, "put", 0.20, 0.22, EXP_TIME)         # liquid, two-sided; mark 0.34 (no PT, no stop)
+    _put(port, 59.0, "put", 0.03, 0.05, EXP_TIME)         # natural 0.38 <= cap mark0.34+0.10+0.05=0.49
+    _put(port, 70.0, "call", 0.20, 0.22, EXP_TIME)
+    _put(port, 71.0, "call", 0.03, 0.05, EXP_TIME)
+    await mgr.manage_tick(NOW_LATE)
+    assert any(a[0] == "mace_ride_cleared" for a in audits)               # ride resolved
+    assert any(pc.direction == bp.DIR_DEBIT for pc in port.place_calls)   # by CLOSING the winner
+    assert (store.get(rid).extra or {}).get("disposition") != "riding"
 
 
 @pytest.mark.asyncio
-async def test_ride_streak_resets_on_uncloseable_tick():
+async def test_ride_is_sticky_on_a_hold_tick():
+    # A riding rung on a BENIGN (no PT/stop/time) tick stays riding silently -- it does NOT un-ride
+    # just because the wing looks two-sided (no liveness-revive). It clears only by close/escape/expiry.
     port = _CountPort()
     store, mgr, audits, chan = _build(port)
-    rid = _seed(store, credit=0.30)
+    rid = _seed(store, credit=0.30)                       # EXP (dte 42, no time)
     store.set_riding(rid, why="wings_one_sided", ts="t")
-    # One closeable tick, then an UNCLOSEABLE (dead wing) tick must reset the streak -> no revive.
-    _put(port, 60.0, "put", 0.20, 0.22); _put(port, 59.0, "put", 0.03, 0.05)
-    _put(port, 70.0, "call", 0.20, 0.22); _put(port, 71.0, "call", 0.03, 0.05)
+    _put(port, 60.0, "put", 0.20, 0.22)                   # mark 0.34: 0.15 < .. < 0.60 -> HOLD
+    _put(port, 59.0, "put", 0.03, 0.05)
+    _put(port, 70.0, "call", 0.20, 0.22)
+    _put(port, 71.0, "call", 0.03, 0.05)
     await mgr.manage_tick(NOW)
-    _put(port, 71.0, "call", None, 0.41)                  # wing goes dead -> streak resets
-    await mgr.manage_tick(NOW)
-    assert not any(a[0] == "mace_ride_revive" for a in audits)
-    assert (store.get(rid).extra or {}).get("disposition") == "riding"
+    assert not any(a[0] in ("mace_ride_cleared", "mace_ride_escape") for a in audits)
+    assert all(pc.direction != bp.DIR_DEBIT for pc in port.place_calls)   # no close
+    assert (store.get(rid).extra or {}).get("disposition") == "riding"    # still riding (sticky)
 
 
 # ── EXPIRY SWEEP (executor-level) ──

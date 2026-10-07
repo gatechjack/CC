@@ -87,7 +87,6 @@ class CloseabilityConfig:
     (a boot-time SELECTIVE revert -- NOT a live switch; the /mace Halt stops ENTRIES only)."""
     enabled: bool = True             # kill-switch: False -> PT/TIME fire as before (no gate, no ride)
     slack_usd: float = 0.05          # natural may exceed (target + exit_winner_band) by this and still attempt
-    revive_ticks: int = 3            # consecutive closeable ticks to auto-revive a riding rung (~15 min)
     max_closing_redrives: int = 8    # committed-CLOSING re-drive cap before parking (~40 min)
     park_retry_ticks: int = 12       # while parked, pulse one re-drive every N ticks (~hourly at 300s)
     ride_shorts_buffer_pct: float = 0.02  # a short within this % of spot -> drop ride, re-manage (pin risk)
@@ -393,8 +392,6 @@ def load_mace_config(
         errs.append(f"management.closeability.enabled: missing or not a bool: {cc_enabled!r}")
     cc_slack = (num(cc, "slack_usd", "management.closeability", lo=0.0)
                 if "slack_usd" in cc else 0.05)
-    cc_revive = (num(cc, "revive_ticks", "management.closeability", typ=int, lo=1)
-                 if "revive_ticks" in cc else 3)
     cc_maxrd = (num(cc, "max_closing_redrives", "management.closeability", typ=int, lo=1)
                 if "max_closing_redrives" in cc else 8)
     cc_parkrt = (num(cc, "park_retry_ticks", "management.closeability", typ=int, lo=1)
@@ -566,7 +563,6 @@ def load_mace_config(
             closeability=CloseabilityConfig(
                 enabled=bool(cc_enabled),
                 slack_usd=float(cc_slack),
-                revive_ticks=int(cc_revive),
                 max_closing_redrives=int(cc_maxrd),
                 park_retry_ticks=int(cc_parkrt),
                 ride_shorts_buffer_pct=float(cc_buf),

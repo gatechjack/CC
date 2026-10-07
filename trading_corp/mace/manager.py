@@ -97,10 +97,6 @@ class MaceManager:
         # PARKED, so a parked rung re-drives only every park_retry_ticks ticks. In-memory (resets
         # on restart -> a parked rung simply gets one more re-drive attempt post-restart; benign).
         self._park_ticks: dict[str, int] = {}
-        # RIDE revive streak (2026-10-09): consecutive closeable ticks for a riding rung; at
-        # revive_ticks the ride clears and normal management resumes. In-memory (restart -> at most
-        # revive_ticks extra held ticks for a non-deadline winner; benign).
-        self._ride_streak: dict[str, int] = {}
         # PT-held alert de-dupe (2026-10-05): rung_ids CURRENTLY in a held (alert-worthy) episode.
         # Throttles the Telegram push ONLY -- one alert when a rung ENTERS held, suppressed while it
         # stays held (incl leg_inversion<->frozen flips on the same dead wing = one episode), and a
@@ -480,40 +476,24 @@ class MaceManager:
                 self._audit("mace_exdiv_error", symbol=rung.symbol, error=str(exc))
 
         # RIDE-TO-EXPIRY disposition (2026-10-09): a dead-wing OTM winner whose close is not
-        # executable rides to expiry (Jack's ruling) rather than looping an unfillable close. While
-        # riding, STOP/EXDIV still evaluate (risk never sleeps) but PT/TIME are suppressed silently
-        # (already alerted once at ride-enter). Two exits from the ride: (a) SHORTS THREATENED --
-        # spot within ride_shorts_buffer_pct of a short (pin/assignment risk) -> drop ride + re-manage
-        # NOW (near-money legs are liquid, so the gate passes / a stop can fire); (b) REVIVE --
-        # closeable again for revive_ticks consecutive ticks -> drop ride, resume normal management.
+        # executable rides to expiry (Jack's ruling) rather than looping an unfillable close. A ride
+        # is STICKY -- it clears ONLY by resolving the position: (a) the real gate passes again (close
+        # now executable -> close it), (b) a STOP/EXDIV fires (risk overrides), (c) a SHORT is
+        # THREATENED (spot within ride_shorts_buffer_pct -> drop ride + re-manage now, pin/assignment),
+        # or (d) the reconcile expiry sweep books it. While riding, PT/TIME that STILL fail the gate
+        # are suppressed SILENTLY (one alert, at ride-enter) -- no liveness-revive (a tiny-bid garbage
+        # wing is "two-sided" yet uncloseable, so a liveness check would flap ride<->revive).
         riding = (rung.extra or {}).get("disposition") == "riding"
-        if riding:
-            if self._ride_shorts_threatened(rung, spot):
-                self.store.clear_riding(rung.rung_id)
-                self._ride_streak.pop(rung.rung_id, None)
-                self._audit("mace_ride_escape", rung_id=rung.rung_id, symbol=rung.symbol,
-                            spot=spot, detail="short within buffer of spot -> drop ride, re-manage")
-                riding = False
-            elif self._ride_should_revive(rung, snap):
-                self.store.clear_riding(rung.rung_id)
-                self._ride_streak.pop(rung.rung_id, None)
-                self._audit("mace_ride_revive", rung_id=rung.rung_id, symbol=rung.symbol,
-                            detail=f"closeable {self.cfg.management.closeability.revive_ticks} "
-                                   f"consecutive ticks -> resume management")
-                self.notifier.breaker(
-                    condition=f"{rung.symbol} ride ENDED — close executable again",
-                    lines=[f"rung {rung.rung_id}"],
-                    suggested_action="wing market returned; normal management resumed", urgent=False)
-                riding = False
+        if riding and self._ride_shorts_threatened(rung, spot):
+            self.store.clear_riding(rung.rung_id)
+            self._audit("mace_ride_escape", rung_id=rung.rung_id, symbol=rung.symbol, spot=spot,
+                        detail="short within buffer of spot -> drop ride, re-manage this tick")
+            riding = False
 
         decision = st.evaluate_management(rung, mark, spot, now, self.cfg, sym_cfg,
                                           exdiv_within=exdiv_within, stop_mark=snap.stop_mark)
         if not decision.should_exit:
-            return None
-        # While RIDING, suppress PT/TIME silently (the ride alerted once; the gate would re-block
-        # anyway). STOP/EXDIV fall through below -- risk must fire even on a riding rung.
-        if riding and decision.exit_reason in (EXIT_PT, EXIT_TIME):
-            return None
+            return None     # hold; a riding rung stays riding silently (sticky to close/escape/expiry)
         # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.
         # An untrusted mark HOLDS the rung (return None) + alerts; it does NOT log mace_manage_exit
         # (that would misreport a close that never happened). stop/time/exdiv are unguarded (they must
@@ -533,8 +513,17 @@ class MaceManager:
             gate = st.assess_closeability(rung, snap, self.cfg,
                                           exit_reason=decision.exit_reason, target_debit=target)
             if not gate.closeable:
+                if riding:
+                    return None                       # already riding -> suppress re-alert, stay riding
                 self._enter_ride(rung, gate, decision.exit_reason)   # open -> riding (one alert)
                 return None
+        # Proceeding to an actual close (PT/TIME now executable, or an ungated STOP/EXDIV): if the
+        # rung was riding, the position is being resolved -> clear the disposition.
+        if riding:
+            self.store.clear_riding(rung.rung_id)
+            self._audit("mace_ride_cleared", rung_id=rung.rung_id, symbol=rung.symbol,
+                        reason=decision.exit_reason,
+                        detail="close executable again / risk override -> resolving ride")
         self._audit("mace_manage_exit", rung_id=rung.rung_id,
                     reason=decision.exit_reason, detail=decision.detail,
                     symbol=rung.symbol,
@@ -635,7 +624,6 @@ class MaceManager:
         alert fires exactly ONCE per ride episode. The rung stays `open` and keeps stop protection."""
         self.store.set_riding(rung.rung_id, why=gate.reason,
                               ts=self._now_utc().isoformat(timespec="seconds"), detail=gate.detail)
-        self._ride_streak.pop(rung.rung_id, None)
         self._audit("mace_ride_enter", rung_id=rung.rung_id, symbol=rung.symbol,
                     reason=trigger_reason, gate=gate.reason,
                     natural=(round(gate.natural, 4) if gate.natural is not None else None),
@@ -655,16 +643,6 @@ class MaceManager:
             return False
         buf = self.cfg.management.closeability.ride_shorts_buffer_pct * spot
         return spot <= rung.spec.short_put + buf or spot >= rung.spec.short_call - buf
-
-    def _ride_should_revive(self, rung: RungState, snap) -> bool:
-        """Advance the per-rung revive streak: a liveness-only closeability pass (wings two-sided +
-        natural computable) increments it, any miss resets it. Revive when it reaches revive_ticks
-        consecutive closeable ticks. SIDE EFFECT: updates self._ride_streak (call once per tick)."""
-        rid = rung.rung_id
-        cc = self.cfg.management.closeability
-        gate = st.assess_closeability(rung, snap, self.cfg, exit_reason=EXIT_TIME, target_debit=None)
-        self._ride_streak[rid] = (self._ride_streak.get(rid, 0) + 1) if gate.closeable else 0
-        return self._ride_streak[rid] >= cc.revive_ticks
 
     async def _pt_mark_guard(self, rung: RungState, mark: Optional[float], now: datetime,
                              prior_persisted_mark: Optional[float], *,
