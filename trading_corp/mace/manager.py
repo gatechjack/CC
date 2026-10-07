@@ -86,6 +86,13 @@ class MaceManager:
         # frozen (timeliness) + fallback-baseline checks. In-memory (resets on restart — benign:
         # the sibling/structural checks are stateless; frozen also seeds off persisted mace_rung_live).
         self._pt_mark_trust: dict[str, dict] = {}
+        # PT-held alert de-dupe (2026-10-05): rung_ids CURRENTLY in a held (alert-worthy) episode.
+        # Throttles the Telegram push ONLY -- one alert when a rung ENTERS held, suppressed while it
+        # stays held (incl leg_inversion<->frozen flips on the same dead wing = one episode), and a
+        # re-alert only AFTER it RESOLVES (passes the guard) then re-enters. In-memory (resets on
+        # restart -> at most one re-alert per rung per restart, accepted). The per-tick
+        # mace_pt_mark_reject audit row is UNAFFECTED -- the audit trail stays complete.
+        self._pt_held: set[str] = set()
 
     # ── small helpers ────────────────────────────────────────────────────
     def _audit(self, kind: str, **payload) -> None:
@@ -517,17 +524,22 @@ class MaceManager:
             "last_mark": mark, "repeat": unchanged_repeat, "last_trusted": new_trusted}
 
         if trust.trusted:
+            self._pt_held.discard(rung.rung_id)  # resolved -> a later re-entry re-alerts (alert-path only)
             return True
         if trust.alert:
+            # Decision + HOLD + audit row UNCHANGED: the per-tick mace_pt_mark_reject row is always
+            # written (complete trail). Only the Telegram push below is de-duped per held episode.
             self._audit("mace_pt_mark_reject", rung_id=rung.rung_id, symbol=rung.symbol,
                         mark=(round(mark, 4) if mark is not None else None), reason=trust.reason,
                         sibling_marks=[round(x, 4) for x in sib_marks if x is not None],
                         dte=dte, detail=trust.detail)
-            self.notifier.reject(
-                symbol=rung.symbol,
-                detail=(f"PT held - untrusted mark "
-                        f"{('%.2f' % mark) if mark is not None else 'None'} "
-                        f"({trust.reason}); {trust.detail}"))
+            if rung.rung_id not in self._pt_held:  # first held tick of this episode -> alert once
+                self._pt_held.add(rung.rung_id)
+                self.notifier.reject(
+                    symbol=rung.symbol,
+                    detail=(f"PT held - untrusted mark "
+                            f"{('%.2f' % mark) if mark is not None else 'None'} "
+                            f"({trust.reason}); {trust.detail}"))
         return False
 
     def _close_pricing(self, reason: str, rung: RungState,
