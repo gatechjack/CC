@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 
 ROOT = "/home/azureuser/trading_corp"
 DB = ROOT + "/data/trading_corp.db"
-SINCE = "2026-10-09 00:00:00"      # since the Friday deploy; widen if needed
+SINCE = "2026-10-07 23:29:00"      # since the Wed 2026-10-07 23:30Z deploy restart (was Friday 10-09;
+                                   # Jack moved the deploy to Wed -> Thursday 10-08 open is the first
+                                   # manage window). Widen the date here if re-running later.
 STUCK = "mace-XLE-2026-10-30-60-59-70-71-20260917"
 
 

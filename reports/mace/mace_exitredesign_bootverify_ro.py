@@ -11,10 +11,10 @@ from datetime import datetime, timezone
 ROOT = "/home/azureuser/trading_corp"
 MACE = ROOT + "/trading_corp/mace"
 DB = ROOT + "/data/trading_corp.db"
-OLD_PID = "642873"            # PID before the Friday restart (2026-10-06 02:56:24Z dedupe boot);
-                              # RE-PEG if the engine was restarted since. Expect a NEW pid.
+OLD_PID = "642873"            # PID before the deploy restart (2026-10-06 02:56:24Z dedupe boot);
+                              # deployed 2026-10-07 23:30Z -> new PID 664274. RE-PEG if restarted since.
 HASH = "931a8214be50"         # UNCHANGED (code-only deploy; config/mace.yaml data untouched)
-SINCE = "2026-10-09 00:00:00"
+SINCE = "2026-10-07 23:29:00"  # since the Wed 2026-10-07 deploy restart (was Friday 10-09 target)
 # NEW targets -- ALL 5 change this deploy (config.py the MODULE changes; config/mace.yaml data does not).
 TARGET = {"domain.py": "8522dc3a", "execution.py": "9cc1c165", "strategy.py": "b147e59d",
           "manager.py": "ccd02002", "config.py": "d441957f"}
