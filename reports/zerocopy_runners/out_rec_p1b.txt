@@ -1,0 +1,24 @@
+KEY_VAULT_URI present: yes
+---- kalshi_jack (ref=KALSHI) keys_resolved=True ----
+MARKET result='scalar' status='finalized' result_val/settlement=None/'0.4500' expiration='2026-10-13T23:00:00Z'
+   market keys: ['can_close_early', 'close_time', 'created_time', 'custom_strike', 'early_close_condition', 'event_ticker', 'exchange_index', 'expected_expiration_time', 'expiration_time', 'expiration_value', 'last_price_dollars', 'latest_expiration_time', 'market_type', 'no_ask_dollars', 'no_bid_dollars', 'no_sub_title', 'notional_value_dollars', 'occurrence_datetime', 'open_interest_fp', 'open_time', 'previous_price_dollars', 'previous_yes_ask_dollars', 'previous_yes_bid_dollars', 'price_level_structure', 'price_ranges', 'result', 'rules_primary', 'rules_secondary', 'settlement_bounds_type', 'settlement_timer_seconds', 'settlement_ts', 'settlement_value_dollars', 'status', 'strike_type', 'ticker', 'title', 'updated_time', 'volume_24h_fp', 'volume_fp', 'yes_ask_dollars', 'yes_ask_size_fp', 'yes_bid_dollars', 'yes_bid_size_fp', 'yes_sub_title']
+kalshi_jack positions: total=1 ticker_present=False position_fp=[]
+kalshi_jack SETTLEMENT market_result='scalar' revenue=225 settled_time='2026-09-29T23:49:46.459185Z' yes_count=None no_count=None
+     settlement keys: ['event_ticker', 'exchange_index', 'fee_cost', 'market_result', 'no_count_fp', 'no_total_cost_dollars', 'revenue', 'settled_time', 'ticker', 'value', 'yes_count_fp', 'yes_total_cost_dollars']
+     journal cost_basis=$2.3000 entered=5.0
+---- kalshi_karen (ref=kalshi_karen) keys_resolved=True ----
+kalshi_karen positions: total=2 ticker_present=False position_fp=[]
+kalshi_karen SETTLEMENT market_result='scalar' revenue=225 settled_time='2026-09-29T23:49:46.459185Z' yes_count=None no_count=None
+     settlement keys: ['event_ticker', 'exchange_index', 'fee_cost', 'market_result', 'no_count_fp', 'no_total_cost_dollars', 'revenue', 'settled_time', 'ticker', 'value', 'yes_count_fp', 'yes_total_cost_dollars']
+     journal cost_basis=$2.3000 entered=5.0
+---- kalshi_marc (ref=kalshi_marc) keys_resolved=True ----
+kalshi_marc positions: total=0 ticker_present=False position_fp=[]
+kalshi_marc SETTLEMENT market_result='scalar' revenue=45 settled_time='2026-09-29T23:49:46.459185Z' yes_count=None no_count=None
+     settlement keys: ['event_ticker', 'exchange_index', 'fee_cost', 'market_result', 'no_count_fp', 'no_total_cost_dollars', 'revenue', 'settled_time', 'ticker', 'value', 'yes_count_fp', 'yes_total_cost_dollars']
+     journal cost_basis=$0.4600 entered=1.0
+---- kalshi_trey (ref=kalshi_trey) keys_resolved=True ----
+kalshi_trey positions: total=0 ticker_present=False position_fp=[]
+kalshi_trey SETTLEMENT market_result='scalar' revenue=45 settled_time='2026-09-29T23:49:46.459185Z' yes_count=None no_count=None
+     settlement keys: ['event_ticker', 'exchange_index', 'fee_cost', 'market_result', 'no_count_fp', 'no_total_cost_dollars', 'revenue', 'settled_time', 'ticker', 'value', 'yes_count_fp', 'yes_total_cost_dollars']
+     journal cost_basis=$0.4600 entered=1.0
+=== DONE p1b ===
