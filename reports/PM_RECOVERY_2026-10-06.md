@@ -66,6 +66,47 @@ every account. Nothing else is touched. The legacy `trading_corp.db` is NOT writ
 
 ---
 
-## PHASE 2 — backup + book the close — PENDING AUTH
-## PHASE 3 — re-reconcile, clear latch, re-arm prior set — PENDING
+## PHASE 2 — BACKUP + BOOK THE CLOSE — COMPLETE (authorized), HALT before Phase 3
+
+Runner `pm_rec_p2` (guarded: online-backup -> integrity -> precondition-gate -> INSERT -> verify).
+Opened ONLY `prediction_markets.db` (RO for backup/snapshot, RW for the 4 INSERTs); legacy
+`trading_corp.db` never touched. No restart.
+
+### Conditions (pre-write, reported)
+- **C1 (consumers):** `close_source` is read only via SQL CASE/WHERE (equality/LIKE) and Python
+  `in _SETTLE_SOURCES` -> an unrecognized value is excluded, never raised. `won` consumers all guard
+  `won is not None` / `CASE WHEN won=1/0` / template `==1/==0/else dash`. Precedent: **348 existing
+  is_exit=1 rows already carry `won=NULL`**; **2 existing rows already carry a custom
+  `close_source='settlement_hand_reconcile'`**. `settlement_scalar` behaves identically to that
+  precedent: omitted from the /live settled-card rollup (`_SETTLE_SOURCES`) and the
+  `close_source='settlement'`-exact P&L rollups (a $0.33 cosmetic omission), but boot_reconcile ignores
+  `close_source` entirely, W-L correctly excludes a non-binary, and nothing crashes/skews. **No mishandle
+  -> no stop.** (`stats.py`/`scoring.py` `won` read `pm_closed_position`, a different table.)
+- **C2 (mirror book_settlements):** `realized = net_open*settled_value - net_open*avg_cost`, where
+  `avg_cost = (fill_count*fill_price + fee)/entered` -> **fee-INCLUSIVE** (my Phase-1 proposal wrongly
+  excluded it; corrected). `fee=0` on close, `submitted_ts=response_ts=now_ts`, `settled_ts=settlement
+  time` -- all verbatim. Only deviations from yes/no/void: `close_source='settlement_scalar'`,
+  `settled_value=$0.45` (venue scalar value); `won=NULL` matches the void convention.
+- **C3 (Phase-4 exclusion):** these are `is_exit=1` settlement closes; Phase 4's "did anything place"
+  query counts only `is_exit=0` entries (and I scope by close_source/ticker as belt-and-suspenders).
+
+### Executed + verified (box, 2026-10-07 03:25-03:26Z)
+- **Backup (left in place):** `/home/azureuser/pm_recovery_backup_20261007T032558Z.db`,
+  **670,158,848 bytes**, `quick_check ok`. df 17G free pre-backup.
+- `quick_check` main before = ok; existing is_exit=1 for ticker = 0 (no double-book); preconditions ok
+  (4 rows, net_open 5/5/1/1, leg=yes, all 4 accts).
+- **4 rows written** (ids 4619-4622), field-by-field as intended:
+  is_exit=1, fill_count 5/5/1/1, fill_price 0.45, fee 0.0, outcome_status 'filled',
+  close_source 'settlement_scalar', realized_pnl -0.137/-0.137/-0.0274/-0.0274, won NULL,
+  settled_ts 1790725786 (2026-09-29T23:49:46Z), submitted_ts=response_ts 1791343558, dry_run 0,
+  wallet 0x52f454c43b..., cid 0xea1e918e792e..., oidx 1.
+- **Row count 4618 -> 4622 (+4 exactly); other-concurrent new rows = 0** (nothing else moved).
+- **signed-net for KXUFCFIGHT-26SEP29BULVIS-VIS = 0 on all four accounts.**
+- `quick_check` main after = ok. **Total realized P&L booked = -$0.3288.**
+- Engine **PID 642873 / NRestarts 0 / ActiveEnter 2026-10-06 02:56:24Z UNCHANGED** (no restart).
+
+**HALT. Did NOT re-reconcile, did NOT clear any latch, did NOT arm anything.** Phase 3 is a separate
+authorization; the re-reconcile gate there still applies.
+
+## PHASE 3 — re-reconcile, clear latch, re-arm prior set — PENDING AUTH
 ## PHASE 4 — verify fills resume — PENDING
