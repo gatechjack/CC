@@ -214,7 +214,43 @@ not A); (2) armed+UNATTACHED -> no heartbeat at all (the 19 ?x -- code: roster a
 authoritative arm state was overwritten by the latch with no audit/history/journal trace. Jack checks
 this against what he knows and rules.
 
-## PHASE 4 — verify fills resume — BLOCKED on 3.2 (no subs armed yet)
-Will run immediately after the armed set is restored: placed vs rejected per cycle (is_exit=0 only,
-excluding the 4 settlement_scalar closes), first real fill as evidence, gate any non-placed signals die
-at, and the attachment timeline (when the 71->156 landed).
+## STEP 1b/2 — ARMED THE 57 (authorized 2026-10-07) + VERIFIED
+
+Reconcile re-gate (fresh, RO, boot_reconcile.compare): all 4 accounts journal_tickers=0 kalshi_tickers=0
+DIFFS=0 -> ARM_GATE OPEN. Then `pm_cli live-arm --account A --category C --clear-latch --by claude` per
+scope, all 57, every one rc=0 effective_armed=true latched=false. Jack's 57 == my A+A-+A? tiers exactly.
+
+VERIFY (legacy agent_state RO; columns agent/key/value_json -- no false-disarm): **armed=True 57**,
+intended-not-armed 0, unexpected-armed 0, **disarmed 35** (33 real INDETERMINATE + soccer/tennis vestigial),
+arm:global armed=True. Engine **PID 642873 / NRestarts 0 UNCHANGED** (no restart). Legacy db touched ONLY
+via pm_cli arm path.
+
+## STEP 3 — SHARD BALANCES (RO, 04:19Z)
+- kalshi_jack  total $482.06 (s0 $290.76 / s3 $191.30) -- ok (18 cats)
+- kalshi_karen total $447.74 (s0 $260.78 / s3 $186.96) -- ok (16 cats)
+- kalshi_marc  total $79.17  (s0 $35.18  / s3 $43.99)  -- **THIN** (11 cats)
+- kalshi_trey  total $73.41  (s0 $32.45  / s3 $40.96)  -- **THIN** (12 cats)
+shards 1&2 $0 (baseline). marc/trey thin -> gate 6b will reject (bias-down, no row) as they deplete;
+**fund marc + trey** tomorrow. Not a blocker.
+
+## STEP 4 — FILLS RESUMED (watch 04:22-04:47Z, ~3 cycles, RO)
+**All four accounts placed AND filled within ~1 min of arming.** First FILLED entry:
+marc/trey 04:18:58Z, karen 04:19:06Z, jack 04:19:13Z. Tally since arm: jack filled 8/no_fill 3;
+karen 8/3; marc 5/3; trey 8/0. **Zero error/rejected rows** (order path clean); all placements on the
+first armed cycle; later cycles placed 0 (idempotent / no new signal, normal overnight).
+**leg_audit all ok|na -- no mismatch/code_review -> NO fire-first trigger.** boxing/f1 entries since arm = 0
+(their whales have not produced a copyable signal yet -- expected per Jack). MLB is live again via the
+**playoffs** (KXMLBGAME-26OCT07 TB@NYY, LAD@ATL).
+
+### 10-02 window: CLOSED
+The subs were armed throughout 10-02->10-06 (latch came 10-06 02:57). Arming now -> immediate fills with
+the SAME gate stack, so the gates do NOT silently block; the pre-latch zero was **signal availability**
+(whales net-exiting, new_cids=[], early-Oct/overnight lull + the 429 degradation), not a second blocking
+cause. The latch was the whole story for Phase 2; Phase 1 is closed.
+
+## RECOVERY COMPLETE
+Book -> reconcile-clean -> latch cleared / 57 armed -> fills resumed, all four accounts, clean, no
+fire-first. Engine never restarted. Backups left in place. Carry-forward (not started): scalar/refund
+settlement-close path (2nd outage it caused); settled-rollup close_source filter widening (include
+settlement_scalar + settlement_hand_reconcile); Polymarket 429 storm; pm_open_position stale since 09-28;
+NULL caps on jack boxing/f1; fund marc+trey; the 23-ish INDETERMINATE subs Jack may add if any shows quiet.

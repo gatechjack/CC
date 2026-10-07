@@ -1,0 +1,69 @@
+engine BEFORE: PID=642873 NRestarts=0
+=== ARMING 57 (pm_cli live-arm --clear-latch --by claude) ===
+  kalshi_jack/atp rc=0 "effective_armed": true "latched": false
+  kalshi_jack/bra rc=0 "effective_armed": true "latched": false
+  kalshi_jack/bun rc=0 "effective_armed": true "latched": false
+  kalshi_jack/boxing rc=0 "effective_armed": true "latched": false
+  kalshi_jack/cfb rc=0 "effective_armed": true "latched": false
+  kalshi_jack/cs2 rc=0 "effective_armed": true "latched": false
+  kalshi_jack/epl rc=0 "effective_armed": true "latched": false
+  kalshi_jack/f1 rc=0 "effective_armed": true "latched": false
+  kalshi_jack/itf rc=0 "effective_armed": true "latched": false
+  kalshi_jack/lal rc=0 "effective_armed": true "latched": false
+  kalshi_jack/mex rc=0 "effective_armed": true "latched": false
+  kalshi_jack/mlb rc=0 "effective_armed": true "latched": false
+  kalshi_jack/mls rc=0 "effective_armed": true "latched": false
+  kalshi_jack/nfl rc=0 "effective_armed": true "latched": false
+  kalshi_jack/ucl rc=0 "effective_armed": true "latched": false
+  kalshi_jack/ufc rc=0 "effective_armed": true "latched": false
+  kalshi_jack/wnba rc=0 "effective_armed": true "latched": false
+  kalshi_jack/wta rc=0 "effective_armed": true "latched": false
+  kalshi_karen/atp rc=0 "effective_armed": true "latched": false
+  kalshi_karen/bra rc=0 "effective_armed": true "latched": false
+  kalshi_karen/bun rc=0 "effective_armed": true "latched": false
+  kalshi_karen/cfb rc=0 "effective_armed": true "latched": false
+  kalshi_karen/cs2 rc=0 "effective_armed": true "latched": false
+  kalshi_karen/epl rc=0 "effective_armed": true "latched": false
+  kalshi_karen/itf rc=0 "effective_armed": true "latched": false
+  kalshi_karen/lal rc=0 "effective_armed": true "latched": false
+  kalshi_karen/mex rc=0 "effective_armed": true "latched": false
+  kalshi_karen/mlb rc=0 "effective_armed": true "latched": false
+  kalshi_karen/mls rc=0 "effective_armed": true "latched": false
+  kalshi_karen/nfl rc=0 "effective_armed": true "latched": false
+  kalshi_karen/ucl rc=0 "effective_armed": true "latched": false
+  kalshi_karen/ufc rc=0 "effective_armed": true "latched": false
+  kalshi_karen/wnba rc=0 "effective_armed": true "latched": false
+  kalshi_karen/wta rc=0 "effective_armed": true "latched": false
+  kalshi_marc/atp rc=0 "effective_armed": true "latched": false
+  kalshi_marc/cfb rc=0 "effective_armed": true "latched": false
+  kalshi_marc/cs2 rc=0 "effective_armed": true "latched": false
+  kalshi_marc/itf rc=0 "effective_armed": true "latched": false
+  kalshi_marc/lal rc=0 "effective_armed": true "latched": false
+  kalshi_marc/mex rc=0 "effective_armed": true "latched": false
+  kalshi_marc/mlb rc=0 "effective_armed": true "latched": false
+  kalshi_marc/mls rc=0 "effective_armed": true "latched": false
+  kalshi_marc/nfl rc=0 "effective_armed": true "latched": false
+  kalshi_marc/ufc rc=0 "effective_armed": true "latched": false
+  kalshi_marc/wnba rc=0 "effective_armed": true "latched": false
+  kalshi_trey/atp rc=0 "effective_armed": true "latched": false
+  kalshi_trey/cfb rc=0 "effective_armed": true "latched": false
+  kalshi_trey/cs2 rc=0 "effective_armed": true "latched": false
+  kalshi_trey/itf rc=0 "effective_armed": true "latched": false
+  kalshi_trey/lal rc=0 "effective_armed": true "latched": false
+  kalshi_trey/mex rc=0 "effective_armed": true "latched": false
+  kalshi_trey/mlb rc=0 "effective_armed": true "latched": false
+  kalshi_trey/mls rc=0 "effective_armed": true "latched": false
+  kalshi_trey/nfl rc=0 "effective_armed": true "latched": false
+  kalshi_trey/ufc rc=0 "effective_armed": true "latched": false
+  kalshi_trey/wnba rc=0 "effective_armed": true "latched": false
+  kalshi_trey/wta rc=0 "effective_armed": true "latched": false
+=== STEP 2 VERIFY (legacy agent_state RO; columns agent,key,value_json) ===
+intended-to-arm count: 57
+arm:global -> armed=True latched=False
+TOTAL per-sub arm rows: 92 | armed=True: 57
+intended NOT (armed & not-latched): 0
+UNEXPECTED armed (not in the 57): 0
+disarmed per-sub count: 35
+RESULT: armed==57 and matches intended: True
+engine AFTER: PID=642873 NRestarts=0 (before PID=642873 NR=0)
+=== DONE s1arm ===

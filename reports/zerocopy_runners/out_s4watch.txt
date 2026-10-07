@@ -1,0 +1,527 @@
+WATCH since 1791346500 (2026-10-07 04:15:00Z); engine cycle ~5-11min; 10 samples x 150s (~25min)
+==== sample 1 04:22:05Z ====
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=80 placed=0 errors=0 eval_age=0.1min
+    kalshi_karen   sig=318 placed=0 errors=0 eval_age=0.1min
+    kalshi_marc    sig=521 placed=0 errors=0 eval_age=0.1min
+    kalshi_trey    sig=529 placed=0 errors=0 eval_age=0.1min
+==== sample 2 04:24:35Z ====
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=154 placed=0 errors=0 eval_age=0.1min
+    kalshi_karen   sig=65 placed=0 errors=0 eval_age=0.1min
+    kalshi_marc    sig=192 placed=0 errors=0 eval_age=0.0min
+    kalshi_trey    sig=119 placed=0 errors=0 eval_age=0.0min
+==== sample 3 04:27:05Z ====
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=444 placed=0 errors=0 eval_age=0.1min
+    kalshi_karen   sig=320 placed=0 errors=0 eval_age=0.0min
+    kalshi_marc    sig=379 placed=0 errors=0 eval_age=0.0min
+    kalshi_trey    sig=381 placed=0 errors=0 eval_age=0.0min
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+==== sample 4 04:29:35Z ====
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=161 placed=0 errors=0 eval_age=0.0min
+    kalshi_karen   sig=312 placed=0 errors=0 eval_age=0.0min
+    kalshi_marc    sig=521 placed=0 errors=0 eval_age=0.0min
+    kalshi_trey    sig=275 placed=0 errors=0 eval_age=0.0min
+==== sample 5 04:32:05Z ====
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=616 placed=0 errors=0 eval_age=0.0min
+    kalshi_karen   sig=394 placed=0 errors=0 eval_age=0.0min
+    kalshi_marc    sig=364 placed=0 errors=0 eval_age=0.0min
+    kalshi_trey    sig=389 placed=0 errors=0 eval_age=0.0min
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+==== sample 6 04:34:35Z ====
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=345 placed=0 errors=0 eval_age=0.1min
+    kalshi_karen   sig=475 placed=0 errors=0 eval_age=0.1min
+    kalshi_marc    sig=542 placed=0 errors=0 eval_age=0.1min
+    kalshi_trey    sig=545 placed=0 errors=0 eval_age=0.1min
+==== sample 7 04:37:05Z ====
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=77 placed=0 errors=0 eval_age=0.1min
+    kalshi_karen   sig=73 placed=0 errors=0 eval_age=0.1min
+    kalshi_marc    sig=139 placed=0 errors=0 eval_age=0.1min
+    kalshi_trey    sig=60 placed=0 errors=0 eval_age=0.1min
+==== sample 8 04:39:35Z ====
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=503 placed=0 errors=0 eval_age=0.1min
+    kalshi_karen   sig=65 placed=0 errors=0 eval_age=0.1min
+    kalshi_marc    sig=56 placed=0 errors=0 eval_age=0.0min
+    kalshi_trey    sig=39 placed=0 errors=0 eval_age=0.0min
+==== sample 9 04:42:06Z ====
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=504 placed=0 errors=0 eval_age=0.1min
+    kalshi_karen   sig=323 placed=0 errors=0 eval_age=0.0min
+    kalshi_marc    sig=529 placed=0 errors=0 eval_age=0.0min
+    kalshi_trey    sig=227 placed=0 errors=0 eval_age=0.0min
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+==== sample 10 04:44:36Z ====
+/tmp/pmsnap_659430.py:5: DeprecationWarning: datetime.datetime.utcfromtimestamp() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.fromtimestamp(timestamp, datetime.UTC).
+  try: return datetime.datetime.utcfromtimestamp(int(ts)).strftime('%H:%M:%SZ')
+  new ENTRY orders since arm: 38
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_trey   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:18:58Z kalshi_marc   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=1.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=8.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  mlb     KXMLBGAME-26OCT062130MILSD yes px=0.16 cnt=None -> no_fill legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=5.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  itf     KXITFMATCH-26OCT06BECALK-A yes px=0.87 cnt=None -> no_fill legaudit=ok
+    04:19:06Z kalshi_karen  cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=3.0 -> filled legaudit=na
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=7.0 -> filled legaudit=ok
+    04:19:06Z kalshi_karen  lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=7.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=15.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11CHIGB-CHI yes px=0.61 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   nfl     KXNFLGAME-26OCT11LVNE-LV   yes px=0.39 cnt=10.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.83 cnt=None -> no_fill legaudit=ok
+    04:19:13Z kalshi_jack   cfb     KXNCAAFSPREAD-26OCT09FSULO no px=0.43 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=2.0 -> filled legaudit=na
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH no px=0.37 cnt=10.0 -> filled legaudit=ok
+    04:19:13Z kalshi_jack   lal     KXLALIGAGAME-26OCT10RVCATH yes px=0.36 cnt=10.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.85 cnt=None -> no_fill legaudit=ok
+    04:19:27Z kalshi_trey   itf     KXITFMATCH-26OCT06BECALK-A yes px=0.96 cnt=5.0 -> filled legaudit=ok
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT072000TBNYY yes px=0.63 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT071800LADAT yes px=0.6 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.18 cnt=None -> no_fill legaudit=na
+    04:19:27Z kalshi_trey   mlb     KXMLBGAME-26OCT062130MILSD yes px=0.19 cnt=2.0 -> filled legaudit=na
+    04:19:27Z kalshi_trey   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    04:19:27Z kalshi_marc   cfb     KXNCAAFGAME-26OCT10LSUUK-U yes px=0.28 cnt=1.0 -> filled legaudit=na
+    kalshi_jack: {'no_fill': 3, 'filled': 8}
+    kalshi_karen: {'no_fill': 3, 'filled': 8}
+    kalshi_marc: {'filled': 5, 'no_fill': 3}
+    kalshi_trey: {'filled': 8}
+  heartbeat per account (sum sig/placed/errors, newest eval age):
+    kalshi_jack    sig=66 placed=0 errors=0 eval_age=0.0min
+    kalshi_karen   sig=53 placed=0 errors=0 eval_age=0.0min
+    kalshi_marc    sig=47 placed=0 errors=0 eval_age=0.0min
+    kalshi_trey    sig=178 placed=0 errors=0 eval_age=0.0min
+=== FINAL per-account entry-status tally since arm ===
+entries by account x status:
+    kalshi_jack filled 8
+    kalshi_jack no_fill 3
+    kalshi_karen filled 8
+    kalshi_karen no_fill 3
+    kalshi_marc filled 5
+    kalshi_marc no_fill 3
+    kalshi_trey filled 8
+first FILLED entry per account since arm:
+    kalshi_jack 1791346753
+    kalshi_karen 1791346746
+    kalshi_marc 1791346738
+    kalshi_trey 1791346738
+boxing/f1 entries since arm: 0
+=== DONE s4 ===
