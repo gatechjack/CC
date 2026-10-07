@@ -94,9 +94,13 @@ class MaceManager:
         # the sibling/structural checks are stateless; frozen also seeds off persisted mace_rung_live).
         self._pt_mark_trust: dict[str, dict] = {}
         # CLOSING-park pulse counters (2026-10-09): per-rung tick count while a committed close is
-        # PARKED, so a parked rung re-drives only every _PARK_RETRY_TICKS ticks. In-memory (resets
+        # PARKED, so a parked rung re-drives only every park_retry_ticks ticks. In-memory (resets
         # on restart -> a parked rung simply gets one more re-drive attempt post-restart; benign).
         self._park_ticks: dict[str, int] = {}
+        # RIDE revive streak (2026-10-09): consecutive closeable ticks for a riding rung; at
+        # revive_ticks the ride clears and normal management resumes. In-memory (restart -> at most
+        # revive_ticks extra held ticks for a non-deadline winner; benign).
+        self._ride_streak: dict[str, int] = {}
         # PT-held alert de-dupe (2026-10-05): rung_ids CURRENTLY in a held (alert-worthy) episode.
         # Throttles the Telegram push ONLY -- one alert when a rung ENTERS held, suppressed while it
         # stays held (incl leg_inversion<->frozen flips on the same dead wing = one episode), and a
@@ -475,9 +479,40 @@ class MaceManager:
             except Exception as exc:  # noqa: BLE001
                 self._audit("mace_exdiv_error", symbol=rung.symbol, error=str(exc))
 
+        # RIDE-TO-EXPIRY disposition (2026-10-09): a dead-wing OTM winner whose close is not
+        # executable rides to expiry (Jack's ruling) rather than looping an unfillable close. While
+        # riding, STOP/EXDIV still evaluate (risk never sleeps) but PT/TIME are suppressed silently
+        # (already alerted once at ride-enter). Two exits from the ride: (a) SHORTS THREATENED --
+        # spot within ride_shorts_buffer_pct of a short (pin/assignment risk) -> drop ride + re-manage
+        # NOW (near-money legs are liquid, so the gate passes / a stop can fire); (b) REVIVE --
+        # closeable again for revive_ticks consecutive ticks -> drop ride, resume normal management.
+        riding = (rung.extra or {}).get("disposition") == "riding"
+        if riding:
+            if self._ride_shorts_threatened(rung, spot):
+                self.store.clear_riding(rung.rung_id)
+                self._ride_streak.pop(rung.rung_id, None)
+                self._audit("mace_ride_escape", rung_id=rung.rung_id, symbol=rung.symbol,
+                            spot=spot, detail="short within buffer of spot -> drop ride, re-manage")
+                riding = False
+            elif self._ride_should_revive(rung, snap):
+                self.store.clear_riding(rung.rung_id)
+                self._ride_streak.pop(rung.rung_id, None)
+                self._audit("mace_ride_revive", rung_id=rung.rung_id, symbol=rung.symbol,
+                            detail=f"closeable {self.cfg.management.closeability.revive_ticks} "
+                                   f"consecutive ticks -> resume management")
+                self.notifier.breaker(
+                    condition=f"{rung.symbol} ride ENDED — close executable again",
+                    lines=[f"rung {rung.rung_id}"],
+                    suggested_action="wing market returned; normal management resumed", urgent=False)
+                riding = False
+
         decision = st.evaluate_management(rung, mark, spot, now, self.cfg, sym_cfg,
                                           exdiv_within=exdiv_within, stop_mark=snap.stop_mark)
         if not decision.should_exit:
+            return None
+        # While RIDING, suppress PT/TIME silently (the ride alerted once; the gate would re-block
+        # anyway). STOP/EXDIV fall through below -- risk must fire even on a riding rung.
+        if riding and decision.exit_reason in (EXIT_PT, EXIT_TIME):
             return None
         # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.
         # An untrusted mark HOLDS the rung (return None) + alerts; it does NOT log mace_manage_exit
@@ -498,10 +533,7 @@ class MaceManager:
             gate = st.assess_closeability(rung, snap, self.cfg,
                                           exit_reason=decision.exit_reason, target_debit=target)
             if not gate.closeable:
-                self._audit("mace_close_blocked", rung_id=rung.rung_id, symbol=rung.symbol,
-                            reason=decision.exit_reason, gate=gate.reason,
-                            natural=(round(gate.natural, 4) if gate.natural is not None else None),
-                            detail=gate.detail)
+                self._enter_ride(rung, gate, decision.exit_reason)   # open -> riding (one alert)
                 return None
         self._audit("mace_manage_exit", rung_id=rung.rung_id,
                     reason=decision.exit_reason, detail=decision.detail,
@@ -596,6 +628,43 @@ class MaceManager:
                     if rung.credit_actual is not None else None)
         dte = (rung.expiry - now.date()).days
         return snap.mark if dte > m.time_exit_defer_floor_dte else None
+
+    def _enter_ride(self, rung: RungState, gate, trigger_reason: str) -> None:
+        """Transition an OPEN rung -> RIDING (disposition, not status). Called ONLY on the first
+        gate-fail of a PT/TIME close (a riding rung's PT/TIME is suppressed before the gate), so the
+        alert fires exactly ONCE per ride episode. The rung stays `open` and keeps stop protection."""
+        self.store.set_riding(rung.rung_id, why=gate.reason,
+                              ts=self._now_utc().isoformat(timespec="seconds"), detail=gate.detail)
+        self._ride_streak.pop(rung.rung_id, None)
+        self._audit("mace_ride_enter", rung_id=rung.rung_id, symbol=rung.symbol,
+                    reason=trigger_reason, gate=gate.reason,
+                    natural=(round(gate.natural, 4) if gate.natural is not None else None),
+                    detail=gate.detail)
+        self.notifier.breaker(
+            condition=f"{rung.symbol} RIDING to expiry — close not executable ({gate.reason})",
+            lines=[f"rung {rung.rung_id}", f"trigger {trigger_reason}", gate.detail],
+            suggested_action="holding OTM defined-risk to expiry; auto-revives if the wing market returns",
+            urgent=False)
+
+    def _ride_shorts_threatened(self, rung: RungState, spot: Optional[float]) -> bool:
+        """A riding condor is OTM; if spot approaches/crosses EITHER short (within
+        ride_shorts_buffer_pct), pin/assignment risk means we must drop the ride and re-manage
+        (a stop may be due, and near-money legs are liquid so the gate will pass). spot None (quote
+        outage) -> not threatened (hold the ride; a blind close helps nothing)."""
+        if spot is None or rung.spec is None:
+            return False
+        buf = self.cfg.management.closeability.ride_shorts_buffer_pct * spot
+        return spot <= rung.spec.short_put + buf or spot >= rung.spec.short_call - buf
+
+    def _ride_should_revive(self, rung: RungState, snap) -> bool:
+        """Advance the per-rung revive streak: a liveness-only closeability pass (wings two-sided +
+        natural computable) increments it, any miss resets it. Revive when it reaches revive_ticks
+        consecutive closeable ticks. SIDE EFFECT: updates self._ride_streak (call once per tick)."""
+        rid = rung.rung_id
+        cc = self.cfg.management.closeability
+        gate = st.assess_closeability(rung, snap, self.cfg, exit_reason=EXIT_TIME, target_debit=None)
+        self._ride_streak[rid] = (self._ride_streak.get(rid, 0) + 1) if gate.closeable else 0
+        return self._ride_streak[rid] >= cc.revive_ticks
 
     async def _pt_mark_guard(self, rung: RungState, mark: Optional[float], now: datetime,
                              prior_persisted_mark: Optional[float], *,

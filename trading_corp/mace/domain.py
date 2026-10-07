@@ -32,8 +32,10 @@ EXIT_TIME = "time"
 EXIT_EXDIV = "exdiv"
 EXIT_GAP = "gap"
 EXIT_MANUAL = "manual"
+EXIT_EXPIRED = "expired"   # booked by the reconcile expiry sweep: a dead-wing OTM rung that RODE
+                           # to expiry and expired worthless (exit_debit 0, realized = full credit)
 EXIT_REASONS = frozenset(
-    {EXIT_PT, EXIT_STOP, EXIT_TIME, EXIT_EXDIV, EXIT_GAP, EXIT_MANUAL}
+    {EXIT_PT, EXIT_STOP, EXIT_TIME, EXIT_EXDIV, EXIT_GAP, EXIT_MANUAL, EXIT_EXPIRED}
 )
 
 # ---------------------------------------------------------------------------

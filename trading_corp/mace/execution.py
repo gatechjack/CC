@@ -64,7 +64,7 @@ from trading_corp.mace.config import MaceConfig
 from trading_corp.mace.domain import (
     CondorSpec, OptionQuote, QuoteSnapshot, RungState, iso_week,
     RUNG_ABANDONED, RUNG_CLOSED, RUNG_CLOSING, RUNG_OPEN, RUNG_SUBMITTING,
-    EXIT_PT,
+    EXIT_PT, EXIT_EXPIRED,
 )
 from trading_corp.mace.disposition import exit_disposition_line
 from trading_corp.mace.notify import MaceNotifier
@@ -427,6 +427,17 @@ class RungStore:
         self._merge_extra(rung_id, {"exit_order_id": None, "exit_order_limit": None,
                                     "exit_order_reason": None})
 
+    def set_riding(self, rung_id: str, *, why: str, ts: str, detail: str = "") -> None:
+        """Mark an OPEN rung RIDING-to-expiry (2026-10-09): a dead-wing OTM winner whose close is
+        not executable rides to expiration (Jack's ruling) instead of looping an unfillable close.
+        Riding is a DISPOSITION in extra_json, NOT a status -- the rung stays `open` (it is still a
+        live position needing stop protection; capacity/reconcile/PnL/UI all key on status)."""
+        self._merge_extra(rung_id, {"disposition": "riding",
+                                    "ride": {"why": why, "since": ts, "detail": detail}})
+
+    def clear_riding(self, rung_id: str) -> None:
+        self._merge_extra(rung_id, {"disposition": None, "ride": None})
+
     def reopen_from_closing(self, rung_id: str) -> bool:
         """Transition a CLOSING rung back to OPEN -- the un-latch (2026-10-09). Guarded in SQL
         exactly like reports/mace/mace_xle_reset.py: ONLY a rung still `closing` with NO booked
@@ -532,6 +543,10 @@ class MaceExecutor:
         self._now_et = now_et_fn
         self._poll_interval_s = poll_interval_s
         self._poll_timeout_s = poll_timeout_s
+        # Expiry-sweep de-dupe (2026-10-09): rung_ids already alerted as "past expiry with OPEN
+        # legs remaining" (possible assignment) so the reconcile sweep warns ONCE, not every tick.
+        # In-memory (resets on restart -> at most one re-alert per rung per restart).
+        self._expiry_alerted: set[str] = set()
 
     # -- small helpers --------------------------------------------------------
     def _utc_iso(self) -> str:
@@ -1249,6 +1264,11 @@ class MaceExecutor:
         `submitting` anchors (boot/crash): match by deterministic combo_id, promote
         confirmed fills, abandon+alert past the 2-session horizon. Fake-fill guard
         everywhere — an error/exception books nothing."""
+        # (0) EXPIRY SWEEP (2026-10-09): ride-to-expiry needs a settlement path, else a riding (or
+        # any) rung held past expiry becomes an immortal `open` row poisoning capacity / weekly
+        # budget / PnL (the pre-redesign gap). Book an expired-worthless OTM rung at debit 0 (keep
+        # the full credit); if same-expiry legs still show on the account, warn ONCE (assignment).
+        await self._sweep_expired(session_date)
         # (A) resting-PT lifecycle for open rungs.
         for rung in self.store.load_by_status(RUNG_OPEN):
             try:
@@ -1269,6 +1289,53 @@ class MaceExecutor:
             except Exception as exc:  # noqa: BLE001
                 self._audit("mace_reconcile_drain_error", rung_id=rung.rung_id, error=str(exc))
                 self.notifier.error(loop="reconcile", exc=exc)
+
+    async def _sweep_expired(self, session_date: date) -> None:
+        """Settle OPEN rungs whose expiry has passed (2026-10-09). One open_positions fetch for the
+        batch (skip the sweep on a broker error -> retry next tick). Per rung: same-expiry legs still
+        on the account -> possible assignment, warn ONCE; otherwise expired worthless OTM -> book."""
+        expired = [r for r in self.store.load_by_status(RUNG_OPEN) if r.expiry < session_date]
+        if not expired:
+            return
+        try:
+            positions = await self.port.open_positions()
+        except Exception as exc:  # noqa: BLE001 — no positions list this tick -> retry next
+            self._audit("mace_expiry_sweep_error", error=str(exc))
+            return
+        for rung in expired:
+            try:
+                self._settle_expired(rung, positions or [])
+            except Exception as exc:  # noqa: BLE001 — one rung must not sink the sweep
+                self._audit("mace_expiry_settle_error", rung_id=rung.rung_id, error=str(exc))
+
+    def _settle_expired(self, rung: RungState, positions: "Sequence") -> None:
+        exp_iso = rung.expiry.isoformat()
+        same_exp = [p for p in positions
+                    if (getattr(p, "symbol", "") or "").upper() == rung.symbol.upper()
+                    and str((getattr(p, "raw", None) or {}).get("expiration_date") or "") == exp_iso]
+        if same_exp:
+            # Legs still open at/after expiry -> possible assignment/settlement in flight. A no-HITL
+            # engine must NOT guess here: warn ONCE and leave the rung open for manual resolution.
+            if rung.rung_id not in self._expiry_alerted:
+                self._expiry_alerted.add(rung.rung_id)
+                self.notifier.breaker(
+                    condition=f"{rung.symbol} rung PAST EXPIRY with {len(same_exp)} open leg(s) — possible assignment",
+                    lines=[f"rung {rung.rung_id}", f"expiry {exp_iso}"],
+                    suggested_action="verify assignment/settlement + close/book manually")
+                self._audit("mace_expiry_legs_remain", rung_id=rung.rung_id, symbol=rung.symbol,
+                            expiry=exp_iso, legs=len(same_exp))
+            return
+        # No same-expiry legs remain -> the condor expired worthless OTM (Jack's ride-to-expiry
+        # outcome): book at exit_debit 0, realized = the full credit kept. (A rung that expired ITM
+        # would have shown same-expiry legs / been assigned -> the warn branch above, never here.)
+        credit = rung.credit_actual or 0.0
+        realized = credit * 100.0 * rung.contracts
+        self.store.mark_closed(rung.rung_id, exit_reason=EXIT_EXPIRED, exit_debit=0.0,
+                               realized_pnl=realized, exit_ts=self._utc_iso())
+        self.notifier.exit(symbol=rung.symbol, expiry=exp_iso, contracts=rung.contracts,
+                           reason=EXIT_EXPIRED, debit=0.0, pnl=realized, pct_of_credit=100.0)
+        self._audit("mace_expired_booked", rung_id=rung.rung_id, symbol=rung.symbol,
+                    realized=realized, line=exit_disposition_line(rung.spec, EXIT_EXPIRED))
 
     async def _reconcile_open_pt(self, rung: RungState) -> None:
         if not self._resting_pt:

@@ -248,10 +248,10 @@ async def test_manager_time_blocked_on_nobid_wing():
     _put(port, 70.0, "call", 0.07, 0.09, EXP_TIME)
     _put(port, 71.0, "call", None, 0.41, EXP_TIME)        # DEAD wing (no bid)
     await mgr.manage_tick(NOW_LATE)
-    assert any(k == "mace_close_blocked" and p.get("gate") == "wings_one_sided"
-               for k, p in audits)
-    assert all(pc.direction != bp.DIR_DEBIT for pc in port.place_calls)
-    assert store.get(rid).status == "open"
+    assert any(k == "mace_ride_enter" and p.get("gate") == "wings_one_sided" for k, p in audits)
+    assert all(pc.direction != bp.DIR_DEBIT for pc in port.place_calls)   # no close attempted
+    r = store.get(rid)
+    assert r.status == "open" and (r.extra or {}).get("disposition") == "riding"  # rides to expiry
 
 
 @pytest.mark.asyncio
@@ -272,10 +272,10 @@ async def test_manager_pt_blocked_natural_above_cap_the_10_5_shape():
     # mark = (0.09-0.02)+(0.22-0.21) = 0.08 <= 0.15 (PT) ; stop_mark 0.29 < 0.60 ; not inverted.
     # natural = (0.10+0.24)-(0.01+0.01) = 0.32 > cap 0.15+0.10+0.05 = 0.30 -> natural_above_cap.
     await mgr.manage_tick(NOW_LATE)
-    assert any(k == "mace_close_blocked" and p.get("gate") == "natural_above_cap"
-               for k, p in audits)
+    assert any(k == "mace_ride_enter" and p.get("gate") == "natural_above_cap" for k, p in audits)
     assert all(pc.direction != bp.DIR_DEBIT for pc in port.place_calls)
-    assert store.get(rid).status == "open"
+    r = store.get(rid)
+    assert r.status == "open" and (r.extra or {}).get("disposition") == "riding"
 
 
 @pytest.mark.asyncio
