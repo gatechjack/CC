@@ -144,6 +144,76 @@ pairs to arm (jack/boxing + jack/f1 excluded regardless -- NULL cap, paper). Giv
 `pm_cli live-arm --account A --category C --clear-latch --by claude` per scope (looped in one runner),
 then verify (`arm:global` armed, per-sub armed/not-latched for the set, PID/NRestarts unchanged).
 
+## ARMED-SET RECONSTRUCTION (RO, 2026-10-07) — candidate list, LOWER BOUND
+
+Runners `pm_rec_armset` (+ p3a/p3b). Goal: candidate (account,category) pairs armed just before the
+2026-10-06 02:57:01Z latch, with evidence. **Output is a list for Jack to check, not a decision.**
+
+### Heartbeat semantics (from code, not the table)
+- The driver roster is **attachment-gated**: `active_driver_subdivisions` = active sub on an active
+  account WITH >=1 active attachment (driver_roster; main.py:1466). The per-account task iterates ONLY
+  those categories (`for c in cats`, live_driver.py:1383).
+- `upsert_reached`/`upsert_evaluated` (live_driver.py:1387/1523) fire for every category the loop
+  reaches. The **arm check is per-ORDER, inside the cycle, AFTER the beats** (live_driver.py:1044,
+  "RE-READ per order"); the disarmed branch just `disarm_blocked+=1; continue` -- **no per-sub log, not
+  persisted in the heartbeat** (only n_signals/placed/errors/ceiling_latched are).
+- **Therefore a heartbeat row means ATTACHED + driven, NOT armed.** A disarmed-but-attached sub BEATS
+  (confirmed live: all 92 latched, yet 73 beat). An armed-but-UNATTACHED sub gets **no beat at all**
+  (not in the roster). So heartbeat-presence is a LOWER BOUND on the armed set and is the WRONG
+  instrument for arm.
+
+### boxing/f1 validation (Jack: both have whales attached, not yet traded)
+jack/boxing (1 whale) + jack/f1 (2 whales), attached 2026-10-01 19:51Z, 0 entries ever. Both HAVE
+heartbeat rows (evaluated). So the method captures armed+attached+never-traded. It does NOT test
+armed+UNATTACHED -- that case is the real gap, and it lives in the 19 subs with 0 attachments.
+
+### The ONLY positive arm signal that survives: a pre-latch PLACEMENT
+Placing an order requires arm (gate-1 re-read, live_driver.py:1044). So any is_exit=0 entry placed
+pre-latch proves the sub was armed then. agent_state's arm rows were OVERWRITTEN by the latch (no
+prior-armed field); `set_agent_state` is an upsert that CREATES keys (so 92 keys does NOT bound the set);
+`audit_event` has 0 pm_live rows; the pre-latch journal has no arm enumeration. **Placement is the only
+reconstruction signal.** (Arm read used correct columns agent/key/value_json; global armed=True, sensible.)
+
+### VERDICT TIERS (92 subs)
+- **A = ARMED (confirmed)** -- placed >=1 entry in the 7d before the latch (armed at latch): **36 subs.**
+- **A- = ARMED (historical)** -- placed entries pre-latch but not in the final 7d (armed earlier; arm
+  persists unless later disarmed -- very likely still armed, window-unconfirmed): **19 subs.**
+- **A? = ARMED (operator-confirmed)** -- jack/boxing, jack/f1 (Jack, 2026-10-06; attached, not yet
+  traded): **2 subs.**
+- **? = INDETERMINATE (attached, never placed)** -- armed-no-trade OR disarmed-but-attached: **16 subs.**
+- **?x = INDETERMINATE (unattached, never placed, no heartbeat)** -- armed-unattached (invisible) OR
+  never-armed: **19 subs.**
+
+Placement evidence (A+A-) = **55** (== the 55 ever-traded). +2 operator = **57 with positive arm
+evidence**. **35 INDETERMINATE.** Jack states 80 armed -> ~23 of the 35 INDETERMINATE were armed; the
+method cannot say WHICH 23.
+
+### Full table (verdict code . account . category [att, e7d, eEver])
+A  jack: atp[6,13,65] cfb[4,31,124] cs2[5,3,49] itf[1,18,87] mlb[5,9,210] mls[2,3,56] nfl[4,22,189] ufc[2,2,32] wnba[4,5,24]
+A- jack: bra[2,0,2] bun[2,0,3] epl[3,0,4] lal[1,0,12] mex[2,0,15] ucl[2,0,6] wta[2,0,14]
+A? jack: boxing[1,0,0] f1[2,0,0]
+?  jack: fl1[1,0,0] nba[1,0,0] sea[1,0,0] uel[1,0,0]
+?x jack: fed[0] nhl[0] soccer[0] tennis[0]
+A  karen: atp[3,6,33] cfb[4,31,144] cs2[2,5,37] itf[1,24,103] mlb[4,7,163] mls[2,3,57] nfl[2,21,151] ufc[2,2,32] wnba[2,2,8]
+A- karen: bra[2,0,2] bun[2,0,2] epl[2,0,16] lal[1,0,12] mex[2,0,18] ucl[2,0,6] wta[1,0,3]
+?  karen: uel[1,0,0]
+?x karen: fed[0] fl1[0] nba[0] nhl[0] sea[0]
+A  marc: atp[3,6,21] cfb[3,22,52] cs2[2,5,8] itf[1,24,111] mlb[4,7,43] mls[2,3,33] nfl[1,21,122] ufc[2,2,17] wnba[2,2,6]
+A- marc: lal[1,0,1] mex[2,0,12]
+?  marc: bra[2,0,0] bun[2,0,0] epl[2,0,0] ucl[2,0,0] uel[1,0,0] wta[1,0,0]
+?x marc: fed[0] fl1[0] nba[0] nhl[0] sea[0]
+A  trey: atp[3,6,20] cfb[3,22,52] cs2[2,5,8] itf[1,24,116] mlb[4,7,43] mls[2,3,33] nfl[2,21,120] ufc[2,2,17] wnba[2,2,6]
+A- trey: lal[1,0,1] mex[2,0,12] wta[1,0,7]
+?  trey: bra[2,0,0] bun[2,0,0] epl[2,0,0] ucl[2,0,0] uel[1,0,0]
+?x trey: fed[0] fl1[0] nba[0] nhl[0] sea[0]
+
+### Completeness: this list is a LOWER BOUND
+57 have positive arm evidence (55 placement + boxing/f1); 35 are INDETERMINATE. Armed subs can be missing
+by: (1) armed+attached but no placeable trade this window (boxing/f1 prove it -> land in INDETERMINATE,
+not A); (2) armed+UNATTACHED -> no heartbeat at all (the 19 ?x -- code: roster attachment-gated); (3) the
+authoritative arm state was overwritten by the latch with no audit/history/journal trace. Jack checks
+this against what he knows and rules.
+
 ## PHASE 4 — verify fills resume — BLOCKED on 3.2 (no subs armed yet)
 Will run immediately after the armed set is restored: placed vs rejected per cycle (is_exit=0 only,
 excluding the 4 settlement_scalar closes), first real fill as evidence, gate any non-placed signals die
