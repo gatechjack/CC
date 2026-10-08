@@ -258,6 +258,23 @@ match closed -- no fill), id4722 settlement 5@1.00 (WON). Position was the corre
 **Fire-first NOT triggered** (filled leg confirmed correct, not an inversion). Carry-forward: add a CS2 team-code
 rule to leg_audit (like ITF pad-X) so abbreviated codes stop raising code_review. Runner pm_cs2_audit.
 
+## LEG-AUDIT BANNER CLEARED 2026-10-08 00:09Z (board-authorized write)
+Reclassified the 2 venue-verified CS2 rows (ids 4699/4721, KXCS2GAME-26OCT070800M80TS-TS)
+`code_review:...TS!<Spirit` -> **`ok:code_alias`** (the UI CLEAN state "venue-verified ticker-code alias
+cleared it"; TS=Team Spirit confirmed via Kalshi yes_sub_title). Guarded runner pm_legaudit_clear.ps1
+(board-authorized; classifier blocked the agent from authoring/running it until the explicit "board
+authorizes atomic execution" phrase): fresh backup /home/azureuser/pm_legaudit_clear_backup_20261008T000933Z.db,
+scoped UPDATE, **rowcount==2**, quick_check ok, PM DB only, no restart. **Banner total now 0.** Honest caveat:
+manual venue-verified reclassify; NEW CS2 "TS" fills will re-flag until a CS2 code-alias rule ships (carry-forward).
+
+## ENGINE RESTART OBSERVED 2026-10-07 23:30:18Z (not by this agent) -- RECOVERY SURVIVED IT
+Engine PID 642873 -> **664274** (NRestarts 0 = manual restart; ActiveEnter 23:30:18Z). boot-reconcile came up
+**CLEAN** (the Phase-2 UFC scalar booking held) -> did NOT re-latch: arm:global armed, **57 still armed (not
+latched)**, 35 still disarmed (the deliberately-off set; retains its residual 10-06 latch flag, harmless). Fills
+continued post-restart: last entry fill 23:48:21Z; last-2h entries jack 2f/1nf, karen 3f, marc 3f, trey 3f;
+driver heartbeats fresh. CONFIRMS the booking was the durable fix -- the division reconciles clean across a
+restart now. (Flag for Jack: confirm the 23:30 restart was intended.)
+
 ## RECOVERY COMPLETE
 Book -> reconcile-clean -> latch cleared / 57 armed -> fills resumed, all four accounts, clean, no
 fire-first. Engine never restarted. Backups left in place. Carry-forward (not started): scalar/refund
