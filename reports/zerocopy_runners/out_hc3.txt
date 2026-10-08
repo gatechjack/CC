@@ -1,0 +1,107 @@
+=== restarts today + boot-reconcile result (2026-10-07 00:00 onward) ===
+2026-10-07T23:30:42+0000 tc-prod-vm xvfb-run[664287]: 2026-10-07 23:30:42,208 INFO trading_corp.main: Robinhood MACE wired (execution_mode=live, config_hash=931a8214be50; 4 loops online; gating: divisions.yaml standby + /mace halt latch + strategies.yaml auto_execute).
+2026-10-07T23:30:55+0000 tc-prod-vm xvfb-run[664287]: 2026-10-07 23:30:55,790 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_karen reconciled=True latched=False latched_categories=()
+2026-10-07T23:30:55+0000 tc-prod-vm xvfb-run[664287]: 2026-10-07 23:30:55,943 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_marc reconciled=True latched=False latched_categories=()
+2026-10-07T23:30:56+0000 tc-prod-vm xvfb-run[664287]: 2026-10-07 23:30:56,122 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_trey reconciled=True latched=False latched_categories=()
+2026-10-07T23:30:57+0000 tc-prod-vm xvfb-run[664287]: 2026-10-07 23:30:57,429 INFO trading_corp.prediction_markets.live_driver: pm_live_driver: boot-reconcile account=kalshi_jack reconciled=True latched=False latched_categories=()
+=== single-scan grep of the day for 429 / REVIEW / WARNING / guards (since arm) ===
+matched lines total:
+173158 /tmp/hcj_666740.txt
+--- HTTP 429 count today + first + last ---
+count: 172651
+2026-10-07T04:18:15+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 04:18:15,105 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x91feec8af2 (mex): positions[0x91feec8a…, limit=500, offset=0]: HTTP 429
+...
+2026-10-08T03:08:21+0000 tc-prod-vm xvfb-run[664287]: 2026-10-08 03:08:21,001 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x21f333307a (ufc): positions[0x21f33330…, limit=500, offset=0]: HTTP 429
+--- 429 per hour ---
+   8132 2026-10-07T04
+   6271 2026-10-07T05
+   8919 2026-10-07T06
+  15813 2026-10-07T07
+  10059 2026-10-07T08
+   9447 2026-10-07T09
+   6904 2026-10-07T10
+  11444 2026-10-07T11
+   8387 2026-10-07T12
+   2797 2026-10-07T13
+   2020 2026-10-07T14
+   2862 2026-10-07T15
+   2192 2026-10-07T16
+   3108 2026-10-07T17
+   3187 2026-10-07T18
+   2891 2026-10-07T19
+   3902 2026-10-07T20
+   3804 2026-10-07T21
+   8889 2026-10-07T22
+   8217 2026-10-07T23
+  12146 2026-10-08T00
+  14278 2026-10-08T01
+  14611 2026-10-08T02
+   2371 2026-10-08T03
+--- guards (counts) ---
+  OPPOSING-PAIR: 276
+  whale-EXIT: 74
+  shard_underfunded: 58
+  shard_read_failed: 0
+  exposure_unknown: 0
+  abbrev_collision: 0
+  winner_outcome_unresolved: 0
+  driver_ambiguous: 0
+--- REVIEW / inversion / code_review lines (verbatim, non-429) ---
+2026-10-07T13:48:01+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 13:48:01,505 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T14:05:02+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 14:05:02,060 INFO mace.manager: mace.mace_pt_mark_reject {'rung_id': 'mace-XLE-2026-11-06-57.5-56.5-67-68-20260929', 'symbol': 'XLE', 'mark': 0.135, 'reason': 'leg_inversion', 'sibling_marks': [], 'dte': 30, 'detail': 'long put mark 0.25 >= short put 0.11 (+0.01) -- arbitrage-impossible inverted wing'}
+2026-10-07T14:51:08+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 14:51:08,403 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T14:58:46+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 14:58:46,863 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T14:58:51+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 14:58:51,439 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on BLSH -- sparse_chain_no_weekly (missing new_short); chain={'reason': 'no_liquid_weekly_contracts', 'considered': 29, 'liquid': 0, 'target_date': '2026-10-30', 'failed_by_gate': {'liveness': 29}}
+2026-10-07T15:03:56+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 15:03:56,532 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T15:15:47+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 15:15:47,536 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T15:25:54+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 15:25:54,266 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:04:50+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:04:50,127 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:49:04+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:49:04,924 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:49:56+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:49:56,656 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:50:41+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:50:41,373 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:51:29+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:51:29,325 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:52:13+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:52:13,872 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:52:59+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:52:59,718 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:53:46+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:53:46,106 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:54:34+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:54:34,425 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:55:33+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:55:33,685 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:56:32+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:56:32,998 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+2026-10-07T18:57:33+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 18:57:33,439 INFO trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: PREVIEW ABORTED roll/open on MSTR -- sparse_chain_no_weekly_for_new_leap (missing new_short_on_new_leap); chain={'reason': 'no_rollout_weekly', 'considered': 0, 'after_dte': 44}
+--- WARNING / Traceback / CRITICAL (non-429, sample) ---
+2026-10-07T05:04:37+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 05:04:37,797 WARNING trading_corp.prediction_markets.settlement: pm settlement: PROCEEDS cross-check divergence on KXITFMATCH-26OCT06BECALK-ALK: our proceeds=5.0000 vs kalshi revenue=500.0000 (>tol 0.10) -- hand-inspect the booked realized_pnl
+2026-10-07T06:06:31+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 06:06:31,953 WARNING trading_corp.data.bitunix_ws_feed: bitunix ws feed disconnected: no close frame received or sent; reconnect in 1.0s
+2026-10-07T07:08:18+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 07:08:18,619 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/boxing -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x65a6baf1df3cd613e589346aee4428e3ed4e95a1629c259aa4693ddaa08c7edd']
+2026-10-07T07:18:07+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 07:18:07,997 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/wnba -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x0e7b4dd9733bd7338754cd01217e8bd0a429034000e944da4b44aa7eea9fab79']
+2026-10-07T07:52:10+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 07:52:10,869 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/wnba -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x1603b0c6a3f40636cffd52c37fda596fd7e81b3fa8d59d86dcbd710b96fd6d9d']
+2026-10-07T08:37:28+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 08:37:28,793 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/wnba -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x2075991436bb3189d2902f05e8d3d8dd767b3866f67c30f4fc4d0a73fccecb37']
+2026-10-07T08:50:16+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 08:50:16,888 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/wnba -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x07d9a47d5a2e701de5a0181a764b455267b78a64df4a9348b5ae0c53c7245ebd']
+2026-10-07T09:10:26+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 09:10:26,143 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_marc/itf -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0xab5edf40dd7252e5f6288a9ad5ae33257efc91746275c2da88f989a0dae26467']
+2026-10-07T09:10:26+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 09:10:26,914 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_trey/itf -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0xab5edf40dd7252e5f6288a9ad5ae33257efc91746275c2da88f989a0dae26467']
+2026-10-07T09:10:27+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 09:10:27,427 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_karen/itf -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0xab5edf40dd7252e5f6288a9ad5ae33257efc91746275c2da88f989a0dae26467']
+2026-10-07T09:10:28+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 09:10:28,488 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/itf -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0xab5edf40dd7252e5f6288a9ad5ae33257efc91746275c2da88f989a0dae26467']
+2026-10-07T09:28:53+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 09:28:53,891 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/wnba -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x73e695c184b10d6ed2d10b612d3cf3ee516e5cd2df1a7e66a2e6b4ac4a15fee8']
+2026-10-07T09:34:04+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 09:34:04,065 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/mlb -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x7e7e59264e1685649f6677f8166283ddfffd67e2bd2f06798624d003e88041e4']
+2026-10-07T09:40:53+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 09:40:53,586 WARNING trading_corp.data.bitunix_ws_feed: bitunix ws feed disconnected: no close frame received or sent; reconnect in 1.0s
+2026-10-07T10:03:35+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 10:03:35,812 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_marc/bun -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x73e695c184b10d6ed2d10b612d3cf3ee516e5cd2df1a7e66a2e6b4ac4a15fee8']
+2026-10-07T10:03:36+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 10:03:36,137 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_trey/bun -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x73e695c184b10d6ed2d10b612d3cf3ee516e5cd2df1a7e66a2e6b4ac4a15fee8']
+2026-10-07T10:03:36+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 10:03:36,843 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/bun -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x73e695c184b10d6ed2d10b612d3cf3ee516e5cd2df1a7e66a2e6b4ac4a15fee8']
+2026-10-07T10:03:48+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 10:03:48,612 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_karen/bun -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0x73e695c184b10d6ed2d10b612d3cf3ee516e5cd2df1a7e66a2e6b4ac4a15fee8']
+2026-10-07T10:09:27+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 10:09:27,729 WARNING trading_corp.agents.divisions.bitunix_sfp_research_log: bitunix_sfp_research_log log_exit failed (order_id=24146137-998c-4e33-8127-9dba2c38b825): can't subtract offset-naive and offset-aware datetimes
+2026-10-07T10:23:48+0000 tc-prod-vm xvfb-run[642887]: 2026-10-07 10:23:48,707 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: OPPOSING-PAIR guard kalshi_jack/wnba -- 1 NEWLY-contested; flattened 0 held leg(s) + skipped incoming both sides; new_cids=['0xb97d49892cb6b119354a29f907dd50e7cdb06a0130cf650cc03eddfe70960247']
+--- WARNING types tally (non-429) ---
+    275 trading_corp.prediction_markets.live_driver: pm_live_driver:
+     25 trading_corp.utils.market_data: earnings source disagreement
+     22 trading_corp.prediction_markets.settlement: pm settlement: P
+      9 trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: no 
+      4 trading_corp.data.bitunix_ws_feed: bitunix ws feed disconnec
+      2 trading_corp.data.live_bar_cache: LiveBarCache ws stale (XRP
+      1 trading_corp.web.webhooks: market-cypher webhook IP allowlis
+      1 trading_corp.web.webhooks: lord-otter webhook IP allowlist: 
+      1 trading_corp.data.live_bar_cache: LiveBarCache ws stale (SOL
+      1 trading_corp.data.live_bar_cache: LiveBarCache ws stale (ETH
+      1 trading_corp.agents.strategies._pmcc_combo: reprice_combo: H
+      1 trading_corp.agents.divisions.pmcc_robinhood: PMCCAgent: ABO
+      1 trading_corp.agents.divisions.bitunix_sfp_research_log: bitu
+      1 pykalshi._async.client: GET /markets?status=open&series_tick
+      1 2026-10-07T12:34:54+0000 tc-prod-vm xvfb-run[642887]: /home/
+=== DONE hc3 ===
