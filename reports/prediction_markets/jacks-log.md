@@ -1553,3 +1553,22 @@ PROD-LIVE FF (the deploy is NOT complete until prod-live carries it): prod-live 
 STANDING WATCH (daily): any settlement with market_result outside {yes,no,void}, booked or not; any n_nonstandard
       > 0 or a settlement_<nonstandard> close_source row. Until a real scalar books automatically, that is the
       only signal that confirms the live path.
+FF LANDED -- VERIFIED AGAINST THE REMOTE (2026-10-08, after Jack pushed; checked by git ls-remote + rev-parse,
+      NOT local refs): origin/prod-live = 403d774a67ff416e11cc2bfe970ebc03c17f995e. TRUE FAST-FORWARD, not a
+      reset: 403d774a^ == 074ef365 (one commit on top, linear) and 074ef365 is an ancestor of 403d774a. Tag
+      pm-settlement-close-deploy-2026-10-08 present on the remote -> 403d774a. Other branches present at the
+      reported tips: pm-settlement-close-2026-10-08 403d774a, pm-zerocopy-diag-2026-10-06 8158e595,
+      pm-docs-jackslog-2026-09-12 056498fe (this ledger branch, pre-this-addendum). No partial push.
+BOX == PROD-LIVE on the deployed code: box settlement.py CR-stripped sha = a0eb5a437166b875 == origin/prod-live:
+      settlement.py (the TARGET). EXACTLY ONE legitimate difference, named as expected (NOT drift): the new test
+      tests/prediction_markets/test_settlement_close_class.py is in prod-live (repo) and ABSENT on the box -- it
+      was never deployed; only settlement.py was grafted. The engine runs the production file, not the test.
+ENGINE UNTOUCHED since the one authorized restart: MainPID 675073, NRestarts 0, ActiveEnter 2026-10-08 12:13:48Z,
+      running. First scan booked 0 new-branch rows = the written prediction. CONFIDENCE: PROVEN BY TEST (6/6) + BY
+      CONSTRUCTION + BY A CLEAN RESTART with the new code live -- NOT by a real scalar (none has settled since).
+      The daily watch above remains the only thing that will confirm the live non-binary path end-to-end.
+BACKUPS LEFT IN PLACE (this workstream, 3 artifacts): pm_recovery_backup_20261007T032558Z.db (670,158,848 B, the
+      only pre-hand-edit journal copy) + pm_legaudit_clear_backup_20261008T000933Z.db (670,683,136 B) +
+      pm_settclose_backup_20261008T114934Z.settlement.py (11,870 B) -- ~1.25 GB total. ("3 DB copies" in the
+      running notes was imprecise: 2 DB snapshots + 1 .py file.) The box holds 432 backup artifacts / 4.58 GB from
+      prior sessions, none touched. Root fs: 47G used / 15G free / 77% on /.
