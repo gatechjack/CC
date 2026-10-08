@@ -22,7 +22,11 @@
       <span class="pm-region-basis">our paper trades &middot;
         <span class="pm-region-count">{{ watchlist|length }}</span> whale(s)</span>
     </h2>
-    {% include "partials/pm_watchlist_rows.html" %}
+    {# #pm-watchlist-rows is the per-row Refresh swap target (mirrors #pm-prospects-rows): a Watchlist Refresh
+       re-renders ONLY this fragment, so the Analyze panel + the Prospects section are never blown away. #}
+    <div id="pm-watchlist-rows">
+      {% include "partials/pm_watchlist_rows.html" %}
+    </div>
   </div>
 
   {# BOTTOM region = screen word "Prospects" = code status='candidate' = COMPLETED basis (pm_category_stats via

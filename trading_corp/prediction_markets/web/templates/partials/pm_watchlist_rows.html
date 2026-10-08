@@ -15,6 +15,9 @@
    pair. The rollup gates every performance column on status='closed'; OPEN trades feed ONLY the open count. So a
    pair with N open / 0 closed shows a real open count and honest-empty performance -- that is INFORMATION, not
    missing data. n_stale/n_void sit beside `closed` so the exclusions are never invisible (survivorship). #}
+{# A REFRESH outcome notice (success resolved-count / partial / failed / inflight) -- set ONLY on a refresh
+   re-render, absent on the initial page load. Mirrors the Prospects pm-refresh-notice so a result is never silent. #}
+{% if refresh_notice %}<div class="pm-refresh-notice" role="status" data-refresh-notice="1">{{ refresh_notice }}</div>{% endif %}
 {% if not watchlist %}
   <div class="pm-empty" data-empty="1">&mdash; no whales on the Watchlist for this category yet. (Honest-empty: nothing to show.)</div>
 {% else %}
@@ -32,7 +35,10 @@
       {{ wsorth('roi', 'roi&nbsp;(cost)', "Paper cost-based ROI over CLOSED trades -- THE paper metric.", 'pm-num pm-primary') }}
       {{ wsorth('netpnl', 'net&nbsp;pnl', "Net paper PnL over CLOSED trades.", 'pm-num') }}
       {{ wsorth('cost', 'cost', "Paper cost basis (CLOSED).", 'pm-num pm-muted') }}
-      <th title="Operator actions. Analyze narrates; Demote returns this whale to Prospects (paper kept); Promote attaches it to a live sub-division.">actions</th>
+      {# ★ COMPLETED-BASIS column (2026-10-08): a DIFFERENT basis from the paper columns to the left -- this is the
+         ANALYZE input (pm_category_stats via /closed-positions). Non-sortable readout; Refresh (in actions) moves it. #}
+      <th class="pm-num" title="COMPLETED basis (pm_category_stats via /closed-positions) -- the ANALYZE input, a SEPARATE basis from the paper columns to the left. 'n' = scoreable resolved rows; the dot is its last on-demand Refresh age. Refresh (in actions) re-pulls THIS; it does NOT touch the paper win%/ROI/PNL/open/closed.">completed<sup>&dagger;</sup> <span class="pm-th-sub">(n &middot; age)</span></th>
+      <th title="Operator actions. Analyze narrates; Demote returns this whale to Prospects (paper kept); Promote attaches it to a live sub-division; Refresh re-pulls the completed (Analyze) basis.">actions</th>
     </tr>
   </thead>
   <tbody>
@@ -49,6 +55,12 @@
       <td class="pm-num pm-primary {% if r.roi is not none and r.roi >= 0 %}pm-gain{% elif r.roi is not none %}pm-loss{% endif %}">{% if r.roi is not none %}{{ '%+.1f'|format(r.roi * 100) }}%{% else %}&mdash;{% endif %}</td>
       <td class="pm-num {% if r.net_paper_pnl is not none and r.net_paper_pnl >= 0 %}pm-gain{% elif r.net_paper_pnl is not none %}pm-loss{% endif %}">{% if r.net_paper_pnl is not none %}{{ '%+.0f'|format(r.net_paper_pnl) }}{% else %}&mdash;{% endif %}</td>
       <td class="pm-num pm-muted">{% if r.cost_basis is not none %}{{ '%.0f'|format(r.cost_basis) }}{% else %}&mdash;{% endif %}</td>
+      {# ★ COMPLETED-BASIS cell (2026-10-08) -- the ANALYZE input, NOT the paper columns to the left. n = scoreable
+         resolved rows (pm_category_stats); the freshdot is its completed-basis last-refresh age (pm_whale.last_refresh_ts,
+         NOT the paper cadence). Refresh (actions) moves THIS; a NULL n reads "never" (visible, not silent). #}
+      <td class="pm-num pm-completed-cell" title="Completed-basis screening (the Analyze input). The paper columns to the left are a separate basis on the 30-min/daily paper cadence.">
+        {% if r.completed_n is not none %}<a class="pm-drill-link" href="/whale/{{ r.wallet }}/{{ r.category }}?drill=scoreable" title="completed-basis resolved rows (the Analyze input)">{{ r.completed_n }}</a>{% else %}<span class="pm-na" title="never pulled on the completed basis -- Refresh to populate.">&mdash;</span>{% endif %}
+        <span class="pm-freshdot pm-band-{{ r.completed_refresh.band }}" title="{% if r.completed_refresh.iso %}completed basis -- last refresh {{ r.completed_refresh.iso }} ({{ '%.1f'|format(r.completed_refresh.age_days) }}d old){% else %}{{ r.completed_refresh.note }}{% endif %}">{% if r.completed_refresh.ts %}{{ '%.0f'|format(r.completed_refresh.age_days) }}d{% else %}never{% endif %}</span></td>
       <td class="pm-actioncell">
         {# Analyze WIRED (same route/target as the legacy analyze_button macro) -- inlined here ONLY to render the
            category UPPERCASE in the tooltip (F-3 casing) without editing the shared macro, which would change the
@@ -86,6 +98,20 @@
         {% else %}
           <span class="pm-muted pm-btn-sm" title="No live account provisioned yet -- add a credentialed account before promoting to live.">Promote &middot; no live account</span>
         {% endif %}
+        {# REFRESH (2026-10-08): re-pull this whale's FULL COMPLETED history on demand -> updates the completed cell +
+           the ANALYZE input (pm_closed_position), NOT the paper columns. Mirrors the Prospects Refresh exactly (same
+           route, admin-only, POST-only, hx-disabled-elt, JS-off 303) but TARGETS the Watchlist fragment and carries
+           ?from=watchlist so the handler re-renders THIS table (the pinned whale is not in Prospects). ★ does NOT
+           chain Re-analyze: Analyze costs against the $20/day cap -- refresh, look, then Analyze. The inline
+           "refreshing..." indicator shows the ~1-min work in progress (the one deliberate add over the Prospects
+           button, which disables alone). #}
+        <form method="post" action="/farm/{{ r.category }}/refresh/{{ r.wallet }}?from=watchlist" class="pm-inline-form"
+              hx-post="/farm/{{ r.category }}/refresh/{{ r.wallet }}?from=watchlist" hx-target="#pm-watchlist-rows"
+              hx-swap="innerHTML" hx-disabled-elt="find button" hx-indicator="find .pm-wl-refreshing">
+          <button class="pm-btn pm-btn-sm pm-btn-refresh" type="submit"
+             title="Refresh: re-pull this whale's FULL completed history (~30 calls, up to a minute) -> updates the completed 'n' + its freshness + the Analyze input. The paper win%/ROI/PNL/open/closed are a SEPARATE basis and are untouched. While it runs the button disables; on failure the whale is left unchanged.">Refresh</button>
+          <span class="pm-wl-refreshing htmx-indicator pm-muted" aria-live="polite">refreshing&hellip;</span>
+        </form>
       </td>
     </tr>
   {% endfor %}

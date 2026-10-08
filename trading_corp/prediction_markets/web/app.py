@@ -573,6 +573,25 @@ def _load_farm_category(category: str, now_ts: int, wsort: str | None = None, wd
             r["score"] = _score_cell(score_map.get(r["wallet"]), now_ts)
         for wr in watchlist:                                                            # keep the verdict visible after Promote-to-Watchlist
             wr["score"] = _score_cell(score_map.get(wr["wallet"]), now_ts)
+        # ★ COMPLETED-BASIS readout for the Watchlist (2026-10-08): the perf columns to the left are PAPER basis
+        # (pm_paper_category_stats, written by the paper crons) and are NOT what the on-demand Refresh touches. Refresh
+        # re-pulls the COMPLETED basis (pm_closed_position -> pm_category_stats) that the ANALYZE panel reads (its
+        # footer: "source: pm_closed_position (resolved only)"). So each Watchlist row carries a SEPARATE, explicitly
+        # labelled completed-basis cell: the scoreable resolved count + its last-refresh age (pm_whale.last_refresh_ts,
+        # the completed clock -- NEVER the paper columns' 30-min/daily cadence). This is the value the Refresh button
+        # moves (12 -> ~245 for the worked example). READ-ONLY enrichment; farm.py's shared PINNED query is untouched.
+        wl_wallets = [wr["wallet"] for wr in watchlist]
+        comp_n_map: dict = {}
+        last_rf_map: dict = {}
+        if wl_wallets:
+            comp_n_map = {row["wallet"]: row["n_resolved"] for row in conn.execute(
+                "SELECT wallet, n_resolved FROM pm_category_stats WHERE category = ?", (category,)).fetchall()}
+            qm = ", ".join("?" * len(wl_wallets))
+            last_rf_map = {row["wallet"]: row["last_refresh_ts"] for row in conn.execute(
+                "SELECT wallet, last_refresh_ts FROM pm_whale WHERE wallet IN (%s)" % qm, wl_wallets).fetchall()}
+        for wr in watchlist:
+            wr["completed_n"] = comp_n_map.get(wr["wallet"])                             # completed-basis scoreable count (None -> never pulled)
+            wr["completed_refresh"] = stats.refresh_band_state(last_rf_map.get(wr["wallet"]), now_ts)  # completed clock, not paper
         refresh = stats.refresh_band_state(stats.max_refresh_ts(conn), now_ts)
         # R6: the ACTIVE accounts = the promote-to-LIVE targets. Auto-create (ruling 1) makes the (account,
         # category) sub-division on demand, so a Watchlist row offers "promote to <account>", not a pre-existing
@@ -1132,29 +1151,69 @@ _REFRESH_NOTICE = {
     "partial": "Refresh came back INCOMPLETE (the pull truncated) -- this whale is now marked partial and DROPPED "
                "from the ranked list until a clean refresh. It is never ranked on partial data.",
     "failed":  "Refresh FAILED (network) -- this whale is UNCHANGED; its prior complete data is intact.",
+    "inflight": "A refresh for this whale is already running -- not started again (one re-pull at a time).",
 }
+
+# SERVER-SIDE SINGLE-FLIGHT for the on-demand refresh. BOTH the Prospects and the new Watchlist button share the
+# one handler (refresh_action); a wallet with a refresh IN FLIGHT must not start a SECOND ~30-call Polymarket pull
+# on a double-POST (two tabs / a direct re-POST / a fast double-click that outran the UI disable). Single-worker
+# uvicorn with no autoreload (the leg-audit precedent) => one event loop => a module-level set is a valid in-process
+# guard, and the check+add is ATOMIC between awaits (asyncio is single-threaded). ★ This also FIXES the Prospects
+# path, which previously relied on hx-disabled-elt (a UI hint) alone -- a double-POST there double-called the API.
+_refresh_inflight: set = set()
+
+
+def _wl_refresh_notice(outcome: str, n_completed) -> str | None:
+    """The Watchlist Refresh notice. On success it states the COMPLETED-basis resolved count now stored (the Analyze
+    input, NOT the paper columns), so 'did it do anything' is answered on screen. partial/failed/inflight reuse the
+    Prospects wording (shared _REFRESH_NOTICE) -- the failure behaviour is identical (errs safe; whale unchanged)."""
+    if outcome == "complete":
+        n = ("%d" % n_completed) if n_completed is not None else "the"
+        return ("Refreshed -- %s resolved position(s) now on the COMPLETED basis (the Analyze input; NOT the paper "
+                "win%%/ROI/PNL/open/closed to the left). Click Analyze to re-judge on the fresh basis." % n)
+    return _REFRESH_NOTICE.get(outcome)
 
 
 @app.post("/farm/{category}/refresh/{wallet}")
 async def refresh_action(request: Request, category: str, wallet: str):
-    """REFRESH one prospect whale (POST-only -- no GET mutates, R6 discipline). Re-pulls its full completed history
-    on demand + rolls up, then re-renders the Prospects section. SLOW (~30 calls, up to ~1 min): htmx shows the
-    button disabled while it runs (hx-disabled-elt) so the operator sees it working and cannot double-fire; JS-off
-    blocks on the browser's native load, then a 303 back to the page. A failed/partial refresh is SAFE (see
-    _refresh_whale) -- the whale is never left half-populated or ranked on incomplete data, and a NOTICE explains a
-    partial/failed outcome so a dropped whale is never a silent vanish. ADMIN-ONLY (M4, Jack ruled 2026-09-01):
-    Karen is the promotion JUDGE (Analyze is judgment, ungated), but refresh is a ~30-call API pull against a SHARED
-    budget -- a data-operator action, so it joins promote/attach/demote behind the server-side gate."""
+    """REFRESH one whale (POST-only -- no GET mutates, R6 discipline). Re-pulls its full COMPLETED history on demand
+    + rolls up, then re-renders the section it was fired from. SLOW (~30 calls, up to ~1 min): htmx shows the button
+    disabled while it runs (hx-disabled-elt) so the operator sees it working and cannot double-fire; JS-off blocks on
+    the browser's native load, then a 303 back to the page. A failed/partial refresh is SAFE (see _refresh_whale) --
+    the whale is never left half-populated or ranked on incomplete data, and a NOTICE explains a partial/failed
+    outcome so a dropped whale is never a silent vanish. ADMIN-ONLY (M4, Jack ruled 2026-09-01): Karen is the
+    promotion JUDGE (Analyze is judgment, ungated), but refresh is a ~30-call API pull against a SHARED budget -- a
+    data-operator action, so it joins promote/attach/demote behind the server-side gate.
+
+    ★ ONE handler serves BOTH tables (2026-10-08): `?from=watchlist` re-renders the Watchlist fragment (the whale is
+    PINNED, so it is NOT in the Prospects table -- re-rendering Prospects would omit it); anything else keeps the
+    legacy Prospects behaviour BYTE-FOR-BYTE. The completed re-pull feeds the ANALYZE panel + the Watchlist's
+    completed cell; it does NOT touch the Watchlist's paper columns (a separate basis, written by the paper crons)."""
     forbidden = _forbid_if_not_admin(request)
     if forbidden is not None:
         return forbidden
     category = (category or "").strip().lower()
-    outcome = await _refresh_whale((wallet or "").lower(), int(time.time()))
+    wallet = (wallet or "").lower()
+    from_table = (request.query_params.get("from") or "").strip().lower()
+    # SINGLE-FLIGHT (server-side): a concurrent re-POST for the same wallet must not start a second ~30-call pull.
+    if wallet in _refresh_inflight:
+        outcome = "inflight"
+    else:
+        _refresh_inflight.add(wallet)
+        try:
+            outcome = await _refresh_whale(wallet, int(time.time()))
+        finally:
+            _refresh_inflight.discard(wallet)
     if request.headers.get("HX-Request"):
         data = await asyncio.to_thread(_load_farm_category, category, int(time.time()))
         if data is None:
             return templates.TemplateResponse(
                 request, "pm_category_404.html", {"request": request, "category": category}, status_code=404)
+        if from_table == "watchlist":
+            wrow = next((x for x in data.get("watchlist", []) if (x.get("wallet") or "").lower() == wallet), None)
+            ncomp = wrow.get("completed_n") if wrow else None
+            return templates.TemplateResponse(request, "partials/pm_watchlist_rows.html",
+                                              {"request": request, "refresh_notice": _wl_refresh_notice(outcome, ncomp), **data})
         return templates.TemplateResponse(request, "partials/pm_prospects_rows.html",
                                           {"request": request, "refresh_notice": _REFRESH_NOTICE.get(outcome), **data})
     return RedirectResponse("/farm/%s" % category, status_code=303)
