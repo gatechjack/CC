@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,7 +21,7 @@ from trading_corp.mace import broker_port as bp
 from trading_corp.mace import execution as ex
 from trading_corp.mace.broker_port import OpenOrder
 from trading_corp.mace.domain import (
-    EXIT_PT, EXIT_STOP, RUNG_CLOSING, RUNG_OPEN, RUNG_CLOSED,
+    EXIT_PT, EXIT_STOP, EXIT_EXDIV, OptionQuote, RUNG_CLOSING, RUNG_OPEN, RUNG_CLOSED,
 )
 from trading_corp.mace.manager import MaceManager
 from trading_corp.mace.notify import MaceNotifier
@@ -28,7 +29,7 @@ from trading_corp.utils.time import ET, UTC
 
 # Reuse the proven scriptable harness (FakePort: place_script/status_script/open_orders_ret).
 from tests.test_mace_execution import (
-    CFG, FakePort, RecChannel, SPEC, RUNG_ID, ISO_WK,
+    CFG, FakePort, RecChannel, SPEC, RUNG_ID, ISO_WK, EXPIRY,
     _conn, _res, _exit_quotes, _open_rung, _executor,
 )
 
@@ -168,9 +169,17 @@ async def test_preamble_aborts_when_recovered_order_unconfirmed():
 @pytest.mark.asyncio
 async def test_committed_redrive_caps_and_parks_once():
     conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
-    _dead_wing_exit_quotes(port)                          # natural None -> ladder never places
+    # A SHORT ask is missing -> _natural_debit_floored None -> every ladder attempt skips (no place,
+    # no place_script needed) -> exhaust. reason=EXDIV (stop-class cap/park path, but NOT the
+    # EXIT_STOP-only spurious-stop self-heal) so the rung genuinely re-drives toward the cap.
+    port.quotes = {
+        ("put", 585.0): OptionQuote("SPY", EXPIRY, 585.0, "put", 1.90, 2.00, -0.55),
+        ("put", 582.0): OptionQuote("SPY", EXPIRY, 582.0, "put", 0.05, 0.07, -0.30),
+        ("call", 615.0): OptionQuote("SPY", EXPIRY, 615.0, "call", 0.06, None, 0.10),  # short ask None
+        ("call", 618.0): OptionQuote("SPY", EXPIRY, 618.0, "call", 0.01, 0.03, 0.05),
+    }
     _open_rung(store, pt=None)
-    store.mark_closing(RUNG_ID, exit_reason=EXIT_STOP, ts="2026-08-10T19:40:00+00:00")
+    store.mark_closing(RUNG_ID, exit_reason=EXIT_EXDIV, ts="2026-08-10T19:40:00+00:00")
     mgr, audits = _mgr(port, store, chan)
     for _ in range(_park_cap() + 2):                      # drive past the cap
         await mgr._drive_closing(store.get(RUNG_ID), NOW_ET)

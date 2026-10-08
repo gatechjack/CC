@@ -148,23 +148,50 @@ def test_gate_disabled_is_passthrough():
     assert g.closeable and g.reason == "disabled"
 
 
-# ══ evaluate_management stop-basis ══
+# ══ evaluate_management stop semantics (2026-10-08 hotfix: plain mark + dead-wing short-ITM
+#     fallback; REPLACES the stop_mark flooring that fired spurious stops) ══
 
-def test_stop_fires_on_stop_mark_when_mark_deflated():
-    # A garbage dead-wing mid DEFLATES the plain mark below the stop threshold (hiding the stop);
-    # stop_mark (wings floored to bid-or-0) is above it -> the stop MUST fire on stop_mark.
-    rung = _rung(credit=0.30)                       # stop threshold = 2.0*0.30 = 0.60
-    # plain mark 0.50 (< 0.60, no stop); stop_mark 0.70 (>= 0.60, STOP).
-    d = st.evaluate_management(rung, 0.50, 64.0, NOW, CFG,
-                               CFG.symbols["XLE"], exdiv_within=False, stop_mark=0.70)
+def test_stop_fires_on_plain_mark():
+    # All-liquid: plain mark 0.70 >= 2x credit 0.60 -> STOP (unchanged behaviour).
+    rung = _rung(credit=0.30)                       # stop threshold 0.60; shorts 60/70
+    d = st.evaluate_management(rung, 0.70, 64.0, NOW, CFG, CFG.symbols["XLE"], exdiv_within=False)
     assert d.exit_reason == EXIT_STOP
 
 
-def test_stop_mark_none_defaults_to_mark():
+def test_no_stop_on_healthy_priceable_mark():
     rung = _rung(credit=0.30)
-    d = st.evaluate_management(rung, 0.70, 64.0, NOW, CFG,
-                               CFG.symbols["XLE"], exdiv_within=False)   # stop_mark omitted
-    assert d.exit_reason == EXIT_STOP                                    # falls back to mark
+    d = st.evaluate_management(rung, 0.50, 64.0, NOW, CFG, CFG.symbols["XLE"], exdiv_within=False)
+    assert d.exit_reason != EXIT_STOP               # 0.50 < 0.60 -> no stop
+
+
+def test_SPURIOUS_STOP_REPLAY_dead_wing_otm_no_fire():
+    # THE 2026-10-07 regression, exactly: plain mark None (a wing has no two-sided market) and spot
+    # SAFELY BETWEEN the shorts (60 < 64.77 < 70) -> a healthy OTM condor. Must NOT stop. (Pre-hotfix,
+    # stop_mark floored the dead wing to 0 and fabricated >= 0.60 -> spurious stop.)
+    rung = _rung(credit=0.30)
+    d = st.evaluate_management(rung, None, 64.77, NOW, CFG, CFG.symbols["XLE"], exdiv_within=False)
+    assert d.exit_reason != EXIT_STOP
+    assert st.stop_triggered(rung, None, 64.77, CFG.management) is False
+
+
+def test_dead_wing_short_call_itm_still_fires():
+    # Genuine dead-wing stop: plain mark None but spot 71 >= short_call 70 (ITM) -> real risk -> STOP.
+    rung = _rung(credit=0.30)
+    d = st.evaluate_management(rung, None, 71.0, NOW, CFG, CFG.symbols["XLE"], exdiv_within=False)
+    assert d.exit_reason == EXIT_STOP
+
+
+def test_dead_wing_short_put_itm_still_fires():
+    rung = _rung(credit=0.30)
+    d = st.evaluate_management(rung, None, 59.0, NOW, CFG, CFG.symbols["XLE"], exdiv_within=False)
+    assert d.exit_reason == EXIT_STOP               # spot 59 <= short_put 60 (ITM)
+
+
+def test_stop_triggered_credit_none_no_stop():
+    import dataclasses
+    rung = dataclasses.replace(_rung(credit=0.30), credit_actual=None)
+    assert st.stop_triggered(rung, 0.99, 64.0, CFG.management) is False
+    assert st.stop_triggered(rung, None, 71.0, CFG.management) is False
 
 
 # ══ manager-level: dead-wing false-PT blocked, liquid PT fires, dead-wing stop fires ══
@@ -298,19 +325,57 @@ async def test_manager_time_fires_when_closeable():
 
 @pytest.mark.asyncio
 async def test_manager_dead_wing_stop_still_fires():
-    # A dead wing must NEVER block a genuine STOP. Shorts near the money (liquid), long wings dead:
-    # stop_mark (dead wings floored to 0) >= 2x credit -> STOP fires (UNGATED) + a close is placed.
-    port = _CountPort()
+    # A dead wing must NEVER block a GENUINE STOP. 2026-10-08: "genuine" = a SHORT is ITM (real
+    # risk), not merely illiquid wings on an OTM condor (that was the spurious-stop regression).
+    # Here spot 71 >= short_call 70 (ITM) with the wings dead + plain mark None -> the dead-wing
+    # fallback fires the stop (ungated) and a close is placed via stop_natural (wings given away).
+    port = _CountPort(); port.spot = 71.0                 # short call 70 ITM -> genuine risk
     store, mgr, audits, chan = _build(port)
     rid = _seed(store, credit=0.30)                       # stop threshold 0.60; EXP (dte 42, no time)
-    _put(port, 60.0, "put", 0.34, 0.36)                   # sp mid 0.35
-    _put(port, 59.0, "put", None, 0.03)                   # lp DEAD (no bid) -> floored to 0
-    _put(port, 70.0, "call", 0.34, 0.36)                  # sc mid 0.35
-    _put(port, 71.0, "call", None, 0.41)                  # lc DEAD -> floored to 0
-    # stop_mark = (0.35-0)+(0.35-0) = 0.70 >= 0.60 -> STOP (plain mark None: wings have no mid).
+    _put(port, 60.0, "put", 0.02, 0.04)                   # sp OTM
+    _put(port, 59.0, "put", None, 0.03)                   # lp DEAD (no bid)
+    _put(port, 70.0, "call", 1.30, 1.34)                  # sc ITM (spot 71)
+    _put(port, 71.0, "call", None, 0.41)                  # lc DEAD -> plain mark None
+    # plain mark None (dead wings); spot 71 >= short_call 70 -> stop_triggered fallback -> STOP.
     await mgr.manage_tick(NOW)
     assert any(pc.direction == bp.DIR_DEBIT for pc in port.place_calls)   # stop close placed
     assert not any(k == "mace_close_blocked" for k, _ in audits)         # stop is never gated
+
+
+@pytest.mark.asyncio
+async def test_manager_spurious_stop_closing_rung_self_heals():
+    # THE 2026-10-08 live wedge (XLE 57.5/56.5/67/68 @ spot 64.77): a dead-wing OTM condor was
+    # SPURIOUSLY stopped (status=closing, exit_reason=stop) by the old stop_mark flooring. On a tick
+    # where the stop is no longer valid (plain mark None + both shorts OTM), _drive_closing REOPENS
+    # it to open (clears the wedge automatically) instead of re-driving an unwarranted/unfillable close.
+    port = _CountPort(); port.spot = 64.77                # between shorts 60/70 -> healthy OTM
+    store, mgr, audits, chan = _build(port)
+    rid = _seed(store, credit=0.30)                       # shorts 60/70; stop thresh 0.60
+    _put(port, 60.0, "put", 0.07, 0.09)                   # sp OTM
+    _put(port, 59.0, "put", None, 0.03)                   # lp DEAD -> plain mark None
+    _put(port, 70.0, "call", 0.07, 0.09)                  # sc OTM
+    _put(port, 71.0, "call", None, 0.41)                  # lc DEAD
+    store.mark_closing(rid, exit_reason=EXIT_STOP, ts="2026-10-08T13:46:00+00:00")  # wedged
+    await mgr.manage_tick(NOW)                            # NOW 12:00 ET -> no time exit
+    r = store.get(rid)
+    assert r.status == "open"                             # self-healed (reopened)
+    assert any(k == "mace_closing_reopen" for k, _ in audits)
+    assert all(pc.direction != bp.DIR_DEBIT for pc in port.place_calls)   # no close attempted
+
+
+@pytest.mark.asyncio
+async def test_manager_genuine_stop_closing_rung_keeps_driving_not_reopened():
+    # Negative: a GENUINE stop (short ITM) in CLOSING must NOT self-heal -- it keeps re-driving.
+    port = _CountPort(); port.spot = 71.0                 # short call 70 ITM -> stop still valid
+    store, mgr, audits, chan = _build(port)
+    rid = _seed(store, credit=0.30)
+    _put(port, 60.0, "put", 0.02, 0.04); _put(port, 59.0, "put", None, 0.03)
+    _put(port, 70.0, "call", 1.30, None)                  # short ask None -> close unpriceable (no place)
+    _put(port, 71.0, "call", None, 0.41)
+    store.mark_closing(rid, exit_reason=EXIT_STOP, ts="2026-10-08T13:46:00+00:00")
+    await mgr.manage_tick(NOW)
+    assert store.get(rid).status == "closing"             # still committed (stop valid, short ITM)
+    assert not any(k == "mace_closing_reopen" for k, _ in audits)
 
 
 @pytest.mark.asyncio

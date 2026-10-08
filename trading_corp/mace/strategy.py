@@ -814,9 +814,34 @@ class ManageDecision:
         return self.exit_reason is not None
 
 
+def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
+                   m: "ManagementConfig") -> bool:
+    """A stop fires when cost-to-close has reached stop_multiple x credit.
+
+    Measured on the plain MID `mark` (all four legs two-sided). When the plain mark is UNPRICEABLE
+    (a wing has no two-sided market) the mark-based test cannot run -> fall back to a STRUCTURAL risk
+    signal ONLY: a SHORT leg ITM (spot at/beyond a short strike), i.e. the position is genuinely at/
+    approaching max loss regardless of wing liquidity.
+
+    2026-10-08 hotfix: this REPLACES the stop_mark basis (shorts@mid, wings floored to bid-or-0),
+    which FABRICATED cost-to-close on a healthy illiquid-wing OTM condor (both shorts OTM, a wing
+    dead -> stop_mark ~ short mids alone >= 2x credit -> SPURIOUS stop -> unfillable -> reject loop;
+    live case XLE 57.5/56.5P 67/68C @ spot 64.77). The dead-wing fallback here canNOT fire on that
+    case (both shorts OTM -> neither short ITM), yet still fires a GENUINE dead-wing stop (a short
+    ITM). credit None -> no stop (unsizable)."""
+    if rung.credit_actual is None:
+        return False
+    if mark is not None:
+        return mark >= m.stop_multiple * rung.credit_actual
+    # Plain mark unpriceable (dead/one-sided wing): structural risk only -- a SHORT ITM.
+    if spot is not None and rung.spec is not None:
+        return spot >= rung.spec.short_call or spot <= rung.spec.short_put
+    return False
+
+
 def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
                         now_et: datetime, cfg: MaceConfig, symbol_cfg: SymbolConfig,
-                        *, exdiv_within: bool, stop_mark: float | None = None) -> ManageDecision:
+                        *, exdiv_within: bool) -> ManageDecision:
     """Precedence: stop > PT > time > exdiv. `mark` = cost-to-close at mid (net
     debit to exit). The 09:35 tick IS the gap rule (no separate branch).
     `exdiv_within` is the calendar side (caller uses mace.exdiv.MaceExDiv).
@@ -830,19 +855,18 @@ def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
     exclusive on `mark`; PT is ordered before time/exdiv so a hit target closes
     favorably regardless of DTE, and the exit is labelled `pt` (not `time`).
 
-    `stop_mark` (2026-10-09): the STOP basis only. Defaults to `mark` (unchanged behaviour). When
-    the caller passes QuoteSnapshot.stop_mark (shorts @ mid, wings floored to bid-or-0), a garbage/
-    dead wing mid can no longer DEFLATE the mark and hide a stop -- stop_mark >= mark always, so a
-    stop fires no later and is never blinded on a dead-wing condor. PT still uses `mark` (a win must
-    not fire on the conservative basis)."""
+    STOP basis (2026-10-08 hotfix): `stop_triggered` -- the plain mid mark, with a dead-wing
+    structural short-ITM fallback. This reverted the 2026-10-07 `stop_mark` flooring that fired
+    SPURIOUS stops on healthy illiquid-wing OTM condors."""
     m = cfg.management
-    # stop: stop_basis >= stop_multiple x credit received (stop_mark when supplied, else mark).
-    stop_basis = stop_mark if stop_mark is not None else mark
-    if stop_basis is not None and rung.credit_actual is not None:
-        if stop_basis >= m.stop_multiple * rung.credit_actual:
-            return ManageDecision(rung.rung_id, EXIT_STOP,
-                                  f"mark {stop_basis:.2f} >= {m.stop_multiple}x credit "
-                                  f"{rung.credit_actual:.2f}")
+    # stop: cost-to-close >= stop_multiple x credit (plain mid mark; dead-wing -> short-ITM fallback).
+    if stop_triggered(rung, mark, spot, m):
+        if mark is not None:
+            detail = (f"mark {mark:.2f} >= {m.stop_multiple}x credit {rung.credit_actual:.2f}")
+        else:
+            detail = (f"dead-wing mark unpriceable + short ITM "
+                      f"(spot {spot} vs {rung.spec.short_put}/{rung.spec.short_call})")
+        return ManageDecision(rung.rung_id, EXIT_STOP, detail)
     # PT (T9 synthetic): mark <= pt_pct_of_credit x credit received -> lock the win.
     if mark is not None and rung.credit_actual is not None:
         pt_target = m.pt_pct_of_credit * rung.credit_actual

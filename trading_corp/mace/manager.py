@@ -433,15 +433,17 @@ class MaceManager:
             return None
         # A rung already CLOSING (a prior exit exhausted/latched). 2026-10-09: no longer a blind
         # infinite re-drive -- _drive_closing caps committed re-drives (park) and UN-LATCHES a
-        # winner-class/legacy CLOSING rung with no booked fill + no working order (the self-heal
-        # for the wedged XLE rung; Commit 2 adds the executable-closeability gate -> ride).
+        # winner-class/legacy CLOSING rung with no booked fill + no working order (the self-heal for
+        # the wedged XLE rung; the closeability gate -> ride). 2026-10-08: it also re-evaluates a
+        # STOP-class CLOSING rung (fetching its own fresh mark+spot) and reopens it if the stop is no
+        # longer valid (spurious-stop heal). Kept BEFORE the snapshot so a closing rung's path is
+        # unchanged for executors that don't implement quote_snapshot.
         if rung.status == "closing":
             return await self._drive_closing(rung, now)
 
-        # ONE fresh 4-leg snapshot per tick (2026-10-09): mark (triggers), stop_mark (stop basis),
-        # leg_mids (PT mark-trust guard) and natural/wings (closeability gate) all derive from it,
-        # so trigger + guard + gate can never disagree across two fetches (the old mark()-vs-leg_mids
-        # race) and the hot path makes 4 broker calls per rung, not 8.
+        # ONE fresh 4-leg snapshot per tick (2026-10-09): mark (triggers), leg_mids (PT mark-trust
+        # guard) and natural/wings (closeability gate) all derive from it, so trigger + guard + gate
+        # can never disagree across two fetches (the old mark()-vs-leg_mids race).
         snap = await self.executor.quote_snapshot(rung.spec)
         mark = snap.mark
         if rung.symbol not in spot_cache:
@@ -491,7 +493,7 @@ class MaceManager:
             riding = False
 
         decision = st.evaluate_management(rung, mark, spot, now, self.cfg, sym_cfg,
-                                          exdiv_within=exdiv_within, stop_mark=snap.stop_mark)
+                                          exdiv_within=exdiv_within)
         if not decision.should_exit:
             return None     # hold; a riding rung stays riding silently (sticky to close/escape/expiry)
         # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.
@@ -542,13 +544,16 @@ class MaceManager:
         """Drive a rung in status=CLOSING (2026-10-09 un-latch). Replaces the old blind
         `close_rung(rung, exit_reason or 'manual')` that re-drove EVERY tick forever.
 
-          COMMITTED (stop/exdiv/gap): a genuine risk close MUST keep trying, but the re-drive is
-          now CAPPED (_MAX_CLOSING_REDRIVES) then PARKED -- a single URGENT alert + an occasional
-          pulse, instead of a ~15-min alert/exit_error flood.
+          STOP-class (stop/exdiv/gap): a genuine risk close MUST keep trying, CAPPED
+          (max_closing_redrives) then PARKED (one URGENT + occasional pulse) instead of a ~15-min
+          flood. 2026-10-08: FIRST re-evaluate a STOP on its OWN fresh mark+spot -- if it is no
+          longer valid (position healthy again; the 2026-10-07 stop_mark-flooring spurious stop) and
+          nothing is booked/working, REOPEN to open rather than re-drive an unwarranted/unfillable
+          close. Guarded on credit_actual present (an unsizable rung's stop can't be re-evaluated ->
+          keep driving, never spuriously reopen).
           WINNER-class (pt/time) or a LEGACY NULL-reason wedge: a profit close that cannot fill
           must not loop. With NO booked fill and NO working close order, REOPEN the rung to `open`
-          (self-heals the wedged XLE rung: next tick re-evaluates it via the normal guarded path;
-          Commit 2's closeability gate then routes a dead-wing winner to RIDE instead of re-closing).
+          (self-heals the wedged XLE rung; the closeability gate then routes a dead-wing winner to RIDE).
           A persisted in-flight order / a working {rid}-x* order -> drive close_rung ONCE so its
           crash-recovery preamble reconciles the live order (never reopen underneath a live close).
 
@@ -564,6 +569,31 @@ class MaceManager:
 
         cc = self.cfg.management.closeability
         if reason in (EXIT_STOP, EXIT_EXDIV, EXIT_GAP):
+            # SPURIOUS-STOP SELF-HEAL (2026-10-08): a STOP that is no longer valid on fresh quotes
+            # (position healthy again) must not keep re-driving an unwarranted close. Re-evaluate on
+            # this rung's OWN fresh mark+spot (closing rungs don't carry the tick snapshot). With
+            # nothing booked and no working order, REOPEN to open. Only EXIT_STOP (the stop_mark
+            # regression) + credit present (can't re-evaluate an unsizable stop -> keep driving);
+            # exdiv/gap are structural and keep driving.
+            if (reason == EXIT_STOP and rung.credit_actual is not None
+                    and not extra.get("exit_order_id")):
+                try:
+                    chk_mark = await self.executor.mark(rung.spec)
+                except Exception:  # noqa: BLE001 — a quote miss must not sink the drive
+                    chk_mark = None
+                chk_spot = await self._spot(rung.symbol)
+                if not st.stop_triggered(rung, chk_mark, chk_spot, self.cfg.management):
+                    working = await self.executor._working_exit_order(rid)
+                    if working is None and self.store.reopen_from_closing(rid):
+                        self._audit("mace_closing_reopen", rung_id=rid, reason=reason,
+                                    detail="stop no longer valid on fresh quotes (spurious-stop "
+                                           "self-heal) -> reopened to open")
+                        self.notifier.breaker(
+                            condition=f"{rung.symbol} CLOSING rung reopened (stop no longer valid)",
+                            lines=[f"rung {rid}", f"reason {reason}"],
+                            suggested_action="spurious stop healed; back to OPEN, re-managed next tick",
+                            urgent=False)
+                        return None
             blk = extra.get("closing") or {}
             if blk.get("parked"):
                 n = self._park_ticks.get(rid, 0) + 1
