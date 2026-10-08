@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import calendar
 import logging
+import re
 import time as _time
 from dataclasses import dataclass
 
@@ -36,6 +37,15 @@ _EPS = 1e-9
 # proceeds-vs-Kalshi-revenue cross-check tolerance (dollars): a divergence beyond this WARNs (our order fees are not
 # in Kalshi's settlement `revenue`, so a small gap is expected; a large gap is a booking anomaly to hand-inspect).
 _REVENUE_TOL = 0.10
+# ── non-binary / unknown settlement-class handling (2026-10-08: the fix for the silent-skip that caused two total
+# outages). A result outside {yes,no,void} is NEVER skipped; it books FLAT at the venue's own per-contract `value`
+# (cents), leg-adjusted, won=NULL, close_source='settlement_<class>'. See book_settlements.
+_CLOSE_SOURCE_MAXLEN = 40           # bound close_source so an odd venue string cannot create an unbounded value
+# ABSENT-`value` fallback: book WORTHLESS (realized = -cost), NOT avg_cost. avg_cost (void-style refund) was
+# CONSIDERED and REJECTED as bias-UP -- it would overstate realized P&L by the full cost basis if the contract
+# actually settled worthless, the one error the realized journal (the counterweight to Polymarket loss-dropping)
+# must never make. 0.0 is bias-DOWN and recoverable: the WARN + close_source make a real refund hand-fixable.
+_ABSENT_VALUE_SETTLED = 0.0
 
 
 # ── the injected settlement record (parsed from the RAW /portfolio/settlements payload) ──────────────────
@@ -43,14 +53,24 @@ _REVENUE_TOL = 0.10
 class SettlementRecord:
     ticker: str            # the MARKET ticker (UPPER); may be empty if only event_ticker is present
     event_ticker: str      # the EVENT ticker (UPPER) -- a market ticker starts with it (fallback match)
-    result: str            # 'yes' | 'no' | 'void' | '' (lowercased market_result)
+    result: str            # 'yes' | 'no' | 'void' | 'scalar' | '' (lowercased market_result)
     settled_ts: int | None
-    revenue: float | None  # Kalshi's settlement revenue (dollars) -- cross-check only, NOT the booked P&L
+    revenue: float | None  # Kalshi's settlement revenue (CENTS; UNRELIABLE -- a 'yes' win read 0) -- NOT booked from
+    value_cents: int | None = None  # Kalshi per-contract settled value in CENTS (yes->100 / no->0 / scalar->45); the
+                                     # class-agnostic field the non-binary path books from. Defaulted for back-compat.
 
 
 def _f(v):
     try:
         return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_cents(v):
+    """Kalshi settlement `value` -> int CENTS, or None. (yes->100, no->0, scalar->45.)"""
+    try:
+        return int(round(float(v)))
     except (TypeError, ValueError):
         return None
 
@@ -102,7 +122,8 @@ def parse_settlements(raw) -> list:
             res = str(it.get("market_result") or it.get("result") or "").strip().lower()
             out.append(SettlementRecord(ticker=tk, event_ticker=ev, result=res,
                                         settled_ts=_iso_to_unix(it.get("settled_time")),
-                                        revenue=_f(it.get("revenue"))))
+                                        revenue=_f(it.get("revenue")),
+                                        value_cents=_int_cents(it.get("value"))))
         except Exception:  # noqa: BLE001 -- one malformed record must not block the rest
             continue
     return out
@@ -139,6 +160,17 @@ def _won(leg: str, result: str) -> int:
     return 1 if ((leg == "yes" and result == "yes") or (leg == "no" and result == "no")) else 0
 
 
+def _settlement_close_source(result: str) -> str:
+    """close_source for a non-binary/unknown class: 'settlement_<sanitised result>', charset-restricted to
+    [a-z0-9_] and length-bounded so an odd venue string cannot create a strange/unbounded value; a degenerate
+    result -> 'settlement_unknown'. 'scalar' -> 'settlement_scalar' (the SAME queryable class as the rows
+    hand-booked 2026-09-22 (WTA) and 2026-10-06 (UFC))."""
+    base = re.sub(r"[^a-z0-9_]", "", str(result or "").strip().lower())
+    if not base:
+        return "settlement_unknown"
+    return ("settlement_" + base)[:_CLOSE_SOURCE_MAXLEN]
+
+
 def book_settlements(conn, account_id: str, category: str, settlements, *, now_ts: int) -> dict:
     """INSERT a terminal-close row for every held (wallet, ticker, leg) whose ticker has a Kalshi settlement.
 
@@ -155,7 +187,7 @@ def book_settlements(conn, account_id: str, category: str, settlements, *, now_t
     a summary; `booked` carries each close (for the boot-scan to LOG, esp. the first-ever settlement, hand-inspect)."""
     settlements = list(settlements)
     by_ticker = {r.ticker: r for r in settlements if r.ticker}
-    booked, skipped_flat, skipped_no_settlement = [], 0, 0
+    booked, skipped_flat, skipped_no_settlement, nonstandard = [], 0, 0, []
     proceeds_by_ticker: dict = {}
     for row in conn.execute(_HELD_SQL, (account_id, category)):
         wallet = row["wallet"]; ticker = row["ticker"]; leg = row["outcome_leg"]
@@ -166,16 +198,36 @@ def book_settlements(conn, account_id: str, category: str, settlements, *, now_t
             skipped_flat += 1
             continue
         rec = _settlement_for_ticker(ticker, by_ticker)
-        if rec is None or rec.result not in ("yes", "no", "void"):
-            skipped_no_settlement += 1
+        if rec is None:
+            skipped_no_settlement += 1              # no settlement for this ticker YET -> leave OPEN (unchanged)
             continue
         avg_cost = (entry_cost / entered) if entered > _EPS else 0.0
         cost_basis_open = net_open * avg_cost
-        if rec.result == "void":
-            close_source, won, settled_value = "settlement_void", None, avg_cost   # void = refund cost -> pnl 0
+        res = rec.result
+        if res == "void":
+            close_source, won, settled_value = "settlement_void", None, avg_cost   # void = refund cost -> pnl 0 (UNCHANGED)
+        elif res in ("yes", "no"):
+            won = _won(leg, res)
+            close_source, settled_value = "settlement", (1.0 if won else 0.0)       # binary (UNCHANGED)
         else:
-            won = _won(leg, rec.result)
-            close_source, settled_value = "settlement", (1.0 if won else 0.0)
+            # ★ NON-BINARY / UNKNOWN CLASS (scalar, refund, or anything Kalshi adds) -- NEVER SILENTLY SKIP.
+            # A skip leaves the journal OPEN -> the next restart's boot_reconcile latches the WHOLE account (the
+            # defect behind two total outages). So BOOK a close that nets the position FLAT (reconcile stays clean
+            # -> no latch) AND fail LOUD (WARN + non-standard close_source + the `nonstandard` summary) for review.
+            won = None
+            close_source = _settlement_close_source(res)
+            if rec.value_cents is not None:
+                yes_val = rec.value_cents / 100.0     # venue per-contract value (cents); present on every record enumerated
+                settled_value = yes_val if leg == "yes" else (1.0 - yes_val)
+            else:
+                settled_value = _ABSENT_VALUE_SETTLED  # book WORTHLESS (bias-DOWN); see the constant for why not avg_cost
+            nonstandard.append({"wallet": wallet, "ticker": ticker, "leg": leg, "market_result": res,
+                                "value_cents": rec.value_cents, "settled_value": settled_value,
+                                "close_source": close_source})
+            _LOG.warning("pm settlement: NON-STANDARD market_result=%r on %s (account=%s leg=%s) -> booking FLAT at "
+                         "settled_value=%.4f (close_source=%s, won=NULL%s) to AVOID a boot-reconcile latch; "
+                         "HUMAN-REVIEW the class + value", res, ticker, account_id, leg, settled_value, close_source,
+                         ("" if rec.value_cents is not None else "; value ABSENT -> WORTHLESS bias-down"))
         proceeds = net_open * settled_value
         realized = round(proceeds - cost_basis_open, 6)
         settled_ts = rec.settled_ts if rec.settled_ts is not None else int(now_ts)
@@ -201,4 +253,5 @@ def book_settlements(conn, account_id: str, category: str, settlements, *, now_t
             _LOG.warning("pm settlement: PROCEEDS cross-check divergence on %s: our proceeds=%.4f vs kalshi "
                          "revenue=%.4f (>tol %.2f) -- hand-inspect the booked realized_pnl", tk, proceeds, rev, _REVENUE_TOL)
     return {"account_id": account_id, "category": category, "n_booked": len(booked), "booked": booked,
-            "skipped_flat": skipped_flat, "skipped_no_settlement": skipped_no_settlement}
+            "skipped_flat": skipped_flat, "skipped_no_settlement": skipped_no_settlement,
+            "n_nonstandard": len(nonstandard), "nonstandard": nonstandard}
