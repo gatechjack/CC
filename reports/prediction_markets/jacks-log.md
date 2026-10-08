@@ -1441,3 +1441,74 @@ STATE: both 2026-10-02 debts folded (MACE 2ce0b5c2 + PM-props 074ef365). prod-li
 CARRIED FORWARD: Mon 09:35 ET MACE acceptance; the `main` divergence (older MACE+PM base, separate debt);
       PM-props live-firing dormancy is record-stated (0 fills ever) but NOT re-audited this pass (fold was
       behavior-neutral). Report: reports/prediction_markets/PM_PROPS_FOLD_SCOPING_2026-10-02.md.
+
+----------------------------------------------------------------------------------------------------
+2026-10-06/07 -- INCIDENT: ALL 4 ACCOUNTS LATCHED ~4.3 DAYS BY AN UNBOOKED 33-CENT SCALAR SETTLEMENT (recovered, no engine restart)
+----------------------------------------------------------------------------------------------------
+NOT A DEPLOY -- an outage + a read-only diagnosis + a journal-only recovery. No prod-live code change, no
+      migration, no engine restart by this work, nothing pushed.
+THE OUTAGE: no Kalshi copy trade on ANY of the four accounts for ~4.3 days. Last entry fill 2026-10-02
+      19:50:05Z (jack; karen 19:49:58Z, marc 19:38:40Z, trey 19:38:38Z -- all within ~12 minutes).
+ROOT CAUSE: one UFC position -- KXUFCFIGHT-26SEP29BULVIS-VIS (Dana White's Contender Series), 4 entries filled
+      09-29 (jack 5 / karen 5 / marc 1 / trey 1) -- settled at Kalshi 09-29T23:49:46Z with market_result='scalar',
+      value $0.45/ct. book_settlements SKIPS any result outside {yes,no,void} (settlement.py:169), so no close
+      was booked and the journal held it OPEN while the venue held ZERO. At the 2026-10-06 02:56:24Z engine
+      restart -- a MACE deploy, NOT PM -- boot_reconcile saw the journal-vs-venue mismatch and FAIL-SAFE-LATCHED
+      all 92 sub-divisions across all four accounts (auto_trigger=boot_reconcile_mismatch, stamped 02:57:01-03Z).
+      Gate 1 then rejected every signal: ~972 signals/cycle, placed=0, no order rows. Nobody disarmed anything --
+      the system disarmed itself, and PM was taken down by another division's deploy.
+REALIZED LOSS THAT CAUSED IT: -$0.3288 on 12 contracts (fee-inclusive, book_settlements' own formula:
+      realized = net_open*settled_value - net_open*avg_cost, avg_cost = (fill_count*fill_price + fee)/entered).
+      *** THIRTY-THREE CENTS LATCHED FOUR ACCOUNTS FOR FOUR DAYS. ***
+RECOVERY (four phases, NO engine restart): venue truth established READ-ONLY from Kalshi, not Polymarket (Poly
+      resolved 0.425, which is WHY it was skipped) -> PM DB backed up via the sqlite online-backup API -> 4
+      settlement_scalar close rows written (ids 4619-4622; +4 exactly, nothing else moved; signed-net -> 0 on all
+      four; integrity ok) -> reconcile re-proven CLEAN on all four accounts (0 DIFFS) -> latch cleared and 57
+      sub-divisions armed (jack 18 / karen 16 / marc 11 / trey 12), 35 left disarmed. Arm verified against the
+      legacy DB's agent / key / value_json columns, so the known false-disarm trap did not fire. FILLS RESUMED
+      WITHIN ~1 MINUTE on all four accounts -- marc & trey 04:18:58Z, karen 04:19:06Z, jack 04:19:13Z; zero errors,
+      zero rejects, every leg_audit ok or na, fire-first untriggered. Engine PID 642873 / NRestarts 0 throughout
+      the recovery. DURABILITY CONFIRMED: a Jack-initiated engine restart 2026-10-07 23:30:18Z (-> PID 664274) came
+      up CLEAN (the booking held), 57 still armed, fills continued -- the scalar booking is the durable fix.
+TWO NEW CLOSE-SOURCE VALUES NOW IN THE JOURNAL: close_source='settlement_scalar' with won=NULL. Consumed safely
+      (close_source read only via SQL CASE/WHERE + the _SETTLE_SOURCES set; an unrecognized value is excluded,
+      never raised; won consumers all guard NULL; 348 rows already carry won=NULL and 2 already carry
+      settlement_hand_reconcile). CONSEQUENCE: these rows are OMITTED from the /live settled-card rollup and the
+      close_source='settlement'-exact P&L rollups -- a $0.33 cosmetic gap. The label was kept deliberately: it is
+      accurate, and it is the queryable record of every scalar settlement hand-booked before the path is built.
+      (Separately: 2 CS2 leg_audit 'code_review' rows -- a TS=Team-Spirit abbreviation false-flag, venue-verified
+      correct and WON -- were reclassified to 'ok:code_alias' so the "LEG AUDITS TO REVIEW" banner -> 0;
+      board-authorized DB edit, backup kept. Not an inversion; fire-first untriggered.)
+THE 10-02 -> 10-06 WINDOW: fills stopped 3.3 days BEFORE the latch, with a healthy unlatched driver. Gates are
+      EXONERATED by evidence -- the same gate stack produced immediate fills on arming. The residual explanation
+      is signal supply, likely mechanism dated: the first fills back were KXMLBGAME-26OCT07 PLAYOFF games
+      (TB@NYY, LAD@ATL); MLB regular season ended ~09-28, volume has been MLB-heavy, NFL/CFB are weekly, and the
+      Polymarket 429 storm began 10-03 20:28Z mid-window; new_cids=[] during the window supports it. LOG AS: gates
+      exonerated; drought attributed to the MLB season transition -- consistent with the data but NOT independently
+      proven. *** THIS SHAPE WILL RECUR AT EVERY SEASON BOUNDARY AND WILL LOOK EXACTLY LIKE A FAULT. ***
+SECOND DEFECT -- WHY RECOVERY TOOK HOURS INSTEAD OF ONE COMMAND: the latch DESTROYS the information needed to
+      recover from it. arm.py overwrites each armed row in place with no prior-armed field; set_agent_state is a
+      plain upsert that CREATES keys (so "92 keys" bounds nothing); audit_event has zero pm_live rows; no
+      arm-history table exists; the journal carries no arm enumeration. The pre-latch armed set was UNRECOVERABLE
+      from the box -- only 57 of 92 could be evidenced (55 by a pre-latch placement, 2 by operator confirmation),
+      leaving ~23 armed subs unidentifiable among 35 INDETERMINATE. Jack ruled bias-down and armed the evidenced 57.
+CARRY FORWARD (ordered by what it will cost next time):
+      1. THE SCALAR/REFUND SETTLEMENT-CLOSE PATH, ~10-15 lines. SECOND TOTAL OUTAGE (46 scopes 2026-09-22, all 92
+         on 10-06). Until it ships, every restart with an unbooked non-binary settlement re-latches everything, and
+         the restart does not have to be PM's.
+      2. Preserve prior armed state in the latch record so a clear can RESTORE instead of requiring reconstruction.
+      3. Account-wide latch blast radius -- one stuck ticker latches every category on that account, so a 33-cent
+         UFC position took ITF down for four days. Fail-safe is right; account-wide scope may be wider than needed.
+      4. Widen the settled-rollup / P&L close_source filters to include settlement_scalar + the 2
+         settlement_hand_reconcile rows.
+      5. FUND marc and trey -- $79.17 and $73.41 total against 11 and 12 armed categories (jack $482.06, karen
+         $447.74). Gate 6b rejects pre-submit with no order row as they deplete.
+      6. The Polymarket 429 storm -- 491k+ and climbing ~9k/hr, now across more armed scopes.
+      7. pm_open_position ingest stale since 09-28 -- live copying is unaffected, but Prospects / farm numbers
+         (what promotion decisions read) are stale.
+      8. NULL per_order_usd_cap on jack/boxing and jack/f1.
+      9. The 33 disarmed subs -- re-arm any that later shows as a quiet category.
+EVIDENCE: branch pm-zerocopy-diag-2026-10-06 (reports + 20+ read-only runners + captured outputs). Reports:
+      PM_ZEROCOPY_DIAG_2026-10-06.md (diagnosis), PM_RECOVERY_2026-10-06.md (recovery). Backups KEPT on the box:
+      /home/azureuser/pm_recovery_backup_20261007T032558Z.db (670,158,848 B, the only pre-hand-edit journal copy)
+      + pm_legaudit_clear_backup_20261008T000933Z.db. prod-live / engine code UNCHANGED by this incident.
