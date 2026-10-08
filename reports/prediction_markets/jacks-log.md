@@ -1512,3 +1512,44 @@ EVIDENCE: branch pm-zerocopy-diag-2026-10-06 (reports + 20+ read-only runners + 
       PM_ZEROCOPY_DIAG_2026-10-06.md (diagnosis), PM_RECOVERY_2026-10-06.md (recovery). Backups KEPT on the box:
       /home/azureuser/pm_recovery_backup_20261007T032558Z.db (670,158,848 B, the only pre-hand-edit journal copy)
       + pm_legaudit_clear_backup_20261008T000933Z.db. prod-live / engine code UNCHANGED by this incident.
+
+----------------------------------------------------------------------------------------------------
+2026-10-08 -- DEPLOY: SETTLEMENT-CLOSE PATH -- never silently skip a settlement class (the 2-outage fix)
+----------------------------------------------------------------------------------------------------
+*** THIS DEPLOY RESTARTED THE ENGINE *** (an exception to the standing fact above; MACE was pre-market, the
+      clean window). Engine trading-corp MainPID 664274 -> 675073, ActiveEnter 2026-10-08 12:13:48Z; boot GREEN.
+WHAT LANDED: one file, trading_corp/prediction_markets/settlement.py. book_settlements no longer SKIPS a
+      market_result outside {yes,no,void} (the old settlement.py:169 skip left the journal open -> next restart's
+      boot_reconcile latched the account -> the defect behind the 2026-09-22 (46 scopes) and 2026-10-06 (all 92)
+      outages). NOW: yes/no/void unchanged; scalar + any unknown class BOOK A FLAT CLOSE at the venue's own
+      per-contract `value` (cents; yes->100/no->0/scalar->45; leg-adjusted), won=NULL, close_source=
+      settlement_<sanitised,bounded class> (scalar->settlement_scalar, the SAME class as the hand-booked rows),
+      plus a LOUD WARN + a `nonstandard` summary. Absent-`value` books WORTHLESS (realized=-cost, bias-DOWN; NOT
+      avg_cost -- rejected as bias-up). No migration (close_source is TEXT). PM-only; no gate/matcher/order-path
+      change. (`revenue` is UNRELIABLE -- a yes win read 0 -- hence book from `value`; the 22/day proceeds-vs-
+      revenue cross-check WARN is a separate backlog item: stop reading `revenue`, do not convert it.)
+COMMIT: build branch pm-settlement-close-2026-10-08 @ 403d774a (off prod-live 074ef365). settlement.py
+      BASE a1abe0e3b04a85e4 -> TARGET a0eb5a437166b875. New test tests/prediction_markets/
+      test_settlement_close_class.py (6/6; incl unknown-fail-loud, absent-value-bias-down, and the OUTAGE
+      regression: unbooked scalar -> journal_only DIFF (latch) BEFORE, 0 DIFFS (clean) AFTER). A test caught a
+      real WARN-format bug (missing `leg` arg -> TypeError in the fail-loud branch) that py_compile+import both
+      passed -- it would have turned fail-loud into fail-silent at the first non-binary settlement; fixed, 6/6.
+HOW: reconcile proven 0 DIFFS on all 4 accounts BEFORE apply (a restart with a mismatch would have latched);
+      scp binary-exact -> box-side drift-gate (box==BASE a1abe0e3 / staged==TARGET a0eb5a43) -> backup -> apply
+      CR-stripped -> re-verify live==TARGET -> py_compile+import -> rollback-all on any failure. Backup:
+      /home/azureuser/pm_settclose_backup_20261008T114934Z.settlement.py (11,870 B, left in place). Jack ran the
+      canonical restart_tc.ps1.
+VERIFY (post-restart): MainPID 675073 / ActiveEnter 12:13:48Z POSTDATES the file mtime 11:49:34Z (running the new
+      code, not just on disk); box settlement.py==TARGET a0eb5a43; boot_reconcile reconciled=True latched=False on
+      all 4 (the booking held through a restart with the new code live); 57 armed / arm:global armed survived;
+      MACE/PMCC/PEAD wired, bitunix reconcilers up (bitunix flagged a pre-existing 1-orphan divergence -> its own
+      entry-halt, UNRELATED to this PM change). FIRST SCAN matched the written prediction: 0 rows booked via the
+      new branch (both scalar tickers already flat -> skipped_flat; only 3 normal 'settlement' closes), no
+      NON-STANDARD WARN. Fills flowing.
+PROVEN BY TEST + BY CONSTRUCTION + BY A CLEAN RESTART -- NOT YET BY A REAL SCALAR SETTLEMENT (all 6 in history are
+      already booked; the live non-binary path cannot be exercised until a NEW scalar/refund/void occurs).
+PROD-LIVE FF (the deploy is NOT complete until prod-live carries it): prod-live 074ef365 -> 403d774a (straight
+      FF), tag pm-settlement-close-deploy-2026-10-08. [commands handed to Jack; Jack pushes.]
+STANDING WATCH (daily): any settlement with market_result outside {yes,no,void}, booked or not; any n_nonstandard
+      > 0 or a settlement_<nonstandard> close_source row. Until a real scalar books automatically, that is the
+      only signal that confirms the live path.
