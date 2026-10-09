@@ -121,8 +121,10 @@ def test_refresh_button_on_every_watchlist_row(monkeypatch, tmp_path):
     # the completed-basis column header + per-row cell render (labelled, distinct from the paper columns)
     assert ">completed<" in html                           # the column header
     assert html.count('pm-completed-cell') >= 2            # one completed cell per pinned whale (2 here)
-    # the Prospects button is UNCHANGED: still targets its own fragment and does NOT carry ?from=watchlist
-    assert 'hx-target="#pm-prospects-rows"' in html
+    # the two fragments stay DISTINCT: the Prospects swap-target wrapper is present + separate, and the Watchlist
+    # button targets the Watchlist fragment, never the Prospects one (its own per-row path is proven in test 6).
+    assert 'id="pm-prospects-rows"' in html
+    assert ('refresh/%s?from=watchlist' % WALLET) in html
 
 
 # ── 2. ★ ACCEPTANCE: a refresh raises the stored resolved count, and the new count is visible on screen ──────────
