@@ -81,3 +81,52 @@ Stage: scp the branch git-archive to /home/azureuser/cc_wlrefresh_src.tar, then 
 (drift-gate box==BASE/staged==TARGET -> backup /home/azureuser/pm_wlrefresh_backup_<ts> -> apply -> verify
 live==TARGET -> py_compile+import -> rollback-all on any failure). Then Jack restarts prediction-markets-web.
 prod-live FF (deploy not complete until prod-live carries it): origin/prod-live 2532eee6 -> 47a9af49 (straight FF).
+
+## ───────────── APPLIED + RESTARTED + ACCEPTED (2026-10-09) ─────────────
+APPLIED (guarded graft, clean): 3 files box==BASE -> TARGET, backup /home/azureuser/pm_wlrefresh_backup_20261009T022131Z
+(left in place), py_compile+import OK, no rollback. RESTART (Jack authorized "atomic restart"; canonical az
+run-command restart_pmweb.ps1 -> `systemctl restart prediction-markets-web`): pm_web MainPID 586747 -> 682305,
+ActiveEnter 2026-10-09 02:29:29Z POSTDATES app.py mtime 02:21:31Z (new bytecode). ENGINE trading-corp 678426 /
+NRestarts 0 / boot 2026-10-08 16:38:24Z UNCHANGED throughout (no boot_reconcile bounce). Arm 57 armed / arm:global
+armed / 35 latched = the pre-existing deliberately-off set from the 10-07 recovery, UNCHANGED, NO new latch
+(pm_web is credential-free, cannot write agent_state). /healthz 200, 0 tracebacks. All four levels green incl.
+reachable: 16 Watchlist Refresh buttons render on /farm/cfb (one per pinned whale).
+
+ACCEPTANCE -- the prediction HELD. 0b measured upstream 245 cfb (/3593 total) vs 12 stored, newest stored ~29-30d.
+After Jack's Refresh click on 0x27f738fe...44b0 (cfb): pm_closed_position cfb 12 -> **245**, total 3082 -> 3596,
+pm_whale.last_refresh_ts fresh; after the rollup, pm_category_stats n_resolved -> **245** and the live cell shows
+245 with a fresh (0.0d) completed-basis dot. Paper columns UNTOUCHED (332 closed / 20.8h -- the daily cron).
+★ HONEST NOTE: my FIRST check (02:35) read 12 -- a mid-rollup read (the ambiguous-zero shape); I named it and
+re-checked rather than explaining it, and it was 245 once the rollup landed.
+
+FRESHNESS-DOT finding -- NOT a bug, NOT a cache: MY MONITORING GREP ERROR. My curl checks extracted the dot with
+`head -1` (first watchlist row = a whale still on the daily 05:00 stamp) while the cell was whale-specific via the
+0x27f738 drill link, so I paired two different rows and reported a false "245 cell + 0.9d dot". Proven three ways:
+(1) calling _load_farm_category directly returns completed_refresh.iso == pm_whale.last_refresh_ts (02:34) for this
+whale; (2) GET /farm/{category} (app.py:862) calls _load_farm_category FRESH, no response cache (ui_cache is
+marks-only, no DB); (3) the live page shows 0x27f738's OWN dot as 02:34/0.0d and un-refreshed whales as their own
+older stamps. The enrichment is correct; no code change. (The display is per-whale and self-consistent.)
+
+backfill_complete=0 for this wallet (and 0x629c2844): the re-pull was marked PARTIAL -- a benign union mismatch
+(a few old condition_ids no longer in the API's /closed-positions window, e.g. 3593 pulled vs 3596 stored). It does
+NOT gate the completed cell or Analyze (stats.rollup computes pm_category_stats.n_resolved from pm_closed_position
+regardless of backfill_complete, so the cell shows 245); it ONLY drops the whale from the ranked Prospects board
+(query_scoreboard, app.py-side), where a pinned Watchlist whale does not appear. Inherited refresh_one semantics.
+
+CONCURRENT 2-WHALE click (Jack tested): both completed ~02:43 -- 0x55a1f55f COMPLETE (bc=1, 310==310),
+0x629c2844 PARTIAL (bc=0, 2096/2154). PER-WALLET single-flight correct (two different wallets both proceeded).
+NO 429s (an earlier "8" was a false positive: the substring "429" inside condition-id hex in httpx URLs; actual
+responses 200 OK), NO db-lock, NO traceback. The two global rollups SERIALIZED on SQLite's single write lock
+(busy-wait -> db-lock=0, i.e. it waits, it does not fail) -> safe, slower.
+
+★ BACKLOG (inherited from Prospects, NOT built here): refresh_one re-rolls the ENTIRE pm_category_stats table on
+every click (~5 min wall-clock, button pending the whole time), and the cost SCALES with use -- refreshing all 16
+cfb whales = 16 full-table rollups, and concurrent clicks serialize. This is the single thing most likely to make
+the button unpleasant. Fix = scope the rollup to the refreshed whale, or run it async with the row updating on
+completion. Deferred -- Jack's call on timing.
+
+PENDING (Jack's click): Analyze/Re-analyze -> the grounding report (DATA QUALITY, dagger, inverted-set withholding,
+loss-omission UNKNOWN?, and whether a partial basis still badges "clean"; grounded-vs-merely-numerous).
+
+FF (box == TARGET == branch tip): origin/prod-live 2532eee6 -> <final tip> (straight FF) + tag
+pm-watchlist-refresh-deploy-2026-10-09. Commands handed to Jack; Jack pushes.
