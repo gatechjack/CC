@@ -118,8 +118,9 @@ def test_refresh_button_on_every_watchlist_row(monkeypatch, tmp_path):
     assert html.count("/farm/%s/refresh/%s?from=watchlist" % (CAT, other)) >= 1
     assert 'hx-target="#pm-watchlist-rows"' in html
     assert '<div id="pm-watchlist-rows">' in html          # the swap target wrapper exists
-    # the completed-basis column + cell render (labelled, distinct from the paper columns)
-    assert ">completed<" in html and 'drill=scoreable' in html
+    # the completed-basis column header + per-row cell render (labelled, distinct from the paper columns)
+    assert ">completed<" in html                           # the column header
+    assert html.count('pm-completed-cell') >= 2            # one completed cell per pinned whale (2 here)
     # the Prospects button is UNCHANGED: still targets its own fragment and does NOT carry ?from=watchlist
     assert 'hx-target="#pm-prospects-rows"' in html
 
