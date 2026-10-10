@@ -87,29 +87,57 @@ def read_leg_audit_reviews(conn, account_ids=None, limit=50):
     q = ("SELECT id, account_id, category, ticker, outcome_leg, signal_outcome, signal_slug, leg_audit, "
          "outcome_status, response_ts FROM pm_subdivision_order WHERE %s ORDER BY response_ts DESC, id DESC" % where)
     counts = {s: 0 for s in SURFACED_STATES}
+    status_counts = {"filled": 0, "no_fill": 0}   # positions-at-risk vs attempts (headline split; over ALL matches)
     by_account = {}
     _sev = {s: i for i, s in enumerate(SURFACED_STATES)}   # inversion(0) < soft(1) < unevaluated(2)
-    surfaced = []
+    # ★ FILLED rows NEVER collapse -- each filled position is money at risk and keeps its OWN line (id + status).
+    # Only NO_FILL rows collapse, keyed (ticker, outcome_leg, signal_outcome), into one line with a dup_count.
+    filled_lines = []        # [(sortkey, rowdict)] -- one entry per filled row (dup_count always 1)
+    nofill_groups = {}       # (ticker, leg, signal_outcome) -> {"count": n, "best": (sortkey, rowdict)}
     for r in conn.execute(q, params):
         st = classify_leg_audit(r["leg_audit"])
         if st not in SURFACED_STATES:
             continue
         counts[st] += 1                  # counts are over ALL matches -> the headline stays honest even when capped
         by_account.setdefault(r["account_id"], {s: 0 for s in SURFACED_STATES})[st] += 1
-        surfaced.append((_sev[st], -(r["response_ts"] or 0), -(r["id"] or 0), {
+        is_filled = (r["outcome_status"] == "filled")
+        status_counts["filled" if is_filled else "no_fill"] += 1
+        sortkey = (_sev[st], -(r["response_ts"] or 0), -(r["id"] or 0))
+        rowdict = {
             "id": r["id"], "account": r["account_id"], "category": r["category"], "ticker": r["ticker"],
             "outcome_leg": r["outcome_leg"], "signal_outcome": r["signal_outcome"], "signal_slug": r["signal_slug"],
             "leg_audit": r["leg_audit"], "state": st, "state_label": state_label(st),
             "outcome_status": r["outcome_status"], "response_ts": r["response_ts"],
-        }))
+            "filled": is_filled, "dup_count": 1,
+        }
+        if is_filled:
+            filled_lines.append((sortkey, rowdict))          # never merged -- one line per filled id
+        else:
+            key = (r["ticker"], r["outcome_leg"], r["signal_outcome"])
+            g = nofill_groups.get(key)
+            if g is None:
+                nofill_groups[key] = {"count": 1, "best": (sortkey, rowdict)}
+            else:
+                g["count"] += 1                              # collapse: bump the attempt count
+                if sortkey < g["best"][0]:                   # keep the most-severe/newest as the representative line
+                    g["best"] = (sortkey, rowdict)
+    # one line per filled row + one representative per NO_FILL tuple (stamped with its collapsed count)
+    nofill_lines = []
+    for g in nofill_groups.values():
+        sk, rd = g["best"]
+        rd["dup_count"] = g["count"]
+        nofill_lines.append((sk, rd))
+    lines = filled_lines + nofill_lines
     # severity-first, then newest, then id -- so an INVERSION is NEVER truncated below the cap by a wall of soft/uneval.
-    surfaced.sort(key=lambda t: (t[0], t[1], t[2]))
-    rows = [t[3] for t in surfaced[:limit]]
+    lines.sort(key=lambda t: t[0])
+    rows = [rd for _sk, rd in lines[:limit]]
     return {
         "schema_ok": True,
         "counts": counts,
-        "total_surfaced": sum(counts.values()),
+        "status_counts": status_counts,          # {"filled": F, "no_fill": NF} over ALL surfaced matches (headline split)
+        "total_surfaced": sum(counts.values()),  # raw population (every flagged order) -- unchanged
+        "total_lines": len(lines),               # filled rows + distinct NO_FILL tuples (the deduped line population)
         "by_account": by_account,
         "rows": rows,
-        "shown": len(rows),              # < total_surfaced when capped -> the UI/runner say "showing N of M"
+        "shown": len(rows),                       # deduped lines shown; < total_lines when capped
     }

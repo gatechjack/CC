@@ -1391,10 +1391,14 @@ def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub,
     _la = leg_audit_reviews or {}
     _la_counts = _la.get("counts") or {}
     _la_rows = _la.get("rows", []) if _la.get("schema_ok") else []   # reader already scoped, severity-first, capped
+    _la_status = _la.get("status_counts") or {}
     leg_audit_strip = {
         "schema_ok": bool(_la.get("schema_ok")),
         "total": int(_la.get("total_surfaced", 0) or 0),
-        "shown": int(_la.get("shown", len(_la_rows)) or 0),   # < total when capped -> template says "showing N of M"
+        "total_lines": int(_la.get("total_lines", _la.get("total_surfaced", 0)) or 0),  # deduped line population
+        "shown": int(_la.get("shown", len(_la_rows)) or 0),   # < total_lines when capped -> "showing N of M lines"
+        "n_filled": int(_la_status.get("filled", 0) or 0),    # positions at risk (filled; never collapsed)
+        "n_no_fill": int(_la_status.get("no_fill", 0) or 0),  # attempts (no_fill; collapsed per tuple)
         "n_inversion": int(_la_counts.get(leg_audit.STATE_INVERSION, 0)),
         "n_soft": int(_la_counts.get(leg_audit.STATE_SOFT, 0)),
         "n_uneval": int(_la_counts.get(leg_audit.STATE_UNEVALUATED, 0)),
@@ -1403,6 +1407,7 @@ def build_subdivisions_context(*, subs, accounts_meta, arm_all, liveness_by_sub,
                   "ticker": r.get("ticker"), "leg": r.get("outcome_leg"),
                   "signal_outcome": r.get("signal_outcome"), "verdict": r.get("leg_audit"),
                   "status": r.get("outcome_status"), "filled": (r.get("outcome_status") == "filled"),
+                  "dup_count": int(r.get("dup_count", 1) or 1),
                   "href": "/live/%s/%s" % (r.get("account"), r.get("category"))}
                  for r in _la_rows],
     }
