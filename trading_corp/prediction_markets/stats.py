@@ -46,12 +46,21 @@ _ONESIDED_COLS = [
 ]
 
 
-def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -> int:
+def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD,
+           wallet: str | None = None) -> int:
     """Aggregate pm_closed_position -> pm_category_stats over EVERY (wallet, category) that has
     any rows. Scoreable metrics use the §3A predicate; n_excluded/excluded_pnl summarize the
     quarantined remainder so the visibility columns are honest even for fully-quarantined
-    categories (n_resolved=0, n_excluded>0)."""
+    categories (n_resolved=0, n_excluded>0).
+
+    ★ SCOPE (refresh-button availability fix 2026-10-10): `wallet` given -> every SELECT below is
+    narrowed to that one wallet. INSERT OR REPLACE is keyed on (wallet,category) and STILL writes the
+    full _STATS_COLS, so the scoped rows are VALUE-IDENTICAL to a full run for that wallet and all
+    OTHER wallets' rows are left byte-for-byte intact. Safe ONLY because every column is computed
+    within one (wallet,category) group's OWN rows -- there is NO cross-whale term (no rank, percentile
+    or all-whale denominator). Any future cross-wallet column would break this scope contract."""
     pred = SCOREABLE_PREDICATE_SQL   # the ONE definition
+    wscope = (wallet,) if wallet is not None else ()   # bound into every scoped SELECT below (empty tuple = full table)
     # --- migration 004: two-sided structure over ALL rows (hedge/MM tell). n_condition_ids = distinct
     #     condition_ids; n_two_sided = those the whale held on >1 outcome_index. NOT scoreable-filtered
     #     (two-sidedness is structural regardless of quarantine). ---
@@ -60,8 +69,10 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
         "SELECT wallet, category, COUNT(*) AS n_cond, "
         " SUM(CASE WHEN n_out > 1 THEN 1 ELSE 0 END) AS n_two "
         "FROM (SELECT wallet, category, condition_id, COUNT(DISTINCT outcome_index) AS n_out "
-        "      FROM pm_closed_position GROUP BY wallet, category, condition_id) "
-        "GROUP BY wallet, category"
+        "      FROM pm_closed_position "
+        + ("WHERE wallet = ? " if wallet is not None else "")
+        + "GROUP BY wallet, category, condition_id) "
+        "GROUP BY wallet, category", wscope
     ).fetchall():
         two_sided[(tr["wallet"], tr["category"])] = (tr["n_cond"] or 0, tr["n_two"] or 0)
     # --- migration 004: market-shape counts over ALL rows via the pure classifier (bias-down: ambiguous
@@ -69,6 +80,7 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
     shape: dict[tuple, list] = defaultdict(lambda: [0, 0])   # (wallet,category) -> [n_single_game, n_futures]
     for sr in conn.execute(
         "SELECT wallet, category, slug, event_slug, title FROM pm_closed_position"
+        + (" WHERE wallet = ?" if wallet is not None else ""), wscope
     ).fetchall():
         cls = classify_market_shape(sr["slug"], sr["event_slug"], sr["title"])
         if cls == "single_game":
@@ -90,10 +102,12 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
         " SUM(CASE WHEN pnl_anomaly=1 THEN 1 ELSE 0 END) AS n_anomaly, "
         " SUM(ABS(realized_pnl)) AS abs_all, "
         " SUM(CASE WHEN pnl_suspect=1 THEN ABS(realized_pnl) ELSE 0 END) AS abs_excl "
-        "FROM pm_closed_position GROUP BY wallet, category"
+        "FROM pm_closed_position "
+        + ("WHERE wallet = ? " if wallet is not None else "")
+        + "GROUP BY wallet, category"
     )
     recs = []
-    for r in conn.execute(sql).fetchall():
+    for r in conn.execute(sql, wscope).fetchall():
         n = r["n_resolved"] or 0
         wins = r["wins"] or 0
         losses = r["losses"] or 0
@@ -138,13 +152,13 @@ def rollup(conn, *, now_ts: int, dq_threshold: float = DATA_QUALITY_THRESHOLD) -
         "INSERT OR REPLACE INTO pm_category_stats (%s) VALUES (%s)" % (", ".join(_STATS_COLS), ph),
         recs,
     )
-    _rollup_onesided(conn, now_ts=now_ts)   # migration-004 companion: one-sided directional slice
+    _rollup_onesided(conn, now_ts=now_ts, wallet=wallet)   # migration-004 companion: scoped in lock-step with rollup
     if hasattr(conn, "commit"):
         conn.commit()
     return len(recs)
 
 
-def _rollup_onesided(conn, *, now_ts: int) -> int:
+def _rollup_onesided(conn, *, now_ts: int, wallet: str | None = None) -> int:
     """migration-004 companion: aggregate SCOREABLE rows on condition_ids the whale held on a SINGLE
     outcome_index (NOT two-sided) -> pm_category_onesided_stats. The copyable directional signal, but an
     UPPER BOUND (is_upper_bound=1): a position turns two-sided precisely when the first side sours, so
@@ -162,13 +176,16 @@ def _rollup_onesided(conn, *, now_ts: int) -> int:
         " MAX(p.resolved_ts) AS last_ts "
         "FROM pm_closed_position p "
         "JOIN (SELECT wallet, category, condition_id FROM pm_closed_position "
-        "      GROUP BY wallet, category, condition_id HAVING COUNT(DISTINCT outcome_index) = 1) oc "
+        + ("     WHERE wallet = ? " if wallet is not None else "")
+        + "     GROUP BY wallet, category, condition_id HAVING COUNT(DISTINCT outcome_index) = 1) oc "
         "  ON p.wallet=oc.wallet AND p.category=oc.category AND p.condition_id=oc.condition_id "
-        "WHERE " + scoreable_where("p") + " "
-        "GROUP BY p.wallet, p.category"
+        "WHERE " + scoreable_where("p")
+        + (" AND p.wallet = ? " if wallet is not None else " ")
+        + "GROUP BY p.wallet, p.category"
     )
     recs = []
-    for r in conn.execute(sql).fetchall():
+    _os_params = (wallet, wallet) if wallet is not None else ()
+    for r in conn.execute(sql, _os_params).fetchall():
         n = r["n"] or 0
         wins = r["wins"] or 0
         losses = r["losses"] or 0

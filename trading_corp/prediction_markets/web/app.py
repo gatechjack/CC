@@ -1141,7 +1141,8 @@ async def _refresh_whale(wallet: str, now_ts: int) -> str:
             outcome = (res or {}).get("verdict") or "complete"   # 'complete' | 'partial'
         except Exception:
             outcome = "failed"   # a raised refresh -> the whale is UNCHANGED (safe); still rollup + re-render honest state
-        await asyncio.to_thread(stats.rollup, conn, now_ts=now_ts)   # reflect the re-pull; OFF the loop (blocking aggregate)
+        async with _rollup_lock:                                     # <=1 rollup process-wide (availability fix 2026-10-10)
+            await asyncio.to_thread(stats.rollup, conn, now_ts=now_ts, wallet=wallet)   # SCOPED to this whale + serialized
     return outcome
 
 
@@ -1161,6 +1162,16 @@ _REFRESH_NOTICE = {
 # guard, and the check+add is ATOMIC between awaits (asyncio is single-threaded). ★ This also FIXES the Prospects
 # path, which previously relied on hx-disabled-elt (a UI hint) alone -- a double-POST there double-called the API.
 _refresh_inflight: set = set()
+
+# PROCESS-WIDE ROLLUP LOCK (availability fix 2026-10-10): the per-wallet _refresh_inflight guard above does NOT
+# bound DISTINCT wallets -- N whales refreshed at once spawned N concurrent FULL-TABLE rollups, each holding a
+# default-executor thread while serializing on SQLite's single write lock, saturating the asyncio thread pool so
+# even unrelated to_thread() reads (e.g. _load_farm_category) starved -> the site wedged ~7 min, no self-recovery.
+# At most ONE rollup runs process-wide. Held ONLY around the to_thread(rollup) call -- NEVER around the ~30-call
+# network pull (which yields and is already per-wallet single-flighted above). Same one-event-loop assumption the
+# set above relies on, so a module-level asyncio.Lock is a valid in-process serializer. With the rollup now SCOPED
+# (stats.rollup wallet=) each queued run is sub-second, so FIFO-queue (not reject): every re-pull is still rolled up.
+_rollup_lock = asyncio.Lock()
 
 
 def _wl_refresh_notice(outcome: str, n_completed) -> str | None:
