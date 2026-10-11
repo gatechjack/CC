@@ -1572,3 +1572,79 @@ BACKUPS LEFT IN PLACE (this workstream, 3 artifacts): pm_recovery_backup_2026100
       pm_settclose_backup_20261008T114934Z.settlement.py (11,870 B) -- ~1.25 GB total. ("3 DB copies" in the
       running notes was imprecise: 2 DB snapshots + 1 .py file.) The box holds 432 backup artifacts / 4.58 GB from
       prior sessions, none touched. Root fs: 47G used / 15G free / 77% on /.
+UPGRADE 2026-10-09 ~06:29Z -- NOW PROVEN LIVE BY A REAL SCALAR (supersedes the "NOT YET BY A REAL SCALAR" lines
+      above). A real non-binary settlement booked AUTOMATICALLY through the new branch on its first occurrence:
+      kalshi_jack -- KXBOXING-26OCT08CHABOTROMERO-CHABOT -- close_source=settlement_scalar, won=NULL,
+      realized_pnl=+0.0275, with EXACTLY ONE non-standard market_result WARN matching that row (the loud path
+      fired, not silent). Reconcile CLEAN on all four at the same time -- 22/22, 15/15, 5/5, 5/5, DIFFS=0 -- so
+      the defect behind BOTH outages did not recur. The path is now proven LIVE, not only by test+construction.
+      The standing daily watch found it on its first morning, which is exactly what the watch was for.
+
+----------------------------------------------------------------------------------------------------
+2026-10-10 -- DEPLOY: WATCHLIST-REFRESH ROLLUP SCOPED + PROCESS-WIDE LOCK; LEG-AUDIT BANNER DEDUP (pm_web only)
+----------------------------------------------------------------------------------------------------
+NO ENGINE RESTART. One pm_web restart only (MainPID 689895 -> 698062, ActiveEnter 2026-10-11 00:23:45Z, boot
+      GREEN, /healthz 200). Engine trading-corp 678426 NEVER bounced, NRestarts 0. Arm unchanged: 57 armed /
+      arm:global armed / 35 latched, NO new latch.
+★ THE SEVERITY (a defect, NOT an optimisation): the per-row Refresh button -- shipped 2026-10-08 -- fired a
+      FULL-TABLE stats.rollup on every click. Measured on a consistent backup of the live PM db (354 wallets,
+      722,320 closed rows): full rollup = 993.6 s (~16.5 min); scoped = 0.284 s -- 3,501x. ONE Refresh click
+      occupied a worker thread for ~16.5 minutes out of pm_web's 6-thread pool (min(32, 2 vCPU + 4)). EVERY
+      Refresh pressed since 2026-10-08 did that; a 2nd concurrent click removed a thread for 16 min, a 6th would
+      wedge the site outright. The site staying up was luck, not headroom.
+THE FIX: (1) stats.rollup / _rollup_onesided take an optional wallet= that scopes every SELECT; INSERT OR REPLACE
+      keyed on (wallet,category) still writes the full column tuple -> a scoped run is VALUE-IDENTICAL to the
+      nightly full run (proven against a full-rollup oracle) and leaves other wallets byte-untouched; NO
+      cross-whale term exists -> scoping REMOVES the work. (2) a module-level asyncio.Lock around ONLY the
+      to_thread(rollup) -> <=1 rollup in flight process-wide, QUEUED not rejected (each scoped run is
+      sub-second). The per-wallet _refresh_inflight guard did NOT bound distinct wallets = the root cause.
+      Async-row-update-on-completion was FORBIDDEN as a standalone; not built.
+LEG-AUDIT DISPLAY: 19 flagged rows -> 3 lines. FILLED rows NEVER collapse (5038 TSFAL + 5278 TSMOUZ keep their
+      own ids and statuses); only NO_FILL collapses (TSMOUZ x17), grouped and NEVER suppressed; headline leads
+      with "2 FILLED POSITIONS TO REVIEW" (positions at risk) then "17 no-fill attempts (no position)".
+      Display-layer only (leg_audit read side + live_view + template); the engine audit write-side is untouched.
+      This REFORMATS the banner; it does NOT clear the flags -- clearing is the staged ts->spirit alias + the
+      19-row reclassify, which ride the NEXT engine restart (not done here).
+TESTS (non-tautological; 10 new + 4 regression suites green on the box venv): scoped==full value-identity +
+      others-untouched; lock serialises peak==1 WITH a red-first no-lock control (peak>1); the acceptance is a
+      REPRODUCTION -- on a pinned 4-thread pool (a stated simplification vs production's 6) 8 concurrent
+      distinct-wallet refreshes WEDGE an unrelated control request before the lock (>0.3 s) and keep it
+      responsive after (<0.15 s); hand-computed 19->3 dedup incl. two-filled-same-tuple-DON'T-merge.
+COMMITS (two, independently revertible) + record: 7f4aa111 rollup fix (stats.py, web/app.py) + e943e804 leg
+      dedup (leg_audit.py, web/live_view.py, pm_live_list.html) + ebe46234 record. Per-file CR-stripped BASE->
+      TARGET: stats.py e0334a96->c9d381ed, app.py 6693cb1e->b8f85d00, leg_audit.py 04880ccd->07b98056,
+      live_view.py a7907af5->bb186867, pm_live_list.html af8e3210->3fa2c799. Guarded graft (drift-gate all 5 ->
+      backup -> apply -> verify live==TARGET -> py_compile+import -> rollback-all). Backup:
+      /home/azureuser/pm_rollupfix_backup_20261011T002054Z.tar (296,960 B, left in place). Jack authorized the
+      atomic restart (az run-command).
+PROD-LIVE FF -- VERIFIED AGAINST THE REMOTE (git ls-remote, NOT local refs): prod-live 49091390 -> ebe46234,
+      TRUE fast-forward (49091390 IS an ancestor of ebe46234; 3 linear commits; not a reset). Tag
+      pm-rollup-fix-deploy-2026-10-10 present on the remote -> ebe46234. BOX == PROD-LIVE on the 5 deployed code
+      files (CR-stripped == TARGET). EXACTLY FIVE legitimate differences, named (NOT drift): the 4 new test files
+      (test_rollup_scoped / test_rollup_lock / test_refresh_outage_repro / test_leg_audit_dedup) + this record
+      are in prod-live (repo) and ABSENT on the box -- repo-only, never deployed.
+★ FINDINGS THAT OUTLIVE THE DEPLOY:
+  - CORRECTION -- /activity has a HARD 5000-row ceiling that is POLYMARKET'S, NOT OURS. A live probe of 5 whales
+    returned HTTP 400 "max historical activity offset of 5000 exceeded" at page 11 (offset 5500) on all five.
+    Phase 0 Q3 AND I both said the cap was ours and fixable -- both of us read loss_grounding's comments instead
+    of calling the endpoint. THE WRONG VERSION STILL LIVES IN loss_grounding.py:149's comments; said here so the
+    next session does not re-derive it. prod activity_max_pages=10 (offsets 0-4500) sits one page under the wall;
+    bumping it buys <=500 more rows then 400s. Deeper /activity paging CANNOT improve truncated-whale coverage
+    (the ~50% truncated-coverage is a venue floor) -- only a different grounding source could.
+  - Coverage runs INVERSE to activity: a 100-trade whale can reach 100%, a 1,666-trade one structurally cannot.
+    So INSUFFICIENT_DATA means "we cannot see past the wall" on a busy whale and "there is not much here" on a
+    sparse one, and the tier CONFLATES them. Backlog, flagged, NOT fixed.
+  - A HARD coverage floor at promote time is RULED OUT ON EVIDENCE (it would permanently exclude every
+    high-activity whale whose coverage is venue-capped below 90%). WARN-AT-PROMOTE recommended, PENDING Jack's
+    ruling. promote_to_live (farm_actions.py:113-170) currently gates only on pinned + account-active.
+  - THE 35 LATCHES ARE RESIDUE, NOT POLICY: reason boot_reconcile_mismatch, from the 2026-10-06 account-wide
+    event, never re-armed, carried through the 10-08 reboot. A LATCH IS NOT A CURRENT RECONCILE DIFF -- on
+    2026-10-09 they coexisted with DIFFS=0 on all four. (Prior notes calling the leftover set "deliberately off"
+    / "left disarmed" were imprecise: it is an un-cleared fail-safe residue, not a deliberate policy state.)
+  - 429 observation during the Phase-3 probe window: 500 -> 4,614/hr with ZERO /activity calls in the rise (the
+    CFB driver's /positions polling, not the probe); fills never stalled; still below the ~7.5k/hr normal.
+NOT TOUCHED / NOT AUTHORIZED: the ts->spirit alias (staged cs2-leg-alias-ts-2026-10-09@43cdcfb5, rides the next
+      engine restart), the 19-row reclassify (waits on the alias being live), the 35 latches, any re-arm, Phase 3
+      (reported + closed), the engine. The legacy trading_corp.db was NEVER written. bitunix/MACE out of scope --
+      nothing surfaced. Still outstanding (Jack's): the cfb whale 0x27f738fe...44b0 grounding report, awaiting an
+      Analyze click, will carry a backfill_complete=0 partial-data caveat.
