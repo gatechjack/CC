@@ -12,7 +12,9 @@ No restart, no arm/halt, no push, no code change. Branch `mace-xle-reconcile-202
 - **2026-10-16 03:47:52Z** — `mace_xle_reconcile_verify_ro.ps1`: rung confirmed closed; census **open 18→17, closed 26→27**;
   no XLE 10-30 open/closing rung remains; XLE closed-realized total **$167.00** (prior $151 + $16). ✓
 - NOT a code deploy → no prod-live fold required (DB-data reconcile only; the 5 mace `.py` + yaml are byte-unchanged).
-- **Still open (Jack):** the RH-session re-auth (the reconcile error + mark freeze persist until the box RH session re-authenticates).
+- **RH session (update):** the RH **pickle re-auth was fixed by Jack earlier 2026-10-15** — the session failure
+  described in Q4/anomaly is RESOLVED (my recon read pre-fix journal/mark data). Marks resume on the next manage
+  window (Fri 10/16 09:35 ET); no further action. (The historical outage detail below is retained as-observed.)
 
 All times UTC unless marked ET (ET = UTC−4, EDT). Stuck rung = `mace-XLE-2026-10-30-60-59-70-71-20260917`.
 
