@@ -1,8 +1,18 @@
 # MACE XLE Stuck-Rung Diagnosis + DB Reconcile — Report (2026-10-15)
 
-**Status: PART 1 DIAGNOSIS COMPLETE (read-only). PART 2 RECONCILE PREPARED — RESERVED for Jack's authorization.**
-Nothing written to the prod DB. No restart, no arm/halt, no push. Engine/tree/DB untouched.
-Branch `mace-xle-reconcile-2026-10-15` (worktree). Box engine PID 678426, re-read live.
+**Status: PART 1 DIAGNOSIS COMPLETE (read-only). PART 2 RECONCILE EXECUTED + VERIFIED (Option A, Jack-authorized 2026-10-16 03:46Z).**
+No restart, no arm/halt, no push, no code change. Branch `mace-xle-reconcile-2026-10-15` (worktree). Box engine PID 678426, re-read live.
+
+### EXECUTION LEDGER
+- **2026-10-16 03:46:08Z** — `mace_xle_reconcile_write.ps1` run under board authorization ("run write runner A then verify").
+  Atomic DB online-backup → `/home/azureuser/mace_xle_reconcile_backup_20261016T034608Z.db` (5.57 GB; df-guard 15.2 GB free).
+  Pre-image → `/home/azureuser/mace_xle_reconcile_preimage_20261016T034608Z.json`. **rows updated: 1.**
+  PRE `status=open, exit_*=NULL` → POST `status=closed, exit_ts=2026-10-13T17:05:02+00:00, exit_reason=manual,
+  exit_debit=0.22, realized_pnl=16.00, credit_actual=0.30 (unchanged)`.
+- **2026-10-16 03:47:52Z** — `mace_xle_reconcile_verify_ro.ps1`: rung confirmed closed; census **open 18→17, closed 26→27**;
+  no XLE 10-30 open/closing rung remains; XLE closed-realized total **$167.00** (prior $151 + $16). ✓
+- NOT a code deploy → no prod-live fold required (DB-data reconcile only; the 5 mace `.py` + yaml are byte-unchanged).
+- **Still open (Jack):** the RH-session re-auth (the reconcile error + mark freeze persist until the box RH session re-authenticates).
 
 All times UTC unless marked ET (ET = UTC−4, EDT). Stuck rung = `mace-XLE-2026-10-30-60-59-70-71-20260917`.
 
