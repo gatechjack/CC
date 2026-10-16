@@ -13187,3 +13187,57 @@ a41644d0/acea4a74 match the build base exactly -> clean bump to 398dc425 / d342e
 ssh azureuser@trading.jacksumner.com "cp ~/bfut_graft_backup_20260921T102326Z/trading_corp/brokers/bitunix.py /home/azureuser/trading_corp/trading_corp/brokers/bitunix.py"
 # then restart_tc.ps1 ; and git revert the prod-live + main FF commits (non-force).
 ```
+
+---
+
+## 2026-10-15/16 — MACE XLE stuck-rung DB reconcile (DATA-only) + prod-live ledger fold (NO code deploy, NO restart, NO arm/halt)
+
+**What this is.** A read-only MACE health check plus a one-row DB reconcile booking the stuck XLE
+2026-10-30 60/59/70/71 x2 rung that Jack manually closed at Robinhood on 2026-10-13. **No code or config
+changed — only a `mace_rung` row and the git ledger.** The engine was never touched (MainPID **678426**,
+NRestarts **0**, boot 2026-10-08 16:38:24 UTC — identical before and after).
+
+**The reconcile (Option A, board-authorized 2026-10-16 03:46 UTC).** The rung was a dead-wing
+ride-to-expiry winner: its far-OTM long 59P had no bid, so every engine close hit RH "empty response";
+the exit-redesign correctly un-wedged it (`closing_reopen` 10/08), deferred, then entered ride-to-expiry
+(`ride_enter` 10/13, gate `natural_above_cap`). Jack realized it manually at RH on 10/13 (four single-leg
+`user` orders). Booked to `data/trading_corp.db`: `status=closed, exit_ts=2026-10-13T17:05:02+00:00,
+exit_reason=manual, exit_debit=0.22, realized_pnl=+16.00`. Arithmetic: entry net credit $62 (0.31/ct; DB
+`credit_actual` recorded as the 0.30 order limit), close debit $44 (0.22/ct) -> MACE-formula realized
+(0.30-0.22)*100*2 = **+$16.00** (RH per-leg economic truth = +$18.00; the $2 is the limit-vs-fill
+convention present on every rung — Option A keeps this rung formula-consistent). Census **18->17 open /
+26->27 closed**; XLE closed-realized total **$167.00**; Division P&L (live computed-from-rungs) now carries
+the +$16 in 1W/1MO/ALL, correctly NOT in 1D (dated 10/13). Position confirmed FLAT at RH (nothing naked).
+Atomic DB online-backup `/home/azureuser/mace_xle_reconcile_backup_20261016T034608Z.db` (5.57 GB) +
+pre-image JSON retained. Guarded idempotent UPDATE (`WHERE rung_id=... AND status!='closed'`, exactly 1 row).
+
+**Health findings (read-only).** (1) The "2 spreads" Jack saw = **RH display artifact, benign** — the
+engine opens AND closes a condor as ONE 4-leg combo and cannot structurally split it (proven 3 ways: source
+`close_rung` = whole-condor; zero partial/drain audits for the rung; RH shows MACE opened it as one
+`iron_condor` order while Jack's manual close was four single-leg orders). (2) The exit-redesign +
+stop-hotfix are **healthy on live positions** (~1 week): 6 clean fills, all new paths engaged
+(closing_reopen/ride_enter/defer), the old `exit_error` loop is dead, the stop-hotfix self-heal fired on the
+57.5 rung. (3) The pulse "reconcile open orders error ×12" was an **RH pickle/session blip** (~10/13 12:46
+ET; Jack re-authed earlier 10/15) — unrelated to the rung; the booking does not clear it.
+
+**The git fold (prod-live ledger advance).** Reconcile branch `mace-xle-reconcile-2026-10-15` commits
+`22629f17` (RO diagnosis + prepared reconcile), `d087efa7` (reconcile executed+verified), `46ecb416`
+(status correction), `66a9b69e` (Division-P&L verification runner). They touch **only 13 NEW files** (10
+RO/reconcile runner scripts at repo root + `reports/mace/MACE_XLE_RECON_2026-10-15.md` + 2 divpnl runners)
+— **zero tracked code/config/schema** (the DB is not in git; only the report + runners are). The exit stack
+was ALREADY on prod-live from the 2026-10-08 cherry-pick fold (md5s verified UNCHANGED by this push:
+strategy b30db63f / manager dc04eb60 / domain 8522dc3a / execution 9cc1c165 / config d441957f, config_hash
+931a8214be50), so the reconcile branch is divergent (merge-base `2362db46`); folded by **cherry-pick, NOT
+merge** (a merge would drag 21 duplicate exit-stack originals into prod-live history).
+
+**prod-live FF:** `ebe46234 -> 3327b178` (clean fast-forward; 4 cherry-picked commits
+8ff7ef4e/847dcccf/eb6da13e/3327b178; ebe46234 IS an ancestor — not a reset). **Three-way proof:** diff
+ebe46234..3327b178 = 13 files ALL `A` (zero M/D = no clobber of any PM/PMCC/PEAD file); each folded blob
+SHA byte-identical to the reconcile branch (LF-clean). **Closing full-tree walk (box vs prod-live, ALL
+divisions, 375 deployed files): BOX_ONLY = 0** (0 box-differs, 0 box-extra; 7 git-only never-deployed files
+left intact per the ledger-not-mirror ruling) — no un-folded deploy anywhere; the prior
+prodlive-behind-props debt is resolved. **Do-no-harm pre==post:** engine MainPID 678426 / NRestarts 0 /
+census 17 open+27 closed / PM subs 92 active — identical (the push is to GitHub, not the box).
+
+**No rollback recipe needed** (data-only + additive ledger). To revert the ledger: `git revert` the 4
+prod-live commits (non-force). To revert the DB row: restore from the online-backup named above.
