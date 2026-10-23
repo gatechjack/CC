@@ -13241,3 +13241,49 @@ census 17 open+27 closed / PM subs 92 active — identical (the push is to GitHu
 
 **No rollback recipe needed** (data-only + additive ledger). To revert the ledger: `git revert` the 4
 prod-live commits (non-force). To revert the DB row: restore from the online-backup named above.
+
+---
+
+## 2026-10-23 ~20:12 UTC — MACE durability fix: manage-tick/leg-quote TIMEOUTS + liveness WATCHDOG — DEPLOYED (box graft) + RESTARTED + VERIFIED LIVE (agent-driven under explicit Board authorization; config_hash UNCHANGED)
+
+**What this is.** Root-cause fix for the 2026-10-13→10-23 **9-day silent manage-loop hang** (an un-timed-out
+`leg_quote` await inside `manage_tick` froze the loop that owns ALL exits + live-marks; sibling loops stayed
+alive; no alarm fired). Branch `mace-durability-fix-2026-10-23`, built off box-truth `2ffa1d20`.
+
+**The fix (5 code files, all MACE except main.py).** (1) `execution._fresh_quotes` — each `leg_quote` under
+`asyncio.wait_for(leg_quote_timeout_sec=30)` + short-circuit on timeout (a timeout = session trouble → skip
+remaining legs); (2) `manager._spot` — same wrap; `manage_tick` writes a COMPLETED-tick heartbeat to
+`agent_state robinhood_mace/manage_tick_heartbeat`; (3) `loops.mace_manage_loop` — outer
+`asyncio.wait_for(manage_tick_timeout_sec=600)` → audit `mace_manage_timeout` + breaker + next tick; (4) NEW
+`loops.mace_watchdog_loop` — sibling BROKER-FREE liveness watchdog (`mace_manage_stall` if no completed tick
+in 900s during market hours w/ open-warmup grace; `mace_marks_dead` if ticking but 0/N priced in 900s =
+session dead); (5) `main.py` — wire the watchdog as a 5th MACE task (3 additive lines; the ONLY shared-file
+touch). Config fields are **optional-with-defaults** (mirrors MarkGuard/Closeability) so **mace.yaml is NOT
+changed → config_hash `931a8214be50` PRESERVED**. Timeout values are data-driven: measured sweep ~21s/rung
+(leg_quote pulls full chain via `to_thread`, no timeout). CLOSING-idempotency proven (an interrupted tick ==
+a crash the exit-redesign already recovers). Tests: 16 pass (9 new), 0 new failures; py_compile + live
+config-load verified box-scratch.
+
+**Deploy (box graft + restart).** scp+tar binary-exact graft of the 5 files (drift-gate box==base: config
+d441957f / execution 9cc1c165 / manager dc04eb60 / loops 461867a8 / main b7cc5dd7 — all matched; backup
+`/home/azureuser/mace_durfix_predeploy_backup_20261023T201020Z`), applied + verified box==target (config
+**4a47188b** / execution **71f1a828** / manager **0116e860** / loops **765e3360** / main **f486de42**),
+py_compile OK, config_hash still `931a8214be50`. Then `restart_tc.ps1` (Board-authorized; market closed,
+clean window). **Boot-verify (RO):** NEW MainPID **785516** / NRestarts 0 / boot 2026-10-23 20:12:31 UTC; 5
+md5s == target on the running tree; config_hash `931a8214be50`; journald shows all 5 schedulers online
+**including `MACE watchdog scheduler online`** (NEW); **0 tracebacks**. Boot snapshot also refreshed the
+sizing basis (fresh 2026-10-23 `mace_equity_snapshot` abp=3766.82, replacing the stale 10-22 $279).
+
+**The git fold (prod-live ledger advance).** Cherry-pick `c06c57a9`/`b9df7afb`/`720f1a56` onto origin/prod-live
+`2ffa1d20` → fold commits `00f015ff`/`bc941ad6`/`15c30133` + this ledger. **Three-way proof:** fold's 5 code
+files CR-md5 == box == target (above); `diff 2ffa1d20..HEAD` = **14 files, ALL MACE-scope** (5 code M + test A
++ BACKLOG M + 7 analysis_fix runners A), **zero files outside MACE** (clobber check clean; no PM/PEAD/PMCC/
+bitunix touched; main.py = 3 additive MACE-task lines). config_hash unchanged (mace.yaml not in the diff).
+**prod-live FF:** `2ffa1d20 -> <HEAD>` (clean fast-forward; `2ffa1d20` IS an ancestor — not a reset).
+
+**Rollback:** code — `cp` the 5 files from the predeploy backup dir + `restart_tc.ps1`; ledger — `git revert`
+the prod-live commits (non-force). To DISABLE without a revert: set `management.watchdog.enabled: false` /
+raise the timeouts in mace.yaml (moves config_hash) — but the timeouts are the safety net, keep them on.
+
+**Backlog filed (not deployed):** BACKLOG.md "MACE — sizing-basis freshness guard" (15:30 ET snapshot ahead of
+the 15:45 eval + a staleness alert) — same silent-single-point-refresh class.
