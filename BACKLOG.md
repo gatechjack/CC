@@ -8,6 +8,32 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## MACE — sizing-basis freshness guard  *(2026-10-23 — filed after the 9-day hang)*
+
+**Problem.** The deploy-cap sizing basis (`mace_equity_snapshot.available_buying_power`, read by
+`manager._load_available_bp` for BOTH the /mace UI "CAPITAL — SIZING BASIS" and the reserve gate) is
+refreshed by exactly ONE job: the daily-slots **15:40 ET** `snapshot_equity` slot — only **5 min**
+before the **15:45** entry eval, with **no guard that it actually ran or is fresh**. If the snapshot
+is missed or writes a stale/NULL value (e.g. the 10-13→10-23 manage hang left the basis stuck at the
+10-22 collapsed $279.18 while real BP had recovered to ~$1,737), the 15:45 eval sizes off a stale
+basis → under-deploys (or falls back to the equity total-book model → SKIP_RESERVE). Observed pattern:
+`abp = 2 × settled-cash` every snapshot, so a collapsed settled-cash day propagates a collapsed cap.
+
+**Proposed (Jack to schedule/deploy — NOT now):**
+1. **Earlier + redundant refresh:** add a `snapshot_equity` run at **15:30 ET** (ahead of the 15:45
+   eval) in addition to 15:40, so the eval always has a fresh same-session basis even if one run slips.
+   (Cheap: one broker snapshot + one upsert; daily-slots already fires other slots.)
+2. **Freshness check + alert:** at entry-eval start (or in the new 2026-10-23 watchdog), if the latest
+   `mace_equity_snapshot` is NULL `available_buying_power` OR `snap_date < today` at eval time, emit a
+   Pulse audit + Telegram breaker ("sizing basis stale — eval sizing off <date> $<abp>") so a missed
+   snapshot is LOUD instead of a silent under-deploy. Reuse the existing notifier.breaker plumbing.
+3. (Optional) have the entry eval itself trigger a just-in-time `snapshot_equity` if the latest row is
+   not today's, rather than sizing off a stale row.
+
+Relates to the 2026-10-23 durability fix (manage-tick timeout + liveness watchdog, branch
+mace-durability-fix-2026-10-23) — same class: a silent single-point refresh with no freshness guard.
+**Priority:** next MACE maintenance window (not time-critical once the 15:40 job is confirmed firing).
+
 ## ⏸ PAUSED — Lord Otter + Market Cypher feature work  *(2026-05-02 — Board direction)*
 
 Both crypto strategies are in **maintenance mode** until the PMCC
