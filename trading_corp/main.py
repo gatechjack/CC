@@ -1796,6 +1796,7 @@ async def run(argv: list[str] | None = None) -> int:
         mace_manage_task = None
         mace_reconcile_task = None
         mace_calendar_task = None
+        mace_watchdog_task = None   # 2026-10-23 durability fix: sibling liveness watchdog
         try:
             import sqlite3 as _mace_sqlite3
             from trading_corp.agents.divisions.robinhood_mace import RobinhoodMaceAgent
@@ -1953,6 +1954,12 @@ async def run(argv: list[str] | None = None) -> int:
             mace_calendar_task = asyncio.create_task(
                 mace_loops.mace_calendar_loop(mace_division, logger_agent),
                 name="mace-calendar")
+            # Durability fix (2026-10-23): sibling BROKER-FREE liveness watchdog -- alerts if the
+            # manage loop stops completing ticks (the 2026-10-13 silent 9-day hang) or ticks but can't
+            # price any rung (session dead). Independent task so a hung manage loop can't mute it.
+            mace_watchdog_task = asyncio.create_task(
+                mace_loops.mace_watchdog_loop(mace_division, logger_agent),
+                name="mace-watchdog")
 
             # ── Phase-2 aux loops (2026-09-04): dxFeed candle feed -> mace_candle
             # cache (read broker-free by the /mace price charts) + forward-only
@@ -2465,7 +2472,8 @@ async def run(argv: list[str] | None = None) -> int:
                 pass
             # MACE loops (None when wiring failed — guarded so shutdown is clean).
             for _mace_task in (mace_daily_task, mace_manage_task,
-                               mace_reconcile_task, mace_calendar_task):
+                               mace_reconcile_task, mace_calendar_task,
+                               mace_watchdog_task):
                 if _mace_task is not None:
                     _mace_task.cancel()
                     try:

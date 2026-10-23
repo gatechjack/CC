@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
 
-from trading_corp.utils.time import now_et
+from trading_corp.utils.time import now_et, now_utc
 
 _LOG = logging.getLogger("mace.loops")
 
@@ -118,7 +118,29 @@ async def mace_manage_loop(division, logger_agent, *, now_et_fn=now_et,
                 if now.weekday() < 5 and dtime(ws_h, ws_m) <= now.time() <= dtime(we_h, we_m):
                     mgr = division.manager
                     if mgr is not None:
-                        outs = await mgr.manage_tick(now)
+                        # Durability fix (2026-10-23): BOUND the whole tick. The 2026-10-13 9-day
+                        # outage was an un-timed-out broker await inside manage_tick that froze this
+                        # loop. asyncio.wait_for CANCELS a tick that overruns -- safe because an
+                        # interrupted mid-exit is equivalent to a crash the exit-redesign already
+                        # recovers (set_exit_order persist-before-cancel + CLOSING crash-recovery
+                        # preamble + combo_id working-order sweep; proven idempotent). We alert loudly
+                        # + audit mace_manage_timeout, and the NEXT scheduled tick runs normally. The
+                        # per-leg leg_quote timeout (execution._fresh_quotes) catches the actual quote
+                        # hang much sooner; this outer cap is the backstop for any OTHER tick await.
+                        t = mgr.cfg.management.manage_tick_timeout_sec
+                        try:
+                            outs = await asyncio.wait_for(mgr.manage_tick(now), timeout=t)
+                        except asyncio.TimeoutError:
+                            mgr._audit("mace_manage_timeout", timeout_sec=t,
+                                       detail="manage_tick exceeded timeout -> cancelled; next tick will run")
+                            try:
+                                mgr.notifier.breaker(
+                                    condition="MACE manage tick TIMED OUT -- cancelled, self-healing next tick",
+                                    lines=[f"timeout {t}s", "a broker await overran; the tick was cancelled"],
+                                    suggested_action="watch for repeats; a persistent timeout = broker/session down")
+                            except Exception:  # noqa: BLE001 — an alert must never break the loop
+                                pass
+                            outs = None
                         if outs:
                             _log_event(logger_agent, "mace_manage_exits", {"exits": len(outs)})
             await asyncio.sleep(interval_sec)
@@ -174,3 +196,106 @@ async def mace_calendar_loop(division, logger_agent, *, now_et_fn=now_et,
         except Exception as e:  # noqa: BLE001
             _LOG.exception("MACE weekly-calendar loop error (continuing): %s", e)
             await asyncio.sleep(poll_interval_sec)
+
+
+def _alert_watchdog(mgr, logger_agent, kind: str, condition: str, action: str, **payload) -> None:
+    """Fire a watchdog alert through the EXISTING plumbing (no new channels): the manager audit hook
+    (Activity Pulse + audit_event) + the Telegram breaker + the scheduler telemetry log. Each guarded
+    so the watchdog can never be sunk by an alert failure."""
+    try:
+        mgr._audit(kind, detail=condition, **payload)
+    except Exception:  # noqa: BLE001
+        _LOG.exception("watchdog audit failed: %s", kind)
+    try:
+        mgr.notifier.breaker(condition=condition, lines=[condition], suggested_action=action)
+    except Exception:  # noqa: BLE001
+        pass
+    _log_event(logger_agent, kind, dict(payload, detail=condition))
+
+
+async def mace_watchdog_loop(division, logger_agent, *, now_et_fn=now_et, now_utc_fn=now_utc,
+                             window=((9, 35), (15, 55))) -> None:
+    """Manage-loop liveness WATCHDOG (2026-10-23 durability fix). A SIBLING, BROKER-FREE scheduler --
+    it must NOT live inside the loop it watches (a hung loop cannot page about itself) and it makes NO
+    broker calls (only a DB heartbeat read + the clock), so it can never hang the way the manage loop
+    did on 2026-10-13. During market hours it alerts ONCE PER EPISODE (via _alert_watchdog -> existing
+    Pulse + Telegram) on:
+      STALL        -- no COMPLETED manage tick within watchdog.stall_alert_sec (the silent 9-day hang
+                      -- also fires if there is NO heartbeat at all while in-window), or
+      SESSION DEAD -- ticks ARE completing but 0 open rungs have priced within marks_dead_alert_sec
+                      while open rungs exist (the 10-13 ROOT: a dead RH session -> all-None marks).
+    Market-closed silence is EXPECTED -> no alert, and the episode latch resets so the next session
+    re-arms cleanly. The manage loop writes its heartbeat only on a COMPLETED tick, so a hung/cancelled
+    tick leaves last_tick_ts stale and this watchdog catches it."""
+    (ws_h, ws_m), (we_h, we_m) = window
+    _LOG.info("MACE watchdog scheduler online.")
+    active = None   # None | "stall" | "marks_dead" -- in-memory de-dupe (one alert per episode)
+
+    def _age_sec(ts_iso):
+        if not ts_iso:
+            return None
+        try:
+            t = datetime.fromisoformat(str(ts_iso))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            return (now_utc_fn() - t).total_seconds()
+        except Exception:  # noqa: BLE001
+            return None
+
+    while True:
+        poll = 60
+        try:
+            mgr = division.manager if division.active else None
+            wd = mgr.cfg.management.watchdog if mgr is not None else None
+            if wd is not None:
+                poll = wd.poll_interval_sec
+            if mgr is not None and wd is not None and wd.enabled:
+                now = now_et_fn()
+                in_window = (now.weekday() < 5
+                             and dtime(ws_h, ws_m) <= now.time() <= dtime(we_h, we_m))
+                if not in_window:
+                    active = None   # market closed -> silence expected; re-arm for the next session
+                else:
+                    # Warmup grace: at market open the heartbeat is ~overnight-stale and the first tick
+                    # takes minutes, so don't judge a stall until a full stall-window has elapsed SINCE
+                    # today's open (the overnight gap is not a stall). A mid-session hang is still caught
+                    # (tick_age exceeds the window well after open).
+                    open_dt = now.replace(hour=ws_h, minute=ws_m, second=0, microsecond=0)
+                    secs_since_open = (now - open_dt).total_seconds()
+                    hb = mgr.store.get_manage_heartbeat() or {}
+                    tick_age = _age_sec(hb.get("last_tick_ts"))
+                    marks_age = _age_sec(hb.get("last_marked_ok_ts"))
+                    open_count = int(hb.get("open_count") or 0)
+                    stalled = (secs_since_open >= wd.stall_alert_sec
+                               and ((tick_age is None) or (tick_age > wd.stall_alert_sec)))
+                    marks_dead = (not stalled and secs_since_open >= wd.marks_dead_alert_sec
+                                  and open_count > 0
+                                  and (marks_age is None or marks_age > wd.marks_dead_alert_sec))
+                    if stalled and active != "stall":
+                        active = "stall"
+                        _alert_watchdog(
+                            mgr, logger_agent, "mace_manage_stall",
+                            "MACE manage loop STALLED -- no completed tick in "
+                            f"{int(tick_age) if tick_age is not None else '>' + str(wd.stall_alert_sec)}s "
+                            "during market hours",
+                            "manage loop hung/dead; a RESTART revives it (2026-10-13 incident class)",
+                            tick_age_sec=(round(tick_age) if tick_age is not None else None))
+                    elif marks_dead and active != "marks_dead":
+                        active = "marks_dead"
+                        _alert_watchdog(
+                            mgr, logger_agent, "mace_marks_dead",
+                            f"MACE ticking but 0 of {open_count} rungs priced in "
+                            f"{int(marks_age) if marks_age is not None else '>' + str(wd.marks_dead_alert_sec)}s "
+                            "-- broker session likely DEAD",
+                            "quotes failing on a live loop; check the RH session/pickle (2026-10-13 root)",
+                            marks_age_sec=(round(marks_age) if marks_age is not None else None),
+                            open_count=open_count)
+                    elif not stalled and not marks_dead:
+                        active = None   # healthy -> clear the latch so a future episode re-alerts
+            await asyncio.sleep(poll)
+        except asyncio.CancelledError:
+            _LOG.info("MACE watchdog scheduler cancelled.")
+            return
+        except Exception as e:  # noqa: BLE001
+            _LOG.exception("MACE watchdog loop error (continuing): %s", e)
+            await asyncio.sleep(60)

@@ -339,6 +339,34 @@ class RungStore:
             "UPDATE mace_rung SET pt_order_id=NULL WHERE rung_id=?", (rung_id,)
         )
 
+    # -- manage-loop liveness heartbeat (2026-10-23 durability fix) ------------
+    def set_manage_heartbeat(self, payload: dict, ts: str) -> None:
+        """Persist the manage-loop heartbeat into agent_state (agent='robinhood_mace',
+        key='manage_tick_heartbeat') -- the same INSERT..ON CONFLICT upsert the rest of the codebase
+        uses, on the live autocommit WAL conn. Written at the END of each COMPLETED manage tick, so a
+        hung/timed-out tick does NOT update it -> the sibling watchdog detects the stall. FAIL-SAFE in
+        the caller (a heartbeat write must never sink a tick)."""
+        self.conn.execute(
+            "INSERT INTO agent_state (agent, key, value_json, updated_ts) VALUES (?,?,?,?) "
+            "ON CONFLICT(agent, key) DO UPDATE SET "
+            "value_json=excluded.value_json, updated_ts=excluded.updated_ts",
+            ("robinhood_mace", "manage_tick_heartbeat", json.dumps(payload), ts))
+
+    def get_manage_heartbeat(self) -> Optional[dict]:
+        """Read the manage-loop heartbeat dict (or None). Used by the watchdog loop; read-only."""
+        try:
+            row = self.conn.execute(
+                "SELECT value_json FROM agent_state WHERE agent=? AND key=?",
+                ("robinhood_mace", "manage_tick_heartbeat")).fetchone()
+        except Exception:  # noqa: BLE001 — table/row absent -> no heartbeat yet
+            return None
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value_json"])
+        except Exception:  # noqa: BLE001
+            return None
+
     def _read_extra(self, rung_id: str) -> dict:
         r = self.conn.execute(
             "SELECT extra_json FROM mace_rung WHERE rung_id=?", (rung_id,)
@@ -565,11 +593,36 @@ class MaceExecutor:
             await asyncio.sleep(secs)
 
     async def _fresh_quotes(self, spec: CondorSpec) -> dict[str, Optional[OptionQuote]]:
-        sp = await self.port.leg_quote(spec.symbol, spec.expiry, "put", spec.short_put)
-        lp = await self.port.leg_quote(spec.symbol, spec.expiry, "put", spec.long_put)
-        sc = await self.port.leg_quote(spec.symbol, spec.expiry, "call", spec.short_call)
-        lc = await self.port.leg_quote(spec.symbol, spec.expiry, "call", spec.long_call)
-        return {"sp": sp, "lp": lp, "sc": sc, "lc": lc}
+        """Four fresh leg quotes, each bounded by management.leg_quote_timeout_sec (2026-10-23
+        durability fix). The 2026-10-13 9-day hang was an UN-TIMED-OUT leg_quote await (robin_stocks
+        chain pull via asyncio.to_thread, no timeout) that froze the whole manage loop. Each leg now
+        runs under asyncio.wait_for: on timeout the leg reads None (fail-fast) and -- because a
+        timeout signals a broker/session failure that affects ALL legs, not a single illiquid strike
+        (a no-bid wing still RETURNS a quote promptly) -- the remaining legs short-circuit to None so
+        a dead session costs ~one timeout per rung, not four. The None-tolerant callers
+        (quote_snapshot/mark/_credit_mid/_natural_debit) already treat a None leg as unpriceable, so
+        the tick degrades (mark None -> stop/PT skip, time/exdiv still fire) instead of blocking.
+        wait_for returns control to the event loop at the timeout; a stuck worker thread is abandoned
+        but self-resolves on session recovery -- a bounded leak vs a permanent event-loop freeze."""
+        t = self.cfg.management.leg_quote_timeout_sec
+        out: dict[str, Optional[OptionQuote]] = {}
+        timed_out = False
+        for key, opt_type, strike in (
+            ("sp", "put", spec.short_put), ("lp", "put", spec.long_put),
+            ("sc", "call", spec.short_call), ("lc", "call", spec.long_call),
+        ):
+            if timed_out:
+                out[key] = None
+                continue
+            try:
+                out[key] = await asyncio.wait_for(
+                    self.port.leg_quote(spec.symbol, spec.expiry, opt_type, strike), timeout=t)
+            except asyncio.TimeoutError:
+                self._audit("mace_leg_quote_timeout", symbol=spec.symbol, opt_type=opt_type,
+                            strike=strike, timeout_sec=t)
+                out[key] = None
+                timed_out = True   # a hung quote = session trouble (affects all legs) -> skip the rest fast
+        return out
 
     @staticmethod
     def _credit_mid(q: dict[str, Optional[OptionQuote]]) -> Optional[float]:

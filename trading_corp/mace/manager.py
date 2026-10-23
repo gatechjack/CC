@@ -104,6 +104,9 @@ class MaceManager:
         # restart -> at most one re-alert per rung per restart, accepted). The per-tick
         # mace_pt_mark_reject audit row is UNAFFECTED -- the audit trail stays complete.
         self._pt_held: set[str] = set()
+        # Manage-tick liveness counter (2026-10-23 durability fix): # of open rungs successfully
+        # priced this tick, reset at the top of manage_tick and written into the watchdog heartbeat.
+        self._tick_marked_ok: int = 0
 
     # ── small helpers ────────────────────────────────────────────────────
     def _audit(self, kind: str, **payload) -> None:
@@ -416,6 +419,7 @@ class MaceManager:
         rungs = self.store.load_by_status(*_MANAGED_STATUSES)
         # cache one spot per distinct symbol (ex-div ITM test)
         spot_cache: dict[str, Optional[float]] = {}
+        self._tick_marked_ok = 0   # durability watchdog: # open rungs priced this tick (reset per tick)
         for rung in rungs:
             try:
                 out = await self._manage_one(rung, now, spot_cache)
@@ -424,7 +428,25 @@ class MaceManager:
             except Exception as exc:  # noqa: BLE001 — one rung must not sink the loop
                 self._audit("mace_manage_error", rung_id=rung.rung_id, error=str(exc))
                 self.notifier.error(loop="manage", exc=exc)
+        # Heartbeat is written ONLY after the full sweep completes (2026-10-23 durability fix): a tick
+        # cancelled by the loop's wait_for timeout, or that raises, never reaches here -> last_tick_ts
+        # goes stale -> the sibling watchdog alerts. A COMPLETED tick (even an all-None/degraded one)
+        # advances the heartbeat; last_marked_ok_ts advances only when >=1 rung actually priced.
+        self._write_manage_heartbeat(len(rungs), self._tick_marked_ok)
         return outcomes
+
+    def _write_manage_heartbeat(self, open_count: int, marked_ok: int) -> None:
+        """Record the completed-manage-tick heartbeat for the watchdog loop (2026-10-23). FAIL-SAFE:
+        a heartbeat write/read error is audited and swallowed -- it must NEVER sink a manage tick."""
+        try:
+            now = self._now_utc().isoformat(timespec="seconds")
+            prior = self.store.get_manage_heartbeat() or {}
+            last_marked = now if marked_ok > 0 else prior.get("last_marked_ok_ts")
+            self.store.set_manage_heartbeat(
+                {"last_tick_ts": now, "last_marked_ok_ts": last_marked,
+                 "open_count": int(open_count), "marked_ok": int(marked_ok)}, now)
+        except Exception as exc:  # noqa: BLE001 — non-load-bearing; never break the tick
+            self._audit("mace_heartbeat_error", error=str(exc))
 
     async def _manage_one(self, rung: RungState, now: datetime,
                           spot_cache: dict) -> Optional[ExitOutcome]:
@@ -446,6 +468,8 @@ class MaceManager:
         # can never disagree across two fetches (the old mark()-vs-leg_mids race).
         snap = await self.executor.quote_snapshot(rung.spec)
         mark = snap.mark
+        if mark is not None:
+            self._tick_marked_ok += 1   # durability watchdog liveness (session-dead detection)
         if rung.symbol not in spot_cache:
             spot_cache[rung.symbol] = await self._spot(rung.symbol)
         spot = spot_cache[rung.symbol]
@@ -759,14 +783,18 @@ class MaceManager:
         return "marketable", False       # stop / exdiv / gap / manual: unchanged
 
     async def _spot(self, symbol: str) -> Optional[float]:
+        # Bounded by leg_quote_timeout_sec (2026-10-23 durability fix): spot also goes through the
+        # broker (quote/chain), so an un-timed-out await here could hang the tick just like leg_quote.
+        t = self.cfg.management.leg_quote_timeout_sec
         try:
-            return float(await self.port.quote(symbol))  # type: ignore[attr-defined]
+            return float(await asyncio.wait_for(self.port.quote(symbol), timeout=t))  # type: ignore[attr-defined]
         except AttributeError:
             try:
-                return (await self.port.chain(symbol)).spot
-            except Exception:  # noqa: BLE001
+                ch = await asyncio.wait_for(self.port.chain(symbol), timeout=t)
+                return ch.spot
+            except Exception:  # noqa: BLE001 (incl. TimeoutError) -> no spot this tick
                 return None
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 (incl. TimeoutError) -> no spot this tick
             return None
 
     # ── reconcile ────────────────────────────────────────────────────────

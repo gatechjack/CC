@@ -93,6 +93,20 @@ class CloseabilityConfig:
 
 
 @dataclass(frozen=True)
+class WatchdogConfig:
+    """Manage-loop liveness watchdog (2026-10-23 durability fix). Runs in a SIBLING, broker-free
+    loop (it cannot live inside the loop it watches). Alerts when the manage loop stops completing
+    ticks (the 2026-10-13 9-day SILENT hang) OR ticks but cannot price any open rung (broker session
+    dead -- the 10-13 ROOT). Optional-with-defaults (mirrors MarkGuardConfig/CloseabilityConfig) so
+    the shipped code needs NO config/mace.yaml change -> config_hash 931a8214be50 is preserved; add a
+    `management.watchdog` block to tune."""
+    enabled: bool = True             # kill-switch; False -> watchdog loop logs online then no-ops
+    poll_interval_sec: int = 60      # how often the (broker-free) watchdog checks the heartbeat
+    stall_alert_sec: int = 900       # no COMPLETED manage tick within this during market hrs -> alert (HANG)
+    marks_dead_alert_sec: int = 900  # ticking but 0 rungs priced within this w/ open rungs -> alert (SESSION DEAD)
+
+
+@dataclass(frozen=True)
 class ManagementConfig:
     check_interval_sec: int
     window_et: tuple[str, str]
@@ -105,6 +119,12 @@ class ManagementConfig:
     time_exit_defer_floor_dte: int   # time-exit defers above this DTE, forces natural at/below
     mark_guard: MarkGuardConfig = MarkGuardConfig()   # PT mark-trust guard (2026-09-18)
     closeability: CloseabilityConfig = CloseabilityConfig()  # closeability gate + un-latch (2026-10-09)
+    # Durability fix (2026-10-23): bound the per-tick + per-leg-quote broker awaits so a hung
+    # broker call can never freeze the manage loop again (the 10-13 root). Optional-with-defaults
+    # -> absent from mace.yaml -> these defaults, config_hash preserved. Deploy = code graft + restart.
+    manage_tick_timeout_sec: int = 600   # outer wait_for on manage_tick; exceeded -> cancel + audit + next tick
+    leg_quote_timeout_sec: int = 30      # per broker leg-quote await; exceeded -> that leg None (fail-fast)
+    watchdog: WatchdogConfig = WatchdogConfig()  # sibling liveness watchdog (2026-10-23)
 
 
 @dataclass(frozen=True)
@@ -398,6 +418,27 @@ def load_mace_config(
                  if "park_retry_ticks" in cc else 12)
     cc_buf = (num(cc, "ride_shorts_buffer_pct", "management.closeability", lo=0.0, hi=1.0,
                   hi_excl=True) if "ride_shorts_buffer_pct" in cc else 0.02)
+    # Durability fix (2026-10-23) — manage-tick/leg-quote timeouts + liveness watchdog.
+    # Optional-with-defaults (mirrors closeability); absent -> defaults, config_hash preserved.
+    mtt = (num(m, "manage_tick_timeout_sec", "management", typ=int, lo=1)
+           if "manage_tick_timeout_sec" in m else 600)
+    lqt = (num(m, "leg_quote_timeout_sec", "management", typ=int, lo=1)
+           if "leg_quote_timeout_sec" in m else 30)
+    wd = m.get("watchdog")
+    if wd is None:
+        wd = {}
+    elif not isinstance(wd, dict):
+        errs.append(f"management.watchdog: expected a mapping, got {wd!r}")
+        wd = {}
+    wd_enabled = wd.get("enabled", True)
+    if not isinstance(wd_enabled, bool):
+        errs.append(f"management.watchdog.enabled: missing or not a bool: {wd_enabled!r}")
+    wd_poll = (num(wd, "poll_interval_sec", "management.watchdog", typ=int, lo=1)
+               if "poll_interval_sec" in wd else 60)
+    wd_stall = (num(wd, "stall_alert_sec", "management.watchdog", typ=int, lo=1)
+                if "stall_alert_sec" in wd else 900)
+    wd_marks = (num(wd, "marks_dead_alert_sec", "management.watchdog", typ=int, lo=1)
+                if "marks_dead_alert_sec" in wd else 900)
 
     x = sect("execution")
     start_off = num(x, "entry_start_offset_usd", "execution", lo=0.0)
@@ -566,6 +607,14 @@ def load_mace_config(
                 max_closing_redrives=int(cc_maxrd),
                 park_retry_ticks=int(cc_parkrt),
                 ride_shorts_buffer_pct=float(cc_buf),
+            ),
+            manage_tick_timeout_sec=int(mtt),
+            leg_quote_timeout_sec=int(lqt),
+            watchdog=WatchdogConfig(
+                enabled=bool(wd_enabled),
+                poll_interval_sec=int(wd_poll),
+                stall_alert_sec=int(wd_stall),
+                marks_dead_alert_sec=int(wd_marks),
             ),
         ),
         execution=ExecutionConfig(
