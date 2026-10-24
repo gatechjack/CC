@@ -13287,3 +13287,37 @@ raise the timeouts in mace.yaml (moves config_hash) — but the timeouts are the
 
 **Backlog filed (not deployed):** BACKLOG.md "MACE — sizing-basis freshness guard" (15:30 ET snapshot ahead of
 the 15:45 eval + a staleness alert) — same silent-single-point-refresh class.
+
+---
+
+## 2026-10-23 — MACE DAY SUMMARY (jack-log): 9-day manage-loop hang found + fixed, backlog cleared, durability fix deployed, disk + WAL reclaimed
+
+**The hang.** The MACE manage loop (owns ALL exits + live-marks) died **2026-10-13 16:46 ET** on an
+un-timed-out broker `leg_quote` await (RH session meltdown) and ran **dead for 9 days** while every sibling
+loop stayed alive and NO alarm fired — 8 rungs sailed past their 21-DTE TIME exit; nothing was risk-managed.
+Diagnosed read-only (branch `mace-exit-diag-2026-10-22`).
+
+**Revival + backlog clear.** Jack restarted trading-corp **~10:31 ET** (PID **782463**) — the manage loop came
+back and drained the 10-day backlog: **GDX 85/80/105/110 STOP −$300** (put spread hit max loss during the
+blackout), **6 PT winners +$288** (SPY/IWM), **2 TIME exits +$56** (SPY 738 +35 / SPY 746 +21, the DTE-21
+11-13 cohort), and the dead-wing **XLE 57.5/56.5/67/68** which RH would not auto-close ("empty response") →
+Jack manually closed both contracts and the reserved DB reconcile booked it (`manual`, exit_debit 0.75,
+realized **−$86**; ★ a qty-1-of-2 partial close was caught via RH `get_option_positions` BEFORE booking — a
+live ITM short call remained — and the booking held until flat). **Net day = −$42.00** (= day_realized over 10
+closes; the earlier "−98" was an incomplete tally missing the 2 TIME exits). Bounded outage cost, not a bug.
+
+**Durability fix (deployed + verified — see the entry above).** leg-quote 30s + manage-tick 600s
+`asyncio.wait_for` timeouts + a sibling broker-free liveness watchdog (stall + session-dead detection);
+code-only graft, config_hash **931a8214be50** unchanged; NEW PID **785516** / boot 20:12:31Z; `MACE watchdog
+scheduler online`; 0 tracebacks. prod-live FF **2ffa1d20 → 3b03e5a0** (clean, verified; 95e78c4 reachable;
+zero non-MACE files touched).
+
+**Disk + WAL reclaimed.** Pruned the two superseded XLE reconcile full-DB backups (**10.4 GiB**, 95%→78%).
+Then an online **`wal_checkpoint(TRUNCATE)`** on the live DB (Board-authorized): `db-wal` **3.467G → 0.000G**,
+result `(busy=0, log_frames=0, checkpointed=0)` — a clean full truncate (the data was already flushed to the
+main DB by passive auto-checkpoint; the 3.47G was un-reclaimed WAL file space that never truncated because the
+engine sets no `journal_size_limit`; the restart had cleared the old starving reader, so TRUNCATE fully
+succeeded). `quick_check: ok`; all crypto divisions kept writing uninterrupted; disk **78%→73% (17.5G free)**.
+WAL re-grows normally under the default 1000-page auto-checkpoint. **Recurrence prevention filed in BACKLOG.md**
+("MACE/platform — WAL growth guard": set `journal_size_limit` + a periodic forced checkpoint in
+`persistence/db.py` — a SHARED file; next maintenance window).

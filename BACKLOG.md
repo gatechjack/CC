@@ -34,6 +34,26 @@ Relates to the 2026-10-23 durability fix (manage-tick timeout + liveness watchdo
 mace-durability-fix-2026-10-23) — same class: a silent single-point refresh with no freshness guard.
 **Priority:** next MACE maintenance window (not time-critical once the 15:40 job is confirmed firing).
 
+---
+
+## platform — WAL growth guard (checkpoint starvation)  *(2026-10-23 — filed after a 3.47G WAL)*
+
+**Problem.** `persistence/db.py connect()` sets `journal_mode=WAL` + `busy_timeout=5000` + `synchronous=NORMAL`
+but **no `journal_size_limit` and no explicit `wal_autocheckpoint`** (default 1000 pages ≈ 4MB). With 6
+divisions + the web + candle feed all reading, a long-held reader starves the passive auto-checkpoint, so the
+WAL file grows to a high-water mark and — with no `journal_size_limit` — **never truncates back**. Observed:
+`trading_corp.db-wal` reached **3.47G** (2026-10-13→10-23), survived restarts (WAL files persist), and only an
+explicit `wal_checkpoint(TRUNCATE)` reclaimed it (2026-10-23, 3.47G→0, clean busy=0). It will re-grow over time.
+
+**Proposed (Jack to schedule/deploy — NOT now; this is `persistence/db.py`, a SHARED cross-division file).**
+1. In `connect()` set **`PRAGMA journal_size_limit = <N>`** (e.g. 64–256 MB) so the WAL truncates back to the
+   limit after each checkpoint instead of growing unbounded.
+2. Add a **periodic forced `wal_checkpoint(TRUNCATE)`** (e.g. a lightweight daily/off-hours job, or fold it
+   into an existing low-frequency sibling loop) so a transient reader-starvation can't accumulate into
+   multi-GB WAL again — the one-time manual checkpoint is a stopgap, not a guard.
+3. (Diagnostic) consider logging WAL size when it crosses a threshold so growth is visible before it's a disk
+   problem. **Priority:** next platform maintenance window; cross-division review (affects all divisions' DB).
+
 ## ⏸ PAUSED — Lord Otter + Market Cypher feature work  *(2026-05-02 — Board direction)*
 
 Both crypto strategies are in **maintenance mode** until the PMCC
