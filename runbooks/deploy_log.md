@@ -13367,3 +13367,39 @@ CR-md5 == box == target above; diff is MACE/brokers-scope only, config_hash unch
 
 **Rollback:** code — `cp` the 3 files from `/home/azureuser/mace_pf_graft_backup_20261027T051537Z` + `restart_tc.ps1`
 (runner `analysis/mace_pf_rollback.ps1`); the graft runner also auto-rolls-back on any in-run gate failure.
+
+---
+
+## 2026-10-27 — MACE DAY SUMMARY (jack-log): entry-ladder partial-fill orphan fix DEPLOYED + GREEN (autonomous overnight deploy+restart)
+
+**Root cause.** On a ×2+ MACE entry the two contracts fill in separate executions ms apart, so RH shows
+`partially_filled` transiently. `brokers/robinhood.py` had `partially_filled` in `_TERMINAL_OPTION_STATES`, so
+the fill-poll early-returned on that transient state → raised `RobinhoodOrderError` → `MaceOrderRejected` →
+`run_entry` clean-reject `delete_submitting` — destroying the durable anchor **~160ms before RH marked the
+order `filled`** → ORPHAN (a live condor invisible to the engine until a book reconcile). A pure timing race on
+any ×2+ entry (session-independent). It caused 2 historical orphans: 2026-09-16 XLE 10-30 (since PT-closed
++$44) and 2026-10-16 XLE 11-27 (adopted into the DB 2026-10-26).
+
+**Fix (3 code-only files, commit `52df733c`; config_hash `931a8214be50` unchanged).** (1) drop
+`partially_filled` from `_TERMINAL_OPTION_STATES` → the poll runs THROUGH the transient partial to `filled`
+(bounded by the existing timeout) and books normally; (2) new `RobinhoodComboPartial(RobinhoodOrderError)` — a
+PERSISTENT partial routes to `_entry_partial` (keep the anchor + URGENT), never clean-reject (subclass ⇒
+PMCC/PEAD unaffected); (3) `execution.py` confirms via `open_orders` that nothing is live at RH for this combo
+BEFORE a clean-delete (fail-safe = keep). Box-scratch: orphan sequence now books / genuine reject still deletes
+/ persistent partial kept; full MACE + cross-division suite 530 pass / 5 pre-existing fail (proven delta 0,
+identical base vs fixed).
+
+**Deploy (autonomous, overnight, Jack-authorized).** Pre-flight all green (box==BASE no drift, market closed
+01:14 ET, divisions idle, not halted) → box graft (backup `mace_pf_graft_backup_20261027T051537Z`, box
+BASE→TARGET `1e6bbc1e`/`bac4411a`/`e380c2f6`, config_hash unchanged) → `restart_tc.ps1` → engine PID
+**785516 → 809209**, boot 05:16:42Z. Boot-verify GREEN: 3 md5s==target on the running tree, config_hash
+`931a8214be50`, LIVE RH, 5 MACE schedulers incl watchdog, 0 tracebacks, all 6 divisions wired, census open 12
+(incl the adopted XLE 11-27), entry_halt false (unchanged). No rollback needed.
+
+**Also this cycle (2026-10-26).** Adopted the XLE 11-27 orphan into the DB
+(`mace-XLE-2026-11-27-63.5-62-73.5-75-20261016`, credit 0.46, engine-shaped, box-scratch-proven) so the engine
+manages it; RH session re-authed (the 10-26 401 reconcile errors stopped).
+
+**prod-live fold.** origin/prod-live advanced `411362f8 → <new tip>` (clean FF carrying `52df733c` + this
+ledger; three-way proven: 3 code files CR-md5 == box == target, diff MACE/brokers-scope only, config_hash
+unchanged). [Exact pushed tip recorded in the session report.]
