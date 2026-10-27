@@ -13321,3 +13321,49 @@ succeeded). `quick_check: ok`; all crypto divisions kept writing uninterrupted; 
 WAL re-grows normally under the default 1000-page auto-checkpoint. **Recurrence prevention filed in BACKLOG.md**
 ("MACE/platform — WAL growth guard": set `journal_size_limit` + a periodic forced checkpoint in
 `persistence/db.py` — a SHARED file; next maintenance window).
+
+---
+
+## 2026-10-27 ~05:16 UTC — MACE entry-ladder PARTIAL-FILL ORPHAN fix — DEPLOYED (box graft) + RESTARTED + VERIFIED LIVE (agent-driven, unattended, under explicit Jack authorization; config_hash UNCHANGED; box-only, prod-live FF reserved for Jack)
+
+**What this is.** Fix for the entry-ladder defect that orphaned filled condors (2026-09-16 XLE 10-30 +
+2026-10-16 XLE 11-27, both since adopted). On a multi-contract (x2+) atomic spread the two lots fill in
+separate executions ms apart; the intermediate `partially_filled` was (a) treated as a TERMINAL poll state and
+(b) raised as a definitive `RobinhoodOrderError` → `MaceOrderRejected` → `run_entry` clean-stand-down
+`delete_submitting` — which destroyed the anchor ~160ms before RH marked the order `filled` → orphan, invisible
+to reconcile. Branch `mace-entry-partialfix-2026-10-27` @ `52df733c`, built off box-truth `411362f8`.
+
+**The fix (3 code files; config/mace.yaml UNTOUCHED → config_hash `931a8214be50` PRESERVED).**
+(#1) `brokers/robinhood.py` [SHARED]: removed `partially_filled` from `_TERMINAL_OPTION_STATES` so
+`_await_terminal_option_order` polls THROUGH a transient partial to `filled` (bounded by the existing
+`timeout_s`/`_COMBO_FILL_TIMEOUT_S`=20s — no new hang, no new knob). (#2) `robinhood.py` + `mace/rh_broker.py`:
+new `class RobinhoodComboPartial(RobinhoodOrderError)` (carries order_id + processed_qty), raised only by the
+PERSISTENT-partial branch; `rh_broker.place_condor` catches it BEFORE `RobinhoodOrderError` → returns
+`OrderResult(STATE_PARTIAL, processed>0)` → `run_entry._is_partial` → `_entry_partial` (keep anchor + URGENT),
+never clean-delete. Subclass ⇒ PMCC/PEAD `except RobinhoodOrderError` + `data_exec` catch-all are byte-unchanged
+(cross-division safe; also improves the exit ladder's `_exit_partial` path). (#3) `mace/execution.py` [MACE]:
+`run_entry`'s `MaceOrderRejected` arm calls new `_combo_live_at_broker()` (open_orders ref_id-prefix match)
+BEFORE `delete_submitting` — a working order for this combo ⇒ KEEP anchor + URGENT (`mace_entry_reject_but_live`);
+fail-SAFE=keep on an unreadable broker. (#4 by-ref_id reconcile match — SKIPPED by Jack's decision.) Box-scratch:
+full MACE + cross-division suite 530 pass / 5 PRE-EXISTING fail (proven delta 0: identical on base vs fixed);
+3 replays pass (orphan→books, genuine-reject→deletes, persistent-partial→`_entry_partial`).
+
+**Deploy (box graft + restart).** scp+tar binary-exact graft of the 3 files (drift-gate box==BASE: robinhood
+`2753939c` / rh_broker `c8aa5789` / execution `71f1a828` — all matched; backup
+`/home/azureuser/mace_pf_graft_backup_20261027T051537Z`), applied CR-stripped + verified box==TARGET (robinhood
+**1e6bbc1e** / rh_broker **bac4411a** / execution **e380c2f6**), py_compile OK, config_hash still `931a8214be50`.
+Pre-flight (RO): market CLOSED (01:14 ET Tue), submitting=0, 0 order-ish audit rows in 3 min, all divisions
+idle. No entry-halt (next eval 15:45 ET, ~14h out). Then `restart_tc.ps1`. **Restart CYCLED confirmed:** MainPID
+**785516 → 809209** (child 809222), boot 2026-10-27 05:16:42 UTC. **Boot-verify (RO):** 3 md5s == TARGET on the
+running tree; config_hash `931a8214be50` UNCHANGED; LIVE RH (`execution_mode=live`); all 5 MACE schedulers online
+incl `MACE watchdog scheduler online`; **0 tracebacks**; ALL divisions wired (bitunix_sfp, bitunix_futures/Donchian,
+PMCC, PM live-driver + M3 writer, PEAD, MACE); healthz/mace 200; census open **12** (incl adopted XLE 11-27 =
+open); entry_halt `halted:false` (unchanged). **GREEN.**
+
+**The git fold (prod-live ledger advance) — RESERVED FOR JACK (NOT pushed this task).** Fold = cherry-pick the
+code commit `52df733c` onto origin/prod-live `411362f8` (+ this ledger), three-way prove (fold's 3 code files
+CR-md5 == box == target above; diff is MACE/brokers-scope only, config_hash unchanged), then FF-push
+`411362f8 -> <HEAD>`. Box is already running the fix; this is the ledger/parity step only.
+
+**Rollback:** code — `cp` the 3 files from `/home/azureuser/mace_pf_graft_backup_20261027T051537Z` + `restart_tc.ps1`
+(runner `analysis/mace_pf_rollback.ps1`); the graft runner also auto-rolls-back on any in-run gate failure.
