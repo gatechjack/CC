@@ -26,14 +26,14 @@ import re
 from datetime import date, datetime
 
 from trading_corp.brokers.robinhood import (
-    RobinhoodBroker, RobinhoodComboPending, RobinhoodOrderError)
+    RobinhoodBroker, RobinhoodComboPartial, RobinhoodComboPending, RobinhoodOrderError)
 from trading_corp.persistence.models import ProposedOrder
 
 from trading_corp.mace.broker_port import (
     AccountInfo, MaceOrderRejected, OpenOrder, OpenOptionPosition,
     OptionsBrokerPort, OrderResult,
     PortSnapshot, DIR_CREDIT, DIR_DEBIT,
-    STATE_FILLED, STATE_QUEUED, STATE_UNCONFIRMED,
+    STATE_FILLED, STATE_PARTIAL, STATE_QUEUED, STATE_UNCONFIRMED,
 )
 from trading_corp.mace.domain import CondorLeg, CondorSpec, OptionQuote
 from trading_corp.mace.strategy import ChainView
@@ -201,6 +201,17 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
                                   combo_tif=time_in_force, fill_timeout_s=fill_timeout_s)
         try:
             fills = await self._broker.place_multi_leg(orders, ref_id=combo_id)
+        except RobinhoodComboPartial as part:
+            # PERSISTENT partial (2026-10-27 orphan fix): an order EXISTS and is partly
+            # filled -> NOT a definitive reject. Return a partial OrderResult (is_terminal
+            # + not is_filled + processed_quantity>0) so execution routes it to
+            # _entry_partial (keep anchor + URGENT) / _exit_partial, NEVER the
+            # MaceOrderRejected clean-delete that orphaned the 2026-10-16 fill. MUST precede
+            # the RobinhoodOrderError arm below -- RobinhoodComboPartial subclasses it.
+            return OrderResult(
+                order_id=part.order_id, state=STATE_PARTIAL,
+                processed_quantity=float(getattr(part, "processed_quantity", 0.0) or 0.0),
+                time_in_force=time_in_force)
         except RobinhoodComboPending as pend:
             # Accepted (has an id) but not terminal `filled` within the poll window
             # -> NON-terminal; execution cancels + polls (cancel race). Never booked here.

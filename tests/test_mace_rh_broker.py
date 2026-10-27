@@ -16,7 +16,8 @@ import pytest
 import robin_stocks.robinhood as rs  # type: ignore
 
 from trading_corp.brokers.base import AccountSnapshot
-from trading_corp.brokers.robinhood import RobinhoodComboPending, RobinhoodOrderError
+from trading_corp.brokers.robinhood import (
+    RobinhoodBroker, RobinhoodComboPartial, RobinhoodComboPending, RobinhoodOrderError)
 from trading_corp.mace import broker_port as bp
 from trading_corp.mace.domain import CondorSpec
 from trading_corp.mace.rh_broker import RobinhoodOptionsBroker
@@ -152,6 +153,43 @@ async def test_place_condor_reject_translates_to_mace_order_rejected():
     with pytest.raises(bp.MaceOrderRejected):
         await port.place_condor(SPEC, 1, 1.18, "mace-x-a1", direction=bp.DIR_CREDIT,
                                 time_in_force="gfd", fill_timeout_s=60)
+
+
+@pytest.mark.asyncio
+async def test_place_condor_persistent_partial_returns_partial_not_rejected():
+    # 2026-10-27 orphan fix #2: a PERSISTENT partial (RobinhoodComboPartial) must NOT
+    # translate to MaceOrderRejected (the clean-delete that orphaned the 2026-10-16 fill).
+    # The port returns a partial OrderResult (terminal + NOT filled + processed>0) so
+    # execution keeps the submitting anchor and routes it to _entry_partial (URGENT).
+    b = MockRHBroker(); port = _port(b)
+    b.pml_raises = RobinhoodComboPartial("partial after poll", order_id="RHPART",
+                                         processed_quantity=1.0)
+    res = await port.place_condor(SPEC, 2, 0.46, "mace-x-a2", direction=bp.DIR_CREDIT,
+                                  time_in_force="gfd", fill_timeout_s=60)
+    assert res.order_id == "RHPART" and res.state == bp.STATE_PARTIAL
+    assert res.is_terminal and not res.is_filled and res.processed_quantity == 1.0
+
+
+@pytest.mark.asyncio
+async def test_await_terminal_polls_through_transient_partial_to_filled(monkeypatch):
+    # 2026-10-27 orphan fix #1 (THE orphan sequence): a multi-contract atomic spread fills
+    # in 2 executions ms apart; the intermediate `partially_filled` is TRANSIENT. With it
+    # removed from _TERMINAL_OPTION_STATES the poll continues THROUGH to `filled` instead of
+    # short-circuiting to a false reject. Replays partially_filled(1/2) -> filled(2/2).
+    assert "partially_filled" not in RobinhoodBroker._TERMINAL_OPTION_STATES
+    b = RobinhoodBroker.__new__(RobinhoodBroker)     # skip the heavy real __init__
+    b._COMBO_FILL_POLL_S = 0.001
+    b._COMBO_FILL_TIMEOUT_S = 1.0
+    seq = [{"state": "partially_filled", "processed_quantity": "1"},
+           {"state": "filled", "processed_quantity": "2"}]
+    calls = {"i": 0}
+    def _fake_info(order_id):
+        i = min(calls["i"], len(seq) - 1); calls["i"] = i + 1; return seq[i]
+    monkeypatch.setattr("robin_stocks.robinhood.orders.get_option_order_info",
+                        _fake_info, raising=False)
+    final = await b._await_terminal_option_order({"state": "confirmed"}, "OID", timeout_s=1.0)
+    assert str(final.get("state")).lower() == "filled"    # polled THROUGH the partial
+    assert calls["i"] >= 2                                 # did not stop at the first partial
 
 
 @pytest.mark.asyncio

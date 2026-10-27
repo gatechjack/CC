@@ -849,11 +849,26 @@ class MaceExecutor:
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
                                              "risk_reject", clean=True)
             except bp.MaceOrderRejected as rej:
-                # DEFINITIVE broker reject (no order id -> nothing placed at the
-                # broker; e.g. the position_effect collision reject). Unlike an
-                # ambiguous error, there is NO order to reconcile -> clean stand-down
-                # DELETES the anchor now, freeing the capacity slot THIS session
-                # (was: stranded as `submitting` until the 2-session abandon horizon).
+                # #3 ENTRY-ORPHAN BACKSTOP (2026-10-27): TRUST RH's actual state, not the
+                # reject claim, BEFORE deleting the durable anchor. The 2026-10-16 orphan was a
+                # transient partial mislabeled as a definitive reject whose clean-delete removed
+                # the anchor ~160ms before RH marked the order filled. #1 (poll through partials)
+                # + #2 (persistent partial -> partial OrderResult, not a reject) mean a filled/
+                # partial can no longer REACH this arm, so a working-order check on this combo
+                # fully distinguishes a genuine no-id reject (delete, slot freed) from an order
+                # RH actually accepted (keep + reconcile). Fail-SAFE = keep (never orphan).
+                if await self._combo_live_at_broker(rung_id):
+                    self._audit("mace_entry_reject_but_live", rung_id=rung_id, attempt=k,
+                                detail=str(rej))
+                    self.notifier.breaker(
+                        condition=f"{spec.symbol} entry reported REJECT but an order is LIVE at RH",
+                        lines=[f"rung {rung_id}", f"attempt {k}", f"reject: {rej}"],
+                        suggested_action="verify/adopt the live order; anchor KEPT for reconcile")
+                    return EntryOutcome(rung_id, False, attempts=k, order_id=combo_id,
+                                        standdown_reason="reject_but_live")
+                # Confirmed GENUINE reject (nothing live at the broker; no order id -> nothing
+                # placed, e.g. BP exhaustion or the position_effect collision). Clean stand-down
+                # DELETES the anchor now, freeing the capacity slot THIS session.
                 self._audit("mace_entry_rejected", rung_id=rung_id, attempt=k, detail=str(rej))
                 self.notifier.reject(symbol=spec.symbol, detail=f"entry rejected: {rej}")
                 return self._entry_standdown(spec, rung_id, k - 1, last_price,
@@ -942,6 +957,26 @@ class MaceExecutor:
                     order_id=res.order_id, processed=res.processed_quantity)
         return EntryOutcome(rung_id, False, attempts=k, order_id=res.order_id,
                             standdown_reason="partial")
+
+    async def _combo_live_at_broker(self, rung_id: str) -> bool:
+        """#3 entry-orphan backstop (2026-10-27): is any WORKING order for this combo
+        (an open-order ref_id prefixed by rung_id, i.e. a `{rung_id}-aK` attempt) still
+        live at the broker? Checked before a clean-reject delete so the anchor is NEVER
+        destroyed for an order RH actually accepted. Fail-SAFE = True (keep the anchor;
+        reconcile owns it) on an unreadable broker -- we must not delete when we cannot
+        confirm nothing was placed. A filled/partial cannot reach the reject arm after
+        fixes #1/#2, so this working-order check suffices to classify a genuine reject."""
+        try:
+            ords = await self.port.open_orders()
+        except Exception as exc:  # noqa: BLE001 — unknown broker state -> keep anchor (safe)
+            self._audit("mace_entry_reject_confirm_error", rung_id=rung_id, error=str(exc))
+            return True
+        for o in ords or []:
+            ref = getattr(o, "ref_id", None)
+            st = (getattr(o, "state", "") or "").lower()
+            if ref and ref.startswith(rung_id) and st not in bp.DEAD_STATES:
+                return True
+        return False
 
     async def _book_entry_fill(self, rung_id: str, spec: CondorSpec, contracts: int,
                                credit: float, res: OrderResult, attempts: int,

@@ -290,6 +290,38 @@ async def test_entry_definitive_reject_deletes_anchor_same_session():
 
 
 @pytest.mark.asyncio
+async def test_entry_reject_but_order_live_at_rh_keeps_anchor():
+    # 2026-10-27 orphan fix #3: a MaceOrderRejected arrives BUT an order for this combo is
+    # actually WORKING at RH (open_orders ref_id startswith rung_id). The engine must NOT
+    # clean-delete the anchor (that clean-delete orphaned the 2026-10-16 fill). Keep it +
+    # URGENT; reconcile adopts it. (Contrast the test above: open_orders empty -> delete.)
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [bp.MaceOrderRejected("port said reject")]
+    port.open_orders_ret = [OpenOrder(order_id="O1", state="confirmed",
+                                      ref_id=f"{RUNG_ID}-a1")]
+    out = await _executor(port, store, chan).run_entry(_ev(), SESSION)
+    assert not out.filled and out.standdown_reason == "reject_but_live"
+    r = store.get(RUNG_ID)
+    assert r is not None and r.status == RUNG_SUBMITTING    # anchor KEPT for reconcile
+    assert chan.any("URGENT") and chan.any("LIVE at RH")
+
+
+@pytest.mark.asyncio
+async def test_entry_reject_confirm_unreadable_keeps_anchor_failsafe():
+    # #3 fail-SAFE: if open_orders is unreadable we cannot confirm "nothing placed", so we
+    # KEEP the anchor (never orphan); reconcile / the abandon horizon owns it.
+    conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
+    _entry_quotes(port)
+    port.place_script = [bp.MaceOrderRejected("port said reject")]
+    port.open_orders_ret = RuntimeError("open_orders unreadable")
+    out = await _executor(port, store, chan).run_entry(_ev(), SESSION)
+    assert out.standdown_reason == "reject_but_live"
+    r = store.get(RUNG_ID)
+    assert r is not None and r.status == RUNG_SUBMITTING
+
+
+@pytest.mark.asyncio
 async def test_entry_partial_fill_is_urgent_never_booked():
     conn = _conn(); store = ex.RungStore(conn); port = FakePort(); chan = RecChannel()
     _entry_quotes(port)

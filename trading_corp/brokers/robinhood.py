@@ -120,6 +120,23 @@ class RobinhoodComboPending(RuntimeError):
         self.order_id = order_id
 
 
+class RobinhoodComboPartial(RobinhoodOrderError):
+    """A combo order PARTIALLY filled and persisted partial to the poll timeout — an
+    order EXISTS at the broker and is partly executed (NOT a hard no-id reject).
+    SUBCLASSES RobinhoodOrderError so every existing `except RobinhoodOrderError`
+    caller is byte-unchanged (still a non-booking failure); the MACE port catches
+    THIS first and returns a partial OrderResult so execution KEEPS the submitting
+    anchor + escalates URGENT (never the clean-reject delete that orphaned a live
+    fill — the 2026-10-16 XLE partial-fill orphan root). Carries the broker order id
+    and processed_quantity. Distinct from RobinhoodComboPending (accepted, no fill yet)."""
+
+    def __init__(self, message: str, *, order_id: str | None = None,
+                 processed_quantity: float = 0.0):
+        super().__init__(message)
+        self.order_id = order_id
+        self.processed_quantity = processed_quantity
+
+
 def _days_to_expiry(expiration_date: str) -> int:
     """Calendar days from today to expiration_date ('YYYY-MM-DD')."""
     try:
@@ -1491,12 +1508,21 @@ class RobinhoodBroker(Broker):
                 f"NOTHING ({combo.direction} {combo.underlying} x{combo.quantity})"
             )
         if state == "partially_filled":
-            # An atomic spread should not partial-fill; surface loudly and book
-            # NOTHING. PMCC/IC re-derive positions from the broker each scan, which
-            # reconciles the true state — never book a half position here.
-            raise RobinhoodOrderError(
-                f"combo {rh_combo_id} PARTIALLY_FILLED — anomaly on an atomic "
-                "spread; booked NOTHING, needs reconciliation"
+            # PERSISTENT partial (survived the whole poll). A TRANSIENT mid-fill now
+            # polls THROUGH to `filled` because `partially_filled` was removed from
+            # _TERMINAL_OPTION_STATES (2026-10-27 orphan fix) — so reaching here means
+            # an order EXISTS and is partly executed, NOT a no-id reject. Raise the
+            # dedicated RobinhoodComboPartial (carries id + processed qty) so the MACE
+            # port returns a partial OrderResult the caller KEEPS + escalates for
+            # reconciliation — never the clean-delete that orphaned the 2026-10-16 fill.
+            try:
+                _pq = float((final or {}).get("processed_quantity") or 0.0)
+            except (TypeError, ValueError):
+                _pq = 0.0
+            raise RobinhoodComboPartial(
+                f"combo {rh_combo_id} PARTIALLY_FILLED after poll — order exists, "
+                "partly executed; keep + reconcile (NOT a no-id reject)",
+                order_id=rh_combo_id, processed_quantity=_pq,
             )
         if state != "filled":
             # Timed out while still queued/confirmed/unconfirmed → NOT confirmed.
@@ -1730,8 +1756,16 @@ class RobinhoodBroker(Broker):
     # can shrink the window; PMCC re-prices marketable so fills land in < 1s.
     _COMBO_FILL_TIMEOUT_S: float = 20.0
     _COMBO_FILL_POLL_S: float = 1.0
+    # `partially_filled` is deliberately NOT terminal (2026-10-27 orphan fix): for a
+    # multi-contract atomic spread it is a TRANSIENT state between per-contract
+    # executions (ms apart) that resolves to `filled`. Keeping the poll running THROUGH
+    # it (bounded by timeout_s / _COMBO_FILL_TIMEOUT_S) lets a fast multi-exec fill book
+    # correctly instead of a mid-fill snapshot short-circuiting to a false reject. A
+    # partial that PERSISTS to the timeout is handled explicitly by place_multi_leg
+    # (-> RobinhoodComboPartial). Applies to all callers (MACE/PMCC/PEAD) — strictly
+    # safer: the worst case is a <=timeout wait on a genuinely stuck partial.
     _TERMINAL_OPTION_STATES: frozenset = frozenset({
-        "filled", "partially_filled", "rejected", "cancelled", "canceled",
+        "filled", "rejected", "cancelled", "canceled",
         "failed", "voided",
     })
 

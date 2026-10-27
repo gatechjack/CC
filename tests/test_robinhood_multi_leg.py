@@ -18,6 +18,7 @@ import robin_stocks.robinhood as rs  # type: ignore
 from trading_corp.brokers.base import validate_combo_cohesion
 from trading_corp.brokers.robinhood import (
     RobinhoodBroker,
+    RobinhoodComboPartial,
     RobinhoodComboPending,
     RobinhoodOrderError,
 )
@@ -401,14 +402,47 @@ async def test_place_multi_leg_rejected_state_raises_books_nothing():
 
 
 @pytest.mark.asyncio
-async def test_place_multi_leg_partial_fill_raises_books_nothing():
-    """Terminal `partially_filled` on an atomic spread → anomaly; raise, no book."""
+async def test_place_multi_leg_transient_partial_polls_through_to_filled_and_books():
+    """2026-10-27 orphan fix #1 (THE orphan sequence): a TRANSIENT `partially_filled`
+    (a multi-contract spread filling in 2 executions ms apart) must be polled THROUGH to
+    `filled` and BOOKED — never short-circuited to a false reject (the 2026-10-16 XLE
+    orphan). `partially_filled` is no longer in _TERMINAL_OPTION_STATES, so the poll runs on."""
     b = _make_broker()
+    b._COMBO_FILL_TIMEOUT_S = 1.0
+    b._COMBO_FILL_POLL_S = 0.01
+    legs = _standard_ic_legs()
+    filled = {"id": "RH-ORD", "state": "filled",
+              "legs": [{"price": "0.55"}, {"price": "0.20"},
+                       {"price": "0.60"}, {"price": "0.15"}]}
+    with patch.object(rs.orders, "order_option_spread",
+                      return_value={"id": "RH-ORD", "state": "partially_filled"}), \
+         patch.object(rs.orders, "get_option_order_info",
+                      side_effect=[{"id": "RH-ORD", "state": "partially_filled"},
+                                   filled, filled]):
+        fills = await b.place_multi_leg(legs)
+    assert [f.price for f in fills] == [0.55, 0.20, 0.60, 0.15]   # booked the completed fill
+    assert all(f.broker_order_id == "RH-ORD" for f in fills)
+
+
+@pytest.mark.asyncio
+async def test_place_multi_leg_persistent_partial_raises_combo_partial():
+    """2026-10-27 orphan fix #2: a partial that PERSISTS to the poll timeout raises the
+    dedicated RobinhoodComboPartial (subclass of RobinhoodOrderError) carrying the order id
+    + processed qty, so the MACE port keeps the anchor instead of clean-deleting it. Books
+    NOTHING here; execution routes it to _entry_partial / reconcile."""
+    b = _make_broker()
+    b._COMBO_FILL_TIMEOUT_S = 0.05
+    b._COMBO_FILL_POLL_S = 0.01
     legs = _standard_ic_legs()
     with patch.object(rs.orders, "order_option_spread",
-                      return_value={"id": "RH-ORD", "state": "partially_filled"}):
-        with pytest.raises(RobinhoodOrderError, match="PARTIALLY_FILLED"):
+                      return_value={"id": "RH-ORD", "state": "confirmed"}), \
+         patch.object(rs.orders, "get_option_order_info",
+                      return_value={"id": "RH-ORD", "state": "partially_filled",
+                                    "processed_quantity": "1"}):
+        with pytest.raises(RobinhoodComboPartial) as ei:
             await b.place_multi_leg(legs)
+    assert ei.value.order_id == "RH-ORD" and ei.value.processed_quantity == 1.0
+    assert isinstance(ei.value, RobinhoodOrderError)   # subclass -> existing callers unaffected
 
 
 @pytest.mark.asyncio
