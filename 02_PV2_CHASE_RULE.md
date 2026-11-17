@@ -347,7 +347,10 @@ harvest 400 → **173** (168 series/status pairs, 48MB, 0×429, stop-on-429 arme
 was RECORDED on the box with a zero-network stub (no Kalshi call), and the sim served 242 harvest files in
 place of live Kalshi reads. Local Python: stdlib-only analysis scripts on scratch data +
 one `py_compile` syntax pass; `procgov` (the run_capped 25GB wrapper) is ABSENT on this machine, so that
-compile-only pass ran unwrapped and ALL pytest ran on the box, none locally. The §3 sweep scripts live in the
-session scratchpad; their outputs are quoted in full above.
+compile-only pass ran unwrapped and ALL pytest ran on the box, none locally. The §3 sweep scripts (coverage,
+v2 recovery fetch, threshold sweep, per-category pass) + the Kalshi series recorder/harvester are committed
+under `analysis/chase_sweep/` for re-runnability (the sweep inputs: the backtest worktree's
+`scratch/entries_enriched.csv` + `scratch/prediction_markets.db`, both left untouched); their outputs are
+quoted in full above.
 
 MACE, PMCC, PEAD and bitunix untouched. Fire-first stayed armed and had nothing to fire on (no fills exist).
