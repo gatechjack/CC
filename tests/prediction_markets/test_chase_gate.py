@@ -18,7 +18,7 @@ output -- and every expected chase number is a HAND-COMPUTED literal from the pa
 from the code under test.
 
 Fee model literals: fee = mult * 0.07 * p * (1-p) per contract; mult 0.50 for KXMLBGAME/KXMLBSPREAD/KXMLBTOTAL,
-1.00 otherwise (Kalshi fee schedule, harvested 2026-10-17; re-verified against 3,672/3,681 actual fill fees).
+1.00 otherwise (Kalshi fee schedule, harvested 2026-10-17; re-verified against 3,472/3,681 actual fill fees).
 """
 import asyncio
 import logging

@@ -400,7 +400,7 @@ def _top_of_book_depth_usd(market: dict, leg: str) -> float:
 # Kalshi's taker fee schedule: fee = ceil_to_cent(mult * 0.07 * contracts * P * (1-P)) per ORDER, where P is the
 # execution price (symmetric in P <-> 1-P, so leg-agnostic). `mult` is per SERIES; of the 24 series we have ever
 # copied, exactly the three MLB series are 0.50 and every other is 1.00 (kalshi_cache/series_fees.json, harvested
-# from Kalshi's own fee schedule 2026-10-17, re-verified against 3,672/3,681 actual fill fees 2026-11-17 -- see
+# from Kalshi's own fee schedule 2026-10-17, re-verified against 3,472/3,681 actual fill fees 2026-11-17 -- see
 # 02_PV2_CHASE_RULE.md section 3). An UNLISTED series reads 1.00: the conservative-HIGH direction (overstates the
 # fee -> overstates chase -> blocks MORE -> fail-closed). Gate C uses the UNROUNDED per-contract rate; the order-
 # level ceil adds < 1 cent spread across the order's contracts (stated, not modelled).
