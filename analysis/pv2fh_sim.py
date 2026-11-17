@@ -288,6 +288,7 @@ async def main():
     simfill = defaultdict(lambda: {"usd": 0.0, "n": 0})
     simcoids = set()
     placed_detail = []
+    chase_detail = []   # gate C (chase, 2026-11-17): WHICH signals the new gate blocks, and why (cycle 1)
     percycle = []
     first_cycle_tally = {}
     for cycle in range(1, MAXC + 1):
@@ -312,6 +313,13 @@ async def main():
                     d = execution.evaluate(s, sub, ctx, j, conn, now, shard_balances=None,
                                            venue_exposure=None, legacy_db_path=LEGACY)
                     tally[aid][d.status] += 1
+                    if cycle == 1 and d.status in ("skip:chase", "skip:chase_unpriced"):
+                        chase_detail.append({
+                            "account": aid, "category": cat, "wallet": s.wallet[:10],
+                            "ticker": d.kalshi_ticker, "leg": d.leg, "count": d.count,
+                            "whale_avg_price": s.whale_avg_price,
+                            "whale_first_entry_ts": s.whale_first_entry_ts,
+                            "reason": d.reason})
                     if d.status == "dry_run_would_place":
                         if armmap.get((aid, cat)):
                             newly.append((aid, cat, s, d))
@@ -336,6 +344,7 @@ async def main():
                 "whale_avg_price": getattr(p, "avg_price", None),
                 "whale_cur_price": ex.get("curPrice"), "end_date": ex.get("endDate"),
                 "last_event_at": ex.get("last_event_at"),
+                "first_entry_at": ex.get("first_entry_at"),   # v2 TRUE entry ts (exact age, no proxy)
                 "event_ts": ev_ts, "event_has_time": has_time, "kalshi_close_ts": close_ts,
                 "kalshi_status": raw.get("status"),
             })
@@ -355,9 +364,13 @@ async def main():
                                          for (a, c), st in simfill.items() if a == aid and st["n"]}}
                        for aid in sim_accounts}
 
+    out["chase_blocked"] = chase_detail
+
     # ---- the placed-set age / price / market-state stats ----------------------------------------
-    ages = [(now - int(p["last_event_at"])) / 3600.0 for p in placed_detail
-            if p.get("last_event_at") and int(p["last_event_at"]) > 1e9]
+    # exact ages via v2 first_entry_at (TRUE entry ts) where present; last_event_at fallback
+    ages = [(now - int(p["first_entry_at"] or p["last_event_at"])) / 3600.0 for p in placed_detail
+            if (p.get("first_entry_at") or p.get("last_event_at"))
+            and int(p.get("first_entry_at") or p["last_event_at"]) > 1e9]
     drift = [p["leg_cost"] - float(p["whale_avg_price"]) for p in placed_detail
              if p.get("whale_avg_price")]
     started = [p for p in placed_detail if p.get("event_ts") and p["event_has_time"] and p["event_ts"] <= now]
@@ -366,12 +379,11 @@ async def main():
     pastend = [p for p in placed_detail if p.get("end_date") and (iso_ts(p["end_date"]) or 9e18) < now]
     out["placed_stats"] = {
         "n": len(placed_detail),
-        "age_h_via_last_event_at": {
+        "age_h": {
             "n": len(ages), "median": round(statistics.median(ages), 1) if ages else None,
             "min": round(min(ages), 1) if ages else None, "max": round(max(ages), 1) if ages else None,
             "gt_24h": sum(1 for a in ages if a > 24), "gt_7d": sum(1 for a in ages if a > 168),
-            "caveat": "last_event_at = the whale's most recent event on the position (v2 serves no entry ts); "
-                      "true position age >= this where the whale added later -- a LOWER-bound proxy"},
+            "caveat": "age via v2 first_entry_at (TRUE entry ts) where present; last_event_at fallback"},
         "leg_cost_minus_whale_avg": {
             "n": len(drift), "median": round(statistics.median(drift), 4) if drift else None,
             "min": round(min(drift), 4) if drift else None, "max": round(max(drift), 4) if drift else None,
@@ -384,11 +396,11 @@ async def main():
         samp = rowlut.get(next(iter(rowlut)))
         out["sample_extra_keys"] = sorted((getattr(samp, "extra", {}) or {}).keys())
 
-    with open("/home/azureuser/pv2fh_scratch/pv2fh_report.json", "w") as f:
+    with open(os.environ.get("PV2FH_OUT", "/home/azureuser/pv2fh_scratch/pv2fh_report.json"), "w") as f:
         json.dump(out, f, indent=1, default=str)
     print("\n==== SUMMARY ====")
-    print(json.dumps({k: out[k] for k in ("committed", "per_cycle", "placed_stats", "claim_order",
-                                          "cash", "poly", "kalshi_calls", "sim_accounts",
+    print(json.dumps({k: out[k] for k in ("committed", "per_cycle", "placed_stats", "chase_blocked",
+                                          "claim_order", "cash", "poly", "kalshi_calls", "sim_accounts",
                                           "latched_only_accounts")}, indent=1, default=str))
     conn.close()
 
