@@ -146,8 +146,11 @@ def ground_losses(activity_rows, closed_rows, resolutions: dict, *, activity_tru
 
 
 # ── the async ORCHESTRATOR: page /activity + /closed-positions + gamma, category-filter, ground (Stage 5 R2a) ──
-# Verbatim paging from the probe: /activity up to `activity_max_pages*activity_limit` (5000 default, TRUNCATED flag);
-# /closed-positions up to `closed_max` (~the API's ~1500 cap). Category filtering is DECOUPLED from the slug->category
+# Paging depth: /activity up to `activity_max_pages*activity_limit` (5000 default, TRUNCATED flag); /closed-positions
+# up to `closed_max`. ★ Since the Data API v2 migration (2026-11-17) BOTH caps are OURS, not the venue's: v1's hard
+# ~5000 /activity offset wall and ~1500 /closed-positions cap are GONE under v2 cursor paging, which walks to
+# exhaustion. The depth is DELIBERATELY kept at the v1-era values so grounded verdicts/ROIs do not shift silently on
+# restore; deepening it is a separate, later decision. Category filtering is DECOUPLED from the slug->category
 # derivation via an injected `category_of(row)->str` -- so this stays PURE-logic + testable with a fake client, and
 # the derivation (names.py) lives at the ONE caller (analyze). The client is a PolymarketDataAPIClient (duck-typed:
 # fetch_activity / fetch_closed_positions / fetch_market_resolutions). This is the ONE site with the API cost.
