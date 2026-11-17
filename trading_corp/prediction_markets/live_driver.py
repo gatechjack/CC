@@ -608,10 +608,34 @@ def _stable_entry_key(condition_id: str, outcome_index) -> str:
     return "pos:%s:%s" % (condition_id or "", outcome_index)
 
 
+def _whale_avg_price(p):
+    """The whale's average entry price for the HELD token, from the /positions row's `avg_price` (v2 serves it
+    first-class; held-token basis). ★ The client's numeric coercion maps a MISSING value to 0.0 -- and 0.0 is
+    never a real entry price -- so anything outside (0,1) returns None (gate C then FAIL-CLOSED skips, loudly)."""
+    v = getattr(p, "avg_price", None)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if 0.0 < f < 1.0 else None
+
+
+def _whale_first_entry_ts(p):
+    """The position's TRUE first-entry timestamp: the raw v2 `first_entry_at` (unix seconds) riding in
+    PositionRow.extra (not a consumed field). None when absent/junk -- informational carry, never gating."""
+    v = (getattr(p, "extra", None) or {}).get("first_entry_at")
+    try:
+        i = int(v)
+    except (TypeError, ValueError):
+        return None
+    return i if i > 0 else None
+
+
 def positions_to_entry_signals(rows, wallet: str) -> list:
     """Genuinely-open /positions rows for one whale -> entry CopySignals (is_exit=False). Reuses
     paper.is_genuinely_open + paper.pos_outcome_index. DEDUPES within the book on (condition_id, outcome_index) so a
-    duplicate /positions row cannot emit two identical signals in one cycle (adversarial-review obs). EXITS later."""
+    duplicate /positions row cannot emit two identical signals in one cycle (adversarial-review obs). EXITS later.
+    CHASE RULE: carries the whale's held-token avg entry price + first_entry_at from the SAME row (gate C inputs)."""
     out, seen = [], set()
     for p in rows:
         if not paper.is_genuinely_open(p):
@@ -625,7 +649,8 @@ def positions_to_entry_signals(rows, wallet: str) -> list:
             wallet=wallet, slug=str(getattr(p, "slug", "") or ""),
             outcome=str(getattr(p, "outcome", "") or ""), condition_id=cid, outcome_index=oidx,
             signal_id=execution.stable_signal_id(wallet, cid, oidx, _stable_entry_key(cid, oidx)),
-            is_exit=False, title=str(getattr(p, "title", "") or "")))   # tennis pair-keying reads title; mlb/ufc ignore it
+            is_exit=False, title=str(getattr(p, "title", "") or ""),   # tennis pair-keying reads title; mlb/ufc ignore it
+            whale_avg_price=_whale_avg_price(p), whale_first_entry_ts=_whale_first_entry_ts(p)))
     return out
 
 
@@ -985,6 +1010,28 @@ def _finalize_order(conn, coid, outcome_status, *, fill=None, error_detail=None,
         conn.commit()
 
 
+# ── gate-C (chase) skip visibility ─────────────────────────────────────────────────────────────────────
+# ⚠️ THE TRAP THIS GUARDS: a pre-submit skip writes NO order row, so a sub that is quietly chase-skipping looks
+# IDENTICAL to a sub with no signal. Two traces close that: (1) the per-cycle chase_skips count rides the existing
+# per-(account,category) heartbeat (upsert_evaluated -> pm_driver_heartbeat.chase_skips, migration 025); (2) a
+# RATE-LIMITED warning with the first skipped order's ticker + the whale/our/threshold numbers (the Decision
+# reason carries them verbatim). Rate-limited per (account, category) so a persistent chase condition logs once
+# per window, not once per ~7s cycle -- loud, bounded, never silent.
+_CHASE_LOG_INTERVAL_SEC = 60
+_chase_log_last: dict = {}            # (account_id, category) -> last log monotonic-ish ts
+
+
+def _chase_log(log, account_id, category, decision, n_so_far, now_ts) -> None:
+    key = (account_id, category)
+    if now_ts - _chase_log_last.get(key, 0) < _CHASE_LOG_INTERVAL_SEC:
+        return
+    _chase_log_last[key] = now_ts
+    log.warning("pm_live_driver: gate-C CHASE skip %s/%s (%d this cycle so far) -- %s (%s x%s): %s "
+                "[rate-limited %ss; per-cycle count in pm_driver_heartbeat.chase_skips]",
+                account_id, category, n_so_far, decision.kalshi_ticker, decision.leg, decision.count,
+                decision.reason, _CHASE_LOG_INTERVAL_SEC)
+
+
 # ── the ASYNC arm-gated cycle (async twin of run_arm_gated_cycle; reuses evaluate + read_arm_verdict) ──
 async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, place_fn, shard_balances=None,
                                    venue_exposure=None, legacy_db_path=None, log=None):
@@ -997,6 +1044,7 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
     log = log or _LOG
     signals = list(signals)
     n_would = n_skip = n_reject = placed = disarm_blocked = errors = n_shard_underfunded = 0
+    n_chase_skipped = 0
     consec_err = 0
     ceiling_latched = False
     for s in signals:
@@ -1019,6 +1067,9 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
                 elif d.status == "skip:exposure_unknown":                        # R7: venue exposure unreadable -> fail-closed
                     log.warning("pm_live_driver: skip:exposure_unknown -- venue open-exposure read failed; "
                                 "sizing against an unknown book is refused (fail-closed): %s", d.reason)
+                elif d.status in ("skip:chase", "skip:chase_unpriced"):          # gate C: counted + rate-limited log
+                    n_chase_skipped += 1
+                    _chase_log(log, sub.account_id, sub.category, d, n_chase_skipped, int(now_ts))
             else:
                 n_reject += 1
                 # ★ R7.d: the 4TH latching trigger, WIRED HERE. It was DEAD CODE -- arm.latch_count_ceiling
@@ -1079,7 +1130,7 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
     return {"account_id": sub.account_id, "category": sub.category, "n_signals": len(signals),
             "n_would_place": n_would, "placed": placed, "n_disarm_blocked": disarm_blocked, "errors": errors,
             "n_skip": n_skip, "n_reject": n_reject, "n_shard_underfunded": n_shard_underfunded,
-            "posts_sent": placed, "ceiling_latched": ceiling_latched}
+            "posts_sent": placed, "ceiling_latched": ceiling_latched, "chase_skips": n_chase_skipped}
 
 
 # ── boot-reconcile against the AUTHENTICATED portfolio (async fetch -> sync reconcile with a lambda) ────

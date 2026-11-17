@@ -28,8 +28,8 @@ def _events(p, wallet=W):
 def test_migration_024_at_head_and_table_empty(tmp_path):
     p = _mk(tmp_path)
     with db.connect(p) as conn:
-        assert db.SCHEMA_HEAD == 24
-        assert db._current_version(conn) == 24
+        assert db.SCHEMA_HEAD == 25   # 24 -> 25 with migration 025 (chase rule / gate C; the pin bumps per migration)
+        assert db._current_version(conn) == 25
         assert conn.execute("SELECT COUNT(*) FROM pm_subdivision_attachment_event").fetchone()[0] == 0
 
 

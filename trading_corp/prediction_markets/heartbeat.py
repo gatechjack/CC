@@ -81,19 +81,36 @@ def upsert_reached(conn, account_id: str, category: str, ts: int) -> None:
 
 def upsert_evaluated(conn, account_id: str, category: str, ts: int, summ: dict | None = None) -> None:
     """Per-(account,category) 'this category fully evaluated' beat + the cheap summary from the arm-gated cycle
-    (n_signals/placed/errors/ceiling_latched) so IDLE (0 signals) is distinguishable from PLACING (placed>0) and a
-    latched order-ceiling (intentionally not placing) is not read as a fault. Bumps reached_ts too (it was reached).
-    UPSERT. `state`='evaluated'."""
+    (n_signals/placed/errors/ceiling_latched/chase_skips) so IDLE (0 signals) is distinguishable from PLACING
+    (placed>0), a latched order-ceiling (intentionally not placing) is not read as a fault, and a sub that is
+    QUIETLY CHASE-SKIPPING (gate C: pre-submit skip -> no order row) is distinguishable from one with no signal.
+    Bumps reached_ts too (it was reached). UPSERT. `state`='evaluated'.
+    ★ PRE-MIGRATION-025 TOLERANCE: the chase_skips column arrives with migration 025; on a box that has not
+    applied it the extended statement raises OperationalError ('no such column') -> FALL BACK to the pre-025
+    statement, so the heartbeat NEVER goes dark over a schema lag (the counter is simply invisible until the
+    pm_cli cron self-applies 025). Never silent in the other direction: with the column present it is ALWAYS
+    written (0 when absent from summ), so NULL means pre-migration/not-written, 0 means 'evaluated, no skips'."""
+    import sqlite3 as _sqlite3
     s = summ or {}
-    conn.execute(
-        "INSERT INTO %s (account_id, category, reached_ts, evaluated_ts, n_signals, placed, errors, "
-        "ceiling_latched, state, updated_ts) VALUES (?,?,?,?,?,?,?,?,?,?) "
-        "ON CONFLICT(account_id, category) DO UPDATE SET reached_ts=excluded.reached_ts, "
-        "evaluated_ts=excluded.evaluated_ts, n_signals=excluded.n_signals, placed=excluded.placed, "
-        "errors=excluded.errors, ceiling_latched=excluded.ceiling_latched, state=excluded.state, "
-        "updated_ts=excluded.updated_ts" % _TABLE_CAT,
-        (account_id, category, int(ts), int(ts), int(s.get("n_signals") or 0), int(s.get("placed") or 0),
-         int(s.get("errors") or 0), 1 if s.get("ceiling_latched") else 0, "evaluated", int(ts)))
+    base_cols = (account_id, category, int(ts), int(ts), int(s.get("n_signals") or 0), int(s.get("placed") or 0),
+                 int(s.get("errors") or 0), 1 if s.get("ceiling_latched") else 0, "evaluated", int(ts))
+    try:
+        conn.execute(
+            "INSERT INTO %s (account_id, category, reached_ts, evaluated_ts, n_signals, placed, errors, "
+            "ceiling_latched, state, updated_ts, chase_skips) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(account_id, category) DO UPDATE SET reached_ts=excluded.reached_ts, "
+            "evaluated_ts=excluded.evaluated_ts, n_signals=excluded.n_signals, placed=excluded.placed, "
+            "errors=excluded.errors, ceiling_latched=excluded.ceiling_latched, state=excluded.state, "
+            "updated_ts=excluded.updated_ts, chase_skips=excluded.chase_skips" % _TABLE_CAT,
+            base_cols + (int(s.get("chase_skips") or 0),))
+    except _sqlite3.OperationalError:
+        conn.execute(
+            "INSERT INTO %s (account_id, category, reached_ts, evaluated_ts, n_signals, placed, errors, "
+            "ceiling_latched, state, updated_ts) VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(account_id, category) DO UPDATE SET reached_ts=excluded.reached_ts, "
+            "evaluated_ts=excluded.evaluated_ts, n_signals=excluded.n_signals, placed=excluded.placed, "
+            "errors=excluded.errors, ceiling_latched=excluded.ceiling_latched, state=excluded.state, "
+            "updated_ts=excluded.updated_ts" % _TABLE_CAT, base_cols)
     conn.commit()
 
 

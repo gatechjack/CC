@@ -284,9 +284,11 @@ def test_deployed_evaluate_e2e_itf():
     sub = E.SubConfig(account_id="kalshi_test", category="itf", market_types=("itf_moneyline",),
                       sizing_mode="contracts", fixed_stake_usd=0.0, per_order_usd_cap=100.0, daily_usd_cap=100.0,
                       max_open_usd=100.0, max_orders_per_day=10, max_slippage_cents=5, liquidity_ratio=0.75, contracts=1)
+    # whale_avg_price: gate C (chase, 2026-11-17) fail-closes an ENTRY without one. 0.20 == the ask ->
+    # chase = fee only (0.07*0.20*0.80 = 0.0112) <= the 2c default -> the gate passes it through.
     sig = E.CopySignal(wallet="0xfb07f48542", slug="itf-wendler-tosetti-2026-09-16", outcome="Marco Tosetti",
                        condition_id="0xcond", outcome_index=0, signal_id="sigitfa", is_exit=False,
-                       title="ITF: Jefferson Wendler Filho vs Marco Tosetti")
+                       title="ITF: Jefferson Wendler Filho vs Marco Tosetti", whale_avg_price=0.20)
     d = tempfile.mkdtemp(); path = os.path.join(d, "pm.db"); DB.init_db(path)
     conn = sqlite3.connect(path); conn.row_factory = sqlite3.Row
     jrnl = E.Journal(conn, ["kalshi_test"], 1_800_000_000)

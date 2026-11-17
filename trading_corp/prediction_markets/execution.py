@@ -17,7 +17,7 @@ GATE ORDER (a reject at any gate returns early -- NO budget consumed, NO idempot
      checked BEFORE the match (cheap config sanity); (2b) count*leg_cost <= cap AFTER sizing -- a per-order USD
      ceiling on the money actually committed. (base_price is the Kalshi market's leg ASK -- never the whale's
      Polymarket price -- and the IOC limit bounds the fill, so a mis-sized order self-limits; 2b is the USD ceiling,
-     NOT a substitute for a leg-ask-vs-Poly-price plausibility gate, which is a later refinement, not this rung.)
+     NOT a price-plausibility gate -- that deferred "later refinement" is now gate C below, 2026-11-17.)
   3. strike-exists-EXACT + liquid  (R2 `match_bet`; never round to a neighbour; `liquidity_ok` at match time). The
      leg PRICE gate 2b needs comes from the matched market, so 3 is evaluated between 2a and 2b (data dependency).
   4. idempotency  (deterministic UUID5 over (sub_division, WALLET, ticker, outcome-leg, STABLE signal_id) -- WALLET
@@ -26,6 +26,10 @@ GATE ORDER (a reject at any gate returns early -- NO budget consumed, NO idempot
   6. per-account exposure cap    (in-memory USD counter, across sub-divisions on one account).
   7. slippage within cap  (clamped INSIDE build_v2_event_order; fail-closed here if the leg has no quote).
   8. count ceiling        (in-memory per-day order count).
+  C. maximum CHASE (2026-11-17, ENTRY-only, evaluated LAST): skip when (leg ask + taker fee) - whale_avg_price
+     exceeds max_chase_cents (absolute) or chase_upside_pct% of (1 - whale price) (relative); a missing whale
+     price FAILS CLOSED (skip:chase_unpriced). No budget consumed, no coid journaled, never latches -- the signal
+     re-evaluates every cycle. Observability: per-cycle chase_skips in the heartbeat + a rate-limited driver log.
   ** EVERY CAP IS AN O(1) IN-MEMORY COUNTER, seeded ONCE at construction from a BOUNDED, indexed journal query
      (today's placed rows for THIS sub-division) -- NEVER a scan on the order path. The engine's RiskAgent aggregate
      caps were removed after a synchronous ~1.19M-row audit_event scan froze the event loop; do not reintroduce it. **
@@ -76,6 +80,19 @@ CONFIG_DEFAULTS = {
     # of the 0.75 default: a NULL `liquidity_ratio` column (migration 012) reads as 0.75 here. Operators change the
     # live floor by editing the pm_subdivision.liquidity_ratio NUMBER (read per cycle -- NO restart), NOT this code.
     "liquidity_ratio": 0.75,
+    # ★ CHASE RULE / gate C (2026-11-17): skip an ENTRY whose all-in cost per contract (leg ask + taker fee)
+    # exceeds what the whale paid for the SAME claim by more than the threshold. TWO forms, BOTH active when > 0;
+    # a value <= 0 DISABLES that form for the sub (an explicit opt-out -- a NULL column means "code default", so
+    # off needs a sentinel, and <= 0 can never be a real threshold). Defaults from the 2026-11-17 holdout-confirmed
+    # sweep over every historical copy (see 02_PV2_CHASE_RULE.md section 3); per-sub overrides live in
+    # pm_subdivision.max_chase_cents / chase_upside_pct (migration 025; NULL -> these code defaults, the standing
+    # DDL-NULL rule). Read PER CYCLE -- change the number, no restart.
+    # RECOMMENDED DEFAULTS from the sweep (02_PV2_CHASE_RULE.md section 3): the ABSOLUTE form at 2c is the ONE
+    # threshold that survived the hold-out as a signal filter (train: blocked -4.4c/ct vs kept +0.0c/ct; holdout:
+    # blocked -12.4c/ct vs kept -4.7c/ct; ~38% of fees saved). The RELATIVE form INVERTED on the hold-out
+    # (blocked copies won MORE) at every tested 25/50/75% -> shipped DISABLED (0.0); the knob exists for Jack.
+    "max_chase_cents": 2.0,       # absolute: skip if chase > 2.0 cents [holdout-confirmed]
+    "chase_upside_pct": 0.0,      # relative (% of 1 - whale price): DISABLED by default [holdout-inverted]
 }
 _ENTRY_TIF = "immediate_or_cancel"   # marketable copy (IOC); exits use the same TIF + reduce_only
 
@@ -105,6 +122,17 @@ class CopySignal:
     close_source: str | None = None  # None=whale-exit | 'opposed'=cancellation-by-disagreement (two whales disagree
                                      # -> market off the books). BOTH close PER-WALLET; the opposed flatten emits one
                                      # per holding whale (detect_opposing_closes), summing to the full account flatten.
+    # ★ CHASE RULE (2026-11-17): the whale's average entry price for the HELD outcome token (Data API v2
+    # /positions `avg_price` -- HELD-TOKEN basis: an index-1/"No"/"Under" position carries THAT token's price,
+    # verified on live payloads) and the position's TRUE first-entry timestamp (v2 `first_entry_at`, unix sec).
+    # Populated by live_driver.positions_to_entry_signals from the SAME /positions row that produced the signal.
+    # None = the row carried no usable value -> gate C FAIL-CLOSED skips the entry (skip:chase_unpriced), never
+    # silently. DEFAULTED so every existing construction (exits, opposed closes, detect_exit_signals, tests) is
+    # BYTE-IDENTICAL. The matchers are CLAIM-FAITHFUL (a whale's held-token claim binds the (ticker, leg) with the
+    # SAME claim, or safe-misses -- the swap-regression suite proves it per family), so whale_avg_price is already
+    # on OUR leg's probability scale and gate C compares it to the leg-correct ask with NO further conversion.
+    whale_avg_price: float | None = None
+    whale_first_entry_ts: int | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +156,11 @@ class SubConfig:
     # pm_subdivision.contracts (migration 014, DDL default 5). Defaulted here for direct construction (tests);
     # production sets it via sub_config_from_row. Ignored when sizing_mode != 'contracts'.
     contracts: int = 5
+    # ★ CHASE RULE / gate C thresholds (2026-11-17). Dataclass defaults MIRROR CONFIG_DEFAULTS (the liquidity_ratio
+    # pattern: direct construction = tests; PRODUCTION always sets them via sub_config_from_row, DB value or the
+    # CONFIG_DEFAULTS fallback, so the two defaults never diverge on the live path). <= 0 disables that form.
+    max_chase_cents: float = 2.0
+    chase_upside_pct: float = 0.0
 
     @property
     def division(self) -> str:
@@ -272,6 +305,10 @@ def sub_config_from_row(row) -> SubConfig:
         daily_usd_cap=float(cap("daily_usd_cap")), max_open_usd=float(cap("max_open_usd")),
         max_orders_per_day=int(cap("max_orders_per_day")), max_slippage_cents=int(cap("max_slippage_cents")),
         liquidity_ratio=_safe_liquidity_ratio(row),   # NULL -> 0.75; non-positive/NaN -> CLAMPED to 0.75 + LOUD log; read PER CYCLE
+        # gate C (chase): NULL column (or a pre-migration-025 row with NO such column -- _row_get returns None
+        # for a missing key, so the code deploys safely ahead of the migration) -> code default; an explicit
+        # <= 0 value passes through = that form disabled for this sub. Read PER CYCLE.
+        max_chase_cents=float(cap("max_chase_cents")), chase_upside_pct=float(cap("chase_upside_pct")),
     )
 
 
@@ -357,6 +394,32 @@ def _top_of_book_depth_usd(market: dict, leg: str) -> float:
     if size <= 0.0 or not (0.0 < price < 1.0):
         return 0.0
     return size * price
+
+
+# ── gate C (chase) fee model ────────────────────────────────────────────────────────────────────────────────────
+# Kalshi's taker fee schedule: fee = ceil_to_cent(mult * 0.07 * contracts * P * (1-P)) per ORDER, where P is the
+# execution price (symmetric in P <-> 1-P, so leg-agnostic). `mult` is per SERIES; of the 24 series we have ever
+# copied, exactly the three MLB series are 0.50 and every other is 1.00 (kalshi_cache/series_fees.json, harvested
+# from Kalshi's own fee schedule 2026-10-17, re-verified against 3,672/3,681 actual fill fees 2026-11-17 -- see
+# 02_PV2_CHASE_RULE.md section 3). An UNLISTED series reads 1.00: the conservative-HIGH direction (overstates the
+# fee -> overstates chase -> blocks MORE -> fail-closed). Gate C uses the UNROUNDED per-contract rate; the order-
+# level ceil adds < 1 cent spread across the order's contracts (stated, not modelled).
+_KALSHI_FEE_RATE = 0.07
+_KALSHI_FEE_MULT = {"KXMLBGAME": 0.5, "KXMLBSPREAD": 0.5, "KXMLBTOTAL": 0.5}
+
+
+def kalshi_taker_fee_per_contract(ticker, price) -> float:
+    """Per-contract taker fee in dollars at per-contract price `price` for `ticker`'s series (prefix before the
+    first '-'). Out-of-band price -> 0.0 (the gate's chase then understates by the fee only -- the price itself
+    was already validated upstream by the gate-7 precondition, so this is unreachable on the live path)."""
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return 0.0
+    if not (0.0 < p < 1.0):
+        return 0.0
+    mult = _KALSHI_FEE_MULT.get(str(ticker or "").split("-")[0].upper(), 1.0)
+    return mult * _KALSHI_FEE_RATE * p * (1.0 - p)
 
 
 # ── the durable journal + O(1) counters (seeded ONCE from a BOUNDED indexed query) ───────────────────────────────
@@ -800,6 +863,49 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
                                 leg=leg, count=count, notional_usd=notional, is_exit=signal.is_exit, disarm_armed=armed,
                                 reason="shard_%s underfunded for notional_%.4f (fundable=%r; per-market, fail-closed)"
                                        % (order_shard, notional, fundable))
+
+    # ── gate C (CHASE, 2026-11-17): never pay materially more than the whale did for the SAME claim ──────────
+    # WHY: the 2026-10-22 backtest measured pre-game copy CLV at -1.73c (-7.21 SE) -- our copies systematically
+    # buy worse than the market closes -- and nothing upstream compares our price to the whale's (execution.py's
+    # own header deferred this gate; this is that "later refinement", built 2026-11-17).
+    #   chase = (leg ask + per-contract taker fee) - whale_avg_price
+    # SAME CLAIM, SAME SCALE: `base_price` is the LEG-CORRECT per-contract cost of OUR leg (_leg_ask: yes_ask for
+    # a yes leg, no_ask for a no leg), and `whale_avg_price` is the whale's HELD-TOKEN average entry price -- the
+    # price of the SAME claim, because every matcher binds the whale's held-token claim to a (ticker, leg) with
+    # that claim or safe-misses (claim-faithful; proven per family incl. the complement legs -- soccer win-No,
+    # total Under, F1 No -- in test_chase_gate.py). So NO further conversion is applied here; converting OUR side
+    # to leg cost (no leg = no_ask, NOT the yes-side price) IS the complement handling.
+    # ASK basis, not the slippage limit: the IOC fills at the resting ask; the +slip limit is a mechanical cushion
+    # consumed only when walking a thin book (bounded by max_slippage_cents; the section-3 calibration is on fill
+    # prices, which sit at the ask -- measured median limit-fill = the full slip allowance).
+    # EVALUATED LAST (after the slippage-gate precondition validated base_price and after every budget gate), so a
+    # chase skip consumes NO budget, journals NO coid, and NEVER latches -- the signal re-evaluates next cycle and
+    # places if the price comes back inside the threshold. ENTRY-only: capping a risk-reducing exit strands it
+    # (the Cubs failure); exits are exempt like gates 2b/3/5/6/8.
+    if not signal.is_exit:
+        abs_on = sub.max_chase_cents is not None and sub.max_chase_cents > 0.0
+        rel_on = sub.chase_upside_pct is not None and sub.chase_upside_pct > 0.0
+        if abs_on or rel_on:
+            w = signal.whale_avg_price
+            if w is None or not (0.0 < float(w) < 1.0):
+                # ★ FAIL CLOSED, NEVER SILENTLY: no usable whale price -> no copy. Counted per cycle in the
+                # heartbeat chase_skips + surfaced by the driver's rate-limited chase log (live_driver).
+                return Decision("skip:chase_unpriced", sid, market_type=match.market_type, kalshi_ticker=ticker,
+                                leg=leg, count=count, is_exit=False, disarm_armed=armed,
+                                reason="whale_avg_price_missing_or_out_of_band(%r)_fail_closed" % (w,))
+            w = float(w)
+            fee = kalshi_taker_fee_per_contract(ticker, base_price)
+            chase = (base_price + fee) - w
+            if abs_on and chase > (sub.max_chase_cents / 100.0) + 1e-9:
+                return Decision("skip:chase", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                                count=count, is_exit=False, disarm_armed=armed,
+                                reason="chase_%.4f=ask_%.4f+fee_%.4f-whale_%.4f gt_abs_cap_%.1fc"
+                                       % (chase, base_price, fee, w, sub.max_chase_cents))
+            if rel_on and chase > (sub.chase_upside_pct / 100.0) * (1.0 - w) + 1e-9:
+                return Decision("skip:chase", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                                count=count, is_exit=False, disarm_armed=armed,
+                                reason="chase_%.4f=ask_%.4f+fee_%.4f-whale_%.4f gt_%.0f%%_of_upside_%.4f"
+                                       % (chase, base_price, fee, w, sub.chase_upside_pct, 1.0 - w))
 
     # all gates pass -> COMPUTE the exact V2 body (gate 7 slippage clamped INSIDE build_v2_event_order). DRY-RUN:
     # log-not-place; an exit is reduce_only (is_buy=False on the SAME leg).

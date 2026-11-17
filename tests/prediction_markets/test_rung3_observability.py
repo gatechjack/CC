@@ -16,13 +16,13 @@ from trading_corp.prediction_markets.live_driver import _audit_leg_independent
 
 
 # ── migration 021 ──────────────────────────────────────────────────────────────────────────
-def test_schema_head_is_24_and_contiguous():
-    # head moved 23 -> 24 with migration 024 (pm_subdivision_attachment_event; item-2 attachment span history).
-    # Contiguity is the invariant this test guards (a migration that skips a number is the clobber hazard); the pin
-    # bumps with each one.
+def test_schema_head_is_25_and_contiguous():
+    # head moved 24 -> 25 with migration 025 (chase rule / gate C: pm_subdivision chase thresholds +
+    # pm_driver_heartbeat.chase_skips). Contiguity is the invariant this test guards (a migration that skips a
+    # number is the clobber hazard); the pin bumps with each one.
     vers = sorted(v for v, _ in db.MIGRATIONS)
     assert vers == list(range(1, db.SCHEMA_HEAD + 1)), vers
-    assert db.SCHEMA_HEAD == 24, db.SCHEMA_HEAD
+    assert db.SCHEMA_HEAD == 25, db.SCHEMA_HEAD
 
 
 def test_migration_021_adds_columns_and_is_idempotent(tmp_path):

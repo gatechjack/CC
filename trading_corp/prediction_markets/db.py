@@ -1007,6 +1007,27 @@ MIGRATION_024: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_pm_subattach_event ON pm_subdivision_attachment_event(account_id, category, wallet, ts)",
 ]
 
+# migration 025 (2026-11-17, CHASE RULE / gate C): per-sub-division chase thresholds + the heartbeat skip counter.
+# WHY A MIGRATION AT ALL (config-in-code alone was preferred and is NOT enough): (a) the PER-SUB override lever --
+# pm_subdivision has NO extra/JSON bag column, so "configurable per sub-division" requires real columns (NULL ->
+# code CONFIG_DEFAULTS, the standing DDL-NULL rule; an explicit <= 0 disables that form); (b) the gate-C skip
+# counter must be VISIBLE per (account, category) -- a pre-submit skip writes NO order row, so without a persisted
+# counter a chase-skipping sub is indistinguishable from an idle one (the recurring silent-reject trap) -- and
+# pm_driver_heartbeat is the existing per-cycle surface it rides. ALL THREE ADDITIVE + nullable: pre-migration
+# rows read honest-NULL; the CODE is tolerant BOTH ways (sub_config_from_row's _row_get returns None for a missing
+# column -> code default; heartbeat.upsert_evaluated falls back to the pre-025 statement on a missing column), so
+# code-before-migration and migration-before-code both run clean.
+# ★ NUMBER 025 IS THE NEXT CONTIGUOUS after 024 (test_schema_head_tracks_migrations). ★ DEPLOY GATE
+# (self-renumber-at-apply, the Jack-ruled 2026-09-12 DEFAULT for every PM migration): drift-check the LIVE box
+# schema head == 24 immediately before applying and RENUMBER to box-head+1 on any collision -- a same-number
+# collision SILENTLY SKIPS the loser's DDL (the clobber hazard). PM migrations SELF-APPLY via db.init_db from the
+# pm_cli crons, so expect the cron to apply this before any manual step once the code lands.
+MIGRATION_025: list[str] = [
+    "ALTER TABLE pm_subdivision ADD COLUMN max_chase_cents REAL",       # NULL -> CONFIG_DEFAULTS['max_chase_cents']
+    "ALTER TABLE pm_subdivision ADD COLUMN chase_upside_pct REAL",      # NULL -> CONFIG_DEFAULTS['chase_upside_pct']
+    "ALTER TABLE pm_driver_heartbeat ADD COLUMN chase_skips INTEGER",   # per-cycle gate-C skip count (upsert_evaluated)
+]
+
 MIGRATIONS: list[tuple[int, list[str]]] = [
     (1, MIGRATION_001),
     (2, MIGRATION_002),
@@ -1041,6 +1062,10 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
                            # engine never reads it). ★ DEPLOY GATE: drift-check box head == 23 before applying; renumber to
                            # box-head+1 on collision. ★ PM migrations SELF-APPLY via db.init_db from the pm_cli crons, so
                            # expect the cron to apply this before any manual step -- the STOP-if-head!=23 drift-check is what keeps that safe.
+    (25, MIGRATION_025),   # CHASE RULE / gate C: pm_subdivision.max_chase_cents + chase_upside_pct (NULL -> code
+                           # defaults; <= 0 disables the form) + pm_driver_heartbeat.chase_skips (per-cycle gate-C skip
+                           # count). ★ DEPLOY GATE: drift-check box head == 24 before applying; renumber to box-head+1 on
+                           # collision (the ruled self-renumber-at-apply default). Code is tolerant pre-migration both ways.
 ]
 
 # The head schema version = the highest migration number. Reference THIS from any "is the DB fully migrated?"

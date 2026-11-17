@@ -192,9 +192,11 @@ def test_deployed_evaluate_e2e_f1():
     sub = E.SubConfig(account_id="kalshi_test", category="f1", market_types=("race_winner",),
                       sizing_mode="contracts", fixed_stake_usd=0.0, per_order_usd_cap=100.0, daily_usd_cap=100.0,
                       max_open_usd=100.0, max_orders_per_day=10, max_slippage_cents=5, liquidity_ratio=0.75, contracts=1)
+    # whale_avg_price: gate C (chase, 2026-11-17) fail-closes an ENTRY without one. 0.20 == the ask ->
+    # chase = fee only (0.07*0.20*0.80 = 0.0112) <= the 2c default -> the gate passes it through.
     sig = E.CopySignal(wallet="0xabc", slug="f1-italian-grand-prix-winner-gasly-2026-09-06", outcome="Yes",
                        condition_id="0xcond", outcome_index=0, signal_id="sigf1a", is_exit=False,
-                       title="Will Pierre Gasly win the 2026 F1 Italian Grand Prix?")
+                       title="Will Pierre Gasly win the 2026 F1 Italian Grand Prix?", whale_avg_price=0.20)
     d = tempfile.mkdtemp(); path = os.path.join(d, "pm.db"); DB.init_db(path)
     conn = sqlite3.connect(path); conn.row_factory = sqlite3.Row
     jrnl = E.Journal(conn, ["kalshi_test"], 1_800_000_000)

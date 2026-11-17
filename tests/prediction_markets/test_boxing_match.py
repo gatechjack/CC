@@ -256,9 +256,11 @@ def test_deployed_evaluate_e2e_boxing():
     sub = E.SubConfig(account_id="kalshi_test", category="boxing", market_types=("moneyline",),
                       sizing_mode="contracts", fixed_stake_usd=0.0, per_order_usd_cap=100.0, daily_usd_cap=100.0,
                       max_open_usd=100.0, max_orders_per_day=10, max_slippage_cents=5, liquidity_ratio=0.75, contracts=1)
+    # whale_avg_price: gate C (chase, 2026-11-17) fail-closes an ENTRY without one. 0.52 > the 0.50 ask ->
+    # negative chase (paying LESS than the whale) -> the gate passes it through.
     sig = E.CopySignal(wallet="0xabc", slug="zuffa-garci1-moral1-2026-09-12", outcome="Garcia",
-                       condition_id="0xcond", outcome_index=0,
-                       signal_id="sigbox1", is_exit=False, title="Zuffa Boxing: Garcia vs. Morales")
+                       condition_id="0xcond", outcome_index=0, signal_id="sigbox1", is_exit=False,
+                       title="Zuffa Boxing: Garcia vs. Morales", whale_avg_price=0.52)
     d = tempfile.mkdtemp(); path = os.path.join(d, "pm.db"); DB.init_db(path)
     conn = sqlite3.connect(path); conn.row_factory = sqlite3.Row
     jrnl = E.Journal(conn, ["kalshi_test"], 1_800_000_000)
