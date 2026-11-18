@@ -116,6 +116,43 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-18 21:24 UTC — MACE stop-logic guards (Part B: spot-validity + one-tick structural confirmation) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** `28e0ce31` (B1 spot-validity guard), `b13eabb4` (B2 one-tick structural confirmation) on branch `mace-stop-relogin-2026-11-17` off prod-live `13725707`. NOT yet folded to prod-live — push reserved for the Board.
+**Triggered by:** Board deploy brief 2026-11-18, following the 2026-11-17 SPY-732 false stop (−$39: transient 30s leg-quote timeout on the liquid 729 long put made the condor mark None for one tick; the dead-wing structural fallback fired on a short put 1 cent ITM while the condor priced ≈63% of the 2× stop level) and the 2026-11-16 IWM false-stop inputs (dying session returned spot=0.0).
+**Backup tag:** `/home/azureuser/mace_b_graft_backup_20261118T212338Z` (base files + MD5SUMS.txt: strategy `b30db63ffe69f2fee241f96ea7ec22ee`, manager `0116e860a5c388e7d660f3aba6aa4dc1`)
+
+**Files deployed (2):**
+- `trading_corp/mace/strategy.py` (`04164e9a42f82a589c1d4bc43d34398e`) — structural dead-wing branch of `stop_triggered` now requires `spot > 0`; new keyword-only `structural_confirmed: bool = True` gates the structural branch; `evaluate_management` passes it through. Mark-based 2× stop logic unchanged.
+- `trading_corp/mace/manager.py` (`8f367a4365dabd5a3f65ed76789c92d6`) — `_manage_one` arms an in-memory `_structural_stop_pending` set on the first (mark unpriceable + valid spot + short ITM) tick, audits `mace_structural_stop_pending`, and lets the stop fire only if the condition holds on the next tick; `_drive_closing` stop-class re-eval now skips when fresh inputs carry no information (mark None and no valid spot).
+
+**Features shipped (load-bearing for future "is X done?" checks):**
+- Spot-validity guard: a missing, zero or negative spot can never satisfy the structural stop (the 2026-11-16 class); the rung holds and the tick is treated as unpriced.
+- One-tick structural confirmation: a transient quote loss (the 2026-11-17 SPY-732 class) self-heals next tick; a genuine dead-wing breach exits one 5-min tick later. Observable: `mace_structural_stop_pending` audit rows (pending→cleared next tick with no exit = guard absorbing a transient; pending→exit = confirmed stop).
+
+**Notable code changes (callouts a future Claude shouldn't miss):**
+- `structural_confirmed` defaults True so history-less callers (the CLOSING-state re-eval in `_drive_closing`) keep single-shot semantics; only the manage loop passes the two-tick history.
+- Code-only deploy: `config/mace.yaml` untouched, config_hash stayed `931a8214be50`.
+
+**Verification:**
+- Tests (local, run_capped): branch 427 MACE tests / 5 failures vs pristine base 13725707 at 412/5 — failure sets identical (pre-existing stale-config tests), 15 new guard tests green, zero regressions.
+- Pre-flight 21:20:43Z (RO): box base md5s matched (`b30db63f`/`0116e860`); engine LIVE (PID 991135, up since 11-17 21:08Z), healthz+mace 200; MACE heartbeat 10/10 marked at 20:51:40Z; no rungs submitting/closing, no order/fill audit rows in prior 5 min; baseline recorded (census abandoned 3 / closed 53 / open 11; entry_halt halted:false).
+- Graft 21:23:38Z: drift gate passed, both files verified at full target md5 post-apply, py_compile OK.
+- Restart via sanctioned `restart_tc.ps1` at 21:24:10Z: MainPID 991135→1001863 (python child 991148→1001876), NRestarts=0.
+- Boot-verify (RO): active/running, 0 tracebacks, LIVE mode, config_hash `931a8214be50`, healthz+mace 200 at t+45s, all 5 MACE schedulers online incl. watchdog, every baseline division rewired (bitunix_sfp, Telegram exec alerts, PM live driver ×4 kalshi accounts, M3 snapshot writer, Robinhood PEAD, Robinhood MACE), census + entry_halt byte-identical to baseline, broker session loaded clean at boot (4 accounts discovered/bound; no auth-failure audit rows since restart).
+
+**Inert / dormant on current traffic (if any):**
+- Both guards are dormant until the next (mark-unpriceable + short-ITM-by-spot) manage tick; the next manage window opens 2026-11-19 09:35 ET. First-day watch: list `mace_structural_stop_pending` rows and what the following tick did.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BK=/home/azureuser/mace_b_graft_backup_20261118T212338Z; BASE=/home/azureuser/trading_corp; \
+cp \$BK/trading_corp/mace/strategy.py \$BASE/trading_corp/mace/strategy.py; \
+cp \$BK/trading_corp/mace/manager.py \$BASE/trading_corp/mace/manager.py"
+# then ONE restart (restart_tc.ps1); verify base md5s b30db63f / 0116e860 + config_hash 931a8214be50
+```
+
 ## 2026-07-27 ~12:11 UTC — Kalshi copy dashboard P1+P2 DEPLOYED + VERIFIED LIVE — Selected intel epoch-scoped (completes fix c) + mode-aware header + per-panel scope labels (agent-driven, autonomous under explicit Board authorization; web-only; flat-window restart)
 
 **What & why:** completes S2 fix (c) — fix (c) live-scoped the per-whale panel's *base* columns but the intel merge (`_query_kalshi_whale_intel`) stayed all-time, leaving `Copies/Copy%/Net PnL` all-time next to live-scoped `Resolved/WR%/Realized P&L` on the Selected row (the Sept re-selection sorts by Net PnL → would rank on paper backlog).
