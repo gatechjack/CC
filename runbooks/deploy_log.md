@@ -116,6 +116,48 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-18 22:54 UTC — PM: F1 race-date fix + collapsed-position floor (gate F) + ts→spirit alias DEPLOYED + VERIFIED LIVE; NBA spreads + f1 race_winner enabled by authorized raw-SQL UPDATEs (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** cd3943b6 (ts→spirit alias cherry-pick), b2e7b121 (F1 race-date fix), 6c37b037 (gate F floor), d6e55464 (pvc_graft mode f1floor) on branch `pm-f1fix-floor-2026-11-18` (BASE a698ea2e)
+**Triggered by:** Board task "PM — NBA SPREADS ON · F1 FIX · COLLAPSED-POSITION FLOOR · ROSTER REVIEW — 2026-11-18" (3 UPDATEs + one graft + one restart authorized)
+**Backup tag:** `/home/azureuser/backups/pvc_f1floor_20261118T225326Z/` (3 BASE files, kept)
+
+**Files deployed (3):**
+- `trading_corp/prediction_markets/live_driver.py` — `_f1_race_date_iso` (earliest of expected_expiration/occurrence/close dates), gate-F `_floor_log` + cycle `floor_skips` counter, ts→spirit leg-audit alias (staged since 10-09)
+- `trading_corp/prediction_markets/execution.py` — gate F: `FLOOR_RATIO=0.25`, `skip:floor`/`skip:floor_unpriced` after gate C (entries only, fee-excluded basis, strict boundary, fail-closed unpriced)
+- `trading_corp/data/f1_poly_kalshi_match.py` — docstring corrections only (join-date account updated to the derived race date)
+
+**Features shipped:**
+- F1 LASV26 date-join FIXED: race index keys on the race date (2026-11-22), not close_time (2026-11-29 = +7d settlement buffer). Verified offline vs the live 21-driver KXF1RACE-LASV26 field: 42/42 slug probes match; old rule out_of_window on the same data.
+- Gate F (collapsed-position floor): blocks an ENTRY priced strictly below 0.25× the whale's entry (backtest: ratio<0.25 is 0-for-22 lifetime, −$8.86). Log-only observability (rate-limited `gate-F FLOOR skip` WARNING + cycle-summary `floor_skips`); NO heartbeat column (migration ruled out).
+- Raw-SQL enables (Board-authorized, read per cycle, no restart needed): `pm_subdivision.market_types` → 'moneyline,spread' for kalshi_jack/nba + kalshi_karen/nba (21:50:05Z); → 'moneyline,total,spread,race_winner' for kalshi_jack/f1 (22:55:32Z, post-deploy).
+- First NBA spread fills same hour as the enable: orders 10687 (DAL6 10×0.47) + 10688 (DET8 12×0.39), leg audits clean vs matcher rule AND the operator's mapping doc.
+
+**Notable code changes:**
+- Gate F is ALWAYS ON (code constant, no config column). `skip:floor_unpriced` fail-closes a missing whale price even with gate C disabled — the chase test `test_gate_inert_when_both_forms_disabled` was amended accordingly (dated comment in the test).
+- `fetch_f1_market_context`'s dict key `close_date_iso` now carries the derived RACE date (key name historical).
+
+**Verification:**
+- Full pytest on the box (BASE a698ea2e tree vs HEAD tree, scratch copies, `-p no:pytest_ethereum`): FAILED/ERROR sets byte-identical (177 ids each; diff empty) — zero new failures. New test files green (test_f1_race_date_join_2026_11_18.py, test_floor_gate_2026_11_18.py 7/7, test_cs2_ts_alias).
+- Graft gates: stage==TARGET, drift==BASE, live==TARGET (sha256-16), py_compile + import closure (asserts FLOOR_RATIO, LASV26-shape race date, ts→spirit alias).
+- Restart 22:53:56Z: MainPID 1001863→1006485; boot-reconcile ×4 reconciled=True, no latch; arm census identical (93 rows: global armed, jack 26 armed, karen/marc/trey 22 latched each); MACE+PEAD+PMCC+bitunix online; 0 tracebacks, 0 410s; heartbeats re-beating all accounts; jack/f1 evaluating with race_winner live (153 signals, 0 placed — no whale holds an open F1 winner).
+
+**Inert / dormant on current traffic:**
+- Gate F: no live collapsed entry exists tonight (all candidates price ≳0.75× whale) — proven by box unit tests + import-closure assert; first live `gate-F FLOOR skip` line will appear when a collapsed copy shows up.
+- f1 race_winner: live but no F1 signals exist (attached whales hold zero open F1 positions as of 22:08Z scan). If a whale enters a Vegas winner before Sat, the full pipeline (parse→date-join→driver-bind→gates) is live.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "
+BK=/home/azureuser/backups/pvc_f1floor_20261118T225326Z; BASE=/home/azureuser/trading_corp; \
+cp \$BK/live_driver.py \$BASE/trading_corp/prediction_markets/live_driver.py; \
+cp \$BK/execution.py \$BASE/trading_corp/prediction_markets/execution.py; \
+cp \$BK/f1_poly_kalshi_match.py \$BASE/trading_corp/data/f1_poly_kalshi_match.py"
+# then one engine restart (restart_tc.ps1); market_types UPDATEs revert by the inverse UPDATE statements.
+```
+
+---
+
 ## 2026-11-18 21:24 UTC — MACE stop-logic guards (Part B: spot-validity + one-tick structural confirmation) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
 
 **Commits:** `28e0ce31` (B1 spot-validity guard), `b13eabb4` (B2 one-tick structural confirmation) on branch `mace-stop-relogin-2026-11-17` off prod-live `13725707`. NOT yet folded to prod-live — push reserved for the Board.
