@@ -1,7 +1,7 @@
-echo "=== PVC GRAFT mode=$MODE : v2 (2 files) or v2+chase (6 files) -- drift-gated, rollback-all ==="
+echo "=== PVC GRAFT mode=$MODE : v2 (2 files) / v2chase (6 files) / f1floor (3 files) -- drift-gated, rollback-all ==="
 date -u +%FT%TZ
 set -u
-case "${MODE:-}" in v2|v2chase) ;; *) echo "ABORT: MODE must be v2 or v2chase (got '${MODE:-}')"; exit 1;; esac
+case "${MODE:-}" in v2|v2chase|f1floor) ;; *) echo "ABORT: MODE must be v2, v2chase or f1floor (got '${MODE:-}')"; exit 1;; esac
 ROOT=/home/azureuser/trading_corp
 STAGE=/home/azureuser/pvc_graft_stage
 TGZ=/home/azureuser/pvc_graft.tgz
@@ -29,6 +29,25 @@ tgt_of() { case "$1" in
 esac; }
 if [ "$MODE" = "v2chase" ]; then
   FILES="$FILES trading_corp/prediction_markets/execution.py trading_corp/prediction_markets/live_driver.py trading_corp/prediction_markets/heartbeat.py trading_corp/prediction_markets/db.py"
+fi
+
+# ── mode f1floor (2026-11-18): the ts-alias + F1 race-date fix + collapsed-position floor deploy ──────────
+# EXACTLY the 3 src files branch pm-f1fix-floor-2026-11-18 touches vs its BASE a698ea2e (= prod-live after
+# MACE's 2026-11-18 deploy; PM files there == the 2026-11-17 v2chase TARGET -- live_driver BASE below IS the
+# old mode's TARGET sha). Own stage tarball so the applied v2chase stage artifacts stay untouched.
+if [ "$MODE" = "f1floor" ]; then
+  FILES="trading_corp/prediction_markets/live_driver.py trading_corp/prediction_markets/execution.py trading_corp/data/f1_poly_kalshi_match.py"
+  TGZ=/home/azureuser/pvc_graft_f1floor.tgz
+  base_of() { case "$1" in
+    */live_driver.py) echo 69dc1040abe53bc9;;
+    */execution.py) echo b4f75cc64793c3fb;;
+    */f1_poly_kalshi_match.py) echo 0ba763f880b48417;;
+  esac; }
+  tgt_of() { case "$1" in
+    */live_driver.py) echo 8f82529dcd31a669;;
+    */execution.py) echo 170ba94af6a55261;;
+    */f1_poly_kalshi_match.py) echo 784962d3c705a0aa;;
+  esac; }
 fi
 
 echo "--- [0] df pre-guard ---"
@@ -87,6 +106,20 @@ done
 echo "--- [6] py_compile + import closure (venv) ---"
 PYV=$ROOT/venv/bin/python
 "$PYV" -m py_compile $(for f in $FILES; do echo "$ROOT/$f"; done) || { echo "py_compile FAILED"; rollback; exit 9; }
+if [ "$MODE" = "f1floor" ]; then
+  cd "$ROOT" && PYTHONPATH=. "$PYV" -c "
+import trading_corp.prediction_markets.execution as E
+import trading_corp.prediction_markets.live_driver as LD
+import trading_corp.data.f1_poly_kalshi_match as F1X
+assert E.FLOOR_RATIO == 0.25 and callable(LD._f1_race_date_iso) and callable(LD._floor_log)
+from types import SimpleNamespace as NS
+assert LD._f1_race_date_iso(NS(close_time='2026-11-29T10:00:00Z',
+    expected_expiration_time='2026-11-22T10:00:00Z', occurrence_datetime='2026-11-22T10:00:00Z')) == '2026-11-22'
+assert LD._LEG_AUDIT_CODE_ALIASES.get('ts') == 'spirit', 'ts->spirit alias MISSING'
+print('import closure OK; FLOOR_RATIO', E.FLOOR_RATIO,
+      '; f1 race-date helper LASV26-shape OK; ts->spirit alias present')
+" || { echo "import closure FAILED"; rollback; exit 10; }
+else
 cd "$ROOT" && PYTHONPATH=. "$PYV" -c "
 import trading_corp.data.polymarket_data_api_client as m
 import trading_corp.prediction_markets.loss_grounding
@@ -97,6 +130,7 @@ import trading_corp.prediction_markets.db as D
 print('import closure OK;', m._DATA_API_V2, '; schema head', D.SCHEMA_HEAD,
       '; chase defaults', E.CONFIG_DEFAULTS.get('max_chase_cents'), E.CONFIG_DEFAULTS.get('chase_upside_pct'))
 " || { echo "import closure FAILED"; rollback; exit 10; }
+fi
 
 echo ""
 echo "=== GRAFT ($MODE) APPLIED + VERIFIED. Backup: $BK (kept). ==="
