@@ -606,7 +606,15 @@ class MaceManager:
                 except Exception:  # noqa: BLE001 — a quote miss must not sink the drive
                     chk_mark = None
                 chk_spot = await self._spot(rung.symbol)
-                if not st.stop_triggered(rung, chk_mark, chk_spot, self.cfg.management):
+                # 2026-11-17: NO-INFORMATION inputs (mark None AND no valid spot, e.g. the
+                # 11-16 dying-session spot=0.0) can neither validate nor invalidate the stop.
+                # Without this, the spot-validity guard in stop_triggered would read garbage as
+                # "stop no longer valid" and REOPEN a genuinely stopped rung mid-outage. Skip the
+                # self-heal (keep the existing redrive/park path); reopen only on real quotes.
+                has_info = (chk_mark is not None
+                            or (chk_spot is not None and chk_spot > 0))
+                if has_info and not st.stop_triggered(rung, chk_mark, chk_spot,
+                                                      self.cfg.management):
                     working = await self.executor._working_exit_order(rid)
                     if working is None and self.store.reopen_from_closing(rid):
                         self._audit("mace_closing_reopen", rung_id=rid, reason=reason,

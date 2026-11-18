@@ -828,13 +828,18 @@ def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
     dead -> stop_mark ~ short mids alone >= 2x credit -> SPURIOUS stop -> unfillable -> reject loop;
     live case XLE 57.5/56.5P 67/68C @ spot 64.77). The dead-wing fallback here canNOT fire on that
     case (both shorts OTM -> neither short ITM), yet still fires a GENUINE dead-wing stop (a short
-    ITM). credit None -> no stop (unsizable)."""
+    ITM). credit None -> no stop (unsizable).
+
+    2026-11-17 spot-validity guard: a spot that is missing, ZERO or NEGATIVE is a data failure,
+    not a price (2026-11-16: a dying session returned spot 0.0, which made every short put read
+    ITM and false-stopped five rungs). An invalid spot must NEVER satisfy the structural test:
+    the rung holds, and the tick already counts as unpriced (mark is None on this branch)."""
     if rung.credit_actual is None:
         return False
     if mark is not None:
         return mark >= m.stop_multiple * rung.credit_actual
     # Plain mark unpriceable (dead/one-sided wing): structural risk only -- a SHORT ITM.
-    if spot is not None and rung.spec is not None:
+    if spot is not None and spot > 0 and rung.spec is not None:
         return spot >= rung.spec.short_call or spot <= rung.spec.short_put
     return False
 
