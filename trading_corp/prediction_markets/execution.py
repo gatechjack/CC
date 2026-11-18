@@ -679,6 +679,17 @@ MATCHER_ADAPTERS["f1"] = (_f1_parse, _f1_match)
 MATCHER_ADAPTERS["itf"] = (_itf_parse, _itf_match)
 
 
+# ── gate F (collapsed-position floor) threshold ────────────────────────────────────────────────────────────────
+# Block an ENTRY whose price has COLLAPSED below FLOOR_RATIO x the whale's entry price (strictly below; equality
+# passes). Evidence (2026-11-18 bucket study over the chase-study backtest set, 3,681 priced fills, M4 cut
+# 2026-10-16): the ratio<0.25 bucket is 0-for-22 LIFETIME -- train 0/20 (-$8.57), holdout 0/2 (-$0.29) -- while
+# every bucket >= 0.25 has a nonzero win rate. A copy at <1/4 of the whale's own entry is the market pricing the
+# claim (near-)dead: the whale's edge is stale and we are buying a falling knife into settlement (worst case:
+# order 10663, EMU-WMU Under filled at 0.01 vs whale 0.64 -> settled 0.0). ALWAYS ON: a code constant by design
+# (no pm_subdivision column, no migration) -- the rule is category-independent and the evidence is zero wins.
+FLOOR_RATIO = 0.25
+
+
 def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Journal, conn, now_ts: int,
              *, shard_balances=None, venue_exposure=None, legacy_db_path=None) -> Decision:
     """One copy signal through the gates in order. DRY-RUN: COMPUTES the exact V2 body if gates pass and RECORDS
@@ -906,6 +917,32 @@ def evaluate(signal: CopySignal, sub: SubConfig, ctx: MarketContext, journal: Jo
                                 count=count, is_exit=False, disarm_armed=armed,
                                 reason="chase_%.4f=ask_%.4f+fee_%.4f-whale_%.4f gt_%.0f%%_of_upside_%.4f"
                                        % (chase, base_price, fee, w, sub.chase_upside_pct, 1.0 - w))
+
+    # ── gate F (COLLAPSED-POSITION FLOOR, 2026-11-18): never copy an entry priced < FLOOR_RATIO x the whale ────
+    #   ratio = ours / whale_avg_price, ours = base_price (the SAME leg-correct ask gate C prices against; the
+    #   SAME whale_avg_price basis). FEE EXCLUDED deliberately: the evidence buckets are fill/whale (fee-free),
+    #   and excluding the fee LOWERS `ours` -> blocks MORE -> the fail-closed direction for a too-CHEAP gate
+    #   (gate C's fee-inclusion fail-closes the opposite, too-EXPENSIVE direction). STRICT boundary: blocks
+    #   ours < 0.25*whale; exact equality PASSES. ENTRY-only like gate C: a reduce_only exit must never be
+    #   blocked (the Cubs stranded-position class), and the settlement-close path never calls evaluate. A
+    #   missing/out-of-band whale price FAILS CLOSED loudly exactly like gate C -- with the chase gate at its
+    #   defaults gate C's own skip:chase_unpriced fires first; this self-check keeps the floor fail-closed even
+    #   when an operator disables the chase gate. EVALUATED LAST like gate C: a floor skip writes NO order row,
+    #   consumes NO budget, journals NO coid, never latches -- the signal re-evaluates next cycle. Observability
+    #   is LOG-ONLY + the cycle-summary counter (floor_skips): pm_driver_heartbeat has no fitting column and a
+    #   new one would need a migration (ruled out for this build) -- see the driver's rate-limited _floor_log.
+    if not signal.is_exit:
+        wf = signal.whale_avg_price
+        if wf is None or not (0.0 < float(wf) < 1.0):
+            return Decision("skip:floor_unpriced", sid, market_type=match.market_type, kalshi_ticker=ticker,
+                            leg=leg, count=count, is_exit=False, disarm_armed=armed,
+                            reason="whale_avg_price_missing_or_out_of_band(%r)_fail_closed" % (wf,))
+        wf = float(wf)
+        if base_price < FLOOR_RATIO * wf - 1e-9:
+            return Decision("skip:floor", sid, market_type=match.market_type, kalshi_ticker=ticker, leg=leg,
+                            count=count, is_exit=False, disarm_armed=armed,
+                            reason="floor_%.3f=ours_%.4f/whale_%.4f lt_%.2f"
+                                   % (base_price / wf, base_price, wf, FLOOR_RATIO))
 
     # all gates pass -> COMPUTE the exact V2 body (gate 7 slippage clamped INSIDE build_v2_event_order). DRY-RUN:
     # log-not-place; an exit is reduce_only (is_buy=False on the SAME leg).

@@ -1047,6 +1047,26 @@ def _chase_log(log, account_id, category, decision, n_so_far, now_ts) -> None:
                 decision.reason, _CHASE_LOG_INTERVAL_SEC)
 
 
+# ── gate-F (collapsed-position floor) skip visibility -- LOG-ONLY by design (2026-11-18) ───────────────
+# Same trap as gate C (a pre-submit skip writes NO order row), same two-trace answer MINUS the heartbeat
+# column: pm_driver_heartbeat has no fitting column and adding one needs a migration (ruled out for this
+# build), so the per-cycle count rides ONLY the cycle-summary dict (`floor_skips`, printed in the cycle INFO
+# line when placed>0/errors>0) + this rate-limited warning. Mirrors _chase_log exactly, separate window state.
+_FLOOR_LOG_INTERVAL_SEC = 60
+_floor_log_last: dict = {}            # (account_id, category) -> last log monotonic-ish ts
+
+
+def _floor_log(log, account_id, category, decision, n_so_far, now_ts) -> None:
+    key = (account_id, category)
+    if now_ts - _floor_log_last.get(key, 0) < _FLOOR_LOG_INTERVAL_SEC:
+        return
+    _floor_log_last[key] = now_ts
+    log.warning("pm_live_driver: gate-F FLOOR skip %s/%s (%d this cycle so far) -- %s (%s x%s): %s "
+                "[rate-limited %ss; log-only -- no heartbeat column, see the cycle summary floor_skips]",
+                account_id, category, n_so_far, decision.kalshi_ticker, decision.leg, decision.count,
+                decision.reason, _FLOOR_LOG_INTERVAL_SEC)
+
+
 # ── the ASYNC arm-gated cycle (async twin of run_arm_gated_cycle; reuses evaluate + read_arm_verdict) ──
 async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, place_fn, shard_balances=None,
                                    venue_exposure=None, legacy_db_path=None, log=None):
@@ -1060,6 +1080,7 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
     signals = list(signals)
     n_would = n_skip = n_reject = placed = disarm_blocked = errors = n_shard_underfunded = 0
     n_chase_skipped = 0
+    n_floor_skipped = 0
     consec_err = 0
     ceiling_latched = False
     for s in signals:
@@ -1085,6 +1106,9 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
                 elif d.status in ("skip:chase", "skip:chase_unpriced"):          # gate C: counted + rate-limited log
                     n_chase_skipped += 1
                     _chase_log(log, sub.account_id, sub.category, d, n_chase_skipped, int(now_ts))
+                elif d.status in ("skip:floor", "skip:floor_unpriced"):          # gate F: counted + rate-limited log
+                    n_floor_skipped += 1                                         # (LOG-ONLY: no heartbeat column)
+                    _floor_log(log, sub.account_id, sub.category, d, n_floor_skipped, int(now_ts))
             else:
                 n_reject += 1
                 # ★ R7.d: the 4TH latching trigger, WIRED HERE. It was DEAD CODE -- arm.latch_count_ceiling
@@ -1145,7 +1169,8 @@ async def run_live_arm_gated_cycle(conn, sub, signals, ctx, journal, now_ts, *, 
     return {"account_id": sub.account_id, "category": sub.category, "n_signals": len(signals),
             "n_would_place": n_would, "placed": placed, "n_disarm_blocked": disarm_blocked, "errors": errors,
             "n_skip": n_skip, "n_reject": n_reject, "n_shard_underfunded": n_shard_underfunded,
-            "posts_sent": placed, "ceiling_latched": ceiling_latched, "chase_skips": n_chase_skipped}
+            "posts_sent": placed, "ceiling_latched": ceiling_latched, "chase_skips": n_chase_skipped,
+            "floor_skips": n_floor_skipped}
 
 
 # ── boot-reconcile against the AUTHENTICATED portfolio (async fetch -> sync reconcile with a lambda) ────

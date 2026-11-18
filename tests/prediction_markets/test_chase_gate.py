@@ -410,12 +410,15 @@ def test_missing_whale_price_fails_closed_loudly():
 
 
 def test_gate_inert_when_both_forms_disabled():
-    # both thresholds <= 0 -> the gate is OFF: a 30c chase AND a missing whale price both pass through
+    # both thresholds <= 0 -> gate C is OFF: a 30c chase passes through. ★ AMENDED 2026-11-18: the always-on
+    # FLOOR gate (gate F) now fail-closes the MISSING-whale-price entry even with gate C off
+    # (skip:floor_unpriced) -- the unpriced pass-through this test used to assert is deliberately gone
+    # (fail-closed everywhere was the point); see test_floor_gate_2026_11_18.py.
     _, ctx, sub = _itf_ctx_and_sub(max_chase_cents=0.0, chase_upside_pct=0.0)
-    dec, _ = _eval(_itf_sig(whale=0.58), sub, ctx)      # chase = 0.88+0.0073920-0.58 = 0.3073920
+    dec, _ = _eval(_itf_sig(whale=0.58), sub, ctx)      # chase = 0.88+0.0073920-0.58 = 0.3073920; ratio 1.52
     assert dec.status == "dry_run_would_place", dec.status
     dec2, _ = _eval(_itf_sig(whale=None), sub, ctx)
-    assert dec2.status == "dry_run_would_place", dec2.status
+    assert dec2.status == "skip:floor_unpriced", dec2.status
 
 
 def test_relative_form_alone():
