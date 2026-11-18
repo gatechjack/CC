@@ -57,7 +57,11 @@ entry:
                                         # (SKIP_RESERVE), so 25 cannot over-deploy absent capital.
                                         # Removes max_rungs as the binding limit so the engine
                                         # deploys available capital fast and scales with equity.
-  stop_cooldown_sessions: 2
+  stop_cooldown_sessions: 0             # 2026-11-18 Jack ruling: post-stop cooldown OFF — a past
+                                        # stop must never block a new entry (defined-risk condors;
+                                        # IVR/credit-floor/blackout/deploy-cap still gate). 0 fully
+                                        # disables incl. the stop's own day (since<0 never true;
+                                        # validator floor is 0). Was 2; set back to 2 to revert.
   ibit_overflow_cap: 6                  # vestigial at 3-active (IBIT is a primary now; no
                                         # overflow_only receiver exists) — key retained
                                         # because the validator requires it

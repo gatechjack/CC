@@ -138,8 +138,13 @@ def test_weekly_budget_refill():
 
 
 def test_cooldown_skip_recent_stop():
+    # Pinned to an explicit cooldown=2 config: the shipped value is 0 as of the
+    # 2026-11-18 ruling (cooldown OFF), but the gate must still work when on.
+    from dataclasses import replace
+    cfg2 = replace(CFG, entry=replace(CFG.entry, stop_cooldown_sessions=2))
     rungs = [rung(status="closed", exit_ts="2026-08-11T20:00:00+00:00", exit_reason="stop")]
-    assert _eval(iv=ivr(30.0), rungs=rungs).skip_reason == SKIP_COOLDOWN
+    r = st.evaluate_entry("SPY", cfg2, ctx(iv=ivr(30.0), rungs=rungs))
+    assert r.skip_reason == SKIP_COOLDOWN
 
 
 def test_cooldown_clears_after_window():
