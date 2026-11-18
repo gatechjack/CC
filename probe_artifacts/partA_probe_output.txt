@@ -1,0 +1,568 @@
+=== PART A PROBE: today's trading (RO) ===
+2026-11-18T01:25:16Z
+
+--- [0] engine now ---
+ 991135    04:17:15 /bin/sh /usr/bin/xvfb-run --auto-servernum --server-args=-screen 0 1280x800x24 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+ 991148    04:17:12 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+Nov 17 21:08:01 tc-prod-vm systemd[1]: Started Trading Corp - multi-agent trading bot.
+Nov 17 21:08:07 tc-prod-vm xvfb-run[991148]:   taken in LIVE mode. The system DEFAULTS to PAPER mode on every startup.
+Nov 17 21:08:12 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:12,071 INFO trading_corp.agents.logger: [audit] system/startup {"mode": "LIVE", "live_brokers": ["bitunix", "robinhood", "kalshi"], "dry_run": false, "live_authorization": "env_authorized"}
+Nov 17 21:08:13 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:13,307 INFO trading_corp.main: BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True, execution_mode=live
+Nov 17 21:08:13 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:13,604 INFO trading_corp.agents.data_exec: Registered robinhood broker for division=robinhood_mace (paper=False)
+Nov 17 21:08:14 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:14,010 INFO trading_corp.main: bitunix_sfp observer wired: symbols=['BTC/USDT.P', 'ETH/USDT.P', 'SOL/USDT.P', 'XRP/USDT.P'] execution_mode=live auto_execute=True mode_b=True symbol_modes={'BTCUSDT': ('3m', 'trading'), 'ETHUSDT': ('3m', 'trading'), 'SOLUSDT': ('3m', 'trading'), 'XRPUSDT': ('3m', 'trading')}
+Nov 17 21:08:14 tc-prod-vm xvfb-run[991148]: Starting login process...
+Nov 17 21:08:19 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:19,474 ERROR trading_corp.agents.data_exec: Broker connect failed for division=fidelity_401k broker=paper-exec: Fidelity shared session bootstrap previously failed: BrowserType.launch: ENOENT: no such file or directory, stat '/home/azureuser/.cache/ms-playwright/firefox-1511/firefox/lock'. Restart the process to retry.
+Nov 17 21:08:19 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:19,475 INFO trading_corp.agents.logger: [audit] data_exec/broker_fallback_to_paper {"division": "fidelity_401k", "error": "Fidelity shared session bootstrap previously failed: BrowserType.launch: ENOENT: no such file or directory, stat '/home/azureuser/.cache/ms-playwright/firefo...
+Nov 17 21:08:33 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:33,529 INFO telegram.ext.Application: Application started
+Nov 17 21:08:33 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:33,620 INFO trading_corp.agents.data_exec: broker-connect-retry loop started (0 degraded live division(s) at boot: none)
+Nov 17 21:08:37 tc-prod-vm xvfb-run[991148]: 2026-11-17 21:08:37,076 INFO trading_corp.agents.pmcc_approval_reconciler: pmcc approval reconcile loop starting (interval=300s grace=90min canary=180min)
+
+--- [1] manage heartbeat + schema ---
+entry_halt|{"halted":false,"ts":"2026-09-18T18:18:06+00:00","source":"dashboard_button"}|2026-09-18T18:18:06.933262+00:00
+manage_tick_heartbeat|{"last_tick_ts": "2026-11-17T20:57:44+00:00", "last_marked_ok_ts": "2026-11-17T20:57:44+00:00", "open_count": 12, "marked_ok": 12}|2026-11-17T20:57:44+00:00
+CREATE TABLE mace_rung (
+    rung_id         TEXT PRIMARY KEY,            -- mace-{sym}-{expiry}-{strikes}-{yyyymmdd}; deterministic — reconcile matches on it
+    symbol          TEXT NOT NULL,
+    status          TEXT NOT NULL,               -- submitting|open|closing|closed|abandoned
+    expiry          TEXT NOT NULL,               -- ISO date
+    legs_json       TEXT NOT NULL,               -- 4 legs: type/strike/side/effect/option_id/fill_price
+    width_dollars   REAL NOT NULL,
+    contracts       INTEGER NOT NULL,
+    credit_actual   REAL,                        -- net credit received at entry (per-contract $)
+    max_risk_usd    REAL,
+    entry_ts        TEXT,                        -- ISO-8601 UTC
+    entry_order_id  TEXT,
+    pt_order_id     TEXT,                        -- resting GTC buy-to-close (T9 synthetic id when GTC unproven)
+    pt_debit        REAL,
+    exit_ts         TEXT,
+    exit_reason     TEXT,                        -- pt|stop|time|exdiv|gap|manual
+    exit_debit      REAL,
+    realized_pnl    REAL,                        -- (credit - exit_debit)*100*contracts
+    entry_iso_week  TEXT,                        -- e.g. '2026-W33' — weekly-budget derivation
+    extra_json      TEXT
+, entry_atm_iv REAL);
+CREATE INDEX ix_mace_rung_symbol_status ON mace_rung(symbol, status);
+CREATE INDEX ix_mace_rung_symbol_week ON mace_rung(symbol, entry_iso_week);
+CREATE INDEX ix_mace_rung_status ON mace_rung(status);
+CREATE INDEX ix_mace_rung_exit ON mace_rung(exit_reason, exit_ts);
+
+--- [2] census ---
+abandoned|3
+closed|51
+open|12
+       rung_id = mace-GDX-2026-10-02-88.5-83.5-115-120-20260820
+        symbol = GDX
+        status = abandoned
+        expiry = 2026-10-02
+     legs_json = [{"type": "put", "strike": 88.5, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 83.5, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 115.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 120.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 5.0
+     contracts = 1
+ credit_actual = 
+  max_risk_usd = 335.5
+      entry_ts = 2026-08-21T04:06:04+00:00
+entry_order_id = 
+   pt_order_id = 
+      pt_debit = 
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W34
+    extra_json = {"abandon_detail":"P1-deploy off-hours catch-up phantom (23:45 ET restart, DB-locked, RH-confirmed no order/no fill); operator-cleared 2026-08-21"}
+  entry_atm_iv = 
+
+       rung_id = mace-GDX-2026-12-18-76-74-99-101-20261105
+        symbol = GDX
+        status = open
+        expiry = 2026-12-18
+     legs_json = [{"type": "put", "strike": 76.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 74.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 99.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 101.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 2.0
+     contracts = 2
+ credit_actual = 0.65
+  max_risk_usd = 270.0
+      entry_ts = 2026-11-05T20:48:42+00:00
+entry_order_id = 6aeceba9-43d0-44a4-a0a9-de7a86ba210e
+   pt_order_id = 
+      pt_debit = 0.33
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W45
+    extra_json = 
+  entry_atm_iv = 0.476120526
+
+       rung_id = mace-GDX-2026-12-18-78-77-102-103-20261106
+        symbol = GDX
+        status = open
+        expiry = 2026-12-18
+     legs_json = [{"type": "put", "strike": 78.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 77.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 102.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 103.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 1.0
+     contracts = 2
+ credit_actual = 0.31
+  max_risk_usd = 138.0
+      entry_ts = 2026-11-06T20:47:25+00:00
+entry_order_id = 6aee3cdc-d906-48d3-9488-5ddb6a02c845
+   pt_order_id = 
+      pt_debit = 0.16
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W45
+    extra_json = 
+  entry_atm_iv = 0.461950803
+
+       rung_id = mace-IWM-2026-12-18-262-259-297-300-20261103
+        symbol = IWM
+        status = open
+        expiry = 2026-12-18
+     legs_json = [{"type": "put", "strike": 262.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 259.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 297.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 300.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 3.0
+     contracts = 2
+ credit_actual = 0.94
+  max_risk_usd = 412.0
+      entry_ts = 2026-11-03T20:48:48+00:00
+entry_order_id = 6aea48ad-587b-458d-9536-585a70c2735f
+   pt_order_id = 
+      pt_debit = 0.47
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W45
+    extra_json = 
+  entry_atm_iv = 0.243869776
+
+       rung_id = mace-IWM-2026-12-18-250-247-289-292-20261105
+        symbol = IWM
+        status = open
+        expiry = 2026-12-18
+     legs_json = [{"type": "put", "strike": 250.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 247.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 289.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 292.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 3.0
+     contracts = 1
+ credit_actual = 0.96
+  max_risk_usd = 204.0
+      entry_ts = 2026-11-05T20:48:18+00:00
+entry_order_id = 6aeceb90-f036-49ee-9fd1-6b5dada94bd0
+   pt_order_id = 
+      pt_debit = 0.48
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W45
+    extra_json = 
+  entry_atm_iv = 0.285048207
+
+       rung_id = mace-IWM-2026-12-24-263-260-293-296-20261112
+        symbol = IWM
+        status = open
+        expiry = 2026-12-24
+     legs_json = [{"type": "put", "strike": 263.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 260.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 293.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 296.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 3.0
+     contracts = 1
+ credit_actual = 0.91
+  max_risk_usd = 209.0
+      entry_ts = 2026-11-12T20:47:55+00:00
+entry_order_id = 6af625f8-3e80-48d8-8882-6ad7a4246244
+   pt_order_id = 
+      pt_debit = 0.46
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W46
+    extra_json = 
+  entry_atm_iv = 0.215444247
+
+       rung_id = mace-SPY-2026-10-02-737-734-797-800-20260819
+        symbol = SPY
+        status = abandoned
+        expiry = 2026-10-02
+     legs_json = [{"type": "put", "strike": 737.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 734.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 797.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 800.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 3.0
+     contracts = 1
+ credit_actual = 0.93
+  max_risk_usd = 202.5
+      entry_ts = 2026-08-19T19:45:59+00:00
+entry_order_id = 
+   pt_order_id = 
+      pt_debit = 
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W34
+    extra_json = {"abandon_detail":"8/19 position_effect collision reject phantom; operator-cleared pre-P1-deploy 2026-08-20"}
+  entry_atm_iv = 
+
+       rung_id = mace-SPY-2026-10-02-729-726-791-794-20260820
+        symbol = SPY
+        status = abandoned
+        expiry = 2026-10-02
+     legs_json = [{"type": "put", "strike": 729.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 726.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 791.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 794.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 3.0
+     contracts = 1
+ credit_actual = 
+  max_risk_usd = 204.0
+      entry_ts = 2026-08-21T04:06:49+00:00
+entry_order_id = 
+   pt_order_id = 
+      pt_debit = 
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W34
+    extra_json = {"abandon_detail":"P1-deploy off-hours catch-up phantom (23:45 ET restart, DB-locked, RH-confirmed no order/no fill); operator-cleared 2026-08-21"}
+  entry_atm_iv = 
+
+       rung_id = mace-SPY-2026-12-11-715-710-787-792-20261030
+        symbol = SPY
+        status = open
+        expiry = 2026-12-11
+     legs_json = [{"type": "put", "strike": 715.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 710.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 787.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 792.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 5.0
+     contracts = 2
+ credit_actual = 1.61
+  max_risk_usd = 678.0
+      entry_ts = 2026-10-30T19:46:29+00:00
+entry_order_id = 6ae4f405-6d5c-4d01-ad1f-5b37f8fbe6e6
+   pt_order_id = 
+      pt_debit = 0.81
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W44
+    extra_json = 
+  entry_atm_iv = 0.201850068
+
+       rung_id = mace-SPY-2026-12-11-715-710-786-791-20261102
+        symbol = SPY
+        status = open
+        expiry = 2026-12-11
+     legs_json = [{"type": "put", "strike": 715.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 710.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 786.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 791.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 5.0
+     contracts = 2
+ credit_actual = 1.59
+  max_risk_usd = 682.0
+      entry_ts = 2026-11-02T20:47:29+00:00
+entry_order_id = 6ae8f6de-0c88-49cd-aa9c-12f3ceae2a83
+   pt_order_id = 
+      pt_debit = 0.8
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W45
+    extra_json = 
+  entry_atm_iv = 0.200982708
+
+       rung_id = mace-SPY-2026-12-18-713-710-790-793-20261103
+        symbol = SPY
+        status = open
+        expiry = 2026-12-18
+     legs_json = [{"type": "put", "strike": 713.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 710.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 790.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 793.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 3.0
+     contracts = 2
+ credit_actual = 0.95
+  max_risk_usd = 410.0
+      entry_ts = 2026-11-03T20:48:03+00:00
+entry_order_id = 6aea4881-8ef1-40d3-940c-e830aad19d3f
+   pt_order_id = 
+      pt_debit = 0.48
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W45
+    extra_json = 
+  entry_atm_iv = 0.201540599
+
+       rung_id = mace-SPY-2026-12-18-685-680-773-778-20261105
+        symbol = SPY
+        status = open
+        expiry = 2026-12-18
+     legs_json = [{"type": "put", "strike": 685.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 680.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 773.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 778.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 5.0
+     contracts = 1
+ credit_actual = 1.66
+  max_risk_usd = 334.0
+      entry_ts = 2026-11-05T20:46:53+00:00
+entry_order_id = 6aeceb3a-536e-4699-bfa1-3918ab768353
+   pt_order_id = 
+      pt_debit = 0.83
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W45
+    extra_json = 
+  entry_atm_iv = 0.248742092
+
+       rung_id = mace-SPY-2026-12-18-685-680-773-778-20261106
+        symbol = SPY
+        status = open
+        expiry = 2026-12-18
+     legs_json = [{"type": "put", "strike": 685.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 680.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 773.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 778.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 5.0
+     contracts = 1
+ credit_actual = 1.61
+  max_risk_usd = 339.0
+      entry_ts = 2026-11-06T20:47:01+00:00
+entry_order_id = 6aee3cc3-f460-40cd-9ff3-d87e7a82aff9
+   pt_order_id = 
+      pt_debit = 0.81
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W45
+    extra_json = 
+  entry_atm_iv = 0.231435186
+
+       rung_id = mace-SPY-2026-12-24-725-720-790-795-20261111
+        symbol = SPY
+        status = open
+        expiry = 2026-12-24
+     legs_json = [{"type": "put", "strike": 725.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 720.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 790.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 795.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 5.0
+     contracts = 1
+ credit_actual = 1.51
+  max_risk_usd = 349.0
+      entry_ts = 2026-11-11T20:48:51+00:00
+entry_order_id = 6af4d4b1-3ec2-4607-af90-855feb565637
+   pt_order_id = 
+      pt_debit = 0.76
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W46
+    extra_json = 
+  entry_atm_iv = 0.170063407
+
+       rung_id = mace-SPY-2026-12-24-729-726-782-785-20261112
+        symbol = SPY
+        status = open
+        expiry = 2026-12-24
+     legs_json = [{"type": "put", "strike": 729.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 726.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 782.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 785.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 3.0
+     contracts = 2
+ credit_actual = 1.2
+  max_risk_usd = 360.0
+      entry_ts = 2026-11-12T20:46:49+00:00
+entry_order_id = 6af625b7-0bbd-490d-ab29-2db34c0177de
+   pt_order_id = 
+      pt_debit = 0.6
+       exit_ts = 
+   exit_reason = 
+    exit_debit = 
+  realized_pnl = 
+entry_iso_week = 2026-W46
+    extra_json = 
+  entry_atm_iv = 0.182108876
+
+--- [3] live marks/spots (last tick written) ---
+mace-GDX-2026-10-02-91-86-120-125-20260821|GDX|1.05|96.64|2026-09-11T19:33:57+00:00
+mace-GDX-2026-10-02-91.5-86.5-120-125-20260824|GDX|1.105|96.64|2026-09-11T19:34:35+00:00
+mace-GDX-2026-10-16-85-83-111-113-20260901|GDX|0.315|96.99|2026-09-22T18:00:42+00:00
+mace-GDX-2026-10-16-91-89-118-120-20260903|GDX|0.815|92.91|2026-09-25T19:44:59+00:00
+mace-GDX-2026-11-06-85-80-105-110-20260925|GDX||79.52|2026-10-23T14:32:00+00:00
+mace-GDX-2026-11-20-81-79-102-104-20261009|GDX||78.32|2026-10-30T13:39:17+00:00
+mace-GDX-2026-12-18-76-74-99-101-20261105|GDX|0.665|79.35|2026-11-17T20:55:35+00:00
+mace-GDX-2026-12-18-78-77-102-103-20261106|GDX|0.55|79.35|2026-11-17T20:56:43+00:00
+mace-IBIT-2026-12-11-39-38-48.5-49.5-20261030|IBIT|0.635|36.9|2026-11-16T14:40:55+00:00
+mace-IWM-2026-11-06-264-261-294-297-20260929|IWM|0.425|275.67|2026-10-23T15:16:11+00:00
+mace-IWM-2026-11-06-265-262-296-299-20260928|IWM|0.445|275.7|2026-10-23T15:42:59+00:00
+mace-IWM-2026-11-20-262-259-295-298-20261007|IWM|0.55|278.655|2026-10-30T19:36:02+00:00
+mace-IWM-2026-11-27-254-252-285-287-20261016|IWM|0.6|274.38|2026-11-06T20:39:57+00:00
+mace-IWM-2026-11-27-262-259-290-293-20261020|IWM|0.705|274.38|2026-11-06T20:42:19+00:00
+mace-IWM-2026-12-18-262-259-297-300-20261103|IWM|0.894999999999999|268.775|2026-11-17T20:53:58+00:00
+mace-IWM-2026-12-18-250-247-289-292-20261105|IWM|0.67|268.775|2026-11-17T20:55:08+00:00
+mace-IWM-2026-12-24-263-260-293-296-20261112|IWM|1.08|268.775|2026-11-17T20:57:44+00:00
+mace-SPY-2026-09-25-746-743-807-810-20260813|SPY|0.42|772.755|2026-08-28T13:50:18+00:00
+mace-SPY-2026-09-25-742-739-802-805-20260812|SPY|0.455|772.99|2026-08-28T15:41:51+00:00
+mace-SPY-2026-09-30-740-737-802-805-20260817|SPY|0.44|763.3|2026-09-01T16:19:12+00:00
+mace-SPY-2026-10-02-734-731-797-800-20260818|SPY|0.4|769.76|2026-09-04T19:05:32+00:00
+mace-SPY-2026-10-02-735-732-793-796-20260821|SPY|0.445|765.635|2026-09-11T13:37:11+00:00
+mace-SPY-2026-10-02-735-732-791-794-20260825|SPY|0.46|763.995|2026-09-11T14:44:25+00:00
+mace-SPY-2026-10-02-736-733-792-795-20260826|SPY|0.469999999999999|765.09|2026-09-11T15:08:05+00:00
+mace-SPY-2026-10-16-733-730-792-795-20260902|SPY|0.47|752.21|2026-09-16T19:42:37+00:00
+mace-SPY-2026-10-09-738-735-793-796-20260831|SPY|0.45|762.655|2026-09-17T18:07:19+00:00
+mace-SPY-2026-10-16-727-724-790-793-20260901|SPY|0.61|770.94|2026-09-25T19:41:35+00:00
+mace-SPY-2026-10-23-734-731-796-799-20260908|SPY|0.46|760.92|2026-10-01T17:00:40+00:00
+mace-SPY-2026-10-23-729-726-792-795-20260909|SPY|0.505|769.855|2026-10-02T19:40:46+00:00
+mace-SPY-2026-10-23-729-726-788-791-20260914|SPY|0.679999999999999|769.855|2026-10-02T19:44:22+00:00
+mace-SPY-2026-10-30-730-727-791-794-20260917|SPY|0.96|778.75|2026-10-09T19:43:57+00:00
+mace-SPY-2026-10-30-731-728-790-793-20260918|SPY|1.025|778.75|2026-10-09T19:47:24+00:00
+mace-SPY-2026-10-30-746-743-803-806-20260921|SPY|0.485|778.75|2026-10-09T19:50:52+00:00
+mace-SPY-2026-10-30-739-736-795-798-20260923|SPY|0.78|778.75|2026-10-09T19:54:22+00:00
+mace-SPY-2026-11-06-734-731-795-798-20260928|SPY|0.42|761.9|2026-10-23T14:50:19+00:00
+mace-SPY-2026-11-06-733-730-793-796-20260929|SPY|0.435|761.9|2026-10-23T14:54:45+00:00
+mace-SPY-2026-11-06-741-738-801-804-20260925|SPY|0.405|762.24|2026-10-23T15:13:33+00:00
+mace-SPY-2026-11-06-735-732-794-797-20260930|SPY|0.445|762.24|2026-10-23T15:17:58+00:00
+mace-SPY-2026-11-13-738-735-800-803-20261002|SPY|0.57|760.275|2026-10-23T19:38:55+00:00
+mace-SPY-2026-11-13-746-743-805-808-20261005|SPY|0.665000000000001|760.275|2026-10-23T19:41:02+00:00
+mace-SPY-2026-11-20-748-743-810-815-20261006|SPY|0.77|770.08|2026-10-29T15:36:24+00:00
+mace-SPY-2026-11-27-741-738-802-805-20261015|SPY|1.115|737.2101|2026-11-06T20:38:40+00:00
+mace-SPY-2026-11-30-735-732-797-800-20261019|SPY|0.535|754.271|2026-11-09T20:42:23+00:00
+mace-SPY-2026-12-04-725-720-792-797-20261023|SPY|0.755|756.34|2026-11-11T15:08:05+00:00
+mace-SPY-2026-12-18-732-729-798-801-20261104|SPY||731.99|2026-11-17T16:23:47+00:00
+mace-SPY-2026-12-11-715-710-787-792-20261030|SPY|1.325|729.845|2026-11-17T20:52:06+00:00
+mace-SPY-2026-12-11-715-710-786-791-20261102|SPY|1.4|729.845|2026-11-17T20:52:35+00:00
+mace-SPY-2026-12-18-713-710-790-793-20261103|SPY|0.93|729.845|2026-11-17T20:53:22+00:00
+mace-SPY-2026-12-18-685-680-773-778-20261105|SPY|1.32|729.845|2026-11-17T20:54:45+00:00
+mace-SPY-2026-12-18-685-680-773-778-20261106|SPY|1.26|729.845|2026-11-17T20:56:21+00:00
+mace-SPY-2026-12-24-725-720-790-795-20261111|SPY|1.83|729.845|2026-11-17T20:57:06+00:00
+mace-SPY-2026-12-24-729-726-782-785-20261112|SPY|1.315|729.845|2026-11-17T20:57:28+00:00
+mace-XLE-2026-10-16-60-59-70-71-20260901|XLE|0.245|62.055|2026-09-25T19:40:00+00:00
+mace-XLE-2026-10-16-61-59-70-72-20260902|XLE|0.56|62.055|2026-09-25T19:44:14+00:00
+mace-XLE-2026-10-23-60-59-69.5-70.5-20260914|XLE|0.145|63.7|2026-10-05T18:18:11+00:00
+mace-XLE-2026-10-30-59.5-58-70-71.5-20260916|XLE|0.225|63.67|2026-10-07T14:23:50+00:00
+mace-XLE-2026-10-30-60-58-69.5-71.5-20260918|XLE|0.235|65.285|2026-10-09T17:23:34+00:00
+mace-XLE-2026-10-30-60-59-70-71-20260917|XLE|0.175|66.795|2026-10-13T16:40:59+00:00
+mace-XLE-2026-11-06-57.5-56.5-67-68-20260929|XLE||68.96|2026-10-23T14:34:41+00:00
+mace-XLE-2026-11-20-60-59-70-71-20261006|XLE|0.465|69.67|2026-10-30T19:32:52+00:00
+mace-XLE-2026-11-20-60-58-69-71-20261007|XLE|1.0|69.67|2026-10-30T19:33:55+00:00
+mace-XLE-2026-11-20-61-59-70-72-20261009|XLE|0.88|69.67|2026-10-30T19:37:30+00:00
+mace-XLE-2026-11-27-63.5-62-73.5-75-20261016|XLE||63.27|2026-11-05T16:45:34+00:00
+
+--- [4] the SPY rung (full) ---
+       rung_id = mace-SPY-2026-12-18-732-729-798-801-20261104
+        symbol = SPY
+        status = closed
+        expiry = 2026-12-18
+     legs_json = [{"type": "put", "strike": 732.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "put", "strike": 729.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 798.0, "side": "sell", "effect": "open", "option_id": null, "fill_price": null}, {"type": "call", "strike": 801.0, "side": "buy", "effect": "open", "option_id": null, "fill_price": null}]
+ width_dollars = 3.0
+     contracts = 1
+ credit_actual = 0.93
+  max_risk_usd = 207.0
+      entry_ts = 2026-11-04T20:46:54+00:00
+entry_order_id = 6aeb99bb-cbf2-4fa6-a830-56cf203504d2
+   pt_order_id = 
+      pt_debit = 0.47
+       exit_ts = 2026-11-17T16:25:46+00:00
+   exit_reason = stop
+    exit_debit = 1.32
+  realized_pnl = -39.0
+entry_iso_week = 2026-W45
+    extra_json = {"closing": {"since": "2026-11-17T16:23:47+00:00", "redrives": 0}}
+  entry_atm_iv = 0.164824529
+
+--- [5] audit 16:10-16:40Z full payloads ---
+2026-11-17T16:23:47+00:00|mace_leg_quote_timeout|{"symbol": "SPY", "opt_type": "put", "strike": 729.0, "timeout_sec": 30}
+2026-11-17T16:23:47+00:00|mace_manage_exit|{"rung_id": "mace-SPY-2026-12-18-732-729-798-801-20261104", "reason": "stop", "detail": "dead-wing mark unpriceable + short ITM (spot 731.99 vs 732.0/798.0)", "symbol": "SPY", "line": "732/729P 798/801C exp 2026-12-18 stop closing"}
+2026-11-17T16:23:47+00:00|mace_exit_start|{"rung_id": "mace-SPY-2026-12-18-732-729-798-801-20261104", "reason": "stop", "symbol": "SPY", "pricing": "marketable", "trigger_mid": null, "line": "732/729P 798/801C exp 2026-12-18 stop closing"}
+2026-11-17T16:25:46+00:00|mace_exit_fill|{"rung_id": "mace-SPY-2026-12-18-732-729-798-801-20261104", "reason": "stop", "exit_debit": 1.32, "realized": -39.0, "symbol": "SPY", "line": "732/729P 798/801C exp 2026-12-18 stop debit 1.32 pnl -39.00 (-42% of credit)"}
+2026-11-17T16:29:35+00:00|mace_manage_timeout|{"timeout_sec": 600, "detail": "manage_tick exceeded timeout -> cancelled; next tick will run"}
+2026-11-17T16:30:20+00:00|mace_manage_stall|{"detail": "MACE manage loop STALLED -- no completed tick in 945s during market hours", "tick_age_sec": 946}
+2026-11-17T16:30:20+00:00|mace_manage_stall|{"tick_age_sec": 946, "detail": "MACE manage loop STALLED -- no completed tick in 945s during market hours"}
+
+--- [6] leg-quote timeouts + watchdog events today ---
+2026-11-17T16:23:47+00:00|mace_leg_quote_timeout|{"symbol": "SPY", "opt_type": "put", "strike": 729.0, "timeout_sec": 30}
+2026-11-17T16:29:35+00:00|mace_manage_timeout|{"timeout_sec": 600, "detail": "manage_tick exceeded timeout -> cancelled; next tick will run"}
+2026-11-17T16:30:20+00:00|mace_manage_stall|{"detail": "MACE manage loop STALLED -- no completed tick in 945s during market hours", "tick_age_sec": 946}
+2026-11-17T16:30:20+00:00|mace_manage_stall|{"tick_age_sec": 946, "detail": "MACE manage loop STALLED -- no completed tick in 945s during market hours"}
+2026-11-17T16:44:35+00:00|mace_manage_timeout|{"timeout_sec": 600, "detail": "manage_tick exceeded timeout -> cancelled; next tick will run"}
+2026-11-17T19:37:53+00:00|mace_manage_timeout|{"timeout_sec": 600, "detail": "manage_tick exceeded timeout -> cancelled; next tick will run"}
+2026-11-17T19:38:23+00:00|mace_manage_stall|{"detail": "MACE manage loop STALLED -- no completed tick in 930s during market hours", "tick_age_sec": 931}
+2026-11-17T19:38:23+00:00|mace_manage_stall|{"tick_age_sec": 931, "detail": "MACE manage loop STALLED -- no completed tick in 930s during market hours"}
+
+--- [7] today's mace kind counts ---
+mace_reconcile_open_orders_error|20
+mace_entry_eval|6
+mace_closing_reopen|5
+mace_manage_stall|4
+mace_daily_summary|4
+mace_manage_timeout|3
+mace_snapshot|2
+mace_equity_snapshot|2
+mace_manage_exit|1
+mace_leg_quote_timeout|1
+mace_exit_start|1
+mace_exit_fill|1
+mace_entry_start|1
+mace_entry_standdown|1
+mace_entry_round|1
+mace_entry_rejected|1
+
+--- [8] snapshot + entry eval + daily summary today ---
+2026-11-17T20:40:06+00:00|mace_equity_snapshot|{"snap_date": "2026-11-17", "equity": 279.3397, "available_buying_power": 558.6794, "deployment_basis": "available_buying_power"}
+2026-11-17T20:50:03+00:00|mace_daily_summary|{"session_date": "2026-11-17", "equity": 279.3397, "open": 12, "day_pnl": -39.0, "breakers": ["day_loss", "week_loss"]}
+2026-11-17T20:50:03+00:00|mace_daily_summary|{"date": "2026-11-17"}
+2026-11-17T21:09:03+00:00|mace_equity_snapshot|{"snap_date": "2026-11-17", "equity": 279.3397, "available_buying_power": 558.6794, "deployment_basis": "available_buying_power"}
+2026-11-17T21:09:04+00:00|mace_daily_summary|{"session_date": "2026-11-17", "equity": 279.3397, "open": 12, "day_pnl": -39.0, "breakers": ["day_loss", "week_loss"]}
+2026-11-17T21:09:04+00:00|mace_daily_summary|{"date": "2026-11-17"}
+2026-11-17T20:45:59+00:00|{"symbol": "IBIT", "entered": false, "skip_reason": "cooldown", "reason": "SKIP cooldown 1 sessions since last stop", "ivr_status": "ok", "ivr_value": null, "credit_mid": null, "contracts": 0, "max_risk_usd": null, "overflow": false, "detail": "1 sessions since last stop"}
+2026-11-17T20:45:59+00:00|{"symbol": "XLE", "entered": false, "skip_reason": "credit_floor", "reason": "SKIP credit_floor credit 0.50 < floor 0.60", "ivr_status": "ok", "ivr_value": 74.9234303, "credit_mid": null, "contracts": 0, "max_risk_usd": null, "overflow": false, "detail": "credit 0.50 < floor 0.60"}
+2026-11-17T20:45:59+00:00|{"symbol": "GDX", "entered": false, "skip_reason": "credit_floor", "reason": "SKIP credit_floor credit 1.33 < floor 1.50", "ivr_status": "ok", "ivr_value": 49.6666667, "credit_mid": null, "contracts": 0, "max_risk_usd": null, "overflow": false, "detail": "credit 1.33 < floor 1.50"}
+2026-11-17T20:45:59+00:00|{"symbol": "FXI", "entered": false, "skip_reason": "credit_floor", "reason": "SKIP credit_floor credit 0.24 < floor 0.30", "ivr_status": "ok", "ivr_value": 50.407450499999996, "credit_mid": null, "contracts": 0, "max_risk_usd": null, "overflow": false, "detail": "credit 0.24 < floor 0.30"}
+2026-11-17T20:45:59+00:00|{"symbol": "SPY", "entered": false, "skip_reason": "cooldown", "reason": "SKIP cooldown 0 sessions since last stop", "ivr_status": "ok", "ivr_value": null, "credit_mid": null, "contracts": 0, "max_risk_usd": null, "overflow": false, "detail": "0 sessions since last stop"}
+2026-11-17T20:46:22+00:00|{"symbol": "IWM", "entered": true, "skip_reason": null, "reason": "SKIP entry_standdown rejected", "ivr_status": "ok", "ivr_value": 58.115942, "credit_mid": 1.0150000000000001, "contracts": 2, "max_risk_usd": 397.0, "overflow": false, "detail": "250-247-286-289 x2 credit 1.02"}
+
+--- [9] exits + entries today, day realized ---
+mace-SPY-2026-12-18-732-729-798-801-20261104|closed|stop|2026-11-17T16:25:46+00:00|1.32|-39.0
+-39.0
+2026-11-17T20:45:59+00:00|mace_entry_start|{"rung_id": "mace-IWM-2026-12-31-250-247-286-289-20261117", "symbol": "IWM", "contracts": 2, "strikes": "250-247-286-289"}
+2026-11-17T20:46:22+00:00|mace_entry_standdown|{"rung_id": "mace-IWM-2026-12-31-250-247-286-289-20261117", "reason": "rejected", "attempts": 0, "last_price": 1.0}
+
+--- [10] session health: last auth events + reconcile errors today by hour + since restart ---
+2026-11-17T01:40:48+00:00|rh_auth_recovered
+2026-11-16T19:36:51+00:00|rh_auth_failed
+2026-11-11T14:39:11+00:00|rh_auth_recovered
+2026-11-10T19:38:13+00:00|rh_auth_failed
+00|12
+01|8
+errors since 21:00Z (post-restart):
+0
+
+--- [11] journal: the exit window 16:15-16:35Z (mace lines) ---
+Nov 17 16:23:47 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:23:47,756 INFO trading_corp.agents.logger: [audit] robinhood_mace/mace_leg_quote_timeout {"symbol": "SPY", "opt_type": "put", "strike": 729.0, "timeout_sec": 30}
+Nov 17 16:23:47 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:23:47,756 INFO mace.execution: mace.mace_leg_quote_timeout {'symbol': 'SPY', 'opt_type': 'put', 'strike': 729.0, 'timeout_sec': 30}
+Nov 17 16:23:47 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:23:47,759 INFO trading_corp.agents.logger: [audit] robinhood_mace/mace_manage_exit {"rung_id": "mace-SPY-2026-12-18-732-729-798-801-20261104", "reason": "stop", "detail": "dead-wing mark unpriceable + short ITM (spot 731.99 vs 732.0/798.0)", "symbol": "SPY", "line": "732/729P 798...
+Nov 17 16:23:47 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:23:47,760 INFO mace.manager: mace.mace_manage_exit {'rung_id': 'mace-SPY-2026-12-18-732-729-798-801-20261104', 'reason': 'stop', 'detail': 'dead-wing mark unpriceable + short ITM (spot 731.99 vs 732.0/798.0)', 'symbol': 'SPY', 'line': '732/729P 798/801C exp 2026-12-18 stop closing'}
+Nov 17 16:23:47 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:23:47,762 INFO trading_corp.agents.logger: [audit] robinhood_mace/mace_exit_start {"rung_id": "mace-SPY-2026-12-18-732-729-798-801-20261104", "reason": "stop", "symbol": "SPY", "pricing": "marketable", "trigger_mid": null, "line": "732/729P 798/801C exp 2026-12-18 stop closing"}
+Nov 17 16:23:47 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:23:47,762 INFO mace.execution: mace.mace_exit_start {'rung_id': 'mace-SPY-2026-12-18-732-729-798-801-20261104', 'reason': 'stop', 'symbol': 'SPY', 'pricing': 'marketable', 'trigger_mid': None, 'line': '732/729P 798/801C exp 2026-12-18 stop closing'}
+Nov 17 16:25:46 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:25:46,712 INFO trading_corp.agents.logger: [audit] robinhood_mace/mace_exit_fill {"rung_id": "mace-SPY-2026-12-18-732-729-798-801-20261104", "reason": "stop", "exit_debit": 1.32, "realized": -39.0, "symbol": "SPY", "line": "732/729P 798/801C exp 2026-12-18 stop debit 1.32 pnl -...
+Nov 17 16:25:46 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:25:46,712 INFO mace.execution: mace.mace_exit_fill {'rung_id': 'mace-SPY-2026-12-18-732-729-798-801-20261104', 'reason': 'stop', 'exit_debit': 1.32, 'realized': -39.0, 'symbol': 'SPY', 'line': '732/729P 798/801C exp 2026-12-18 stop debit 1.32 pnl -39.00 (-42% of credit)'}
+Nov 17 16:29:35 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:29:35,310 INFO mace.manager: mace.mace_manage_timeout {'timeout_sec': 600, 'detail': 'manage_tick exceeded timeout -> cancelled; next tick will run'}
+Nov 17 16:30:20 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:20,824 INFO trading_corp.agents.logger: [audit] robinhood_mace/mace_manage_stall {"detail": "MACE manage loop STALLED -- no completed tick in 945s during market hours", "tick_age_sec": 946}
+Nov 17 16:30:20 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:20,824 INFO mace.manager: mace.mace_manage_stall {'detail': 'MACE manage loop STALLED -- no completed tick in 945s during market hours', 'tick_age_sec': 946}
+Nov 17 16:30:20 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:20,826 INFO trading_corp.agents.logger: [audit] scheduler/mace_manage_stall {"tick_age_sec": 946, "detail": "MACE manage loop STALLED -- no completed tick in 945s during market hours"}
+Nov 17 16:33:28 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:33:28,981 WARNING trading_corp.mace.candle_feed: candle_feed.collect_candles_multi: streamer failed for 1d:
+
+--- [12] journal: last lines before the 16:29:35Z cancel ---
+Nov 17 16:29:29 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:34 tc-prod-vm xvfb-run[809222]: [2.0K blob data]
+Nov 17 16:29:34 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:34 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:34 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:34 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:34 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:34 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:35 tc-prod-vm xvfb-run[809222]: [321B blob data]
+Nov 17 16:29:35 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:29:35,310 INFO mace.manager: mace.mace_manage_timeout {'timeout_sec': 600, 'detail': 'manage_tick exceeded timeout -> cancelled; next tick will run'}
+Nov 17 16:29:36 tc-prod-vm xvfb-run[809222]: [906B blob data]
+Nov 17 16:29:36 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:36 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:36 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:37 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:37 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:37 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:37 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:37 tc-prod-vm xvfb-run[809222]: [401B blob data]
+Nov 17 16:29:37 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:37 tc-prod-vm xvfb-run[809222]: [402B blob data]
+Nov 17 16:29:42 tc-prod-vm xvfb-run[809222]: [654B blob data]
+Nov 17 16:30:19 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:19,387 INFO trading_corp.prediction_markets.shard_snapshot_task: shard-snapshot kalshi_jack: total=$296.63 by_shard={0: 146.8102, 1: 0.0, 2: 0.0, 3: 149.8193} has_breakdown=True
+Nov 17 16:30:19 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:19,571 INFO trading_corp.prediction_markets.shard_snapshot_task: shard-snapshot kalshi_karen: total=$390.08 by_shard={0: 208.9371, 1: 0.0, 2: 0.0, 3: 181.1409} has_breakdown=True
+Nov 17 16:30:19 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:19,691 INFO trading_corp.prediction_markets.shard_snapshot_task: shard-snapshot kalshi_marc: total=$44.29 by_shard={0: 2.7741, 1: 0.0, 2: 0.0, 3: 41.5167} has_breakdown=True
+Nov 17 16:30:19 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:19,793 INFO trading_corp.prediction_markets.shard_snapshot_task: shard-snapshot kalshi_trey: total=$53.53 by_shard={0: 2.0151, 1: 0.0, 2: 0.0, 3: 51.519} has_breakdown=True
+Nov 17 16:30:20 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:20,824 INFO trading_corp.agents.logger: [audit] robinhood_mace/mace_manage_stall {"detail": "MACE manage loop STALLED -- no completed tick in 945s during market hours", "tick_age_sec": 946}
+Nov 17 16:30:20 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:20,824 INFO mace.manager: mace.mace_manage_stall {'detail': 'MACE manage loop STALLED -- no completed tick in 945s during market hours', 'tick_age_sec': 946}
+Nov 17 16:30:20 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:20,826 INFO trading_corp.agents.logger: [audit] scheduler/mace_manage_stall {"tick_age_sec": 946, "detail": "MACE manage loop STALLED -- no completed tick in 945s during market hours"}
+Nov 17 16:30:20 tc-prod-vm xvfb-run[809222]: 2026-11-17 16:30:20,924 INFO trading_corp.agents.logger: [audit] bitunix_sfp/sfp_regime_flip {"symbol": "XRP/USDT.P", "coin": "XRPUSDT", "old_regime": "up", "new_regime": "range", "to_up": false, "strategy": "bitunix_sfp", "division": "bitunix_sfp"}
+=== END PART A PROBE ===

@@ -1,0 +1,132 @@
+=== RH PHASE-1 PROBE 1: pickle / processes / lib / journal (RO) ===
+2026-11-17T23:22:49Z
+
+--- [1] pickle metadata (NO contents) ---
+path=/home/azureuser/.tokens/robinhood.pickle mode=664 owner=azureuser:azureuser size=1396 mtime=2026-11-17 01:40:38.548305808 +0000
+total 56
+drwxrwxr-x   2 azureuser azureuser  4096 Jun  9 14:45 .
+drwxr-x--- 218 azureuser azureuser 28672 Nov 17 21:36 ..
+-rw-rw-r--   1 azureuser azureuser  1396 Nov 17 01:40 robinhood.pickle
+-rw-r--r--   1 root      root       1396 May 21 01:58 robinhood.pickle.bak.1779328699
+-rw-r--r--   1 root      root       1396 May 23 15:41 robinhood.pickle.bak.1779550913
+-rw-rw-r--   1 azureuser azureuser  1396 May 24 15:50 robinhood.pickle.bak.1779637829
+-rw-rw-r--   1 azureuser azureuser  1396 Jun  9 14:45 robinhood.pickle.bak.1781016308
+key names / value types / lengths only:
+top-level type: dict
+ key=token_type type=str len_or_val=6
+ key=access_token type=str len_or_val=1234
+ key=refresh_token type=str len_or_val=30
+ key=device_token type=str len_or_val=36
+
+--- [1b] who touches the pickle ---
+lsof: no open handles (or lsof unavailable)
+ps (python/trading processes):
+    645 azureus+ 82-07:57:04 /home/azureuser/trading_corp/venv/bin/python /home/azureuser/market_context/market_context_recorder.py
+    646 root     82-07:57:04 /usr/bin/python3 /usr/bin/networkd-dispatcher --run-startup-triggers
+    656 azureus+ 82-07:57:04 /home/azureuser/trading_corp/venv/bin/python /home/azureuser/card_assets/card_watcher.py
+    686 root     82-07:57:04 /usr/bin/python3 -u /usr/sbin/waagent -daemon
+    778 root     82-07:57:02 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+    793 root     82-07:57:02 /usr/bin/python3 -u bin/WALinuxAgent-2.16.0.2-py3.12.egg -run-exthandlers
+ 991135 azureus+    02:14:48 /bin/sh /usr/bin/xvfb-run --auto-servernum --server-args=-screen 0 1280x800x24 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+ 991145 azureus+    02:14:48 Xvfb :99 -screen 0 1280x800x24 -nolisten tcp -auth /tmp/xvfb-run.FT3xif/Xauthority
+ 991148 azureus+    02:14:45 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+ 991153 azureus+    02:14:34 /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/playwright/driver/node /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/playwright/driver/package/cli.js run-driver
+ 991335 azureus+    02:13:43 /home/azureuser/trading_corp/venv/bin/python trading_corp/scripts/pm_web.py
+crontab:
+30 8 * * * cd /home/azureuser/trading_corp && /home/azureuser/trading_corp/venv/bin/python scripts/telegram_lifecycle_divergence_check.py >> /home/azureuser/trading_corp/logs/divergence_monitor.log 2>&1
+0 * * * * cd /home/azureuser/trading_corp && venv/bin/python scripts/replay_audit_event_write_failed.py --db sqlite:////home/azureuser/trading_corp/data/trading_corp.db >> logs/audit_replay.log 2>&1
+# --- Prediction Markets cadence (installed 2026-08-27; daily refresh moved 03:20 -> 05:00 UTC) ---
+*/30 * * * * cd /home/azureuser/trading_corp && PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py paper-poll >> /home/azureuser/pm_poll.log 2>&1
+0 5 * * * cd /home/azureuser/trading_corp && PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py refresh --cap 50000 >> /home/azureuser/pm_refresh.log 2>&1
+40 5 * * * cd /home/azureuser/trading_corp && PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py paper-adjudicate >> /home/azureuser/pm_adjudicate.log 2>&1
+50 5 * * * cd /home/azureuser/trading_corp && PYTHONPATH=. venv/bin/python trading_corp/scripts/pm_cli.py paper-rollup >> /home/azureuser/pm_rollup.log 2>&1
+grep robinhood.pickle / .tokens in deployed code:
+/home/azureuser/trading_corp/trading_corp/web/routes.py:2241:        pickle = os.path.expanduser("~/.tokens/robinhood.pickle")
+/home/azureuser/trading_corp/trading_corp/prediction_markets/analyze.py:705:         rep.model, rep.cost_usd, rep.tokens_in, rep.tokens_out, rep.n_resolved, rep.generated_ts))
+/home/azureuser/trading_corp/trading_corp/prediction_markets/analyze.py:768:                  cost_usd=nr.cost_usd, tokens_in=nr.tokens_in, tokens_out=nr.tokens_out,
+/home/azureuser/trading_corp/trading_corp/web/routes.py:2241:        pickle = os.path.expanduser("~/.tokens/robinhood.pickle")
+other dirs (scripts, home-level .py):
+/home/azureuser/mace_wp_scratch/deploy_rh_auth/apply_rh_auth_batch.py
+/home/azureuser/mace_wp_scratch/deploy_rh_auth/relogin/rh_daily_relogin.py
+/home/azureuser/mace_wp_scratch/scripts/mace_phase0_probe.py
+/home/azureuser/mace_wp_scratch/scripts/mace_shadow_eval.py
+/home/azureuser/mace_wp_scratch/tests/test_robinhood_multi_leg.py
+/home/azureuser/mace_wp_scratch/tests/test_mace_robinhood_golden_payload.py
+/home/azureuser/mace_wp_scratch/tests/test_mace_robinhood_twin_builder.py
+/home/azureuser/mace_wp_scratch/tests/test_mace_rh_broker.py
+/home/azureuser/mace_wp_scratch/tests/test_robinhood_crypto_snapshot.py
+/home/azureuser/perf_ccfix_graft_backup_20260908T192553Z/data.py
+
+--- [2] robin_stocks install ---
+Name: robin-stocks
+Version: 3.4.0
+Summary: A Python wrapper around the Robinhood API
+Home-page: https://github.com/jmfernandes/robin_stocks
+auth: /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/robin_stocks/robinhood/authentication.py
+helper: /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/robin_stocks/robinhood/helper.py
+urls: /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/robin_stocks/robinhood/urls.py
+
+--- [3] journal 01:39-01:43Z (the 11-16 button login; pykalshi excluded) ---
+Nov 17 01:40:24 tc-prod-vm xvfb-run[809222]: Starting login process...
+Nov 17 01:40:24 tc-prod-vm xvfb-run[809222]: ERROR: There was an issue loading pickle file. Authentication may be expired - logging in normally.
+Nov 17 01:40:26 tc-prod-vm xvfb-run[809222]: Verification required, handling challenge...
+Nov 17 01:40:26 tc-prod-vm xvfb-run[809222]: Starting verification process...
+Nov 17 01:40:32 tc-prod-vm xvfb-run[809222]: Check robinhood app for device approvals method...
+Nov 17 01:40:37 tc-prod-vm xvfb-run[809222]: Verification successful!
+Nov 17 01:40:48 tc-prod-vm xvfb-run[809222]: 2026-11-17 01:40:48,057 INFO trading_corp.brokers.robinhood: rh_auth_recovered: Robinhood session restored (reason=snapshot_ok)
+Nov 17 01:40:48 tc-prod-vm xvfb-run[809222]: 2026-11-17 01:40:48,064 INFO trading_corp.agents.logger: [audit] data_exec/rh_auth_recovered {"reason": "snapshot_ok", "since": "2026-11-16T19:36:51.920162+00:00", "last_good": "2026-11-17T01:40:48.057884+00:00", "accounts": ["680725082", "461391328", "934310442", "116637293063"], "ts": "2...
+expires_in anywhere in journal:
+0
+
+--- [4] journal retention bounds ---
+2026-11-16T01:37:59+0000 tc-prod-vm xvfb-run[809222]: 2026-11-16 01:37:59,779 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x629c2844d5 (bra): positions[0x629c2844…, limit=500, offset=0]: HTTP 410 — {"error":"Data API v1 has been retired","migration":"https://data-api.polymarket.com/v2/","docs":"https://docs.polymarket.com/api-reference/data-api/overview"}
+2026-11-16T01:37:59+0000 tc-prod-vm xvfb-run[809222]: 2026-11-16 01:37:59,788 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0xf5f9294051 (bra): positions[0xf5f92940…, limit=500, offset=0]: HTTP 410 — {"error":"Data API v1 has been retired","migration":"https://data-api.polymarket.com/v2/","docs":"https://docs.polymarket.com/api-reference/data-api/overview"}
+
+--- [5] 11-16 storm 19:30Z - 01:45Z counts (pykalshi excluded) ---
+total lines: 417427
+Verification workflow      0
+challenge                  7
+device.approv              7
+NoneType                   38
+not subscriptable          6
+login                      40
+Robinhood                  622
+rh_auth                    4
+refresh-session            0
+picke\|pickle              0
+sample login-ish lines (first 12):
+Nov 16 19:36:36 tc-prod-vm xvfb-run[809222]: Starting login process...
+Nov 16 19:36:39 tc-prod-vm xvfb-run[809222]: Verification required, handling challenge...
+Nov 16 19:51:16 tc-prod-vm xvfb-run[809222]: Starting login process...
+Nov 16 19:51:18 tc-prod-vm xvfb-run[809222]: Verification required, handling challenge...
+Nov 16 19:55:17 tc-prod-vm xvfb-run[809222]: Starting login process...
+Nov 16 19:55:18 tc-prod-vm xvfb-run[809222]: Verification required, handling challenge...
+Nov 16 19:57:13 tc-prod-vm xvfb-run[809222]: Starting login process...
+Nov 16 19:57:14 tc-prod-vm xvfb-run[809222]: Verification required, handling challenge...
+Nov 16 20:12:36 tc-prod-vm xvfb-run[809222]: Error during login verification: 'NoneType' object is not subscriptable
+Nov 16 20:12:36 tc-prod-vm xvfb-run[809222]: Login failed. Check credentials and try again.
+Nov 16 20:12:36 tc-prod-vm xvfb-run[809222]: Error during login verification: 'NoneType' object is not subscriptable
+Nov 16 20:12:36 tc-prod-vm xvfb-run[809222]: Login failed. Check credentials and try again.
+
+--- [6] logged-out class errors in journal (full retention) ---
+logged out             0
+login_required         0
+not logged in          0
+Trying to access       0
+401                    4563
+unauthorized           40
+samples:
+
+--- [7] md5 (CR-stripped) of files phase-2 may touch ---
+1e6bbc1e  trading_corp/brokers/robinhood.py
+85c5805b  trading_corp/web/routes.py
+8f7d2568  trading_corp/agents/data_exec.py
+b30db63f  trading_corp/mace/strategy.py
+765e3360  trading_corp/mace/loops.py
+e380c2f6  trading_corp/mace/execution.py
+0116e860  trading_corp/mace/manager.py
+f486de42  trading_corp/main.py
+0bc119ec  trading_corp/comms/telegram_bot.py
+=== END PROBE 1 ===
+
+[exited with code 0]
