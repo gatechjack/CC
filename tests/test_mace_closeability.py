@@ -6,7 +6,8 @@ bid) and asks "can this ACTUALLY fill?". A dead long wing (bid 0 -> None) fails 
 DETERMINISTICALLY every tick -- the wiggling-quote slip-through that defeated the point-in-time
 mid-inversion guard is impossible against a positive liveness check. Pure tests cover the gate
 truth table + the snapshot derivations; manager tests prove the dead-wing false-PT is blocked at
-tick 1 (no close, no loop) while a liquid PT still fires and a dead-wing STOP still fires.
+tick 1 (no close, no loop) while a liquid PT still fires and a dead-wing STOP still fires (since
+2026-11-17 B commit 2, on the SECOND consecutive structural tick — one-tick confirmation).
 """
 from __future__ import annotations
 
@@ -329,6 +330,8 @@ async def test_manager_dead_wing_stop_still_fires():
     # risk), not merely illiquid wings on an OTM condor (that was the spurious-stop regression).
     # Here spot 71 >= short_call 70 (ITM) with the wings dead + plain mark None -> the dead-wing
     # fallback fires the stop (ungated) and a close is placed via stop_natural (wings given away).
+    # 2026-11-17 (B commit 2): the structural fallback is CONFIRMED -- tick 1 arms (audit
+    # mace_structural_stop_pending, no close), tick 2 with the condition still true FIRES.
     port = _CountPort(); port.spot = 71.0                 # short call 70 ITM -> genuine risk
     store, mgr, audits, chan = _build(port)
     rid = _seed(store, credit=0.30)                       # stop threshold 0.60; EXP (dte 42, no time)
@@ -336,8 +339,11 @@ async def test_manager_dead_wing_stop_still_fires():
     _put(port, 59.0, "put", None, 0.03)                   # lp DEAD (no bid)
     _put(port, 70.0, "call", 1.30, 1.34)                  # sc ITM (spot 71)
     _put(port, 71.0, "call", None, 0.41)                  # lc DEAD -> plain mark None
-    # plain mark None (dead wings); spot 71 >= short_call 70 -> stop_triggered fallback -> STOP.
-    await mgr.manage_tick(NOW)
+    # plain mark None (dead wings); spot 71 >= short_call 70 -> structural fallback.
+    await mgr.manage_tick(NOW)                            # tick 1: arm + hold
+    assert any(k == "mace_structural_stop_pending" for k, _ in audits)
+    assert all(pc.direction != bp.DIR_DEBIT for pc in port.place_calls)   # no close yet
+    await mgr.manage_tick(NOW)                            # tick 2: confirmed -> STOP
     assert any(pc.direction == bp.DIR_DEBIT for pc in port.place_calls)   # stop close placed
     assert not any(k == "mace_close_blocked" for k, _ in audits)         # stop is never gated
 

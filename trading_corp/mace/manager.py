@@ -107,6 +107,11 @@ class MaceManager:
         # Manage-tick liveness counter (2026-10-23 durability fix): # of open rungs successfully
         # priced this tick, reset at the top of manage_tick and written into the watchdog heartbeat.
         self._tick_marked_ok: int = 0
+        # Structural-stop confirmation arm (2026-11-17, B commit 2): rung_ids whose PRIOR
+        # evaluation saw (mark unpriceable + valid spot + short ITM). The dead-wing structural
+        # stop fires only on the SECOND consecutive such tick. In-memory: a restart re-arms,
+        # costing at most one extra 5-min tick of delay on a genuine dead-wing breach.
+        self._structural_stop_pending: set[str] = set()
 
     # ── small helpers ────────────────────────────────────────────────────
     def _audit(self, kind: str, **payload) -> None:
@@ -516,8 +521,29 @@ class MaceManager:
                         detail="short within buffer of spot -> drop ride, re-manage this tick")
             riding = False
 
+        # Structural-stop CONFIRMATION (2026-11-17, B commit 2): the dead-wing short-ITM
+        # fallback fires only when its condition held on two CONSECUTIVE evaluations of this
+        # rung. The 11-17 SPY-732 false stop was a transient 30s leg-quote timeout on a liquid
+        # 3-pts-OTM long put -> mark None for ONE tick -> a 1-cent-ITM structural fire while the
+        # condor's real value sat at 63% of the stop level. A transient quote failure self-heals
+        # next tick (mark prices -> the 2x test resumes); a genuine dead-wing breach persists
+        # and exits one tick later. Audit the arming BEFORE the decision branch.
+        structural_now = (mark is None and spot is not None and spot > 0
+                          and rung.spec is not None
+                          and (spot >= rung.spec.short_call or spot <= rung.spec.short_put))
+        structural_confirmed = rung.rung_id in self._structural_stop_pending
+        if structural_now and not structural_confirmed:
+            self._audit("mace_structural_stop_pending", rung_id=rung.rung_id,
+                        symbol=rung.symbol, spot=spot,
+                        detail="mark unpriceable + short ITM; held one tick for confirmation")
+        if structural_now:
+            self._structural_stop_pending.add(rung.rung_id)
+        else:
+            self._structural_stop_pending.discard(rung.rung_id)
+
         decision = st.evaluate_management(rung, mark, spot, now, self.cfg, sym_cfg,
-                                          exdiv_within=exdiv_within)
+                                          exdiv_within=exdiv_within,
+                                          structural_confirmed=structural_confirmed)
         if not decision.should_exit:
             return None     # hold; a riding rung stays riding silently (sticky to close/escape/expiry)
         # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.

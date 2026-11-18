@@ -815,7 +815,7 @@ class ManageDecision:
 
 
 def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
-                   m: "ManagementConfig") -> bool:
+                   m: "ManagementConfig", *, structural_confirmed: bool = True) -> bool:
     """A stop fires when cost-to-close has reached stop_multiple x credit.
 
     Measured on the plain MID `mark` (all four legs two-sided). When the plain mark is UNPRICEABLE
@@ -833,12 +833,25 @@ def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
     2026-11-17 spot-validity guard: a spot that is missing, ZERO or NEGATIVE is a data failure,
     not a price (2026-11-16: a dying session returned spot 0.0, which made every short put read
     ITM and false-stopped five rungs). An invalid spot must NEVER satisfy the structural test:
-    the rung holds, and the tick already counts as unpriced (mark is None on this branch)."""
+    the rung holds, and the tick already counts as unpriced (mark is None on this branch).
+
+    2026-11-17 structural CONFIRMATION (`structural_confirmed`): the structural fallback fires
+    only when the caller attests the (mark unpriceable + short ITM) condition also held on the
+    IMMEDIATELY PRIOR evaluation of this rung. The 11-17 SPY-732 false stop was a transient 30s
+    leg-quote timeout on a liquid near-money long put -> mark None for ONE tick -> a 1-cent-ITM
+    structural fire; a transient quote failure self-heals next tick (the mark prices again and
+    the 2x test resumes), while a genuine dead-wing breach persists and exits one tick later.
+    The manager tracks the streak and passes the flag; default True preserves the single-shot
+    semantics for callers with no tick history (the CLOSING re-eval, where the stop has already
+    fired once and the armed test is the correct re-check)."""
     if rung.credit_actual is None:
         return False
     if mark is not None:
         return mark >= m.stop_multiple * rung.credit_actual
-    # Plain mark unpriceable (dead/one-sided wing): structural risk only -- a SHORT ITM.
+    # Plain mark unpriceable (dead/one-sided wing): structural risk only -- a SHORT ITM,
+    # confirmed on two consecutive evaluations.
+    if not structural_confirmed:
+        return False
     if spot is not None and spot > 0 and rung.spec is not None:
         return spot >= rung.spec.short_call or spot <= rung.spec.short_put
     return False
@@ -846,7 +859,8 @@ def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
 
 def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
                         now_et: datetime, cfg: MaceConfig, symbol_cfg: SymbolConfig,
-                        *, exdiv_within: bool) -> ManageDecision:
+                        *, exdiv_within: bool,
+                        structural_confirmed: bool = True) -> ManageDecision:
     """Precedence: stop > PT > time > exdiv. `mark` = cost-to-close at mid (net
     debit to exit). The 09:35 tick IS the gap rule (no separate branch).
     `exdiv_within` is the calendar side (caller uses mace.exdiv.MaceExDiv).
@@ -865,7 +879,7 @@ def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
     SPURIOUS stops on healthy illiquid-wing OTM condors."""
     m = cfg.management
     # stop: cost-to-close >= stop_multiple x credit (plain mid mark; dead-wing -> short-ITM fallback).
-    if stop_triggered(rung, mark, spot, m):
+    if stop_triggered(rung, mark, spot, m, structural_confirmed=structural_confirmed):
         if mark is not None:
             detail = (f"mark {mark:.2f} >= {m.stop_multiple}x credit {rung.credit_actual:.2f}")
         else:
