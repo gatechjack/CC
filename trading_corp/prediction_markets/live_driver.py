@@ -541,14 +541,29 @@ async def fetch_boxing_market_context(client, now_ts: int) -> execution.MarketCo
     return execution.MarketContext({}, {}, {}, dates, markets, boxing_index=boxing_idx)
 
 
+def _f1_race_date_iso(m) -> str | None:
+    """The RACE date for a KXF1RACE market = the EARLIEST of expected_expiration_time / occurrence_datetime /
+    close_time (UTC date part, ISO-lexicographic min). ★ WHY NOT close_time-first (the pre-2026-11-18 rule):
+    LASV26 (Las Vegas GP, race 2026-11-22) lists close_time 2026-11-29T10:00Z -- a +7d SETTLEMENT BUFFER, not
+    the race date -- while expected_expiration_time == occurrence_datetime == 2026-11-22T10:00Z (probed live
+    2026-11-18). close_time-first keyed the race index a week late, so every Poly winner slug (dated 11-21/11-22,
+    +/-1-day window) missed as out_of_window. On the settled shape close_time == the race end (verified ITAGP26/
+    DUTGP26/BELGP26/SPAGP26, 2026-09-14), where min() reduces to the old behaviour exactly. occurrence_datetime
+    may be SDK-dropped (getattr None-safe) -- expected_expiration_time is the load-bearing field."""
+    cands = [str(x)[:10] for x in (getattr(m, "expected_expiration_time", None),
+                                   getattr(m, "occurrence_datetime", None),
+                                   getattr(m, "close_time", None)) if x]
+    return min(cands) if cands else None
+
+
 async def fetch_f1_market_context(client, now_ts: int) -> execution.MarketContext:
     """F1 (2026-09-14): fetch OPEN + recent-SETTLED KXF1RACE per-driver winner markets and build the date-keyed
     race index. MIRRORS fetch_boxing_market_context -- SAME get_markets, _market_quote_dict, raw exchange_index
     merge (F1 exchange_index = 0 = shard 0; probed 2026-09-14). The driver FULL name is on `yes_sub_title`
-    (getattr). ★ THE JOIN DATE is the race date = the market's `close_time` UTC date (getattr off the object --
-    close_time is a core field, not SDK-dropped like exchange_index; expected_expiration_time is a fallback). The
-    Kalshi event_ticker has no month/day, so close_time is where the race date comes from; F1 runs one race/day so
-    the date is a unique key. kalshi_dates is the index's dates. RACE-WINNER only (no sprint/pole/H2H/constructors)."""
+    (getattr). ★ THE JOIN DATE is the race date = `_f1_race_date_iso` (2026-11-18: the EARLIEST of
+    expected_expiration/occurrence/close dates -- close_time alone is a settlement buffer on some events, see the
+    helper; the Kalshi event_ticker has no month/day). F1 runs one race/day so the date is a unique key.
+    kalshi_dates is the index's dates. RACE-WINNER only (no sprint/pole/H2H/constructors)."""
     from pykalshi import MarketStatus
     markets: dict = {}
     f1_markets: list = []          # [{ticker, yes_sub_title, close_date_iso}] -> build_kalshi_f1_index
@@ -561,12 +576,11 @@ async def fetch_f1_market_context(client, now_ts: int) -> execution.MarketContex
             if not tk:
                 continue
             markets[tk.upper()] = _market_quote_dict(m)
-            ct = getattr(m, "close_time", None) or getattr(m, "expected_expiration_time", None) or ""
             f1_markets.append({"ticker": tk, "yes_sub_title": getattr(m, "yes_sub_title", None),
-                               "close_date_iso": (str(ct)[:10] or None)})
+                               "close_date_iso": _f1_race_date_iso(m)})   # the RACE date (not close_time-first)
     await _merge_raw_market_fields(client, markets, series_list=F1_SERIES)   # exchange_index (SDK-dropped) from raw
     f1_idx = F1X.build_kalshi_f1_index(f1_markets)
-    dates = frozenset(f1_idx.keys())                    # race dates (from close_time), one race/day -> unique keys
+    dates = frozenset(f1_idx.keys())                    # race dates (_f1_race_date_iso), one race/day -> unique keys
     return execution.MarketContext({}, {}, {}, dates, markets, f1_race_index=f1_idx)
 
 

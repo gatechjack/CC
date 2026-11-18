@@ -23,11 +23,15 @@ Probed live 2026-09-14:
 ────────────────────────────────────────────────────────────────────────────────
 THE JOIN — by DATE, not a GP-name->country-code map (a deliberate, evidence-backed choice)
 ────────────────────────────────────────────────────────────────────────────────
-The Kalshi event_ticker carries only {COUNTRY}GP{YY} (no month/day), but each KXF1RACE market carries a
-close_time whose date == the race date (verified: ITAGP26 close 2026-09-06 == Poly italian winner 2026-09-06;
-DUTGP26 2026-08-23; BELGP26 2026-07-19; SPAGP26 close 2026-09-14 UTC == Poly spanish 2026-09-13 -> +1 UTC
-boundary). F1 runs exactly ONE race per day, so the race date is a UNIQUE event key -> a date-join (with a
-+/-1 day tolerance for the UTC race-end boundary) is unique and avoids the GP-name->country map entirely.
+The Kalshi event_ticker carries only {COUNTRY}GP{YY} (no month/day), but each KXF1RACE market carries date
+fields from which the ctx builder derives the RACE date (★ 2026-11-18: the EARLIEST of expected_expiration_time
+/ occurrence_datetime / close_time -- live_driver._f1_race_date_iso. On settled events close_time == the race
+end: ITAGP26 close 2026-09-06 == Poly italian winner 2026-09-06; DUTGP26 2026-08-23; BELGP26 2026-07-19;
+SPAGP26 close 2026-09-14 UTC == Poly spanish 2026-09-13 -> +1 UTC boundary. But an OPEN event may close LATER
+than the race -- LASV26 race 2026-11-22, close_time 2026-11-29 (+7d settlement buffer) -- which is why
+close_time-first was a bug). F1 runs exactly ONE race per day, so the race date is a UNIQUE event key -> a
+date-join (with a +/-1 day tolerance for the UTC race-end boundary) is unique and avoids the GP-name->country
+map entirely.
 That map would be fragile precisely where it matters (Poly lists BOTH "spanish" and "catalunya" grands prix;
 mapping each name to a Kalshi country code is guesswork). The date is in both feeds and never collides.
 
@@ -125,9 +129,11 @@ def _surname_tokens(name: str) -> list:
 
 def build_kalshi_f1_index(markets: list) -> dict:
     """{date_iso: KalshiF1Race} from KXF1RACE markets. `markets` = dicts with {ticker, yes_sub_title,
-    close_date_iso} (close_date_iso = the UTC date of the market's close_time, the race date). Markets are
-    grouped by event_ticker; each event's race_date is the modal close date of its drivers. One race per day,
-    so keyed by date. Malformed tickers / no yes_sub_title / no close date are skipped."""
+    close_date_iso} (close_date_iso = the RACE date as derived by the ctx builder -- since 2026-11-18 the
+    EARLIEST of expected_expiration/occurrence/close dates (live_driver._f1_race_date_iso), because an open
+    event's close_time can be a post-race settlement buffer, e.g. LASV26 closes race+7d; the key name is
+    historical). Markets are grouped by event_ticker; each event's race_date is the modal date of its drivers.
+    One race per day, so keyed by date. Malformed tickers / no yes_sub_title / no date are skipped."""
     by_event: dict = {}
     for mk in markets:
         ticker = (mk.get("ticker") or "").strip()
