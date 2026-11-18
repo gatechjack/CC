@@ -116,6 +116,34 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-18 23:25 UTC — MACE: post-stop cooldown OFF (stop_cooldown_sessions 2 → 0) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 61521140 (cherry-pick of 698df35e) on branch `mace-cooldown-off-r2-2026-11-18` (BASE e6624f3d)
+**Triggered by:** Board ruling 2026-11-18 ("a past stop must never block a MACE entry") + autonomous deploy brief authorizing graft, restart and fast-forward push
+**Backup:** `/home/azureuser/mace_cooldown_graft_backup_20261118T232441Z/` (mace.yaml, md5 ccfbbc3b66756ab3c71fffcf6607b660, kept)
+
+**Files deployed (1):**
+- `config/mace.yaml` — `entry.stop_cooldown_sessions: 2 → 0` + dated ruling comment. md5 ccfbbc3b66756ab3c71fffcf6607b660 → 7af8900c9a81eb5c5e6fbdcd2109702b; config_hash 931a8214be50 → 158ea99b2a97.
+
+**Features shipped:**
+- MACE entry-pipeline filter 3 (post-stop cooldown) fully disabled, including the stop's own session: the gate is `since < stop_cooldown_sessions` (strategy.py:662) and `since < 0` is never true — the helper returns None or an int ≥ 0; the validator floor is inclusive 0 (config.py:234-249). Config-only change, no code. Every other gate untouched (IVR floor, credit floor, blackout, capacity, weekly budget, sizing, reserve/deploy cap, one-rung-per-symbol-per-day, risk gate, breaker alerting).
+- Revert = set the key back to 2 (or restore the backup file) + one restart.
+
+**Verification:**
+- Suite on branch 61521140: 433 tests / 5 failures == base e6624f3d failure set byte-identical (known stale set: test_shipped_config_loads, test_manage_loop_fires_in_window, test_size_floor_and_cap, test_clean_entry, test_capacity_skip). 6 new tests green in `tests/test_mace_cooldown_off.py` (same-day + next-day pass at 0, block at 2; boundary at 2; no-history identical; repeated stops never block at 0); `test_cooldown_skip_recent_stop` pinned to an explicit cooldown=2 config.
+- Pre-flight (23:24Z): box == base md5s (mace.yaml ccfbbc3b, strategy 04164e9a, manager 8f367a43), config_hash 931a8214be50, LIVE, healthz+mace 200, RH session authenticated, no mid-flight rungs, zero order/fill audit rows in the prior 5 min.
+- Graft gates: drift==BASE → backup → staged==TARGET → post==TARGET (md5 7af8900c9a81eb5c5e6fbdcd2109702b).
+- Restart 23:25:13Z: MainPID 1006485 → 1008114; MACE wired line logs config_hash=158ea99b2a97 (hash-CHANGE was the boot-verify criterion for this deploy); LIVE; 5 MACE schedulers incl. watchdog; all six divisions re-wired (MACE, PEAD, PMCC, PM live driver, bitunix_sfp, bitunix_futures); 0 tracebacks; healthz+mace 200 at t+15s; census identical (abandoned 3 / closed 53 / open 11, same rung ids); entry_halt unchanged (halted:false, 2026-09-18); RH session authenticated, 0 401-ish lines since boot.
+- First live observable: the 2026-11-19 15:45 ET entry round should log no `cooldown` skip rows (the 11-18 round skipped GDX "0 sessions" and SPY "1 session").
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_cooldown_graft_backup_20261118T232441Z/mace.yaml /home/azureuser/trading_corp/config/mace.yaml && md5sum /home/azureuser/trading_corp/config/mace.yaml"
+# expect ccfbbc3b66756ab3c71fffcf6607b660; then one engine restart (restart_tc.ps1); boot line must log config_hash=931a8214be50.
+```
+
+---
+
 ## 2026-11-18 22:54 UTC — PM: F1 race-date fix + collapsed-position floor (gate F) + ts→spirit alias DEPLOYED + VERIFIED LIVE; NBA spreads + f1 race_winner enabled by authorized raw-SQL UPDATEs (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
 
 **Commits:** cd3943b6 (ts→spirit alias cherry-pick), b2e7b121 (F1 race-date fix), 6c37b037 (gate F floor), d6e55464 (pvc_graft mode f1floor) on branch `pm-f1fix-floor-2026-11-18` (BASE a698ea2e)
