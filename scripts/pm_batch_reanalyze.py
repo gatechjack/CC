@@ -50,6 +50,10 @@ BACKOFF_SCHEDULE = [30, 60, 120, 240, 480]   # batch-side 429 backoff (s); len =
 MAX_ATTEMPTS = 3                          # per-pair failure budget across runs (state file)
 ENGINE_PAUSE_SEC = 900
 BUSY_PAUSE_SEC = 600
+# Jack addendum 2026-11-19 ~22:10Z (engine protection):
+BATCH_OWN_LOGS = ("pm_batch_reanalyze.log",)  # our stdout target matches the pm_*.log cron glob -- never self-scan
+MEM_AVAILABLE_FLOOR_KB = 1_572_864            # 1.5GB: below -> pause 10 min; twice in a row -> stop rc=2
+MEM_PAUSE_SEC = 600
 
 
 def _row_category(row) -> str:
@@ -105,15 +109,29 @@ def busy_count_since(start_iso: str, cron_log_glob: str | None) -> int | None:
     if cron_log_glob:
         import glob as _glob
         for p in _glob.glob(cron_log_glob):
+            if os.path.basename(p) in BATCH_OWN_LOGS:
+                continue  # 22:01Z chunk-4 lesson: whole-file read of our OWN log under the vm cap -> MemoryError
             try:
                 if os.path.getmtime(p) < time.mktime(time.strptime(start_iso, "%Y-%m-%d %H:%M:%S")):
                     continue
                 with open(p, "r", encoding="utf-8", errors="replace") as fh:
-                    txt = fh.read()
-                total += sum(txt.count(tok) for tok in BUSY_TOKENS)
+                    # stream line-by-line: never materialize a whole log under the 2GB address-space cap
+                    total += sum(sum(line.count(tok) for tok in BUSY_TOKENS) for line in fh)
             except OSError:
                 continue
     return total if (j is not None or cron_log_glob) else None
+
+
+def mem_available_kb() -> int | None:
+    """MemAvailable from /proc/meminfo in kB; None when unreadable (guard then reports itself unavailable)."""
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 def load_scope(conn) -> list[dict]:
@@ -189,6 +207,28 @@ class State:
         os.replace(tmp, self.path)
 
 
+def _memerr_note(state: "State", stats: dict, w: str, pending: list) -> None:
+    """MemoryError bookkeeping under the 2GB cap (Jack addendum 2026-11-19): first hit on a wallet -> the
+    caller exits rc=3 so a FRESH 1-wallet process (cold allocator, the full cap to itself) retries it;
+    second hit -> the wallet's pending pairs fail CLOSED (failed:memory_budget, attempts exhausted) and the
+    fresh process skips straight past them. The cap is never raised."""
+    me = state.d.setdefault("wallet_memerr", {})
+    me[w] = me.get(w, 0) + 1
+    if me[w] < 2:
+        log.warning("wallet %s hit MemoryError (fresh-process attempt %d/2) -- exiting rc=3 to retry it "
+                    "as a 1-wallet chunk", w[:10], me[w])
+    else:
+        log.error("wallet %s hit MemoryError twice in fresh processes -- failing its pending pairs closed "
+                  "(failed:memory_budget)", w[:10])
+        for p in pending:
+            st = state.get(w, p["category"])
+            if st.get("status") != "done":
+                st["attempts"] = MAX_ATTEMPTS
+                st["status"] = "failed:memory_budget"
+                stats["failed"] += 1
+    state.save()
+
+
 async def run(args) -> int:
     t_start = utc_now()
     start_iso = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t_start))
@@ -221,7 +261,7 @@ async def run(args) -> int:
                                                               PolymarketRateLimitError)
     http_calls = {"n": 0}
     stats = {"done": 0, "skipped": 0, "failed": 0, "llm_calls": 0, "usd": 0.0,
-             "pauses": [], "consec_429": 0, "busy_events": 0, "engine_pauses_row": 0}
+             "pauses": [], "consec_429": 0, "busy_events": 0, "engine_pauses_row": 0, "mem_pauses_row": 0}
 
     async with PolymarketDataAPIClient(max_concurrent=args.concurrency) as client:
         _orig = client._get_json
@@ -252,6 +292,24 @@ async def run(args) -> int:
                 continue
 
             # ── guardrails at the wallet boundary ────────────────────────────────────────────
+            # free-memory guard (Jack addendum 2026-11-19 #3): the box hosts the LIVE engine; below a
+            # 1.5GB MemAvailable floor the batch pauses 10 min, and twice in a row it stops outright.
+            mem_kb = mem_available_kb()
+            if mem_kb is not None and mem_kb < MEM_AVAILABLE_FLOOR_KB:
+                stats["mem_pauses_row"] += 1
+                stats["pauses"].append({"ts": time.strftime("%H:%M:%SZ", time.gmtime()),
+                                        "why": "MemAvailable %dMB < 1536MB" % (mem_kb // 1024),
+                                        "sec": MEM_PAUSE_SEC})
+                log.warning("PAUSE %ds: MemAvailable %d MB below the 1.5GB floor (streak %d)",
+                            MEM_PAUSE_SEC, mem_kb // 1024, stats["mem_pauses_row"])
+                if stats["mem_pauses_row"] >= 2:
+                    state.d["stopped_reason"] = "MemAvailable below 1.5GB twice in a row"
+                    state.save()
+                    log.error("STOP: %s", state.d["stopped_reason"])
+                    return 2
+                await asyncio.sleep(MEM_PAUSE_SEC)
+            else:
+                stats["mem_pauses_row"] = 0
             if in_pause_window(utc_now()):
                 wait = seconds_until_pause_end(utc_now())
                 stats["pauses"].append({"ts": time.strftime("%H:%M:%SZ", time.gmtime()),
@@ -316,6 +374,9 @@ async def run(args) -> int:
                         state.save()
                         log.error("STOP: %s", state.d["stopped_reason"])
                         return 2
+                except MemoryError:
+                    _memerr_note(state, stats, w, pending)
+                    return 3
                 except Exception as e:  # noqa: BLE001 -- a wallet-level fetch failure fails ITS pairs only
                     log.warning("wallet %s book fetch failed: %r", w[:10], e)
                     break
@@ -377,6 +438,10 @@ async def run(args) -> int:
                         stats["failed"] += 1
                         log.warning("%s/%s NOT CACHED (null_reason=%s, attempt %d/%d)",
                                     w[:10], c, rep.null_reason, st["attempts"], MAX_ATTEMPTS)
+                except MemoryError:
+                    st["attempts"] -= 1   # a process-state problem, not this pair's failure
+                    _memerr_note(state, stats, w, pending)
+                    return 3
                 except Exception as e:  # noqa: BLE001 -- one pair must never kill the batch
                     st["status"] = "failed:%r" % e
                     stats["failed"] += 1
