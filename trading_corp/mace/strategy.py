@@ -642,8 +642,14 @@ def evaluate_entry(symbol: str, cfg: MaceConfig, ctx: EntryContext,
         return _skip(symbol, SKIP_CAPACITY, detail="no symbol config")
     e = cfg.entry
 
-    # 0. equity snapshot must exist (sizing basis)
-    if ctx.equity is None or ctx.equity <= 0:
+    # 0. a usable sizing basis must exist. Under the available-BP basis (Option A)
+    #    sizing + the reserve cap run entirely on ctx.available_buying_power, so a
+    #    zero/missing equity reading must NOT blank the round (2026-11-19: the RH
+    #    portfolio `equity` field read 0.0 while available BP was 924.22 -> all six
+    #    symbols skipped on no_equity_snapshot). Equity is the basis only when
+    #    available BP is absent (legacy fallback) -- there the old equity<=0 skip
+    #    still applies unchanged. Breakers keep reading equity independently.
+    if not _uses_available_bp(cfg, ctx) and (ctx.equity is None or ctx.equity <= 0):
         return _skip(symbol, SKIP_NO_EQUITY_SNAPSHOT)
 
     # 1. capacity
