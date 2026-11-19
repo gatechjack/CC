@@ -64,7 +64,12 @@ PM_ANALYZE_MAX_OUTPUT_TOKENS = 220               # item 7 (2026-09-15): 160 -> 2
                                                  # sentences ~50 tok, well under 220). The prompt still enforces the
                                                  # sentence COUNT; this cap is only a backstop. (One-sentence tiers unaffected.)
 PM_ANALYZE_DAILY_CAP_USD = 20.00                 # Jack ruling 2026-08-25 (legacy code=$1.00; §7.4 doc said $2)
-PM_ANALYZE_SKILL_VERSION = "5"                   # bump on ANY prompt/model/report-shape change -> cache miss.
+PM_ANALYZE_SKILL_VERSION = "6"                   # bump on ANY prompt/model/report-shape change -> cache miss.
+#   "5"->"6" (2026-11-19, RL-supplement grounding): loss-grounding now unions /v2/positions?status=REDEEMABLE_LOST
+#     into the loss side and compares against the FULL live CLOSED walk (Jack ruling 2026-11-19). The grounded
+#     numbers the narrator reasons over change materially (measured: 6,383 truncation-hidden losses across 26 pairs),
+#     and is_cached() short-circuits the grounding fetch on a hit -- so WITHOUT this bump no already-analyzed whale
+#     would ever get RL-grounded. Report gains rl_added_losses + loss_basis.
 #   "4"->"5" (2026-09-15, Group 3 items 5+7): item 7 = INSUFFICIENT_DATA narration keeps the caveat AND adds a second
 #     "shape read" sentence (a watchlist is built by pinning low-N traders that LOOK worth watching); item 5 = the
 #     stats.py ranking metrics are fed to the narrator (clean set) + shown flagged (inverting set). Bumped so the first
@@ -189,6 +194,9 @@ class PMAnalysisReport:
     # DISPLAY-ONLY (not fed to the narrator -> narration byte-identical -> NO skill_version bump): the coverage BEHIND
     # the omission % so the page cannot flatten '94% @ 96% cov' and '94% @ 31% cov (a floor)' into one number.
     loss_coverage_pct: float | None = None  # |closed re-found in /activity window| / |closed|; None when ungrounded/no-closed
+    # ── RL supplement (2026-11-19, skill v6): REDEEMABLE_LOST unioned into the loss side + full live CLOSED basis ──
+    rl_added_losses: int | None = None    # losses the RL book alone contributed (beyond /activity + closed)
+    loss_basis: str | None = None         # 'activity' | 'activity+rl'; None on a pre-v6 (ungrounded/legacy) report
     # ── ANALYZE UPGRADE 2026-09-12: the DETERMINISTIC scoring.WhaleScore as a plain dict (json-trivial, no nested
     # dataclass to reconstruct). tier + sort_roi + trust-flagged dimensions. Written to pm_whale_score separately for
     # the sortable Prospects list; carried here so the verdict + the UI render off ONE object. None on a pre-upgrade cache row.
@@ -215,6 +223,11 @@ class PMAnalysisReport:
             return False
         if "lower bound" in (self.loss_completeness or ""):
             return True
+        if self.loss_basis == "activity+rl":
+            # RL supplement: the loss side is point-in-time complete (losses come from the open book + the
+            # exhausted closed walk), so low /activity coverage no longer floors the omission -- it only
+            # bounds the WIN-side recovery, which the completeness string already carries.
+            return False
         return self.loss_coverage_pct is not None and self.loss_coverage_pct < LOSS_COVERAGE_FLOOR
 
 
@@ -390,6 +403,8 @@ def build_pm_analysis(conn, wallet: str, category: str, *, now_ts: int,
         loss_omission_pct=(loss_grounding.loss_omission_pct if loss_grounding is not None else None),
         loss_completeness=(loss_grounding.completeness if loss_grounding is not None else None),
         loss_coverage_pct=(loss_grounding.coverage_pct if loss_grounding is not None else None),
+        rl_added_losses=(getattr(loss_grounding, "rl_added_losses", None) if loss_grounding is not None else None),
+        loss_basis=(getattr(loss_grounding, "loss_basis", None) if loss_grounding is not None else None),
         score=asdict(_score))
 
 
