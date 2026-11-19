@@ -8,6 +8,43 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## MACE — dashboard re-login button reliability  *(2026-11-18 — filed on Jack's return triage)*
+
+**Problem.** The /mace dashboard re-login button is the sole operator path for restoring an expired
+Robinhood session (two outages while Jack was away: ~19 h from 11-10, ~6 h on 11-16). The button works
+but is finicky; the current workaround is operational, not durable: one click, then approve within
+~90 seconds.
+**Proposed:** harden the button path (clear in-flight state on retry, surface success/failure in the UI,
+alert on session-expired so the outage clock starts at expiry, not at discovery). PARKED by Jack — the
+workaround stands. **Priority:** next MACE maintenance window.
+
+---
+
+## MACE — stale-test cleanup (5 failing)  *(2026-11-18)*
+
+**Problem.** Five MACE tests fail on every run and predate the 11-18 deploys, so every suite gate runs
+as "failure set identical to base" instead of green: `test_mace_config::test_shipped_config_loads`,
+`test_mace_loops::test_manage_loop_fires_in_window`, `test_mace_sizing::test_size_floor_and_cap`,
+`test_mace_strategy_entry::test_clean_entry`, `test_mace_strategy_entry::test_capacity_skip` — stale
+fixture/config assumptions, not product bugs.
+**Proposed:** repin the five to the current shipped config and fixtures so the suite is green and a NEW
+failure is loud. **Priority:** next MACE maintenance window; cheap, test-only.
+
+---
+
+## MACE — quote timeout is still classified as a dead wing  *(2026-11-18 — filed with the stop-guard deploy)*
+
+**Problem.** A 30 s leg-quote timeout and a genuinely unpriceable (dead) wing still produce the same
+input to the structural stop (mark None). The 11-18 guards bound the blast radius — spot-validity +
+one-tick structural confirmation mean the condition must now hold on two consecutive ticks, so a
+transient timeout self-heals — but the classifier gap remains: two consecutive timed-out ticks on a
+liquid wing would still read as structural (the 11-17 SPY-732 −$39 was this class, single-tick).
+**Proposed:** distinguish timeout/transport failure from a truly unpriceable quote in the broker layer
+(tag the None with a reason) so the structural path can require "unpriceable, not timed-out" evidence.
+**Priority:** with the next stop-logic change; the two-consecutive-tick bound stands until then.
+
+---
+
 ## MACE — sizing-basis freshness guard  *(2026-10-23 — filed after the 9-day hang)*
 
 **Problem.** The deploy-cap sizing basis (`mace_equity_snapshot.available_buying_power`, read by

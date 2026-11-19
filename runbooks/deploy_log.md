@@ -13510,3 +13510,33 @@ manages it; RH session re-authed (the 10-26 401 reconcile errors stopped).
 **prod-live fold.** origin/prod-live advanced `411362f8 → <new tip>` (clean FF carrying `52df733c` + this
 ledger; three-way proven: 3 code files CR-md5 == box == target, diff MACE/brokers-scope only, config_hash
 unchanged). [Exact pushed tip recorded in the session report.]
+
+---
+
+## 2026-11-16 → 2026-11-18 — MACE DAY SUMMARY (jack-log): return-from-leave triage — false dead-wing stops guarded, two real GDX stops, cooldown OFF, three deploys GREEN
+
+**11-16 (return).** Jack back after three weeks away; the engine had run unattended since 10-27 with the book
+reconciling clean. Robinhood session expired twice in the window: from 11-10 for ~19 h (restored 11-11
+14:39Z) and on 11-16 for ~6 h (19:36:51Z → 01:40:48Z; both restored by Jack via the dashboard button). During
+the 11-16 outage five rungs parked in `closing` on FALSE dead-wing stops from a spot of 0.0 — no orders
+reached the broker.
+
+**11-17.** All five reopened on the first tick, no orders sent. SPY 732 then stopped FALSELY for −$39: a
+transient 30 s leg-quote timeout made the condor mark None for one tick and the structural fallback read it
+as a dead wing (short put 1¢ ITM) while the condor actually priced ≈63% of the 2× stop level.
+
+**11-18 (three deploys, all GREEN).** (1) 21:24Z stop guards: spot-validity + one-tick structural
+confirmation (`mace/strategy.py` + `mace/manager.py`, commits `28e0ce31`/`b13eabb4`; config_hash
+`931a8214be50` unchanged). (2) 22:54Z Prediction Markets (F1 race-date fix + gate F floor; no MACE files
+touched). (3) 23:25Z cooldown OFF by Jack's ruling — a past stop must never block a MACE entry:
+`entry.stop_cooldown_sessions` 2 → 0, config-only, config_hash `931a8214be50` → `158ea99b2a97`. Separately,
+two REAL GDX stops booked 11-18 before the deploys: −$132 (mark 0.64 ≥ 2.0× credit 0.31) and −$180
+(dead-wing, short ITM at spot 73.685 vs 76 strike); day realized −$312. The guards change nothing for real
+stops. prod-live advanced `a698ea2e → e6624f3d` (PM) `→ 9179b3e5` (MACE cooldown + ledger).
+
+**Open items (filed/held in BACKLOG.md).** Dashboard re-login button reliability — PARKED (workaround: one
+click, approve within ~90 s). Five stale MACE tests (suite gates run as "failure set == base" instead of
+green). A quote timeout is still classified as a dead wing — now bounded by the confirmation tick, not
+eliminated. `entry_max_attempts: 2` stood XLE down at 0.35 on 11-18 (mid 0.385; a third attempt is
+config-forbidden) — Board owns any change. Cooldown-off first live entry round: 11-19 15:45 ET (watch: zero
+`cooldown` skip rows).
