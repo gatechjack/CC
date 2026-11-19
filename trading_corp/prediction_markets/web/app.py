@@ -363,12 +363,16 @@ def _loss_omission_cell(entry: dict | None, now_ts: int) -> dict:
     ts = entry.get("grounded_ts") or 0
     cov = entry.get("coverage_pct")
     truncated = bool(entry.get("activity_truncated"))
+    # RL supplement (2026-11-19): a '+rl'-based grounding gets its losses straight from the open book + the
+    # exhausted closed walk, so truncation/low-coverage no longer floor the OMISSION (they bound only the
+    # win-side recovery). The basis marker rides in the completeness string ('+rl'), so no schema change.
+    rl_based = "+rl" in str(entry.get("completeness") or "")
     return {"known": True, "omission_pct": entry.get("loss_omission_pct"), "coverage_pct": cov,
             "a_only_losses": entry.get("a_only_losses"), "honest_wins": entry.get("honest_wins"),
             "honest_losses": entry.get("honest_losses"), "truncated": truncated,
             # FLOOR = truncated OR under-covered (older losers beyond the window) -- NOT truncation alone, so a
             # low-coverage-but-untruncated omission is not shown as a full measurement.
-            "floor": bool(truncated or (cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)),
+            "floor": bool((truncated or (cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)) and not rl_based),
             "age_days": ((now_ts - ts) / 86400.0) if ts else None}
 
 
@@ -377,7 +381,8 @@ def _load_loss_grounding_map(conn, category: str) -> dict:
     _loss_omission_cell(None) = UNKNOWN. One scan of the per-category-indexed cache; ~O(candidates)."""
     return {r["wallet"]: dict(r) for r in conn.execute(
         "SELECT wallet, honest_wins, honest_losses, a_only_losses, loss_omission_pct, coverage_pct, "
-        "activity_truncated, grounded_ts FROM pm_loss_grounding_cache WHERE category=?", (category,)).fetchall()}
+        "activity_truncated, completeness, grounded_ts FROM pm_loss_grounding_cache WHERE category=?",
+        (category,)).fetchall()}
 
 
 # ── the stored promotion-judge SCORE on the list (migration 023 pm_whale_score) ───────────────────────────
@@ -401,7 +406,12 @@ def _score_cell(row: dict | None, now_ts: int) -> dict:
         grounded = bool(row.get("grounded"))
         cov = row.get("coverage_pct")
         omis = row.get("omission_pct")
-        floor = bool(row.get("omission_floor")) or (grounded and cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)
+        # The low-coverage fallback is belt-and-braces for PRE-RL score rows (scoring skill 'score-1' and older),
+        # where low /activity coverage really did floor the omission. A 'score-2'+ row's omission_floor already
+        # encodes the RL loss_side_complete logic, so the fallback must not re-flag RL-grounded whales.
+        _legacy_score = str(row.get("skill_version") or "score-1") == "score-1"
+        floor = bool(row.get("omission_floor")) or (
+            _legacy_score and grounded and cov is not None and cov < analyze.LOSS_COVERAGE_FLOOR)
         ts = row.get("computed_ts") or 0
         key = scoring.score_sort_key(tier, sort_roi)
         return {
@@ -425,7 +435,7 @@ def _load_whale_score_map(conn, category: str) -> dict:
     try:
         return {r["wallet"]: dict(r) for r in conn.execute(
             "SELECT wallet, tier, reason, sort_roi, honest_roi, grounded, omission_pct, coverage_pct, "
-            "omission_floor, dominance_net, two_sided_pct, chalk, copy_fills, computed_ts "
+            "omission_floor, dominance_net, two_sided_pct, chalk, copy_fills, skill_version, computed_ts "
             "FROM pm_whale_score WHERE category=?", (category,)).fetchall()}
     except Exception:  # noqa: BLE001 -- absent table (pre-migration-023) -> honest-empty, never a 500
         return {}
@@ -471,11 +481,14 @@ async def _ground_losses(wallet: str, category: str):
         from ...data.polymarket_data_api_client import PolymarketDataAPIClient
         async with PolymarketDataAPIClient() as client:
             g, honest = await loss_grounding.fetch_and_ground_losses(client, wallet, category, category_of=_row_category)
-        # Only surface a grounded block when /activity actually yielded in-category held-to-resolution decisions to
-        # compare against. A zero-decision fetch has NOTHING to affirm -- rendering "0W/0L honest" would imply we
-        # checked and found nothing when we may simply have no activity feed for this slice -- so treat it as
-        # UNGROUNDED (no block), the honest degrade. `honest` (Phase A) travels with the grounding.
-        return (g, honest) if (g is not None and g.n_activity_held_resolved > 0) else (None, None)
+        # Only surface a grounded block when there is something to affirm: in-category held-to-resolution
+        # decisions from /activity, OR (RL supplement 2026-11-19) a point-in-time-complete loss side -- the RL
+        # and closed walks both reached their terminal page, so even "0 dropped losses" is then a genuine
+        # measurement (a wallet that redeems everything legitimately grounds clean with zero activity signal,
+        # e.g. the 0 RL rows + full closed book case). A fetch that proved NEITHER stays UNGROUNDED (no block),
+        # the honest degrade. `honest` (Phase A) travels with the grounding.
+        ok = g is not None and (g.n_activity_held_resolved > 0 or getattr(g, "loss_side_complete", False))
+        return (g, honest) if ok else (None, None)
     except Exception as exc:   # noqa: BLE001 -- caveat enrichment must never break Analyze; degrade to ungrounded
         log.warning("pm analyze: loss-grounding failed for %s/%s (%s) -- rendering ungrounded",
                     wallet[:10], category, type(exc).__name__)
