@@ -233,6 +233,7 @@ async def run(args) -> int:
 
         last_busy_total = busy_count_since(start_iso, args.cron_log_glob) or 0
         wallet_i = 0
+        chunk_processed = 0   # wallets that actually fetched+analyzed in THIS process (skips don't count)
         for w, ps in todo:
             wallet_i += 1
             # all pairs already cached at v6? -> skip the wallet without any fetch
@@ -383,6 +384,17 @@ async def run(args) -> int:
                 state.save()
                 await asyncio.sleep(args.sleep_pair)
             await asyncio.sleep(args.sleep_wallet)
+            # ── memory hygiene (added after the 2026-11-19 21:31Z OOM kill at 21/302 wallets, ~4.1GB RSS):
+            # big wallet books (full CLOSED walks keep raw API dicts per row) ratchet the allocator high-water
+            # mark ~hundreds of MB per wallet and glibc never returns it, so a long single process starves the
+            # box (which also hosts the live engine). Bound it structurally: exit rc=3 every --max-wallets
+            # wallets; the outer launcher relaunches and the v6 cache + state file resume exactly where we left.
+            chunk_processed += 1
+            if args.max_wallets and chunk_processed >= args.max_wallets:
+                state.save()
+                log.info("CHUNK END: %d wallets fetched+analyzed this process (wallet %d/%d overall); "
+                         "exiting rc=3 for the outer relauncher", chunk_processed, wallet_i, len(todo))
+                return 3
 
     dur = utc_now() - t_start
     with db.connect(args.db) as conn:
@@ -407,6 +419,9 @@ def main() -> int:
     ap.add_argument("--sleep-wallet", type=float, default=3.0)
     ap.add_argument("--sleep-pair", type=float, default=1.0)
     ap.add_argument("--concurrency", type=int, default=2, help="client semaphore (<=2 per the ruling)")
+    ap.add_argument("--max-wallets", type=int, default=0,
+                    help="exit rc=3 after this many wallets with pending work (memory hygiene; the outer "
+                         "launcher relaunches and the v6 cache + state file resume). 0 = unlimited")
     ap.add_argument("--dry-run", action="store_true", help="print scope + estimate, write NOTHING")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
