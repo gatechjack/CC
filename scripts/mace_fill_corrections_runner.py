@@ -56,6 +56,7 @@ def main() -> int:
     uri = f"file:{args.db}?mode={'rw' if args.apply else 'ro'}"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")   # engine may hold brief write locks
 
     def fetch(rid):
         return conn.execute(
