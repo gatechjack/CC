@@ -20,6 +20,7 @@ Spec: reports/prediction_markets/PM_REBUILD_PLAN_2026-08-26.md Stage 5 + section
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 # a decision "was HELD to resolution" (apples-to-apples with a settled loss -- NOT a round-trip that was sold out)
@@ -247,8 +248,18 @@ async def fetch_wallet_grounding_books(client, wallet: str, *, activity_max_page
                 break
         closed_complete = False                               # the capped legacy path cannot assert exhaustion
     if hasattr(client, "fetch_redeemable_lost"):
-        rb = await client.fetch_redeemable_lost(wallet)
-        rl, rl_complete = list(rb.rows), bool(rb.complete)
+        # A FAILED RL walk (exhausted retries, abandoned page) degrades to the legacy activity-only
+        # grounding (rl=None -> loss_basis 'activity' -> the coverage gate applies as before) instead of
+        # failing the whole wallet: bias down, never up (Board ruling 2026-11-19 #2). A PARTIAL walk
+        # (page ceiling, complete=False) keeps its rows but loss_side_complete stays False.
+        try:
+            rb = await client.fetch_redeemable_lost(wallet)
+            rl, rl_complete = list(rb.rows), bool(rb.complete)
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "loss_grounding: REDEEMABLE_LOST walk failed for %s -- grounding degrades to activity-only",
+                wallet[:10])
+            rl, rl_complete = None, False
     else:
         rl, rl_complete = None, False
     return {"acts": acts, "activity_truncated": trunc, "closed": closed,

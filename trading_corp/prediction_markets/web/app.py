@@ -363,10 +363,12 @@ def _loss_omission_cell(entry: dict | None, now_ts: int) -> dict:
     ts = entry.get("grounded_ts") or 0
     cov = entry.get("coverage_pct")
     truncated = bool(entry.get("activity_truncated"))
-    # RL supplement (2026-11-19): a '+rl'-based grounding gets its losses straight from the open book + the
-    # exhausted closed walk, so truncation/low-coverage no longer floor the OMISSION (they bound only the
-    # win-side recovery). The basis marker rides in the completeness string ('+rl'), so no schema change.
-    rl_based = "+rl" in str(entry.get("completeness") or "")
+    # RL supplement (2026-11-19): an RL-grounded pair whose loss side is point-in-time COMPLETE (both the
+    # REDEEMABLE_LOST and the full CLOSED walks terminated cleanly -- Board ruling 2026-11-19 #2) gets its
+    # losses straight from the open book + the exhausted closed walk, so truncation/low-coverage no longer
+    # floor the OMISSION. The marker is the COMPLETE-form completeness string only ('loss-side: +rl'); a
+    # PARTIAL RL walk ('windowed(+rl partial...') keeps the floor exactly as before. No schema change.
+    rl_based = "loss-side: +rl" in str(entry.get("completeness") or "")
     return {"known": True, "omission_pct": entry.get("loss_omission_pct"), "coverage_pct": cov,
             "a_only_losses": entry.get("a_only_losses"), "honest_wins": entry.get("honest_wins"),
             "honest_losses": entry.get("honest_losses"), "truncated": truncated,

@@ -57,24 +57,6 @@ def _row_category(row) -> str:
     return derive_category_from_slug(getattr(row, "event_slug", None), getattr(row, "slug", None))[0]
 
 
-def load_env_file(path: str) -> int:
-    """Python-direct KEY=VALUE loader (never bash-source; feedback_never_bash_source_env_files). Only sets
-    keys that are not already in the environment. Returns how many keys were set."""
-    n = 0
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            k = k.strip()
-            v = v.strip().strip('"').strip("'")
-            if k and k not in os.environ:
-                os.environ[k] = v
-                n += 1
-    return n
-
-
 def utc_now() -> float:
     return time.time()
 
@@ -319,6 +301,12 @@ async def run(args) -> int:
                 try:
                     books = await loss_grounding.fetch_wallet_grounding_books(client, w)
                     stats["consec_429"] = 0
+                    # Board ruling 2026-11-19 #2: record per wallet which walks completed -- loss_side_complete
+                    # (and the scoring gate lift) requires BOTH the RL and CLOSED walks terminal.
+                    state.d.setdefault("wallet_walks", {})[w] = {
+                        "rl_complete": bool(books.get("rl") is not None and books.get("rl_complete")),
+                        "closed_complete": bool(books.get("closed_complete")),
+                        "activity_truncated": bool(books.get("activity_truncated"))}
                     break
                 except PolymarketRateLimitError:
                     stats["consec_429"] += 1
@@ -372,12 +360,17 @@ async def run(args) -> int:
                         stats["usd"] += rep.cost_usd
                     if rep.verdict is not None:
                         st["status"] = "done"
+                        st["walks"] = state.d.get("wallet_walks", {}).get(w)
                         stats["done"] += 1
-                        log.info("[%d/%d wallets] %s/%s DONE tier=%s honest=%sW/%sL om=%s rl_added=%s $%.4f",
+                        wk = st.get("walks") or {}
+                        log.info("[%d/%d wallets] %s/%s DONE tier=%s honest=%sW/%sL om=%s rl_added=%s "
+                                 "walks=rl:%s/closed:%s $%.4f",
                                  wallet_i, len(todo), w[:10], c,
                                  (rep.score or {}).get("tier"), rep.honest_wins, rep.honest_losses,
                                  ("%.3f" % rep.loss_omission_pct) if rep.loss_omission_pct is not None else "-",
-                                 rep.rl_added_losses, rep.cost_usd)
+                                 rep.rl_added_losses,
+                                 "ok" if wk.get("rl_complete") else "PARTIAL",
+                                 "ok" if wk.get("closed_complete") else "PARTIAL", rep.cost_usd)
                     else:
                         st["status"] = "failed:%s" % rep.null_reason
                         stats["failed"] += 1
@@ -408,7 +401,6 @@ async def run(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--db", default=None, help="PM DB path (default: the platform's pm_db_path)")
-    ap.add_argument("--env-file", default=None, help="KEY=VALUE env file (the pm_web unit's; python-parsed)")
     ap.add_argument("--state", default="/home/azureuser/pm_batch_reanalyze_state.json")
     ap.add_argument("--cron-log-glob", default="/home/azureuser/pm_*.log",
                     help="the pm_cli crons' logs (paper-poll + 05:00/05:40/05:50 write here, box crontab 2026-11-19)")
@@ -421,13 +413,12 @@ def main() -> int:
     if args.concurrency > 2:
         log.error("concurrency > 2 is outside the ruling; refusing")
         return 1
-    if args.env_file:
-        n = load_env_file(args.env_file)
-        log.info("env file loaded: %d keys set", n)
     if not args.dry_run and not analyze.is_llm_available():
-        # The SAME scoped, Anthropic-only Key Vault fetch pm_web itself performs at boot (Jack-ruled
-        # least-privilege design 2026-08-31: ONE secret, never load_secrets(), never written to disk).
-        # Needs KEY_VAULT_URI in the environment, exactly like the pm_web unit.
+        # ★ THE ONE approved key mechanism (Board ruling 2026-11-19 #1): pm_web's OWN scoped,
+        # Anthropic-only Key Vault helper (trading_corp/scripts/pm_web.py:_load_anthropic_key_from_keyvault
+        # -- Jack-ruled least-privilege design 2026-08-31). The key lives in THIS process's os.environ only:
+        # never printed, never logged, never written to disk, never in an env file, never on a command line.
+        # No other secret is read. Needs the non-secret KEY_VAULT_URI in the environment, like the unit.
         try:
             from trading_corp.scripts.pm_web import _load_anthropic_key_from_keyvault
             _load_anthropic_key_from_keyvault()
@@ -436,7 +427,7 @@ def main() -> int:
     if not args.dry_run and not analyze.is_llm_available():
         log.error("ANTHROPIC key not reachable in this process -- the narrator would reasoned-null every "
                   "pair and cache NOTHING (only successful verdicts are cached). Set KEY_VAULT_URI (the "
-                  "pm_web unit's) or pass --env-file.")
+                  "pm_web unit's value) in this process's environment.")
         return 1
     return asyncio.run(run(args))
 

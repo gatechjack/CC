@@ -252,6 +252,89 @@ async def test_legacy_fake_client_backcompat_byte_identical():
     assert g.a_only_losses == 1 and g.completeness == "complete(activity exhausted within window)"
 
 
+# ── Board ruling 2026-11-19 #2: loss_side_complete ONLY when BOTH walks terminated cleanly ───────────
+class PartialRLClient(RLClient):
+    """RL walk hits its page ceiling (complete=False) -- rows present but the set is a lower bound."""
+    async def fetch_redeemable_lost(self, wallet, **kw):
+        return _Book(rows=self._rl, complete=False, pages=40, n=len(self._rl))
+
+
+class PartialClosedClient(RLClient):
+    """CLOSED walk hits its page ceiling (complete=False)."""
+    async def fetch_closed_positions_book(self, wallet, **kw):
+        return _Book(rows=self._closed, complete=False, pages=200, n=len(self._closed))
+
+
+class FailingRLClient(RLClient):
+    """RL walk FAILS outright (retries exhausted / abandoned page) -> grounding must degrade to
+    activity-only (bias down, never up), not claim RL basis."""
+    async def fetch_redeemable_lost(self, wallet, **kw):
+        raise RuntimeError("simulated 429-abandoned walk")
+
+
+def _assert_gate_applies(g):
+    """The ruling's condition: a partial walk keeps loss_side_complete False -> the coverage INSUFFICIENT
+    gate and the omission floor apply exactly as before, and every display path reads it as a floor."""
+    assert g.loss_side_complete is False
+    assert "lower bound" in g.completeness
+    kw = dict(wallet="0xw", category="nba", pnls=[1.0], wons=[1], titles=["t"], sort_roi=0.2,
+              n_resolved=100, two_sided_pct=0.1, avg_win_price=0.6, one_sided_roi=0.2)
+    score = scoring.build_score(grounding=g, honest=None, **kw)
+    assert score.omission_floor is True                      # truncated AND not loss_side_complete
+    tier, reason = scoring.assign_tier(n_honest=100, dominance_net=0.1, grounded=True,
+                                       coverage_pct=0.05, sort_roi=0.2, honest_roi=0.15, chalk=False,
+                                       two_sided_pct=0.1, one_sided_roi=0.2,
+                                       loss_side_complete=g.loss_side_complete)
+    assert tier == scoring.TIER_INSUFFICIENT and "coverage" in reason
+
+
+@pytest.mark.asyncio
+async def test_rl_walk_partial_keeps_the_gate():
+    cli = PartialRLClient(acts=[act("c1", 0, "BUY", 100)], closed_rows=[], rl_rows=[rl("c_rl", 0)])
+    books = await loss_grounding.fetch_wallet_grounding_books(cli, "0xw")
+    assert books["rl_complete"] is False and books["closed_complete"] is True
+    books["activity_truncated"] = True                       # the floored-wallet shape
+    g, _ = await loss_grounding.ground_category_from_books(cli, books, "nba", category_of=_catof)
+    assert g.loss_basis == "activity+rl" and g.rl_added_losses == 1   # rows still counted (bias down only)
+    _assert_gate_applies(g)
+
+
+@pytest.mark.asyncio
+async def test_closed_walk_partial_keeps_the_gate():
+    cli = PartialClosedClient(acts=[act("c1", 0, "BUY", 100)], closed_rows=[], rl_rows=[rl("c_rl", 0)])
+    books = await loss_grounding.fetch_wallet_grounding_books(cli, "0xw")
+    assert books["rl_complete"] is True and books["closed_complete"] is False
+    books["activity_truncated"] = True
+    g, _ = await loss_grounding.ground_category_from_books(cli, books, "nba", category_of=_catof)
+    assert g.loss_basis == "activity+rl"
+    _assert_gate_applies(g)
+
+
+@pytest.mark.asyncio
+async def test_rl_walk_failure_degrades_to_activity_basis():
+    cli = FailingRLClient(acts=[act("c1", 0, "BUY", 100)], closed_rows=[], rl_rows=[])
+    books = await loss_grounding.fetch_wallet_grounding_books(cli, "0xw")
+    assert books["rl"] is None and books["rl_complete"] is False
+    g, _ = await loss_grounding.ground_category_from_books(cli, books, "nba", category_of=_catof)
+    assert g.loss_basis == "activity" and g.rl_added_losses == 0 and g.loss_side_complete is False
+
+
+def test_partial_rl_report_still_reads_as_floor():
+    """analyze.loss_is_floor must stay True for a PARTIAL '+rl' grounding (the completeness string carries
+    'lower bound'); only the clean complete form ('loss-side: +rl') lifts the floor."""
+    base = dict(wallet="0xw", category="nba", user_name=None, backfill_complete=True, n_total_rows=1,
+                n_resolved=1, n_excluded=0, n_anomaly=0, wins=1, losses=0, win_rate=1.0,
+                net_realized_pnl=1.0, total_bought=1.0, cost_basis=1.0, roi=1.0, roi_notional=1.0,
+                avg_win_price=0.6, chalk=False, contested=False, n_condition_ids=1, two_sided_pct=0.0,
+                onesided_roi=None, onesided_n=None, data_quality=None, dq_count_pct=0.0, dq_dollar_pct=0.0,
+                data_state="ok", all_quarantined=False, min_resolved=1, rollup_n_resolved=None,
+                reconciled=True, recon_note=None, generated_ts=1, skill_version="6",
+                loss_grounded=True, loss_coverage_pct=0.05, loss_basis="activity+rl")
+    partial = analyze.PMAnalysisReport(
+        **base, loss_completeness="windowed(+rl partial: a positions walk hit its page ceiling -- a_only losses are a lower bound)")
+    assert partial.loss_is_floor is True
+
+
 @pytest.mark.asyncio
 async def test_books_split_grounds_many_categories_from_one_fetch():
     """The batch-runner seam: fetch once, ground per category (no per-category re-fetch)."""
