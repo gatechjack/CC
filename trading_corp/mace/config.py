@@ -125,6 +125,10 @@ class ManagementConfig:
     manage_tick_timeout_sec: int = 600   # outer wait_for on manage_tick; exceeded -> cancel + audit + next tick
     leg_quote_timeout_sec: int = 30      # per broker leg-quote await; exceeded -> that leg None (fail-fast)
     watchdog: WatchdogConfig = WatchdogConfig()  # sibling liveness watchdog (2026-10-23)
+    # Mark-quality check for the mark-path stop (2026-11-19): a tick is WIDE when the quoted
+    # natural sits more than this fraction above the mid (SPY 11-19: 21% -> the mid was quote
+    # geometry, not value). Optional-with-default -> absent from mace.yaml, config_hash preserved.
+    stop_quote_width_max_pct: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -424,6 +428,9 @@ def load_mace_config(
            if "manage_tick_timeout_sec" in m else 600)
     lqt = (num(m, "leg_quote_timeout_sec", "management", typ=int, lo=1)
            if "leg_quote_timeout_sec" in m else 30)
+    # Mark-quality width threshold (2026-11-19) — optional-with-default (config_hash preserved).
+    sqw = (num(m, "stop_quote_width_max_pct", "management", lo=0.0, lo_excl=True)
+           if "stop_quote_width_max_pct" in m else 0.15)
     wd = m.get("watchdog")
     if wd is None:
         wd = {}
@@ -610,6 +617,7 @@ def load_mace_config(
             ),
             manage_tick_timeout_sec=int(mtt),
             leg_quote_timeout_sec=int(lqt),
+            stop_quote_width_max_pct=float(sqw),
             watchdog=WatchdogConfig(
                 enabled=bool(wd_enabled),
                 poll_interval_sec=int(wd_poll),

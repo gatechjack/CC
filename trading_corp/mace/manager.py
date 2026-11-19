@@ -112,6 +112,11 @@ class MaceManager:
         # stop fires only on the SECOND consecutive such tick. In-memory: a restart re-arms,
         # costing at most one extra 5-min tick of delay on a genuine dead-wing breach.
         self._structural_stop_pending: set[str] = set()
+        # Mark-quality confirmation for the mark-path stop (2026-11-19): rung_ids whose
+        # mid >= stop reading sat on WIDE quotes with the far touch under the level on the
+        # prior evaluation. In-memory like the structural set; a restart clears it -> worst
+        # case ONE extra tick of delay, never a missed stop.
+        self._mark_stop_pending: set[str] = set()
 
     # ── small helpers ────────────────────────────────────────────────────
     def _audit(self, kind: str, **payload) -> None:
@@ -541,9 +546,24 @@ class MaceManager:
         else:
             self._structural_stop_pending.discard(rung.rung_id)
 
+        # MARK-QUALITY confirmation for the mark-path stop (2026-11-19): the 11-19 SPY stop
+        # fired on mid 2.47 >= 2.40 while the quoted natural sat >= 3.00 (21% above mid) and
+        # the close printed 1.64 — a wide-quote mid is quote geometry, not value. On a WIDE
+        # tick the mark stop fires tick-one ONLY when even the far-touch anti-natural reads
+        # at/over the level; otherwise one-tick confirmation arms (mirrors the structural set).
+        # Tight ticks are byte-identical to the old rule.
+        mark_stop_confirmed, mark_rule = self._mark_stop_confirmation(rung, snap, mark)
+        structural_rule = (None if not structural_now else
+                           ("structural_fire" if structural_confirmed
+                            else "structural_pending"))
+        if mark_rule is not None or structural_rule is not None:
+            self._emit_stop_evidence(rung, snap, mark, spot,
+                                     rule=(mark_rule or structural_rule))
+
         decision = st.evaluate_management(rung, mark, spot, now, self.cfg, sym_cfg,
                                           exdiv_within=exdiv_within,
-                                          structural_confirmed=structural_confirmed)
+                                          structural_confirmed=structural_confirmed,
+                                          mark_stop_confirmed=mark_stop_confirmed)
         if not decision.should_exit:
             return None     # hold; a riding rung stays riding silently (sticky to close/escape/expiry)
         # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.
@@ -589,6 +609,63 @@ class MaceManager:
         return await self.executor.close_rung(
             rung, decision.exit_reason, pricing=pricing, defer_on_unfilled=defer,
             trigger_mid=mark)
+
+    def _mark_stop_confirmation(self, rung: RungState, snap,
+                                mark: Optional[float]) -> tuple[bool, Optional[str]]:
+        """Mark-quality confirmation for the mark-path stop (2026-11-19). Returns
+        (mark_stop_confirmed, rule) and maintains the in-memory pending set.
+
+        rule (for the evidence row): 'mark_tight' (quotes tight -> old single-tick rule),
+        'mark_far_touch' (wide, but even the anti-natural is at/over the level -> fire),
+        'mark_confirmed' (second consecutive ambiguous tick -> fire), 'mark_pending'
+        (first ambiguous tick -> hold one tick), None (no mark stop this tick).
+
+        A PRICED tick under the stop level clears pending; an UNPRICEABLE tick keeps it
+        (no evidence either way — the structural path owns unpriceable marks). A restart
+        clears the set: worst case ONE extra tick of delay, never a missed stop (the
+        condition persists and re-confirms on the next evaluation)."""
+        m = self.cfg.management
+        rid = rung.rung_id
+        level = (m.stop_multiple * rung.credit_actual
+                 if rung.credit_actual is not None else None)
+        stop_now = mark is not None and level is not None and mark >= level
+        if not stop_now:
+            if mark is not None:
+                self._mark_stop_pending.discard(rid)
+            return True, None
+        if not st.mark_is_wide(mark, snap.natural_debit, m):
+            self._mark_stop_pending.discard(rid)
+            return True, "mark_tight"
+        anti = snap.anti_natural
+        if anti is not None and anti >= level:
+            self._mark_stop_pending.discard(rid)
+            return True, "mark_far_touch"
+        if rid in self._mark_stop_pending:
+            return True, "mark_confirmed"
+        self._audit("mace_mark_stop_pending", rung_id=rid, symbol=rung.symbol,
+                    mark=mark, natural=snap.natural_debit, anti_natural=anti,
+                    stop_level=level,
+                    detail="mark >= stop on WIDE quotes, far touch under the level; "
+                           "held one tick for confirmation")
+        self._mark_stop_pending.add(rid)
+        return False, "mark_pending"
+
+    def _emit_stop_evidence(self, rung: RungState, snap, mark: Optional[float],
+                            spot: Optional[float], *, rule: str) -> None:
+        """One audit row per stop-trigger tick (fired OR pending) with the full quote
+        picture, so any stop can be reconstructed afterwards (2026-11-19: per-tick quotes
+        were not stored and the SPY 2.47 trigger could not be). self._audit never raises."""
+        def leg(q):
+            return {"bid": getattr(q, "bid", None), "ask": getattr(q, "ask", None),
+                    "mid": getattr(q, "mid", None)}
+        m = self.cfg.management
+        level = (m.stop_multiple * rung.credit_actual
+                 if rung.credit_actual is not None else None)
+        self._audit("mace_stop_quote_evidence", rung_id=rung.rung_id, symbol=rung.symbol,
+                    rule=rule, mark=mark, natural=snap.natural_debit,
+                    anti_natural=snap.anti_natural, spot=spot, stop_level=level,
+                    legs={"sp": leg(snap.sp), "lp": leg(snap.lp),
+                          "sc": leg(snap.sc), "lc": leg(snap.lc)})
 
     async def _drive_closing(self, rung: RungState, now: datetime) -> Optional[ExitOutcome]:
         """Drive a rung in status=CLOSING (2026-10-09 un-latch). Replaces the old blind
@@ -639,6 +716,12 @@ class MaceManager:
                 # self-heal (keep the existing redrive/park path); reopen only on real quotes.
                 has_info = (chk_mark is not None
                             or (chk_spot is not None and chk_spot > 0))
+                # 2026-11-19 mark-quality note: this re-eval runs with mark_stop_confirmed=True
+                # (the armed test). The reopen boundary is therefore mark < level on valid
+                # inputs — IDENTICAL to the pending-clear boundary in _mark_stop_confirmation —
+                # so a rung is stopped and reopened by the SAME rule: wide-but-over-level quotes
+                # keep it closing (never reopen on ambiguity); only a mid genuinely under the
+                # level reopens.
                 if has_info and not st.stop_triggered(rung, chk_mark, chk_spot,
                                                       self.cfg.management):
                     working = await self.executor._working_exit_order(rid)

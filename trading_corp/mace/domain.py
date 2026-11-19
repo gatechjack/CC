@@ -179,6 +179,18 @@ class QuoteSnapshot:
         return (self.sp.ask + self.sc.ask) - (self.lp.bid + self.lc.bid)
 
     @property
+    def anti_natural(self) -> float | None:
+        """Most FAVORABLE displayed cost-to-close = buy shorts @ bid, sell wings @ ask — the
+        far-touch LOWER bound of the quoted market (2026-11-19 mark-quality check). When even
+        this reads at/over the stop level, the position is past the stop on ANY reading of the
+        displayed quotes, however wide they are. None if any required side is missing."""
+        if None in (self.sp, self.lp, self.sc, self.lc):
+            return None
+        if self.sp.bid is None or self.sc.bid is None or self.lp.ask is None or self.lc.ask is None:
+            return None
+        return (self.sp.bid + self.sc.bid) - (self.lp.ask + self.lc.ask)
+
+    @property
     def stop_natural(self) -> float | None:
         """Executable cost-to-close for a RISK close: shorts @ ask, wings @ (bid or 0). A dead
         wing is given away (floored to 0) so a stop is NEVER un-fillable on a no-bid wing. None

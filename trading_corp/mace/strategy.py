@@ -820,8 +820,21 @@ class ManageDecision:
         return self.exit_reason is not None
 
 
+def mark_is_wide(mark: float | None, natural: float | None,
+                 m: "ManagementConfig") -> bool:
+    """WIDE-quote tick: the cross-the-spread cost (natural) sits more than
+    stop_quote_width_max_pct above the mid. The mid is then quote geometry, not value
+    (2026-11-19 SPY 729/726-782/785: mid 2.47 with natural >= 3.00 -> 21% wide; the
+    close printed 1.64, 32% below the stop level). Missing natural or a non-positive
+    mid -> NOT wide (no evidence of width -> the old single-tick rule applies)."""
+    if mark is None or natural is None or mark <= 0:
+        return False
+    return (natural - mark) / mark > m.stop_quote_width_max_pct
+
+
 def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
-                   m: "ManagementConfig", *, structural_confirmed: bool = True) -> bool:
+                   m: "ManagementConfig", *, structural_confirmed: bool = True,
+                   mark_stop_confirmed: bool = True) -> bool:
     """A stop fires when cost-to-close has reached stop_multiple x credit.
 
     Measured on the plain MID `mark` (all four legs two-sided). When the plain mark is UNPRICEABLE
@@ -849,11 +862,22 @@ def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
     the 2x test resumes), while a genuine dead-wing breach persists and exits one tick later.
     The manager tracks the streak and passes the flag; default True preserves the single-shot
     semantics for callers with no tick history (the CLOSING re-eval, where the stop has already
-    fired once and the armed test is the correct re-check)."""
+    fired once and the armed test is the correct re-check).
+
+    2026-11-19 mark-quality confirmation (`mark_stop_confirmed`): on a WIDE-quote tick
+    (mark_is_wide) whose far-touch anti-natural sits UNDER the stop level, the mid >= stop
+    reading is ambiguous — the manager arms one-tick confirmation (mirroring the structural
+    set) and passes False here; a tight tick, an anti-natural at/over the level, or a second
+    consecutive ambiguous tick passes True. Default True keeps every other caller — including
+    the CLOSING self-heal — on the armed test, so the reopen boundary (mark < level on valid
+    inputs) is IDENTICAL to the pending-clear boundary: a rung cannot be stopped under one
+    test and reopened under another."""
     if rung.credit_actual is None:
         return False
     if mark is not None:
-        return mark >= m.stop_multiple * rung.credit_actual
+        if mark < m.stop_multiple * rung.credit_actual:
+            return False
+        return mark_stop_confirmed
     # Plain mark unpriceable (dead/one-sided wing): structural risk only -- a SHORT ITM,
     # confirmed on two consecutive evaluations.
     if not structural_confirmed:
@@ -866,7 +890,8 @@ def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
 def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
                         now_et: datetime, cfg: MaceConfig, symbol_cfg: SymbolConfig,
                         *, exdiv_within: bool,
-                        structural_confirmed: bool = True) -> ManageDecision:
+                        structural_confirmed: bool = True,
+                        mark_stop_confirmed: bool = True) -> ManageDecision:
     """Precedence: stop > PT > time > exdiv. `mark` = cost-to-close at mid (net
     debit to exit). The 09:35 tick IS the gap rule (no separate branch).
     `exdiv_within` is the calendar side (caller uses mace.exdiv.MaceExDiv).
@@ -885,7 +910,8 @@ def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
     SPURIOUS stops on healthy illiquid-wing OTM condors."""
     m = cfg.management
     # stop: cost-to-close >= stop_multiple x credit (plain mid mark; dead-wing -> short-ITM fallback).
-    if stop_triggered(rung, mark, spot, m, structural_confirmed=structural_confirmed):
+    if stop_triggered(rung, mark, spot, m, structural_confirmed=structural_confirmed,
+                      mark_stop_confirmed=mark_stop_confirmed):
         if mark is not None:
             detail = (f"mark {mark:.2f} >= {m.stop_multiple}x credit {rung.credit_actual:.2f}")
         else:
