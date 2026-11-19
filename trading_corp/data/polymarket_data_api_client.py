@@ -807,6 +807,81 @@ class PolymarketDataAPIClient:
         )
         return [ClosedPositionRow.from_api(r) for r in rows if isinstance(r, dict)]
 
+    # ── RL-grounding additions (2026-11-19). ★ ADDITIVE ONLY: this file is imported by the ENGINE and the
+    # pm_cli crons, so the two methods below are NEW surface — no existing signature or behaviour changes.
+    # They deliberately do NOT reuse `_paged_rows` (its offset-translation cache is tuned for the legacy
+    # offset contract); they cursor-walk exactly like `fetch_positions_book`, which stays untouched. ──────
+    async def _walk_positions_filtered(
+        self, wallet: str, *, status: str, include_archived: bool = False,
+        page_size: int = 500, max_pages: int = 40, label_tag: str = "positions-filtered",
+        row_factory=PositionRow.from_api,
+    ) -> PositionBook:
+        """Cursor-walk `/v2/positions` with an explicit `status` filter (same walk/terminal/de-dupe
+        semantics as `fetch_positions_book`; `complete` is the load-bearing field). `row_factory`
+        parses each raw dict (PositionRow for open-side statuses, ClosedPositionRow for CLOSED)."""
+        endpoint = _endpoint_key(f"{_DATA_API_V2}/positions")
+        seen: set[tuple[str, str]] = set()
+        rows: list = []
+        pages = 0
+        complete = False
+        cursor: str | None = None
+        while pages < max_pages:
+            params: dict[str, Any] = {"user": wallet, "status": status, "limit": int(page_size)}
+            if include_archived:
+                # measured 2026-11-19: both spellings are accepted; snake_case matches the v2 param style
+                params["include_archived"] = "true"
+            if cursor:
+                params["cursor"] = cursor
+            label = f"{label_tag}[{wallet[:10]}…, status={status}, page={pages}]"
+            payload = await self._get_json(
+                f"{_DATA_API_V2}/positions", params=params, label=label,
+            )
+            pages += 1
+            page_rows, pagination = _unwrap_v2(payload, label, endpoint=endpoint)
+            for r in page_rows:
+                if not isinstance(r, dict):
+                    continue
+                key = (str(r.get("condition_id") or ""), str(r.get("token_id") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row_factory(r))
+            next_cursor = pagination.get("next_cursor") if isinstance(pagination, dict) else None
+            if not next_cursor:                     # terminal — the API offered no continuation
+                complete = True
+                break
+            cursor = str(next_cursor)
+        return PositionBook(rows=rows, complete=complete, pages=pages, n=len(rows))
+
+    async def fetch_redeemable_lost(
+        self, wallet: str, *, page_size: int = 500, max_pages: int = 40,
+    ) -> PositionBook:
+        """A wallet's held-to-resolution LOSING positions: `/v2/positions?status=REDEEMABLE_LOST` with
+        `include_archived=true`. Docs: OPEN "includes settled-but-unredeemed winners, which REDEEMABLE
+        narrows to"; REDEEMABLE_LOST is the losing-side counterpart (rows ride with row-status REDEEMABLE).
+        These rows never reach CLOSED while held, which is exactly the loss-omission class loss-grounding
+        recovers. Callers gamma-referee every row (measured 2026-11-19: 0 false losses in 6,383 rows, but
+        the referee stays). `complete` False -> the loss-side set is a lower bound."""
+        return await self._walk_positions_filtered(
+            wallet, status="REDEEMABLE_LOST", include_archived=True,
+            page_size=page_size, max_pages=max_pages, label_tag="redeemable-lost",
+        )
+
+    async def fetch_closed_positions_book(
+        self, wallet: str, *, page_size: int = 500, max_pages: int = 200,
+    ) -> PositionBook:
+        """A wallet's FULL live CLOSED history (`status=CLOSED`), cursor-walked to exhaustion. The
+        loss-grounding comparison basis (Jack 2026-11-19): a STALE stored closed basis paired with a live
+        REDEEMABLE_LOST loss side would count recent losses while missing recent redeemed WINS, so grounding
+        walks CLOSED live instead of reading pm_closed_position. `include_archived` is rejected with
+        status=CLOSED (docs), so it is never sent here. Rows are `ClosedPositionRow`s — the same shape
+        `fetch_closed_positions` serves, so grounding consumes either source unchanged."""
+        return await self._walk_positions_filtered(
+            wallet, status="CLOSED", include_archived=False,
+            page_size=page_size, max_pages=max_pages, label_tag="closed-book",
+            row_factory=ClosedPositionRow.from_api,
+        )
+
     async def fetch_market_resolutions(
         self, condition_ids: list[str], *, chunk_size: int = 50,
     ) -> dict[str, dict]:
