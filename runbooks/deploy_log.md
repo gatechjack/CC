@@ -116,6 +116,51 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-19 21:43 UTC — MACE: one-time fill-basis CORRECTION applied to mace_rung (28 closed rungs re-booked at their Robinhood fills; agent-driven, autonomous under explicit Board authorization)
+
+**Runner:** `scripts/mace_fill_corrections_runner.py` + `analysis_fix/mace_fill_corrections_2026-11-19.csv` (commits 9c5a304c + 1546dc7d, branch `mace-equity-fill-fixes-2026-11-19`), run from `/home/azureuser/fill_correction_20261119/`
+**Triggered by:** Board brief 2026-11-19 (step 2 of the fill-fix deploy): audit of all 54 closed rungs vs Robinhood order fills (processed_premium / per-leg executions) found 28 rungs booked at ladder limits, not fills
+**Backup:** DB table `mace_rung_backup_fill_20261119T214326Z` (full mace_rung, 67 rows) + pre-image JSON `/home/azureuser/fill_correction_20261119/mace_fill_corrections_2026-11-19.pre_20261119T214326Z.json`
+
+**What changed:** credit_actual / exit_debit / realized_pnl on 28 closed rungs (dry-run verified every current value == audited old value; all 28 status=closed; idempotent, old-value-pinned, all-or-nothing). No open/closing/abandoned rung touched; census 3/54/10 unchanged.
+**Totals:** realized (closed) **−520.00 → +114.00** (delta +634.00). Per symbol after: SPY +867, GDX −666, XLE −159, IBIT −74, IWM +146. Largest single fixes: SPY 729/726-782/785 11-19 stop −360→−82; GDX 81/79 10-30 stop −266→−124; XLE 63.5/62 11-05 stop −172→−48.
+**Rollback (one step):**
+```bash
+ssh azureuser@trading.jacksumner.com "sqlite3 /home/azureuser/trading_corp/data/trading_corp.db \"UPDATE mace_rung SET credit_actual=b.credit_actual, exit_debit=b.exit_debit, realized_pnl=b.realized_pnl FROM mace_rung_backup_fill_20261119T214326Z b WHERE b.rung_id=mace_rung.rung_id AND mace_rung.status='closed'\""
+# then SELECT SUM(realized_pnl) must read -520.00 again.
+```
+
+---
+
+## 2026-11-19 21:40 UTC — MACE: sizing-basis entry gate + fill-basis booking DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 35438ff0 (gate 0 skips only when no usable sizing basis) + b97b0f45 (book entries/exits at the actual fill) on branch `mace-equity-fill-fixes-2026-11-19` (BASE 28ebc19f)
+**Triggered by:** Board brief 2026-11-19 after the 20:40:04Z equity-0.0 blanked entry round and the SPY stop booked at 3.00 vs 1.64 actual
+**Backup:** `/home/azureuser/mace_fillfix_graft_backup_20261119T214017Z/` (strategy.py 04164e9a, execution.py e380c2f6, kept)
+
+**Files deployed (2):**
+- `trading_corp/mace/strategy.py` — gate 0: skip `no_equity_snapshot` only when NOT `_uses_available_bp` AND equity unusable; equity 0/None with a valid available-BP snapshot no longer blanks the round. md5 04164e9a → 560847a7.
+- `trading_corp/mace/execution.py` — all five booking sites (exit ladder ×2, entry ×2 paths, resting-PT ×2 callers) book the broker's processed net per contract (processed_premium, else leg executions, via OrderResult.raw; immediate-fill path does ONE order_status read-back); limit is the audited fallback (`mace_fill_booked_at_limit`). md5 e380c2f6 → 34b184a1.
+
+**Features shipped:**
+- A zero/missing RH portfolio `equity` reading (brokers/robinhood.py:575) can no longer blank an entry round while available_buying_power is valid; the no-usable-basis fail-safe and the legacy equity fallback are unchanged. Breakers untouched (and still fail-open at equity<=0 — flagged, out of scope).
+- Realized P&L now books what the broker processed, not the ladder limit; new audit kinds `mace_fill_booked_at_limit` + `mace_fill_detail_error`. One extra read-only order_status call per fill.
+
+**Verification:**
+- Suite on branch: 449 tests / 5 failures == the known stale set byte-identical; 16 new tests green (tests/test_mace_sizing_basis_gate.py 6, tests/test_mace_fill_booking.py 10, incl. a fill better than the limit and both fallbacks).
+- Pre-flight (21:37Z): box == BASE md5s (strategy 04164e9a, execution e380c2f6, manager 8f367a43, mace.yaml 7af8900c), config_hash 158ea99b2a97, LIVE, healthz+mace 200, session authenticated, no submitting/closing rungs, 0 order/fill audit rows in 5 min, cross-division reconcile 0 missing / 0 orphan over 15 min (30 rows; PM-note check), disk 7.5G free. PM reanalyze batch not running.
+- Graft gates (21:40:17Z): drift==BASE → backup → staged==TARGET → post==TARGET → py_compile both.
+- Restart 21:40:44Z: MainPID 1008114 → 1022486; wired line logs config_hash=158ea99b2a97 UNCHANGED (no-config-change was the criterion); LIVE; 5 MACE schedulers incl. watchdog; all six divisions online (PM's new client file loaded for the first time, cleared by PM for after 16:05 ET; 0 tracebacks); healthz+mace 200; census 3/54/10 and entry_halt (false) == baseline; session authenticated, 0 401-ish since boot.
+- First live observables: 2026-11-20 15:40 ET snapshot (equity + ABP values; zero `no_equity_snapshot` skips expected even if equity reads 0) and any fill's booked price vs the Robinhood order (zero `mace_fill_booked_at_limit` rows expected on the happy path).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_fillfix_graft_backup_20261119T214017Z/strategy.py /home/azureuser/trading_corp/trading_corp/mace/strategy.py && cp -p /home/azureuser/mace_fillfix_graft_backup_20261119T214017Z/execution.py /home/azureuser/trading_corp/trading_corp/mace/execution.py && md5sum /home/azureuser/trading_corp/trading_corp/mace/strategy.py /home/azureuser/trading_corp/trading_corp/mace/execution.py"
+# expect 04164e9a... and e380c2f6...; then one engine restart (restart_tc.ps1); wired line must still log config_hash=158ea99b2a97.
+```
+
+---
+
 ## 2026-11-18 23:25 UTC — MACE: post-stop cooldown OFF (stop_cooldown_sessions 2 → 0) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
 
 **Commits:** 61521140 (cherry-pick of 698df35e) on branch `mace-cooldown-off-r2-2026-11-18` (BASE e6624f3d)
