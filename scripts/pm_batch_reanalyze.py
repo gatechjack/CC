@@ -277,7 +277,10 @@ async def run(args) -> int:
                 await asyncio.sleep(wait)
             if baseline is not None:
                 cur = engine_429_count()
-                if cur is not None and cur > baseline:
+                # "rises above its pre-batch baseline" operationalized with a noise band: the engine's own
+                # polling already logs ~60-70 429/HARD-FAIL per 15 min (measured pre-batch 2026-11-19), so a
+                # literal > would pause on Poisson noise. A MATERIAL rise = +50% (at least +10). Disclosed.
+                if cur is not None and cur > baseline + max(10, baseline // 2):
                     stats["engine_pauses_row"] += 1
                     stats["pauses"].append({"ts": time.strftime("%H:%M:%SZ", time.gmtime()),
                                             "why": "engine 429/HARD-FAIL %d > baseline %d" % (cur, baseline),
@@ -407,7 +410,8 @@ def main() -> int:
     ap.add_argument("--db", default=None, help="PM DB path (default: the platform's pm_db_path)")
     ap.add_argument("--env-file", default=None, help="KEY=VALUE env file (the pm_web unit's; python-parsed)")
     ap.add_argument("--state", default="/home/azureuser/pm_batch_reanalyze_state.json")
-    ap.add_argument("--cron-log-glob", default="/home/azureuser/trading_corp/logs/*.log")
+    ap.add_argument("--cron-log-glob", default="/home/azureuser/pm_*.log",
+                    help="the pm_cli crons' logs (paper-poll + 05:00/05:40/05:50 write here, box crontab 2026-11-19)")
     ap.add_argument("--sleep-wallet", type=float, default=3.0)
     ap.add_argument("--sleep-pair", type=float, default=1.0)
     ap.add_argument("--concurrency", type=int, default=2, help="client semaphore (<=2 per the ruling)")
@@ -421,8 +425,18 @@ def main() -> int:
         n = load_env_file(args.env_file)
         log.info("env file loaded: %d keys set", n)
     if not args.dry_run and not analyze.is_llm_available():
+        # The SAME scoped, Anthropic-only Key Vault fetch pm_web itself performs at boot (Jack-ruled
+        # least-privilege design 2026-08-31: ONE secret, never load_secrets(), never written to disk).
+        # Needs KEY_VAULT_URI in the environment, exactly like the pm_web unit.
+        try:
+            from trading_corp.scripts.pm_web import _load_anthropic_key_from_keyvault
+            _load_anthropic_key_from_keyvault()
+        except Exception as e:  # noqa: BLE001
+            log.warning("scoped Anthropic Key Vault fetch failed: %r", e)
+    if not args.dry_run and not analyze.is_llm_available():
         log.error("ANTHROPIC key not reachable in this process -- the narrator would reasoned-null every "
-                  "pair and cache nothing. Pass --env-file with the pm_web unit's environment file.")
+                  "pair and cache NOTHING (only successful verdicts are cached). Set KEY_VAULT_URI (the "
+                  "pm_web unit's) or pass --env-file.")
         return 1
     return asyncio.run(run(args))
 
