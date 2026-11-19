@@ -66,7 +66,10 @@ TWO_SIDED_HIGH = 0.40       # INVENTED: two-sided share above which the ROI is a
 CHALK_HI = 0.85            # avg winning price at/above which the profile is favorite-farming (matches stats.CHALK_HI).
 PASS_ROI = 0.0             # NOT invented: cost-ROI at/below zero is no edge, by definition.
 
-SKILL_VERSION = "score-1"   # bump on ANY change to this module's thresholds/logic OR analyze's prompt -> cache miss.
+SKILL_VERSION = "score-2"   # bump on ANY change to this module's thresholds/logic OR analyze's prompt -> cache miss.
+#   "score-1"->"score-2" (2026-11-19, RL supplement): loss_side_complete lifts the coverage INSUFFICIENT gate and
+#   the omission floor for RL-grounded whales (losses come from the open book + exhausted closed walk, so low
+#   /activity coverage bounds only the win-side recovery). Display code keys the floor fallback off this version.
 
 
 @dataclass(frozen=True)
@@ -143,7 +146,7 @@ def _f(v) -> float:
         return 0.0
 
 
-def honest_windowed_roi(activity_rows, closed_rows, resolutions: dict) -> HonestWindowedReturn:
+def honest_windowed_roi(activity_rows, closed_rows, resolutions: dict, *, rl_rows=None) -> HonestWindowedReturn:
     """Cost-based ROI over the honest windowed set. `activity_rows`/`closed_rows`/`resolutions` are the SAME rows
     loss_grounding.ground_losses consumes (so this rides the one grounding fetch). Closed rows contribute
     cost=total_bought*avg_price (GROSS buy), pnl=realized_pnl. A_only held-to-resolution rows (in /activity, ABSENT
@@ -152,7 +155,14 @@ def honest_windowed_roi(activity_rows, closed_rows, resolutions: dict) -> Honest
     sale proceeds - gross buy. ★ The gross basis is the fix for the partial-sale-winner inflation: a net-of-sales
     denominator (buy_usd - sell_usd) shrinks the basis while the full held payout is still credited, over-stating the
     return -- e.g. BUY 100@$0.50, SELL 40@$0.75, hold 60 to a WIN reads +80% on the gross basis, +200% on the net one.
-    Pure; mirrors the loss_grounding held/won conventions and the closed side's denominator."""
+    Pure; mirrors the loss_grounding held/won conventions and the closed side's denominator.
+
+    `rl_rows` (RL supplement 2026-11-19): GAMMA-CONFIRMED-LOST PositionRows from status=REDEEMABLE_LOST (the
+    caller -- loss_grounding.ground_category_from_books -- does the gamma filtering, keeping this pure). Each
+    key not already priced via the closed or A_only sides adds cost = entry cost (initial_value) and
+    pnl = current_value - entry cost (≈ -cost for a held-to-zero loser), so the honest ROI judges the SAME
+    loss set as the grounded omission. Sale proceeds of a partly-sold RL position live in its CLOSED row
+    (measured 2026-11-19: redeemed/sold legs reach CLOSED), so only the HELD leg is added here."""
     # aggregate size + usdc per (cid, oi) from TRADE activity
     agg: dict = {}
     for a in activity_rows:
@@ -184,6 +194,7 @@ def honest_windowed_roi(activity_rows, closed_rows, resolutions: dict) -> Honest
                 pass
     cost = pnl = 0.0
     n = 0
+    counted: set = set()          # A_only keys actually priced, so the RL pass below never double-counts one
     # closed side: cost = total_bought * avg_price (the ruled ROI denominator); pnl = realized_pnl
     for c in closed_rows:
         cb = _f(getattr(c, "total_bought", 0.0)) * _f(getattr(c, "avg_price", 0.0))
@@ -212,6 +223,24 @@ def honest_windowed_roi(activity_rows, closed_rows, resolutions: dict) -> Honest
         # loss (held-to-worthless): sales - buy.
         cost += buy_usd
         pnl += (net_sz + sell_usd - buy_usd) if won else (sell_usd - buy_usd)
+        n += 1
+        counted.add((cid, oi))
+    # RL supplement: gamma-confirmed held-to-zero losers the /activity window never reached (see docstring)
+    for r in rl_rows or []:
+        cid = getattr(r, "condition_id", None)
+        oi = (getattr(r, "extra", None) or {}).get("outcomeIndex")
+        try:
+            key = (cid, int(oi)) if (cid and oi is not None) else None
+        except (TypeError, ValueError):
+            key = None
+        if key is None or key in closed_keys or key in counted:
+            continue
+        counted.add(key)
+        cost_r = _f(getattr(r, "initial_value", 0.0))
+        if cost_r <= 0:
+            continue
+        cost += cost_r
+        pnl += _f(getattr(r, "current_value", 0.0)) - cost_r
         n += 1
     roi = (pnl / cost) if cost > 0 else None
     return HonestWindowedReturn(cost, pnl, roi, n)
@@ -261,7 +290,11 @@ def build_score(*, wallet: str, category: str, pnls, wons, titles,
     grounded = grounding is not None
     omission_pct = getattr(grounding, "loss_omission_pct", None) if grounded else None
     coverage_pct = getattr(grounding, "coverage_pct", None) if grounded else None
-    omission_floor = bool(getattr(grounding, "activity_truncated", False)) if grounded else False
+    # RL supplement (2026-11-19): when the loss side is point-in-time complete (RL + full closed walks both
+    # terminal), activity truncation no longer floors the OMISSION -- the losses came from the open book, not
+    # the window. A legacy LossGrounding (no RL fields) defaults to False -> behaviour unchanged.
+    loss_side_complete = bool(getattr(grounding, "loss_side_complete", False)) if grounded else False
+    omission_floor = (bool(getattr(grounding, "activity_truncated", False)) and not loss_side_complete) if grounded else False
     if grounded:
         hw, hl = getattr(grounding, "honest_wins", 0) or 0, getattr(grounding, "honest_losses", 0) or 0
         n_honest = int(hw) + int(hl)
@@ -270,7 +303,8 @@ def build_score(*, wallet: str, category: str, pnls, wons, titles,
     honest_roi = getattr(honest, "honest_roi", None) if honest is not None else None
     tier, reason = assign_tier(n_honest=n_honest, dominance_net=dom.net_share, grounded=grounded,
                                coverage_pct=coverage_pct, sort_roi=sort_roi, honest_roi=honest_roi, chalk=chalk,
-                               two_sided_pct=two_sided_pct, one_sided_roi=one_sided_roi)
+                               two_sided_pct=two_sided_pct, one_sided_roi=one_sided_roi,
+                               loss_side_complete=loss_side_complete)
     return WhaleScore(
         wallet=(wallet or "").lower(), category=category, tier=tier, reason=reason, sort_roi=sort_roi,
         n_resolved=int(n_resolved), n_honest=n_honest, grounded=grounded, omission_pct=omission_pct,
@@ -283,7 +317,8 @@ def build_score(*, wallet: str, category: str, pnls, wons, titles,
 
 def assign_tier(*, n_honest: int, dominance_net: float | None, grounded: bool, coverage_pct: float | None,
                 sort_roi: float | None, honest_roi: float | None, chalk: bool,
-                two_sided_pct: float | None, one_sided_roi: float | None) -> tuple[str, str]:
+                two_sided_pct: float | None, one_sided_roi: float | None,
+                loss_side_complete: bool = False) -> tuple[str, str]:
     """(tier, one-phrase reason). Top-down; first match wins. See ANALYZE_UPGRADE_RESEARCH S9a. Ruling 2: real copy
     P&L is NEVER a gate here (12 fills is noise) -- it is display-only. Ungrounded -> cannot PROMOTE (omission UNKNOWN)."""
     # 1. INSUFFICIENT-DATA GATE (not a low rank -- 'watch, not yet judgeable')
@@ -291,7 +326,11 @@ def assign_tier(*, n_honest: int, dominance_net: float | None, grounded: bool, c
         return TIER_INSUFFICIENT, "n_honest=%d < %d (too thin to judge)" % (n_honest, MIN_N_HONEST)
     if dominance_net is not None and dominance_net > DOM_EXTREME_NET:
         return TIER_INSUFFICIENT, "one position is %.0f%% of net -- a bet, not a track record" % (100 * dominance_net)
-    if grounded and coverage_pct is not None and coverage_pct < COVERAGE_FLOOR:
+    # RL supplement (2026-11-19): with `loss_side_complete` the losses come straight from the open book
+    # (REDEEMABLE_LOST) + the exhausted closed walk, so low /activity coverage no longer means "win-rate is
+    # only a floor" -- the win-rate's loss denominator is point-in-time complete. The gate stays for legacy
+    # (activity-only) groundings, where low coverage really does leave the omission a floor.
+    if grounded and not loss_side_complete and coverage_pct is not None and coverage_pct < COVERAGE_FLOOR:
         return TIER_INSUFFICIENT, "grounding coverage %.0f%% < %.0f%% -- win-rate is only a floor" % (
             100 * coverage_pct, 100 * COVERAGE_FLOOR)
     # 2. PASS -- no honest edge
