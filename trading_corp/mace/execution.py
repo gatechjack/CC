@@ -41,12 +41,15 @@ Load-bearing invariants (plan § Behavior specifications):
   id per attempt is required; reconcile matches a crash-orphaned `submitting`
   rung against broker orders by that combo_id prefix.
 
-  CREDIT BASIS. `credit_actual` is the marketable limit of the attempt that
-  filled. A net-credit order fills at its limit or better, so this is the
-  conservative (never-overstated) credit basis, and it is broker-neutral (no raw
-  order-dict parsing crosses the port). It is persisted onto the `submitting`
-  anchor BEFORE each place so a crash between fill and promote recovers the right
-  credit in reconcile. Realized P&L = (credit_actual − exit_debit)·100·contracts.
+  FILL BASIS (2026-11-19). `credit_actual` and `exit_debit` book the broker's
+  ACTUAL processed net per contract, read from the filled order's own payload
+  (`processed_premium`, else per-leg executions) via OrderResult.raw -- the limit
+  of the filled attempt is the audited fallback only (`mace_fill_booked_at_limit`).
+  Rationale: a marketable close's limit can sit far above the print (SPY
+  729/726-782/785 2026-11-19: limit 3.00, actual 1.64 -> -$360 booked vs -$88
+  real). The limit is still persisted onto the `submitting` anchor BEFORE each
+  place so a crash between fill and promote recovers a conservative credit in
+  reconcile. Realized P&L = (credit_actual − exit_debit)·100·contracts.
 """
 from __future__ import annotations
 
@@ -978,10 +981,81 @@ class MaceExecutor:
                 return True
         return False
 
+    # ── actual-fill extraction (2026-11-19: book fills, not limits) ─────────
+    @staticmethod
+    def _actual_net_from_order(raw: dict, contracts: int) -> Optional[float]:
+        """Per-contract net premium the broker actually PROCESSED on a filled combo
+        order, from the order payload itself: `processed_premium` (whole-order
+        dollars) first, else the per-leg execution average (buys - sells). None when
+        the payload cannot say -> the caller books the limit and audits that."""
+        if not raw or contracts <= 0:
+            return None
+        try:
+            pp = raw.get("processed_premium")
+            if pp not in (None, ""):
+                v = abs(float(pp)) / (100.0 * contracts)
+                if v > 0:
+                    return round(v, 4)
+        except (TypeError, ValueError):
+            pass
+        try:
+            legs = raw.get("legs") or []
+            if not legs:
+                return None
+            net = 0.0
+            for leg in legs:
+                execs = leg.get("executions") or []
+                tq = sum(float(e.get("quantity") or 0.0) for e in execs)
+                if tq <= 0:
+                    return None
+                avg = sum(float(e.get("price") or 0.0) * float(e.get("quantity") or 0.0)
+                          for e in execs) / tq
+                sign = 1.0 if str(leg.get("side")) == "buy" else -1.0
+                net += sign * avg * float(leg.get("ratio_quantity") or 1)
+            v = abs(net)
+            return round(v, 4) if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    async def _fill_actual(self, res: OrderResult, contracts: int) -> Optional[float]:
+        """Actual per-contract net for a filled OrderResult. The poll path already
+        carries the payload (res.raw); the immediate-fill path does not -> ONE
+        order_status read-back. Never raises; None -> the caller books the limit."""
+        v = self._actual_net_from_order(res.raw or {}, contracts)
+        if v is None and res.order_id:
+            try:
+                r2 = await self.port.order_status(res.order_id)
+                v = self._actual_net_from_order(getattr(r2, "raw", None) or {}, contracts)
+            except Exception as exc:  # noqa: BLE001 -- booking must never fail on the detail fetch
+                self._audit("mace_fill_detail_error", order_id=res.order_id, error=str(exc))
+        return v
+
+    async def _booked_close_debit(self, rung: RungState, res: OrderResult,
+                                  limit: float, reason: str) -> float:
+        """The debit to BOOK for a filled close: the broker's actual net fill
+        (a marketable close's limit can sit far above the print -- SPY 729/726-782/785
+        2026-11-19 booked 3.00 vs 1.64 actual, -$360 vs -$88). The limit is the
+        audited fallback ONLY when the fill detail is unavailable."""
+        actual = await self._fill_actual(res, rung.contracts)
+        if actual is not None:
+            return actual
+        self._audit("mace_fill_booked_at_limit", rung_id=rung.rung_id, where="exit",
+                    reason=reason, limit=limit, order_id=res.order_id)
+        return limit
+
     async def _book_entry_fill(self, rung_id: str, spec: CondorSpec, contracts: int,
                                credit: float, res: OrderResult, attempts: int,
                                entry_atm_iv: Optional[float] = None) -> EntryOutcome:
         # FAKE-FILL GUARD: only reached with a confirmed state == "filled".
+        # Book the ACTUAL net credit (2026-11-19); `credit` arrives as the attempt's
+        # limit and is the audited fallback only. max_risk / PT anchor follow the
+        # booked credit.
+        actual = await self._fill_actual(res, contracts)
+        if actual is None:
+            self._audit("mace_fill_booked_at_limit", rung_id=rung_id, where="entry",
+                        limit=credit, order_id=res.order_id)
+        else:
+            credit = actual
         entry_ts = self._utc_iso()
         self.store.promote_open(rung_id, credit_actual=credit,
                                 entry_order_id=res.order_id or rung_id, entry_ts=entry_ts,
@@ -1069,7 +1143,8 @@ class MaceExecutor:
             if confirmed is not None and confirmed.is_filled:
                 # PT filled during the race — book the PT exit and STOP (do NOT
                 # place a second closing order that would double-fill).
-                return self._book_pt_exit(rung)
+                return self._book_pt_exit(rung, actual=self._actual_net_from_order(
+                    getattr(confirmed, "raw", None) or {}, rung.contracts))
             if confirmed is None or not confirmed.is_terminal:
                 # Cannot prove the PT is dead -> a live PT + a new close would
                 # double-fill. Abort this tick, retry next manage tick. URGENT.
@@ -1191,7 +1266,8 @@ class MaceExecutor:
 
             if res.is_filled:
                 self.store.clear_exit_order(rung_id)
-                return self._book_exit_fill(rung, reason, limit)
+                return self._book_exit_fill(
+                    rung, reason, await self._booked_close_debit(rung, res, limit, reason))
             if self._is_partial(res):
                 return self._exit_partial(spec, rung_id, reason, k, res)
 
@@ -1209,7 +1285,9 @@ class MaceExecutor:
                 confirmed = await self._poll_until_terminal(oid)
                 if confirmed is not None and confirmed.is_filled:
                     self.store.clear_exit_order(rung_id)
-                    return self._book_exit_fill(rung, reason, limit)
+                    return self._book_exit_fill(
+                        rung, reason,
+                        await self._booked_close_debit(rung, confirmed, limit, reason))
                 if confirmed is not None and self._is_partial(confirmed):
                     self.store.clear_exit_order(rung_id)
                     return self._exit_partial(spec, rung_id, reason, k, confirmed)
@@ -1318,9 +1396,16 @@ class MaceExecutor:
         return ExitOutcome(rung.rung_id, True, reason=reason, exit_debit=exit_debit,
                            realized_pnl=realized)
 
-    def _book_pt_exit(self, rung: RungState) -> ExitOutcome:
+    def _book_pt_exit(self, rung: RungState,
+                      actual: Optional[float] = None) -> ExitOutcome:
+        # 2026-11-19: book the resting PT at its ACTUAL fill when the caller's poll
+        # payload carries it; the stored pt limit is the audited fallback.
         credit = rung.credit_actual or 0.0
-        pt_debit = rung.pt_debit if rung.pt_debit is not None else self._pt_debit_for(credit)
+        pt_limit = rung.pt_debit if rung.pt_debit is not None else self._pt_debit_for(credit)
+        if actual is None:
+            self._audit("mace_fill_booked_at_limit", rung_id=rung.rung_id, where="pt",
+                        limit=pt_limit, order_id=rung.pt_order_id)
+        pt_debit = actual if actual is not None else pt_limit
         realized = (credit - pt_debit) * 100.0 * rung.contracts
         exit_ts = self._utc_iso()
         self.store.mark_closed(rung.rung_id, exit_reason=EXIT_PT, exit_debit=pt_debit,
@@ -1441,7 +1526,8 @@ class MaceExecutor:
             self._audit("mace_reconcile_pt_status_error", rung_id=rung.rung_id, error=str(exc))
             return
         if r.is_filled:
-            self._book_pt_exit(rung)
+            self._book_pt_exit(rung, actual=self._actual_net_from_order(
+                getattr(r, "raw", None) or {}, rung.contracts))
             return
         if r.is_dead:
             # unexpectedly cancelled/rejected -> alert + re-place next.
