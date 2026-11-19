@@ -116,6 +116,38 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-19 22:58 UTC — MACE: mark-quality check on the mark-path stop + stop-trigger quote evidence DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 0e340bb7 on branch `mace-mark-quality-2026-11-19` (BASE 0bf892d6)
+**Triggered by:** Board brief 2026-11-19 after the SPY 729/726-782/785 stop fired on mid 2.47 >= 2.40 while natural sat >= 3.00 and the close printed 1.64 (1 of 3 November mark-path stops filled below its own stop level)
+**Backup:** `/home/azureuser/mace_markq_graft_backup_20261119T225820Z/` (domain.py 8522dc3a, config.py 4a47188b, strategy.py 560847a7, manager.py 8f367a43, kept)
+
+**Files deployed (4):**
+- `trading_corp/mace/domain.py` — `QuoteSnapshot.anti_natural` (shorts @ bid, wings @ ask: the far-touch lower bound). 8522dc3a → 4e7ac97a.
+- `trading_corp/mace/strategy.py` — `mark_is_wide()`; `stop_triggered`/`evaluate_management` grow `mark_stop_confirmed=True` (default = old behavior for every other caller, incl. the CLOSING self-heal). 560847a7 → cf32df67.
+- `trading_corp/mace/manager.py` — `_mark_stop_pending` set + `_mark_stop_confirmation()` (tight → fire tick 1; wide + anti >= level → fire tick 1; wide + ambiguous → ONE-tick confirmation, audited `mace_mark_stop_pending`; priced-under-level clears; unpriceable keeps pending — structural path unchanged and owns unpriceable); `_emit_stop_evidence()` — one `mace_stop_quote_evidence` row per stop-trigger tick (fired OR pending) with per-leg bid/ask/mid, condor mid/natural/anti, spot, stop level, rule. 8f367a43 → 1a5f9132.
+- `trading_corp/mace/config.py` — optional `management.stop_quote_width_max_pct` (code default **0.15 — a judgment call**: the only measured trigger is 11-19 at >= 21.5% wide; tune it from the new evidence rows). 4a47188b → d141150b.
+
+**Features shipped:**
+- A wide-quote mid can no longer fire a mark-path stop single-tick unless even the far touch is at/over the level; worst case one extra manage tick (~5 min), never a missed stop (restart clears the pending set → re-confirms next tick). Tight-quote behavior byte-identical. PT/time/exdiv and the structural dead-wing path (its one-tick confirmation + spot guard) untouched.
+- Every stop trigger now leaves a reconstructable quote picture (`mace_stop_quote_evidence`).
+- Self-heal equivalence: the CLOSING re-eval's reopen boundary (mark < level on valid inputs) is identical to the pending-clear boundary — a rung cannot be stopped under one test and reopened under another.
+
+**Verification:**
+- Suite on branch: 461 tests / 5 failures == the known stale set byte-identical; 12 new tests green in `tests/test_mace_mark_quality.py` (incl. the 11-19 replay: no tick-1 stop, confirms tick 2; far-touch tick-1 fire; recovery clears; pending survives an unpriceable tick; restart = one extra tick; self-heal same-rule; evidence row carries all four legs).
+- Pre-flight (22:57Z): box == BASE md5s on all four + execution.py 34b184a1 + mace.yaml 7af8900c; config_hash 158ea99b2a97; LIVE; 200/200; session authenticated; nothing mid-flight; reconcile 0/30 nonzero; PM reanalyze batch running as separate PID (hands off, unaffected by restart per PM's note).
+- Graft gates (22:58:20Z): drift==BASE → backup → staged==TARGET → post==TARGET → py_compile all four.
+- Restart 22:58:51Z: MainPID 1022486 → 1026691; wired line logs config_hash=158ea99b2a97 UNCHANGED; LIVE; 5 MACE schedulers incl. watchdog; all six divisions online; 0 tracebacks; 200/200; census 3/54/10 + entry_halt (false) == baseline; session authenticated, 0 401-ish since boot.
+- First live observables: any `mace_mark_stop_pending` / `mace_stop_quote_evidence` rows and what the following tick did (09:42 + 15:52 ET 11-20 follow-ups).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_markq_graft_backup_20261119T225820Z/domain.py /home/azureuser/trading_corp/trading_corp/mace/domain.py && cp -p /home/azureuser/mace_markq_graft_backup_20261119T225820Z/config.py /home/azureuser/trading_corp/trading_corp/mace/config.py && cp -p /home/azureuser/mace_markq_graft_backup_20261119T225820Z/strategy.py /home/azureuser/trading_corp/trading_corp/mace/strategy.py && cp -p /home/azureuser/mace_markq_graft_backup_20261119T225820Z/manager.py /home/azureuser/trading_corp/trading_corp/mace/manager.py && md5sum /home/azureuser/trading_corp/trading_corp/mace/{domain,config,strategy,manager}.py"
+# expect 8522dc3a / 4a47188b / 560847a7 / 8f367a43; then one engine restart (restart_tc.ps1); wired line must still log config_hash=158ea99b2a97.
+```
+
+---
+
 ## 2026-11-19 21:43 UTC — MACE: one-time fill-basis CORRECTION applied to mace_rung (28 closed rungs re-booked at their Robinhood fills; agent-driven, autonomous under explicit Board authorization)
 
 **Runner:** `scripts/mace_fill_corrections_runner.py` + `analysis_fix/mace_fill_corrections_2026-11-19.csv` (commits 9c5a304c + 1546dc7d, branch `mace-equity-fill-fixes-2026-11-19`), run from `/home/azureuser/fill_correction_20261119/`
