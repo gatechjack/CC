@@ -116,6 +116,67 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-20 21:23 UTC — MACE: SPY-spot fix (direct port quote + candle fallback + spot-source audits) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 693b5e99 on branch `mace-spy-spot-2026-11-20` (BASE 1710d866)
+**Triggered by:** Board brief 2026-11-20 after the same-day read-only investigation: SPY live rows carried an
+empty spot all day while IWM priced. `manager._spot` preferred `port.quote` but the MACE port had none, so
+spot rode the FULL chain fetch (expiries + both strike grids) inside the 30 s `leg_quote_timeout_sec` bound;
+SPY's grid overran it on every slow tick and the failure was silent (NULL spot in `mace_rung_live`, no log,
+no audit — 15/18 leg-quote timeouts since 11-01 are SPY). The structural dead-wing stop backup was therefore
+blind exactly when the correlated mark-path failure was most likely: the ~11-pt-ITM SPY 12-24 rung stopped
+out on the mark path 18:17Z today with `spot: null` in every evidence row.
+**Backup:** `/home/azureuser/mace_spot_graft_backup_20261120T212332Z/` (rh_broker.py bac4411a, manager.py 1a5f9132, config.py d141150b, execution.py 34b184a1, kept)
+
+**Files deployed (4):**
+- `trading_corp/mace/rh_broker.py` — `RobinhoodOptionsBroker.quote()`: direct underlying last-trade (one
+  light equity-quote call, no chain fetch), delegating to the broker's existing call. bac4411a → 19a083f5.
+- `trading_corp/mace/manager.py` — `_spot` prefers the direct `port.quote` (same 30 s bound); <= 0 treated
+  as unavailable (the 11-16 dying-session guard); on broker failure → freshest `mace_candle` close iff
+  younger than `spot_candle_max_age_sec`, else None. New audits, capped ONE row per symbol per tick:
+  `mace_spot_fallback` (symbol, source, bar_age_sec, price, broker_reason) and `mace_spot_unavailable`
+  (symbol, reason, candle missing/stale). Legacy chain ride kept only for ports without `quote()`.
+  1a5f9132 → 16c18715.
+- `trading_corp/mace/config.py` — optional `management.spot_candle_max_age_sec` (code default **600 s**);
+  absent from mace.yaml → config_hash unchanged by construction. d141150b → ca45b0f9.
+- `trading_corp/mace/execution.py` — `RungStore.latest_candle_close` (read-only, fail-safe). 34b184a1 → bfe0cc2d.
+
+**Features shipped:**
+- Spot no longer depends on the chain ride: direct quote first, dxFeed 5m candle close (<= 10 min old) as
+  fallback — the structural stop backup stays armed when the broker quote path is slow or down, and every
+  spot failure is now visible as an audit row (it was invisible for at least 11-18/11-20).
+- `_spot` never returns 0.0; the spot-validity stop guard is unchanged and candle-sourced spot arms the
+  structural stop identically to broker spot.
+
+**Verification:**
+- Suite on branch: 472 tests / 5 failures == the known stale set (two message diffs cosmetic: worktree path
+  in a repr, function address); 11 new tests green in `tests/test_mace_spot_source.py` (direct-no-chain;
+  0/raise → fresh candle; stale/missing candle → unavailable + audited; timeout audited; one row per symbol
+  per tick; structural stop arms on either source; zero refused; full manage_tick integration — candle spot
+  reaches `mace_rung_live`, parse default 600 flows through).
+- Pre-flight (21:21:54Z): box == BASE md5s 4/4 + mace.yaml 7af8900c; config_hash 158ea99b2a97; LIVE;
+  200/200; 0 401-ish since 12:00Z; nothing mid-flight; no blocking restart notes; baseline census
+  3/55/10 + entry_halt false; origin/prod-live unmoved at 1710d866.
+- Graft gates (21:23:32Z): drift==BASE → backup → staged==TARGET → post==TARGET → py_compile all four.
+- Restart 21:23:59Z: MainPID 1026691 → 1041053; wired line logs config_hash=158ea99b2a97 UNCHANGED; LIVE;
+  5 MACE schedulers incl. watchdog; all six divisions online; 0 tracebacks; 200/200; census 3/55/10 +
+  entry_halt (false) == baseline; session authenticated, 0 401-ish since boot.
+- First live observables: Monday 11-23 first manage tick — every rung priced incl. SPY, spot present and
+  from which source, tick duration vs today's ~405 s, all mace_spot_unavailable / mace_spot_fallback /
+  mace_mark_stop_pending / mace_stop_quote_evidence rows (09:42 ET 11-23 follow-up armed).
+
+**Open item filed:** BACKLOG.md "MACE — slow per-leg chain fetch dominates the manage tick" (ticks of about
+405 seconds for 10 rungs; 17 tick cancels this month). The spot fix removes spot's dependence on that path;
+the per-leg fetch itself is unchanged.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_spot_graft_backup_20261120T212332Z/rh_broker.py /home/azureuser/trading_corp/trading_corp/mace/rh_broker.py && cp -p /home/azureuser/mace_spot_graft_backup_20261120T212332Z/manager.py /home/azureuser/trading_corp/trading_corp/mace/manager.py && cp -p /home/azureuser/mace_spot_graft_backup_20261120T212332Z/config.py /home/azureuser/trading_corp/trading_corp/mace/config.py && cp -p /home/azureuser/mace_spot_graft_backup_20261120T212332Z/execution.py /home/azureuser/trading_corp/trading_corp/mace/execution.py && md5sum /home/azureuser/trading_corp/trading_corp/mace/{rh_broker,manager,config,execution}.py"
+# expect bac4411a / 1a5f9132 / d141150b / 34b184a1; then one engine restart (restart_tc.ps1); wired line must still log config_hash=158ea99b2a97.
+```
+
+---
+
 ## 2026-11-19 22:58 UTC — MACE: mark-quality check on the mark-path stop + stop-trigger quote evidence DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
 
 **Commits:** 0e340bb7 on branch `mace-mark-quality-2026-11-19` (BASE 0bf892d6)

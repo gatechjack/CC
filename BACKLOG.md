@@ -8,6 +8,19 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## MACE — slow per-leg chain fetch dominates the manage tick  *(2026-11-20 — filed with the SPY-spot deploy)*
+
+**Problem.** Rung marks are fetched per-leg through the options chain; on 11-20 a 10-rung manage tick took
+about 405 seconds (SPY rungs 33–62 s each, IWM 19–40 s), and the whole-tick 600 s bound has cancelled
+17 ticks this month (`mace_manage_timeout`). The 11-20 spot fix removed spot's dependence on this path
+(direct quote + candle fallback), but the per-leg fetch itself is unchanged — slow ticks stretch stop
+confirmation latency and can still hit the 600 s cancel.
+**Proposed:** batch the leg quotes (one quotes call per rung, or per symbol) and/or parallelize per-rung
+fetches under the existing timeouts; size the change from `mace_leg_quote_timeout` + tick-duration data
+first. **Priority:** next MACE maintenance window; measure before changing.
+
+---
+
 ## MACE — dashboard re-login button reliability  *(2026-11-18 — filed on Jack's return triage)*
 
 **Problem.** The /mace dashboard re-login button is the sole operator path for restoring an expired
