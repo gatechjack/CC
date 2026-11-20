@@ -223,6 +223,76 @@ cp \$BK/trading_corp/mace/manager.py \$BASE/trading_corp/mace/manager.py"
 # then ONE restart (restart_tc.ps1); verify base md5s b30db63f / 0116e860 + config_hash 931a8214be50
 ```
 
+## 2026-11-19 21:06 UTC — PM: REDEEMABLE_LOST loss grounding for Analyze (skill v6) DEPLOYED (pm_web-only graft) + overnight global re-Analyze COMPLETE 2026-11-20 01:54Z (agent-driven under explicit Board authorization; engine untouched)
+
+*(Placed below the 11-18 entries rather than at the top of the file so this commit merges cleanly with the MACE 11-19/20 ledger entries that landed on prod-live at the same file position.)*
+
+**Commits:** branch `pm-rl-grounding-2026-11-19` off prod-live `28ebc19f` (pushed at deploy time; tag `pm-rl-grounding-deploy-2026-11-19`). Batch-runner hardening `bce3fb5a` + `aee7ee7c` (scripts/pm_batch_reanalyze.py, scripts/pm_batch_chunk_loop.sh) committed post-deploy, NOT yet pushed at entry-writing time — merge vs origin/prod-live re-verified conflict-free 2026-11-20; push reserved for Jack.
+**Triggered by:** Board packet 2026-11-19, after the uncashed-loser measurement proved `/v2/positions?status=CLOSED` omits held-to-zero losers (scores ranked on ~noise).
+**Backups kept:** `/home/azureuser/backups/rl_20261119T210835Z` (graft backup, 248K), `pm_loss_grounding_cache_20261119T210828Z.sql` (188K), `pm_whale_score_pre_rl_20261119T210828Z.sql` (476K).
+
+**Files deployed:** graft 21:06-21:09Z, pm_web surface only (exact set preserved in the rl_ backup; loss_grounding is imported solely by pm_web `app.py:38` — engine, cron and rollup untouched). Activation: `systemctl restart prediction-markets-web` → PID 1020846, ActiveEnter 2026-11-19 21:09:02Z.
+
+**Features shipped:**
+- Analyze loss grounding now unions `status=REDEEMABLE_LOST` (+`include_archived`) into the loss set beside /activity — held-to-zero losers (never redeemed → never reach CLOSED) are finally counted. Global pass added 6,383 RL-only losses with 0 false losses (gamma as referee).
+- `skill_version` 5→6 (cache-busting: the grounded set feeds the narrator and `is_cached` skips grounding on a hit — `app.py:496`).
+- One-time global re-Analyze: 1,627 pairs / 302 wallets → **1,616 done, 11 skipped_cached (2 smoke + 9 legacy soccer/tennis rows), 0 failed**; $6.52 of the $20 cap; 95 chunks; 21:15:51→01:53:58Z; 0 guardrail pauses after relaunch. `pm_whale_score` recomputed (`score-2`, 01:53:52Z) — promote/demote screens are now RL-grounded.
+
+**Incident + hardening (the 2 unpushed commits):** the first batch run was OOM-killed 21:31Z (allocator high-water ratchet, no leak). Relaunched as 3-wallet chunk subprocesses with `oom_score_adj=1000`, `ulimit -v` 2 GB, a MemAvailable floor, and resumable chunk state. Engine unaffected all night.
+
+**Outcome:** 6 live-attached pairs dropped to PASS → reviewed 2026-11-20 against the live record (the governing judge); Board then detached 12 attachments (attachment events 170-181) and kept f1 0x6dd6314d, itf 0x74629585 (WATCH), atp 0xe954ddb0.
+
+**Rollback recipe:** restore the grafted files from `/home/azureuser/backups/rl_20261119T210835Z`, restore `pm_whale_score` from `pm_whale_score_pre_rl_20261119T210828Z.sql`, `systemctl restart prediction-markets-web`.
+
+## 2026-11-17 21:08 UTC — PM: v2 client + maximum-chase rule (gate C) DEPLOYED (v2chase graft, GREEN) (agent-driven under explicit Board authorization)
+
+*(Folded 2026-11-20 from `analysis/pv2_deploy_log_draft.md`, which was written at deploy time and said "append after a green pv2_postverify" — postverify was green. Close-out 2026-11-17 23:30-23:31Z: branch pushed; prod-live FF `f82d5be6`→`13725707`; tag `pvc-deploy-2026-11-17` on `776ff4a8` pushed.)*
+
+- **Executed by:** Claude under Board authorization (Jack, 2026-11-17): global disarm, graft, both
+  restarts, 12-check health verify. Re-arm, push, FF, tag reserved for Jack and NOT run at deploy time.
+- **Branch/commits:** `pm-polyv2-migration-2026-11-17` @ `776ff4a8` (8 commits over `f82d5be6`:
+  `00a205c4` v2 client, `75dbd048` v2 tests, `24ee3992` deploy runners, `dbbc24bf` first-hour analysis,
+  `5f8aad50` chase rule, `bddf049f` comment fix, `fba0f6dd` chase report/runners, `776ff4a8` instruments).
+- **Files deployed (6, BASE→TARGET sha256-16 CR-stripped):** polymarket_data_api_client
+  `ad9a3192…`→`c88cfce6…`, loss_grounding `ce22b4d2…`→`42d16657…`, execution `a8a03b59…`→`b4f75cc6…`,
+  live_driver `4bbe3023…`→`69dc1040…`, heartbeat `57afdcc6…`→`227eda72…`, db `49f4f6d8…`→`a4d8ddfd…`.
+  Backup kept: `/home/azureuser/backups/pvc_v2chase_20261117T210723Z`.
+- **Timeline (ET, 2026-11-17):** 16:07:02 global disarm via `pm_cli live-disarm --global`
+  (by=claude_deploy_agent; only `arm:global` changed, 92 sub keys byte-identical, marc/trey untouched);
+  16:07:23–25 graft applied+verified (no rollback); 16:07:32–16:08:39 engine restart
+  (MainPID 809209→991135, ActiveEnter 21:08:01Z); 16:08:46–16:09:19 pm_web restart (698062→991335).
+- **Features shipped:** (a) Polymarket Data API v1→v2 client (v1 retired 2026-11-02, HTTP 410 since —
+  whale signal feed dead division-wide). v2 endpoints + `{data,pagination}` envelope + cursor-only paging;
+  field remap to v1 semantics incl. the paper.py extra-key contract (outcomeIndex/curPrice/redeemable/
+  endDate); loud HARD-FAIL error path (rate-limited ERROR + typed raise; 429 jitter backoff); malformed
+  envelope now RAISES (the v1 silent-[] → phantom-whale-exit path is dead); terminal = absence of
+  next_cursor, never row count; `total_bought←total_size` (shares); `timestamp←last_event_at` (seconds);
+  v2 drops apostrophes in outcome labels (watch leg_audit). (b) Gate C maximum-chase rule:
+  `chase = leg_ask + kalshi_taker_fee − whale_avg_price`; skip entry when > `max_chase_cents`
+  (default 2.0¢ ON) or > `chase_upside_pct`%×(1−whale) (default 0.0 = OFF); per-sub overrides via
+  migration 025 (NULL→code default, ≤0 disables); missing whale price fails closed
+  (`skip:chase_unpriced`); per-cycle `chase_skips` in `pm_driver_heartbeat` + rate-limited (60s)
+  gate-C WARNING with ticker and full arithmetic.
+- **Verification (12/12 GREEN vs written pre-deploy prediction):** 410s 0 since restart (was
+  ~118k/2h); 20,514 v2 success lines in 28 min; box-scratch A/B pytest BASE vs TARGET — 34 pre-existing
+  failures identical, zero regressions (TARGET 792 passed / 34 failed; all new tests green); live v2:
+  42 attached wallets' books complete (incl. 7,238 rows/15 cursor pages), 333 stored-row parity joins →
+  312 value-equal, partial-sale identity 14,343/14,343; boot-reconcile reconciled=True ×4, latch census
+  unchanged (14 boot_reconcile 10-06 + 22 trey 10-22 + 22 marc 10-28); migration 025 self-applied at
+  the 21:30Z pm_cli cron (head 24→25); **farm back: 119 `pm_paper_trade` rows at 21:30:01Z — first
+  writes since 2026-11-02**; **gate C live in prod:** jack/cfb `chase_skips=2`/cycle,
+  `KXNCAAFSPREAD-26NOV17BALLOHIO-OHIO8` blocked at +2.72¢ with full arithmetic; heartbeats fresh ×4;
+  all other divisions cycling; 0 tracebacks engine+pm_web; /healthz 200; df 8.1G.
+- **Deviations / notables (none rollback-class):** one boot-burst Polymarket 429 HARD-FAIL 21:10:14Z
+  (single wallet/page, recovered next cycle); counterfactual sim placed 1 sim-order at exactly +2.0¢
+  (strict-`>` boundary, correct semantics); pre-existing robin_stocks option-read session stale since
+  2026-10-21 (MACE reconcile/PMCC judgment errors ~180/day) — unchanged by restart, reported, not touched.
+- **State at deploy close:** `arm:global` DISARMED (21:07:02Z) — re-armed by Board 2026-11-18 01:20Z.
+  marc/trey auth_failure-latched (attestation pending). Box scratch `/home/azureuser/pvc_verify` removed;
+  all backups left in place.
+- **Reports:** `00_PV2_BUILD_REPORT.md` + `01_PV2_FIRST_HOUR.md` on the branch; scope reports
+  `00_PM_STOPPED_REPORT.md` / `01_V2_MIGRATION_AND_REARM.md` on `pm-health-stopped-2026-11-16`.
+
 ## 2026-07-27 ~12:11 UTC — Kalshi copy dashboard P1+P2 DEPLOYED + VERIFIED LIVE — Selected intel epoch-scoped (completes fix c) + mode-aware header + per-panel scope labels (agent-driven, autonomous under explicit Board authorization; web-only; flat-window restart)
 
 **What & why:** completes S2 fix (c) — fix (c) live-scoped the per-whale panel's *base* columns but the intel merge (`_query_kalshi_whale_intel`) stayed all-time, leaving `Copies/Copy%/Net PnL` all-time next to live-scoped `Resolved/WR%/Realized P&L` on the Selected row (the Sept re-selection sorts by Net PnL → would rank on paper backlog).
