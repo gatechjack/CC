@@ -116,6 +116,60 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-20 22:17 UTC — MACE: 21-DTE time exit forces the marketable close on a threatened or losing rung DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 8c2e3408 on branch `mace-timeforce-2026-11-20` (BASE 3ad31ee2)
+**Triggered by:** Board brief 2026-11-20 (same evening) after the ride investigation: at 20:36Z the TIME exit
+fired on the two SPY 12-11 rungs (`…715-710-787-792-20261030`, `…715-710-786-791-20261102`), the closeability
+gate failed `natural_above_cap`, and both entered ride — but they are FULLY ITM put spreads (SPY closed
+690.91, short puts 24 pts ITM; executable close ≈4.76 vs mids ≈2.5/2.0 on a $3.50-wide after-hours put book),
+not OTM winners. The winner cap must not defer the 21-DTE exit on a threatened or losing rung.
+**Backup:** `/home/azureuser/mace_timeforce_graft_backup_20261120T221656Z/` (manager.py 16c18715, config.py ca45b0f9, kept)
+
+**Files deployed (2):**
+- `trading_corp/mace/manager.py` — at the closeability gate: TIME + `natural_above_cap` +
+  (THREATENED: `_ride_shorts_threatened` — spot at/through/within `ride_shorts_buffer_pct` of a short — OR
+  LOSING: this tick's mark >= credit_actual) → liveness-only re-gate (`target_debit=None`) and the SAME
+  forced path the DTE floor uses (`pricing="marketable"`, no defer; no new ladder); audited
+  `mace_time_exit_forced` (rung_id, condition threatened/losing/both, spot, short strikes, mark, credit,
+  natural, bypassed cap). Already-riding rungs take the path at their next TIME eval. RIDING breaker push
+  capped at ONE per rung per session (`_ride_alert_session`; audits still record every transition — the
+  escape/re-enter churn fix). 16c18715 → 601b590d.
+- `trading_corp/mace/config.py` — optional `management.closeability.time_force_when_threatened` (code
+  default **true**); absent from mace.yaml → config_hash unchanged by construction. ca45b0f9 → 677e669b.
+- strategy.py NOT changed (cf32df67 verified unchanged); no shared file touched.
+
+**Features shipped:**
+- A threatened or losing rung can no longer ride past its 21-DTE exit: it force-closes marketable, liveness
+  gate (dead wing) still respected. True OTM winners, PT, the 2x stop and the DTE-14 floor byte-unchanged.
+- Flag-off restores old behaviour exactly (tested).
+
+**Verification:**
+- Suite on branch: 482 tests / 5 failures == the known stale set (test_shipped_config_loads,
+  test_manage_loop_fires_in_window, test_size_floor_and_cap, test_clean_entry, test_capacity_skip);
+  10 new tests green in `tests/test_mace_time_force.py` (ITM-forced; buffer-threatened-forced;
+  losing-spot-blind-forced; spot-blind-not-losing rides; OTM winner rides; already-riding forced —
+  starts from disposition="riding"; PT rides; dead wing no order; flag-false old behaviour; escape
+  alert once per rung per session).
+- Pre-flight (22:16:23Z): box == BASE (manager 16c18715, strategy cf32df67, config ca45b0f9, mace.yaml
+  7af8900c); PID 1041053 / 21:23:59Z; 158ea99b2a97; 200/200; nothing mid-flight; no PM batch; census
+  3/55/10 + entry_halt false; both SPY 12-11 rungs open + riding; six divisions alive.
+- Graft gates (22:16:56Z): drift==BASE → backup → staged==TARGET → post==TARGET → py_compile both.
+- Restart 22:17:39Z: MainPID 1041053 → 1041875; wired line config_hash=158ea99b2a97 UNCHANGED; LIVE;
+  5 MACE schedulers incl. watchdog; six divisions online; 0 tracebacks; 200/200; census 3/55/10 +
+  entry_halt false == baseline; both rungs still open + riding; session authenticated (0 401-ish).
+- First live observables: Mon 11-23 — 09:42 ET check (rung marks/naturals/spot + distance to stops
+  3.22/3.18 + mace_ride_escape rows); 15:45 ET check (`mace_time_exit_forced` fired per rung, orders +
+  fills vs Robinhood leg sums, booked P&L; ALERT if either rung still open with no working order).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_timeforce_graft_backup_20261120T221656Z/manager.py /home/azureuser/trading_corp/trading_corp/mace/manager.py && cp -p /home/azureuser/mace_timeforce_graft_backup_20261120T221656Z/config.py /home/azureuser/trading_corp/trading_corp/mace/config.py && md5sum /home/azureuser/trading_corp/trading_corp/mace/{manager,config}.py"
+# expect 16c18715 / ca45b0f9; then one engine restart (restart_tc.ps1); wired line must still log config_hash=158ea99b2a97.
+```
+
+---
+
 ## 2026-11-20 21:23 UTC — MACE: SPY-spot fix (direct port quote + candle fallback + spot-source audits) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
 
 **Commits:** 693b5e99 on branch `mace-spy-spot-2026-11-20` (BASE 1710d866)
