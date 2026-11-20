@@ -112,6 +112,23 @@ class MaceManager:
         # stop fires only on the SECOND consecutive such tick. In-memory: a restart re-arms,
         # costing at most one extra 5-min tick of delay on a genuine dead-wing breach.
         self._structural_stop_pending: set[str] = set()
+        # Mark-quality confirmation for the mark-path stop (2026-11-19): rung_ids whose
+        # mid >= stop reading sat on WIDE quotes with the far touch under the level on the
+        # prior evaluation. In-memory like the structural set; a restart clears it -> worst
+        # case ONE extra tick of delay, never a missed stop.
+        self._mark_stop_pending: set[str] = set()
+        # SPY-spot fix (2026-11-20): symbols already audited for spot-source trouble
+        # THIS tick (mace_spot_fallback / mace_spot_unavailable) -> at most ONE row
+        # per symbol per tick. Cleared at each manage-tick start; the CLOSING
+        # self-heal calls _spot outside the per-tick cache, so without this it
+        # could double-audit a symbol within one tick.
+        self._spot_audited: set[str] = set()
+        # 21-DTE force (2026-11-20): one RIDING breaker push per rung per SESSION. The
+        # shorts-threatened escape + a still-failing gate can leave and re-enter ride on
+        # every tick after 15:30 ET; audits record every transition, but the Telegram
+        # push fires at most once per rung per session. In-memory (restart -> at most
+        # one extra push).
+        self._ride_alert_session: dict[str, "date"] = {}
 
     # ── small helpers ────────────────────────────────────────────────────
     def _audit(self, kind: str, **payload) -> None:
@@ -425,6 +442,7 @@ class MaceManager:
         # cache one spot per distinct symbol (ex-div ITM test)
         spot_cache: dict[str, Optional[float]] = {}
         self._tick_marked_ok = 0   # durability watchdog: # open rungs priced this tick (reset per tick)
+        self._spot_audited.clear()  # spot-source audits: at most one per symbol per tick
         for rung in rungs:
             try:
                 out = await self._manage_one(rung, now, spot_cache)
@@ -541,9 +559,24 @@ class MaceManager:
         else:
             self._structural_stop_pending.discard(rung.rung_id)
 
+        # MARK-QUALITY confirmation for the mark-path stop (2026-11-19): the 11-19 SPY stop
+        # fired on mid 2.47 >= 2.40 while the quoted natural sat >= 3.00 (21% above mid) and
+        # the close printed 1.64 — a wide-quote mid is quote geometry, not value. On a WIDE
+        # tick the mark stop fires tick-one ONLY when even the far-touch anti-natural reads
+        # at/over the level; otherwise one-tick confirmation arms (mirrors the structural set).
+        # Tight ticks are byte-identical to the old rule.
+        mark_stop_confirmed, mark_rule = self._mark_stop_confirmation(rung, snap, mark)
+        structural_rule = (None if not structural_now else
+                           ("structural_fire" if structural_confirmed
+                            else "structural_pending"))
+        if mark_rule is not None or structural_rule is not None:
+            self._emit_stop_evidence(rung, snap, mark, spot,
+                                     rule=(mark_rule or structural_rule))
+
         decision = st.evaluate_management(rung, mark, spot, now, self.cfg, sym_cfg,
                                           exdiv_within=exdiv_within,
-                                          structural_confirmed=structural_confirmed)
+                                          structural_confirmed=structural_confirmed,
+                                          mark_stop_confirmed=mark_stop_confirmed)
         if not decision.should_exit:
             return None     # hold; a riding rung stays riding silently (sticky to close/escape/expiry)
         # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.
@@ -560,15 +593,50 @@ class MaceManager:
         # (Commit 3 turns this hold into a first-class RIDE-to-expiry). STOP/EXDIV are risk-reducing
         # -> NEVER gated (they price off stop_natural, dead wings given away). The mark-trust guard
         # above stays as defense-in-depth for a corrupt SHORT-leg mid the gate cannot see.
+        force_time = False
         if decision.exit_reason in (EXIT_PT, EXIT_TIME):
             target = self._closeability_target(decision.exit_reason, rung, snap, now)
             gate = st.assess_closeability(rung, snap, self.cfg,
                                           exit_reason=decision.exit_reason, target_debit=target)
             if not gate.closeable:
-                if riding:
-                    return None                       # already riding -> suppress re-alert, stay riding
-                self._enter_ride(rung, gate, decision.exit_reason)   # open -> riding (one alert)
-                return None
+                # 21-DTE FORCE (2026-11-20): the winner cap exists to stop overpaying on a
+                # near-worthless OTM condor; it must not defer the TIME exit on a rung that is
+                # THREATENED (spot at/through/within buffer of a short) or LOSING (this tick's
+                # mark at/over the credit). Such a rung takes the SAME forced path the DTE
+                # floor already uses: liveness-only gate + marketable pricing (no new ladder).
+                # A true OTM winner (neither condition) rides exactly as before; the DTE-floor
+                # close itself (target None -> gate cannot read natural_above_cap) is untouched.
+                cc = self.cfg.management.closeability
+                threatened = self._ride_shorts_threatened(rung, spot)
+                losing = (mark is not None and rung.credit_actual is not None
+                          and mark >= rung.credit_actual)
+                if (decision.exit_reason == EXIT_TIME
+                        and gate.reason == "natural_above_cap"
+                        and cc.time_force_when_threatened
+                        and (threatened or losing)):
+                    live_gate = st.assess_closeability(
+                        rung, snap, self.cfg, exit_reason=decision.exit_reason,
+                        target_debit=None)      # liveness-only: wings sellable + computable
+                    if live_gate.closeable:
+                        cap = (target + self.cfg.management.exit_winner_band + cc.slack_usd
+                               if target is not None else None)
+                        self._audit("mace_time_exit_forced", rung_id=rung.rung_id,
+                                    symbol=rung.symbol,
+                                    condition=("both" if threatened and losing
+                                               else "threatened" if threatened else "losing"),
+                                    spot=spot,
+                                    short_put=(rung.spec.short_put if rung.spec else None),
+                                    short_call=(rung.spec.short_call if rung.spec else None),
+                                    mark=mark, credit=rung.credit_actual,
+                                    natural=(round(gate.natural, 4)
+                                             if gate.natural is not None else None),
+                                    cap=(round(cap, 4) if cap is not None else None))
+                        force_time = True
+                if not force_time:
+                    if riding:
+                        return None                   # already riding -> suppress re-alert, stay riding
+                    self._enter_ride(rung, gate, decision.exit_reason)   # open -> riding (one alert)
+                    return None
         # Proceeding to an actual close (PT/TIME now executable, or an ungated STOP/EXDIV): if the
         # rung was riding, the position is being resolved -> clear the disposition.
         if riding:
@@ -582,6 +650,8 @@ class MaceManager:
                     line=exit_disposition_line(rung.spec, decision.exit_reason,
                                                phase="decision"))
         pricing, defer = self._close_pricing(decision.exit_reason, rung, now)
+        if force_time:
+            pricing, defer = "marketable", False   # 21-DTE force: same path as the DTE floor
         # trigger_mid = the mid the exit decision was made on (this tick's mark). The winner
         # ladder anchors its mid+band cap to THIS value and holds it fixed for the whole walk
         # (2026-09-18), so an adverse re-inflation during the ~2-min close cannot chase the
@@ -589,6 +659,63 @@ class MaceManager:
         return await self.executor.close_rung(
             rung, decision.exit_reason, pricing=pricing, defer_on_unfilled=defer,
             trigger_mid=mark)
+
+    def _mark_stop_confirmation(self, rung: RungState, snap,
+                                mark: Optional[float]) -> tuple[bool, Optional[str]]:
+        """Mark-quality confirmation for the mark-path stop (2026-11-19). Returns
+        (mark_stop_confirmed, rule) and maintains the in-memory pending set.
+
+        rule (for the evidence row): 'mark_tight' (quotes tight -> old single-tick rule),
+        'mark_far_touch' (wide, but even the anti-natural is at/over the level -> fire),
+        'mark_confirmed' (second consecutive ambiguous tick -> fire), 'mark_pending'
+        (first ambiguous tick -> hold one tick), None (no mark stop this tick).
+
+        A PRICED tick under the stop level clears pending; an UNPRICEABLE tick keeps it
+        (no evidence either way — the structural path owns unpriceable marks). A restart
+        clears the set: worst case ONE extra tick of delay, never a missed stop (the
+        condition persists and re-confirms on the next evaluation)."""
+        m = self.cfg.management
+        rid = rung.rung_id
+        level = (m.stop_multiple * rung.credit_actual
+                 if rung.credit_actual is not None else None)
+        stop_now = mark is not None and level is not None and mark >= level
+        if not stop_now:
+            if mark is not None:
+                self._mark_stop_pending.discard(rid)
+            return True, None
+        if not st.mark_is_wide(mark, snap.natural_debit, m):
+            self._mark_stop_pending.discard(rid)
+            return True, "mark_tight"
+        anti = snap.anti_natural
+        if anti is not None and anti >= level:
+            self._mark_stop_pending.discard(rid)
+            return True, "mark_far_touch"
+        if rid in self._mark_stop_pending:
+            return True, "mark_confirmed"
+        self._audit("mace_mark_stop_pending", rung_id=rid, symbol=rung.symbol,
+                    mark=mark, natural=snap.natural_debit, anti_natural=anti,
+                    stop_level=level,
+                    detail="mark >= stop on WIDE quotes, far touch under the level; "
+                           "held one tick for confirmation")
+        self._mark_stop_pending.add(rid)
+        return False, "mark_pending"
+
+    def _emit_stop_evidence(self, rung: RungState, snap, mark: Optional[float],
+                            spot: Optional[float], *, rule: str) -> None:
+        """One audit row per stop-trigger tick (fired OR pending) with the full quote
+        picture, so any stop can be reconstructed afterwards (2026-11-19: per-tick quotes
+        were not stored and the SPY 2.47 trigger could not be). self._audit never raises."""
+        def leg(q):
+            return {"bid": getattr(q, "bid", None), "ask": getattr(q, "ask", None),
+                    "mid": getattr(q, "mid", None)}
+        m = self.cfg.management
+        level = (m.stop_multiple * rung.credit_actual
+                 if rung.credit_actual is not None else None)
+        self._audit("mace_stop_quote_evidence", rung_id=rung.rung_id, symbol=rung.symbol,
+                    rule=rule, mark=mark, natural=snap.natural_debit,
+                    anti_natural=snap.anti_natural, spot=spot, stop_level=level,
+                    legs={"sp": leg(snap.sp), "lp": leg(snap.lp),
+                          "sc": leg(snap.sc), "lc": leg(snap.lc)})
 
     async def _drive_closing(self, rung: RungState, now: datetime) -> Optional[ExitOutcome]:
         """Drive a rung in status=CLOSING (2026-10-09 un-latch). Replaces the old blind
@@ -639,6 +766,12 @@ class MaceManager:
                 # self-heal (keep the existing redrive/park path); reopen only on real quotes.
                 has_info = (chk_mark is not None
                             or (chk_spot is not None and chk_spot > 0))
+                # 2026-11-19 mark-quality note: this re-eval runs with mark_stop_confirmed=True
+                # (the armed test). The reopen boundary is therefore mark < level on valid
+                # inputs — IDENTICAL to the pending-clear boundary in _mark_stop_confirmation —
+                # so a rung is stopped and reopened by the SAME rule: wide-but-over-level quotes
+                # keep it closing (never reopen on ambiguity); only a mid genuinely under the
+                # level reopens.
                 if has_info and not st.stop_triggered(rung, chk_mark, chk_spot,
                                                       self.cfg.management):
                     working = await self.executor._working_exit_order(rid)
@@ -716,11 +849,17 @@ class MaceManager:
                     reason=trigger_reason, gate=gate.reason,
                     natural=(round(gate.natural, 4) if gate.natural is not None else None),
                     detail=gate.detail)
-        self.notifier.breaker(
-            condition=f"{rung.symbol} RIDING to expiry — close not executable ({gate.reason})",
-            lines=[f"rung {rung.rung_id}", f"trigger {trigger_reason}", gate.detail],
-            suggested_action="holding OTM defined-risk to expiry; auto-revives if the wing market returns",
-            urgent=False)
+        # 21-DTE force follow-up (2026-11-20): the escape/re-enter cycle on a threatened
+        # rung may re-enter ride every tick after 15:30 ET. Audits above record each
+        # transition; the Telegram push fires at most ONCE per rung per session.
+        sess = self._now_et().date()
+        if self._ride_alert_session.get(rung.rung_id) != sess:
+            self._ride_alert_session[rung.rung_id] = sess
+            self.notifier.breaker(
+                condition=f"{rung.symbol} RIDING to expiry — close not executable ({gate.reason})",
+                lines=[f"rung {rung.rung_id}", f"trigger {trigger_reason}", gate.detail],
+                suggested_action="holding OTM defined-risk to expiry; auto-revives if the wing market returns",
+                urgent=False)
 
     def _ride_shorts_threatened(self, rung: RungState, spot: Optional[float]) -> bool:
         """A riding condor is OTM; if spot approaches/crosses EITHER short (within
@@ -817,19 +956,79 @@ class MaceManager:
         return "marketable", False       # stop / exdiv / gap / manual: unchanged
 
     async def _spot(self, symbol: str) -> Optional[float]:
-        # Bounded by leg_quote_timeout_sec (2026-10-23 durability fix): spot also goes through the
-        # broker (quote/chain), so an un-timed-out await here could hang the tick just like leg_quote.
+        """Underlying spot, best-effort. Bounded by leg_quote_timeout_sec (2026-10-23
+        durability fix): an un-timed-out await here could hang the tick like leg_quote.
+
+        SPY-spot fix (2026-11-20): prefer the port's DIRECT equity quote (one light
+        call). The old path rode the FULL chain fetch — expiries + both strike grids
+        of the target expiry — which SPY routinely pushed past the 30s bound, so SPY's
+        spot came back None on every slow tick and the failure was silent. A price
+        <= 0 is a data failure, not a price (the 11-16 dying session returned 0.0) ->
+        treated as unavailable. When the broker yields nothing, fall back to the
+        freshest mace_candle close if younger than spot_candle_max_age_sec; else spot
+        stays None. Audited via _audit_spot: at most one row per symbol per tick."""
         t = self.cfg.management.leg_quote_timeout_sec
+        reason = "error"
         try:
-            return float(await asyncio.wait_for(self.port.quote(symbol), timeout=t))  # type: ignore[attr-defined]
+            px = float(await asyncio.wait_for(self.port.quote(symbol), timeout=t))  # type: ignore[attr-defined]
+            if px > 0:
+                return px
+            reason = "non_positive"
         except AttributeError:
+            # Port without quote() (other ports / old fakes): legacy chain ride.
             try:
                 ch = await asyncio.wait_for(self.port.chain(symbol), timeout=t)
-                return ch.spot
-            except Exception:  # noqa: BLE001 (incl. TimeoutError) -> no spot this tick
-                return None
-        except Exception:  # noqa: BLE001 (incl. TimeoutError) -> no spot this tick
-            return None
+                sp = ch.spot
+                if sp is not None and float(sp) > 0:
+                    return float(sp)
+                reason = "non_positive" if sp is not None else "chain_no_spot"
+            except asyncio.TimeoutError:
+                reason = "timeout"
+            except Exception:  # noqa: BLE001 -> no broker spot this tick
+                reason = "error"
+        except asyncio.TimeoutError:
+            reason = "timeout"
+        except Exception:  # noqa: BLE001 -> no broker spot this tick
+            reason = "error"
+        return self._spot_from_candle(symbol, broker_reason=reason)
+
+    def _spot_from_candle(self, symbol: str, *, broker_reason: str) -> Optional[float]:
+        """Candle-cache fallback for a failed broker spot (2026-11-20). Uses the
+        freshest positive mace_candle close only when its bar is younger than
+        spot_candle_max_age_sec (code default 600s); a stale or missing bar leaves
+        spot unavailable — never a fabricated price. Emits exactly one audit row:
+        mace_spot_fallback when the candle is used, mace_spot_unavailable when no
+        source produced a price (both capped at one per symbol per tick)."""
+        max_age = float(self.cfg.management.spot_candle_max_age_sec)
+        row = None
+        try:
+            row = self.store.latest_candle_close(symbol)
+        except Exception:  # noqa: BLE001 — a cache read error must not sink the tick
+            row = None
+        age: Optional[float] = None
+        if row is not None:
+            bar_time, close = row
+            age = self._now_utc().timestamp() - float(bar_time)
+            # Small negative tolerance: a forming bar's start can sit marginally
+            # ahead of a skewed clock; a genuinely future bar is garbage.
+            if -60.0 <= age <= max_age and close > 0:
+                self._audit_spot(symbol, "mace_spot_fallback", source="mace_candle",
+                                 bar_age_sec=round(age), price=float(close),
+                                 broker_reason=broker_reason)
+                return float(close)
+        self._audit_spot(symbol, "mace_spot_unavailable", reason=broker_reason,
+                         candle=("missing" if age is None else "stale"),
+                         bar_age_sec=(None if age is None else round(age)))
+        return None
+
+    def _audit_spot(self, symbol: str, kind: str, **fields) -> None:
+        """At most ONE spot-source audit row per symbol per tick (the CLOSING
+        self-heal re-eval calls _spot outside the per-tick cache; without this cap
+        it could double-audit). _spot_audited is cleared at manage-tick start."""
+        if symbol in self._spot_audited:
+            return
+        self._spot_audited.add(symbol)
+        self._audit(kind, symbol=symbol, **fields)
 
     # ── reconcile ────────────────────────────────────────────────────────
     async def reconcile_tick(self, session_date: Optional[date] = None) -> None:

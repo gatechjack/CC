@@ -116,6 +116,198 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-20 22:17 UTC — MACE: 21-DTE time exit forces the marketable close on a threatened or losing rung DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 8c2e3408 on branch `mace-timeforce-2026-11-20` (BASE 3ad31ee2)
+**Triggered by:** Board brief 2026-11-20 (same evening) after the ride investigation: at 20:36Z the TIME exit
+fired on the two SPY 12-11 rungs (`…715-710-787-792-20261030`, `…715-710-786-791-20261102`), the closeability
+gate failed `natural_above_cap`, and both entered ride — but they are FULLY ITM put spreads (SPY closed
+690.91, short puts 24 pts ITM; executable close ≈4.76 vs mids ≈2.5/2.0 on a $3.50-wide after-hours put book),
+not OTM winners. The winner cap must not defer the 21-DTE exit on a threatened or losing rung.
+**Backup:** `/home/azureuser/mace_timeforce_graft_backup_20261120T221656Z/` (manager.py 16c18715, config.py ca45b0f9, kept)
+
+**Files deployed (2):**
+- `trading_corp/mace/manager.py` — at the closeability gate: TIME + `natural_above_cap` +
+  (THREATENED: `_ride_shorts_threatened` — spot at/through/within `ride_shorts_buffer_pct` of a short — OR
+  LOSING: this tick's mark >= credit_actual) → liveness-only re-gate (`target_debit=None`) and the SAME
+  forced path the DTE floor uses (`pricing="marketable"`, no defer; no new ladder); audited
+  `mace_time_exit_forced` (rung_id, condition threatened/losing/both, spot, short strikes, mark, credit,
+  natural, bypassed cap). Already-riding rungs take the path at their next TIME eval. RIDING breaker push
+  capped at ONE per rung per session (`_ride_alert_session`; audits still record every transition — the
+  escape/re-enter churn fix). 16c18715 → 601b590d.
+- `trading_corp/mace/config.py` — optional `management.closeability.time_force_when_threatened` (code
+  default **true**); absent from mace.yaml → config_hash unchanged by construction. ca45b0f9 → 677e669b.
+- strategy.py NOT changed (cf32df67 verified unchanged); no shared file touched.
+
+**Features shipped:**
+- A threatened or losing rung can no longer ride past its 21-DTE exit: it force-closes marketable, liveness
+  gate (dead wing) still respected. True OTM winners, PT, the 2x stop and the DTE-14 floor byte-unchanged.
+- Flag-off restores old behaviour exactly (tested).
+
+**Verification:**
+- Suite on branch: 482 tests / 5 failures == the known stale set (test_shipped_config_loads,
+  test_manage_loop_fires_in_window, test_size_floor_and_cap, test_clean_entry, test_capacity_skip);
+  10 new tests green in `tests/test_mace_time_force.py` (ITM-forced; buffer-threatened-forced;
+  losing-spot-blind-forced; spot-blind-not-losing rides; OTM winner rides; already-riding forced —
+  starts from disposition="riding"; PT rides; dead wing no order; flag-false old behaviour; escape
+  alert once per rung per session).
+- Pre-flight (22:16:23Z): box == BASE (manager 16c18715, strategy cf32df67, config ca45b0f9, mace.yaml
+  7af8900c); PID 1041053 / 21:23:59Z; 158ea99b2a97; 200/200; nothing mid-flight; no PM batch; census
+  3/55/10 + entry_halt false; both SPY 12-11 rungs open + riding; six divisions alive.
+- Graft gates (22:16:56Z): drift==BASE → backup → staged==TARGET → post==TARGET → py_compile both.
+- Restart 22:17:39Z: MainPID 1041053 → 1041875; wired line config_hash=158ea99b2a97 UNCHANGED; LIVE;
+  5 MACE schedulers incl. watchdog; six divisions online; 0 tracebacks; 200/200; census 3/55/10 +
+  entry_halt false == baseline; both rungs still open + riding; session authenticated (0 401-ish).
+- First live observables: Mon 11-23 — 09:42 ET check (rung marks/naturals/spot + distance to stops
+  3.22/3.18 + mace_ride_escape rows); 15:45 ET check (`mace_time_exit_forced` fired per rung, orders +
+  fills vs Robinhood leg sums, booked P&L; ALERT if either rung still open with no working order).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_timeforce_graft_backup_20261120T221656Z/manager.py /home/azureuser/trading_corp/trading_corp/mace/manager.py && cp -p /home/azureuser/mace_timeforce_graft_backup_20261120T221656Z/config.py /home/azureuser/trading_corp/trading_corp/mace/config.py && md5sum /home/azureuser/trading_corp/trading_corp/mace/{manager,config}.py"
+# expect 16c18715 / ca45b0f9; then one engine restart (restart_tc.ps1); wired line must still log config_hash=158ea99b2a97.
+```
+
+---
+
+## 2026-11-20 21:23 UTC — MACE: SPY-spot fix (direct port quote + candle fallback + spot-source audits) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 693b5e99 on branch `mace-spy-spot-2026-11-20` (BASE 1710d866)
+**Triggered by:** Board brief 2026-11-20 after the same-day read-only investigation: SPY live rows carried an
+empty spot all day while IWM priced. `manager._spot` preferred `port.quote` but the MACE port had none, so
+spot rode the FULL chain fetch (expiries + both strike grids) inside the 30 s `leg_quote_timeout_sec` bound;
+SPY's grid overran it on every slow tick and the failure was silent (NULL spot in `mace_rung_live`, no log,
+no audit — 15/18 leg-quote timeouts since 11-01 are SPY). The structural dead-wing stop backup was therefore
+blind exactly when the correlated mark-path failure was most likely: the ~11-pt-ITM SPY 12-24 rung stopped
+out on the mark path 18:17Z today with `spot: null` in every evidence row.
+**Backup:** `/home/azureuser/mace_spot_graft_backup_20261120T212332Z/` (rh_broker.py bac4411a, manager.py 1a5f9132, config.py d141150b, execution.py 34b184a1, kept)
+
+**Files deployed (4):**
+- `trading_corp/mace/rh_broker.py` — `RobinhoodOptionsBroker.quote()`: direct underlying last-trade (one
+  light equity-quote call, no chain fetch), delegating to the broker's existing call. bac4411a → 19a083f5.
+- `trading_corp/mace/manager.py` — `_spot` prefers the direct `port.quote` (same 30 s bound); <= 0 treated
+  as unavailable (the 11-16 dying-session guard); on broker failure → freshest `mace_candle` close iff
+  younger than `spot_candle_max_age_sec`, else None. New audits, capped ONE row per symbol per tick:
+  `mace_spot_fallback` (symbol, source, bar_age_sec, price, broker_reason) and `mace_spot_unavailable`
+  (symbol, reason, candle missing/stale). Legacy chain ride kept only for ports without `quote()`.
+  1a5f9132 → 16c18715.
+- `trading_corp/mace/config.py` — optional `management.spot_candle_max_age_sec` (code default **600 s**);
+  absent from mace.yaml → config_hash unchanged by construction. d141150b → ca45b0f9.
+- `trading_corp/mace/execution.py` — `RungStore.latest_candle_close` (read-only, fail-safe). 34b184a1 → bfe0cc2d.
+
+**Features shipped:**
+- Spot no longer depends on the chain ride: direct quote first, dxFeed 5m candle close (<= 10 min old) as
+  fallback — the structural stop backup stays armed when the broker quote path is slow or down, and every
+  spot failure is now visible as an audit row (it was invisible for at least 11-18/11-20).
+- `_spot` never returns 0.0; the spot-validity stop guard is unchanged and candle-sourced spot arms the
+  structural stop identically to broker spot.
+
+**Verification:**
+- Suite on branch: 472 tests / 5 failures == the known stale set (two message diffs cosmetic: worktree path
+  in a repr, function address); 11 new tests green in `tests/test_mace_spot_source.py` (direct-no-chain;
+  0/raise → fresh candle; stale/missing candle → unavailable + audited; timeout audited; one row per symbol
+  per tick; structural stop arms on either source; zero refused; full manage_tick integration — candle spot
+  reaches `mace_rung_live`, parse default 600 flows through).
+- Pre-flight (21:21:54Z): box == BASE md5s 4/4 + mace.yaml 7af8900c; config_hash 158ea99b2a97; LIVE;
+  200/200; 0 401-ish since 12:00Z; nothing mid-flight; no blocking restart notes; baseline census
+  3/55/10 + entry_halt false; origin/prod-live unmoved at 1710d866.
+- Graft gates (21:23:32Z): drift==BASE → backup → staged==TARGET → post==TARGET → py_compile all four.
+- Restart 21:23:59Z: MainPID 1026691 → 1041053; wired line logs config_hash=158ea99b2a97 UNCHANGED; LIVE;
+  5 MACE schedulers incl. watchdog; all six divisions online; 0 tracebacks; 200/200; census 3/55/10 +
+  entry_halt (false) == baseline; session authenticated, 0 401-ish since boot.
+- First live observables: Monday 11-23 first manage tick — every rung priced incl. SPY, spot present and
+  from which source, tick duration vs today's ~405 s, all mace_spot_unavailable / mace_spot_fallback /
+  mace_mark_stop_pending / mace_stop_quote_evidence rows (09:42 ET 11-23 follow-up armed).
+
+**Open item filed:** BACKLOG.md "MACE — slow per-leg chain fetch dominates the manage tick" (ticks of about
+405 seconds for 10 rungs; 17 tick cancels this month). The spot fix removes spot's dependence on that path;
+the per-leg fetch itself is unchanged.
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_spot_graft_backup_20261120T212332Z/rh_broker.py /home/azureuser/trading_corp/trading_corp/mace/rh_broker.py && cp -p /home/azureuser/mace_spot_graft_backup_20261120T212332Z/manager.py /home/azureuser/trading_corp/trading_corp/mace/manager.py && cp -p /home/azureuser/mace_spot_graft_backup_20261120T212332Z/config.py /home/azureuser/trading_corp/trading_corp/mace/config.py && cp -p /home/azureuser/mace_spot_graft_backup_20261120T212332Z/execution.py /home/azureuser/trading_corp/trading_corp/mace/execution.py && md5sum /home/azureuser/trading_corp/trading_corp/mace/{rh_broker,manager,config,execution}.py"
+# expect bac4411a / 1a5f9132 / d141150b / 34b184a1; then one engine restart (restart_tc.ps1); wired line must still log config_hash=158ea99b2a97.
+```
+
+---
+
+## 2026-11-19 22:58 UTC — MACE: mark-quality check on the mark-path stop + stop-trigger quote evidence DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 0e340bb7 on branch `mace-mark-quality-2026-11-19` (BASE 0bf892d6)
+**Triggered by:** Board brief 2026-11-19 after the SPY 729/726-782/785 stop fired on mid 2.47 >= 2.40 while natural sat >= 3.00 and the close printed 1.64 (1 of 3 November mark-path stops filled below its own stop level)
+**Backup:** `/home/azureuser/mace_markq_graft_backup_20261119T225820Z/` (domain.py 8522dc3a, config.py 4a47188b, strategy.py 560847a7, manager.py 8f367a43, kept)
+
+**Files deployed (4):**
+- `trading_corp/mace/domain.py` — `QuoteSnapshot.anti_natural` (shorts @ bid, wings @ ask: the far-touch lower bound). 8522dc3a → 4e7ac97a.
+- `trading_corp/mace/strategy.py` — `mark_is_wide()`; `stop_triggered`/`evaluate_management` grow `mark_stop_confirmed=True` (default = old behavior for every other caller, incl. the CLOSING self-heal). 560847a7 → cf32df67.
+- `trading_corp/mace/manager.py` — `_mark_stop_pending` set + `_mark_stop_confirmation()` (tight → fire tick 1; wide + anti >= level → fire tick 1; wide + ambiguous → ONE-tick confirmation, audited `mace_mark_stop_pending`; priced-under-level clears; unpriceable keeps pending — structural path unchanged and owns unpriceable); `_emit_stop_evidence()` — one `mace_stop_quote_evidence` row per stop-trigger tick (fired OR pending) with per-leg bid/ask/mid, condor mid/natural/anti, spot, stop level, rule. 8f367a43 → 1a5f9132.
+- `trading_corp/mace/config.py` — optional `management.stop_quote_width_max_pct` (code default **0.15 — a judgment call**: the only measured trigger is 11-19 at >= 21.5% wide; tune it from the new evidence rows). 4a47188b → d141150b.
+
+**Features shipped:**
+- A wide-quote mid can no longer fire a mark-path stop single-tick unless even the far touch is at/over the level; worst case one extra manage tick (~5 min), never a missed stop (restart clears the pending set → re-confirms next tick). Tight-quote behavior byte-identical. PT/time/exdiv and the structural dead-wing path (its one-tick confirmation + spot guard) untouched.
+- Every stop trigger now leaves a reconstructable quote picture (`mace_stop_quote_evidence`).
+- Self-heal equivalence: the CLOSING re-eval's reopen boundary (mark < level on valid inputs) is identical to the pending-clear boundary — a rung cannot be stopped under one test and reopened under another.
+
+**Verification:**
+- Suite on branch: 461 tests / 5 failures == the known stale set byte-identical; 12 new tests green in `tests/test_mace_mark_quality.py` (incl. the 11-19 replay: no tick-1 stop, confirms tick 2; far-touch tick-1 fire; recovery clears; pending survives an unpriceable tick; restart = one extra tick; self-heal same-rule; evidence row carries all four legs).
+- Pre-flight (22:57Z): box == BASE md5s on all four + execution.py 34b184a1 + mace.yaml 7af8900c; config_hash 158ea99b2a97; LIVE; 200/200; session authenticated; nothing mid-flight; reconcile 0/30 nonzero; PM reanalyze batch running as separate PID (hands off, unaffected by restart per PM's note).
+- Graft gates (22:58:20Z): drift==BASE → backup → staged==TARGET → post==TARGET → py_compile all four.
+- Restart 22:58:51Z: MainPID 1022486 → 1026691; wired line logs config_hash=158ea99b2a97 UNCHANGED; LIVE; 5 MACE schedulers incl. watchdog; all six divisions online; 0 tracebacks; 200/200; census 3/54/10 + entry_halt (false) == baseline; session authenticated, 0 401-ish since boot.
+- First live observables: any `mace_mark_stop_pending` / `mace_stop_quote_evidence` rows and what the following tick did (09:42 + 15:52 ET 11-20 follow-ups).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_markq_graft_backup_20261119T225820Z/domain.py /home/azureuser/trading_corp/trading_corp/mace/domain.py && cp -p /home/azureuser/mace_markq_graft_backup_20261119T225820Z/config.py /home/azureuser/trading_corp/trading_corp/mace/config.py && cp -p /home/azureuser/mace_markq_graft_backup_20261119T225820Z/strategy.py /home/azureuser/trading_corp/trading_corp/mace/strategy.py && cp -p /home/azureuser/mace_markq_graft_backup_20261119T225820Z/manager.py /home/azureuser/trading_corp/trading_corp/mace/manager.py && md5sum /home/azureuser/trading_corp/trading_corp/mace/{domain,config,strategy,manager}.py"
+# expect 8522dc3a / 4a47188b / 560847a7 / 8f367a43; then one engine restart (restart_tc.ps1); wired line must still log config_hash=158ea99b2a97.
+```
+
+---
+
+## 2026-11-19 21:43 UTC — MACE: one-time fill-basis CORRECTION applied to mace_rung (28 closed rungs re-booked at their Robinhood fills; agent-driven, autonomous under explicit Board authorization)
+
+**Runner:** `scripts/mace_fill_corrections_runner.py` + `analysis_fix/mace_fill_corrections_2026-11-19.csv` (commits 9c5a304c + 1546dc7d, branch `mace-equity-fill-fixes-2026-11-19`), run from `/home/azureuser/fill_correction_20261119/`
+**Triggered by:** Board brief 2026-11-19 (step 2 of the fill-fix deploy): audit of all 54 closed rungs vs Robinhood order fills (processed_premium / per-leg executions) found 28 rungs booked at ladder limits, not fills
+**Backup:** DB table `mace_rung_backup_fill_20261119T214326Z` (full mace_rung, 67 rows) + pre-image JSON `/home/azureuser/fill_correction_20261119/mace_fill_corrections_2026-11-19.pre_20261119T214326Z.json`
+
+**What changed:** credit_actual / exit_debit / realized_pnl on 28 closed rungs (dry-run verified every current value == audited old value; all 28 status=closed; idempotent, old-value-pinned, all-or-nothing). No open/closing/abandoned rung touched; census 3/54/10 unchanged.
+**Totals:** realized (closed) **−520.00 → +114.00** (delta +634.00). Per symbol after: SPY +867, GDX −666, XLE −159, IBIT −74, IWM +146. Largest single fixes: SPY 729/726-782/785 11-19 stop −360→−82; GDX 81/79 10-30 stop −266→−124; XLE 63.5/62 11-05 stop −172→−48.
+**Rollback (one step):**
+```bash
+ssh azureuser@trading.jacksumner.com "sqlite3 /home/azureuser/trading_corp/data/trading_corp.db \"UPDATE mace_rung SET credit_actual=b.credit_actual, exit_debit=b.exit_debit, realized_pnl=b.realized_pnl FROM mace_rung_backup_fill_20261119T214326Z b WHERE b.rung_id=mace_rung.rung_id AND mace_rung.status='closed'\""
+# then SELECT SUM(realized_pnl) must read -520.00 again.
+```
+
+---
+
+## 2026-11-19 21:40 UTC — MACE: sizing-basis entry gate + fill-basis booking DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** 35438ff0 (gate 0 skips only when no usable sizing basis) + b97b0f45 (book entries/exits at the actual fill) on branch `mace-equity-fill-fixes-2026-11-19` (BASE 28ebc19f)
+**Triggered by:** Board brief 2026-11-19 after the 20:40:04Z equity-0.0 blanked entry round and the SPY stop booked at 3.00 vs 1.64 actual
+**Backup:** `/home/azureuser/mace_fillfix_graft_backup_20261119T214017Z/` (strategy.py 04164e9a, execution.py e380c2f6, kept)
+
+**Files deployed (2):**
+- `trading_corp/mace/strategy.py` — gate 0: skip `no_equity_snapshot` only when NOT `_uses_available_bp` AND equity unusable; equity 0/None with a valid available-BP snapshot no longer blanks the round. md5 04164e9a → 560847a7.
+- `trading_corp/mace/execution.py` — all five booking sites (exit ladder ×2, entry ×2 paths, resting-PT ×2 callers) book the broker's processed net per contract (processed_premium, else leg executions, via OrderResult.raw; immediate-fill path does ONE order_status read-back); limit is the audited fallback (`mace_fill_booked_at_limit`). md5 e380c2f6 → 34b184a1.
+
+**Features shipped:**
+- A zero/missing RH portfolio `equity` reading (brokers/robinhood.py:575) can no longer blank an entry round while available_buying_power is valid; the no-usable-basis fail-safe and the legacy equity fallback are unchanged. Breakers untouched (and still fail-open at equity<=0 — flagged, out of scope).
+- Realized P&L now books what the broker processed, not the ladder limit; new audit kinds `mace_fill_booked_at_limit` + `mace_fill_detail_error`. One extra read-only order_status call per fill.
+
+**Verification:**
+- Suite on branch: 449 tests / 5 failures == the known stale set byte-identical; 16 new tests green (tests/test_mace_sizing_basis_gate.py 6, tests/test_mace_fill_booking.py 10, incl. a fill better than the limit and both fallbacks).
+- Pre-flight (21:37Z): box == BASE md5s (strategy 04164e9a, execution e380c2f6, manager 8f367a43, mace.yaml 7af8900c), config_hash 158ea99b2a97, LIVE, healthz+mace 200, session authenticated, no submitting/closing rungs, 0 order/fill audit rows in 5 min, cross-division reconcile 0 missing / 0 orphan over 15 min (30 rows; PM-note check), disk 7.5G free. PM reanalyze batch not running.
+- Graft gates (21:40:17Z): drift==BASE → backup → staged==TARGET → post==TARGET → py_compile both.
+- Restart 21:40:44Z: MainPID 1008114 → 1022486; wired line logs config_hash=158ea99b2a97 UNCHANGED (no-config-change was the criterion); LIVE; 5 MACE schedulers incl. watchdog; all six divisions online (PM's new client file loaded for the first time, cleared by PM for after 16:05 ET; 0 tracebacks); healthz+mace 200; census 3/54/10 and entry_halt (false) == baseline; session authenticated, 0 401-ish since boot.
+- First live observables: 2026-11-20 15:40 ET snapshot (equity + ABP values; zero `no_equity_snapshot` skips expected even if equity reads 0) and any fill's booked price vs the Robinhood order (zero `mace_fill_booked_at_limit` rows expected on the happy path).
+
+**Rollback recipe:**
+```bash
+ssh azureuser@trading.jacksumner.com "cp -p /home/azureuser/mace_fillfix_graft_backup_20261119T214017Z/strategy.py /home/azureuser/trading_corp/trading_corp/mace/strategy.py && cp -p /home/azureuser/mace_fillfix_graft_backup_20261119T214017Z/execution.py /home/azureuser/trading_corp/trading_corp/mace/execution.py && md5sum /home/azureuser/trading_corp/trading_corp/mace/strategy.py /home/azureuser/trading_corp/trading_corp/mace/execution.py"
+# expect 04164e9a... and e380c2f6...; then one engine restart (restart_tc.ps1); wired line must still log config_hash=158ea99b2a97.
+```
+
+---
+
 ## 2026-11-18 23:25 UTC — MACE: post-stop cooldown OFF (stop_cooldown_sessions 2 → 0) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
 
 **Commits:** 61521140 (cherry-pick of 698df35e) on branch `mace-cooldown-off-r2-2026-11-18` (BASE e6624f3d)
@@ -13580,6 +13772,63 @@ manages it; RH session re-authed (the 10-26 401 reconcile errors stopped).
 **prod-live fold.** origin/prod-live advanced `411362f8 → <new tip>` (clean FF carrying `52df733c` + this
 ledger; three-way proven: 3 code files CR-md5 == box == target, diff MACE/brokers-scope only, config_hash
 unchanged). [Exact pushed tip recorded in the session report.]
+
+---
+
+## 2026-11-19 → 2026-11-20 — MACE DAY SUMMARY (jack-log): booking moved to actual fills, SPY spot blindness fixed, 21-DTE exit now forces on threatened or losing rungs — four deploys GREEN
+
+**11-20 (SPY crash day: 715.87 → 690.91, −3.5%).** Morning: SPY spot investigated — the engine had been
+blind to SPY's price all day on 11-18 and 11-20 because spot rode the full chain fetch past its 30 s bound,
+silently. Fix deployed after the close (direct quote + 5-minute-candle fallback + audit rows, 21:23Z). The
+SPY 12-24 725/720-790/795 rung stopped at 18:17Z for **−$153** — a REAL stop: the new wide-quote check held
+the first crossing (16:58Z, mark 3.03) for one tick and it cleared itself; the second (18:06Z, 3.10)
+confirmed on the next tick and the close filled at 3.04, exactly Robinhood's leg sum. Entry round 15:46 ET:
+IWM 12-31 234/231-277/280 ×2 filled at **1.01** (booked == Robinhood's fills to the cent); GDX and SPY were
+**rejected by Robinhood on overnight buying power** — the engine sizes on gross 2:1 margin BP (1,316.62 at
+the snapshot) while Robinhood enforces the overnight figure (≈658; IWM's fill consumed ≈398 of it). FXI
+stood down on credit drift. The two SPY 12-11 715/710 rungs (both fully ITM after the crash) hit their
+21-DTE time exit at 20:36Z and RODE instead — the winner cap read their executable close (3.29/3.48,
+after-hours 4.76) as "too dear". Evening: **21-DTE forced time exit** built, tested (482/5 known-stale, 10
+new green) and deployed — a threatened or losing rung now takes the forced marketable close instead of
+riding; OTM winners still ride. prod-live **994ea139**, engine PID **1041875** (boot 22:17:39Z),
+config_hash **158ea99b2a97** unchanged all day.
+
+**11-19.** Entry gate now runs on the sizing basis when equity reads 0 (the RH portfolio equity field is 0
+for this account — no more blanked rounds). Exits and entries are booked at the ACTUAL fill, not the ladder
+limit, and a one-time 28-row correction re-booked history: **booked −$520 → actual +$114**. The mark-path
+stop got the wide-quote confirmation (far-touch or one-tick confirm) plus `mace_stop_quote_evidence` rows
+for every trigger.
+
+**Jack's rulings today.** Sizing basis STAYS on gross buying power; Robinhood rejections are accepted as
+the effective cap (clean standdowns, nothing left behind — recorded in BACKLOG for reference). The two SPY
+12-11 rungs are LEFT TO THE ENGINE Monday; no manual close planned at the open.
+
+**Current state (2026-11-20 22:31Z, DB read-only).** Census **3 abandoned / 55 closed / 10 open**.
+Open rungs: IWM 12-18 ×2 (262/259-297/300 ×2ct, 250/247-289/292 ×1ct), IWM 12-24 263/260-293/296 ×1ct,
+IWM 12-31 ×2 (252/249-287/290 ×1ct, 234/231-277/280 ×2ct), SPY 12-11 ×2 (715/710-787/792 ×2ct,
+715/710-786/791 ×2ct — both disposition=riding), SPY 12-18 ×3 (713/710-790/793 ×2ct, 685/680-773/778
+×1ct ×2 rungs). All-time realized **−$39.00**: SPY +714.00 (30 closed), IWM +146.00 (5), IBIT −74.00 (1),
+XLE −159.00 (11), GDX −666.00 (8). Box disk **89%** (55G of 62G, 7.2G free).
+
+**Next MACE agent — Monday 11-23.**
+- **09:42 ET check:** first manage tick completed; every rung priced; SPY spot present and from which
+  source (`mace_spot_fallback` = candle, none = direct); tick duration vs Friday's ~405 s; any
+  `mace_spot_unavailable` / `mace_spot_fallback` / `mace_mark_stop_pending` / `mace_stop_quote_evidence` /
+  `mace_ride_escape` rows since 11-20 22:17Z; for the two SPY 12-11 rungs: mark, natural, spot, distance to
+  stops **3.22** (787/792 rung, credit 1.61) and **3.18** (786/791 rung, credit 1.59).
+- **15:45 ET check:** `mace_time_exit_forced` fired for each of the two rungs (expected at the first tick
+  at/after 15:30 ET: threatened — spot ≈690 vs short put 715 — and losing); fills vs Robinhood leg sums;
+  booked P&L. **ALERT if either rung is still open with no working order.**
+- **Rollback backups on the box (all KEEP):** `mace_fillfix_graft_backup_20261119T214017Z` (pre fill-fix),
+  `mace_markq_graft_backup_20261119T225820Z` (pre mark-quality), `mace_spot_graft_backup_20261120T212332Z`
+  (pre SPY-spot), `mace_timeforce_graft_backup_20261120T221656Z` (pre 21-DTE force; restores manager
+  16c18715 + config ca45b0f9), plus DB pre-image `mace_rung_backup_fill_20261119T214326Z` (pre 28-row
+  correction). Each dir has md5s.txt; restore = cp -p back + one restart via restart_tc.ps1; wired line
+  must still log config_hash=158ea99b2a97.
+- **Standing rules:** no Robinhood login or auth call; no dashboard re-login button; Robinhood reads via
+  the MCP connector only; deploy/graft/restart/push/DB writes are Jack's unless he authorizes a run in the
+  brief; plain fast-forward pushes only; sqlite always `-readonly`; a classifier block means STOP and
+  report it verbatim.
 
 ---
 

@@ -90,6 +90,10 @@ class CloseabilityConfig:
     max_closing_redrives: int = 8    # committed-CLOSING re-drive cap before parking (~40 min)
     park_retry_ticks: int = 12       # while parked, pulse one re-drive every N ticks (~hourly at 300s)
     ride_shorts_buffer_pct: float = 0.02  # a short within this % of spot -> drop ride, re-manage (pin risk)
+    time_force_when_threatened: bool = True  # 2026-11-20: a TIME exit blocked natural_above_cap on a
+                                             # THREATENED (spot at/through/within buffer of a short) or
+                                             # LOSING (mark >= credit) rung takes the DTE-floor forced
+                                             # marketable path instead of riding. True OTM winners ride.
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,14 @@ class ManagementConfig:
     manage_tick_timeout_sec: int = 600   # outer wait_for on manage_tick; exceeded -> cancel + audit + next tick
     leg_quote_timeout_sec: int = 30      # per broker leg-quote await; exceeded -> that leg None (fail-fast)
     watchdog: WatchdogConfig = WatchdogConfig()  # sibling liveness watchdog (2026-10-23)
+    # Mark-quality check for the mark-path stop (2026-11-19): a tick is WIDE when the quoted
+    # natural sits more than this fraction above the mid (SPY 11-19: 21% -> the mid was quote
+    # geometry, not value). Optional-with-default -> absent from mace.yaml, config_hash preserved.
+    stop_quote_width_max_pct: float = 0.15
+    # SPY-spot fix (2026-11-20): max age of a mace_candle close usable as the spot
+    # fallback when the broker price is unavailable. Older -> spot stays None.
+    # Optional-with-default -> absent from mace.yaml, config_hash preserved.
+    spot_candle_max_age_sec: int = 600
 
 
 @dataclass(frozen=True)
@@ -418,12 +430,23 @@ def load_mace_config(
                  if "park_retry_ticks" in cc else 12)
     cc_buf = (num(cc, "ride_shorts_buffer_pct", "management.closeability", lo=0.0, hi=1.0,
                   hi_excl=True) if "ride_shorts_buffer_pct" in cc else 0.02)
+    # 21-DTE force (2026-11-20) — optional-with-default (config_hash preserved).
+    cc_tf = cc.get("time_force_when_threatened", True)
+    if not isinstance(cc_tf, bool):
+        errs.append("management.closeability.time_force_when_threatened: "
+                    f"not a bool: {cc_tf!r}")
     # Durability fix (2026-10-23) — manage-tick/leg-quote timeouts + liveness watchdog.
     # Optional-with-defaults (mirrors closeability); absent -> defaults, config_hash preserved.
     mtt = (num(m, "manage_tick_timeout_sec", "management", typ=int, lo=1)
            if "manage_tick_timeout_sec" in m else 600)
     lqt = (num(m, "leg_quote_timeout_sec", "management", typ=int, lo=1)
            if "leg_quote_timeout_sec" in m else 30)
+    # Mark-quality width threshold (2026-11-19) — optional-with-default (config_hash preserved).
+    sqw = (num(m, "stop_quote_width_max_pct", "management", lo=0.0, lo_excl=True)
+           if "stop_quote_width_max_pct" in m else 0.15)
+    # Spot candle-fallback age bound (2026-11-20) — optional-with-default (config_hash preserved).
+    scma = (num(m, "spot_candle_max_age_sec", "management", typ=int, lo=1)
+            if "spot_candle_max_age_sec" in m else 600)
     wd = m.get("watchdog")
     if wd is None:
         wd = {}
@@ -607,9 +630,12 @@ def load_mace_config(
                 max_closing_redrives=int(cc_maxrd),
                 park_retry_ticks=int(cc_parkrt),
                 ride_shorts_buffer_pct=float(cc_buf),
+                time_force_when_threatened=bool(cc_tf),
             ),
             manage_tick_timeout_sec=int(mtt),
             leg_quote_timeout_sec=int(lqt),
+            stop_quote_width_max_pct=float(sqw),
+            spot_candle_max_age_sec=int(scma),
             watchdog=WatchdogConfig(
                 enabled=bool(wd_enabled),
                 poll_interval_sec=int(wd_poll),
