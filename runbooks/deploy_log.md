@@ -13705,6 +13705,63 @@ unchanged). [Exact pushed tip recorded in the session report.]
 
 ---
 
+## 2026-11-19 → 2026-11-20 — MACE DAY SUMMARY (jack-log): booking moved to actual fills, SPY spot blindness fixed, 21-DTE exit now forces on threatened or losing rungs — four deploys GREEN
+
+**11-20 (SPY crash day: 715.87 → 690.91, −3.5%).** Morning: SPY spot investigated — the engine had been
+blind to SPY's price all day on 11-18 and 11-20 because spot rode the full chain fetch past its 30 s bound,
+silently. Fix deployed after the close (direct quote + 5-minute-candle fallback + audit rows, 21:23Z). The
+SPY 12-24 725/720-790/795 rung stopped at 18:17Z for **−$153** — a REAL stop: the new wide-quote check held
+the first crossing (16:58Z, mark 3.03) for one tick and it cleared itself; the second (18:06Z, 3.10)
+confirmed on the next tick and the close filled at 3.04, exactly Robinhood's leg sum. Entry round 15:46 ET:
+IWM 12-31 234/231-277/280 ×2 filled at **1.01** (booked == Robinhood's fills to the cent); GDX and SPY were
+**rejected by Robinhood on overnight buying power** — the engine sizes on gross 2:1 margin BP (1,316.62 at
+the snapshot) while Robinhood enforces the overnight figure (≈658; IWM's fill consumed ≈398 of it). FXI
+stood down on credit drift. The two SPY 12-11 715/710 rungs (both fully ITM after the crash) hit their
+21-DTE time exit at 20:36Z and RODE instead — the winner cap read their executable close (3.29/3.48,
+after-hours 4.76) as "too dear". Evening: **21-DTE forced time exit** built, tested (482/5 known-stale, 10
+new green) and deployed — a threatened or losing rung now takes the forced marketable close instead of
+riding; OTM winners still ride. prod-live **994ea139**, engine PID **1041875** (boot 22:17:39Z),
+config_hash **158ea99b2a97** unchanged all day.
+
+**11-19.** Entry gate now runs on the sizing basis when equity reads 0 (the RH portfolio equity field is 0
+for this account — no more blanked rounds). Exits and entries are booked at the ACTUAL fill, not the ladder
+limit, and a one-time 28-row correction re-booked history: **booked −$520 → actual +$114**. The mark-path
+stop got the wide-quote confirmation (far-touch or one-tick confirm) plus `mace_stop_quote_evidence` rows
+for every trigger.
+
+**Jack's rulings today.** Sizing basis STAYS on gross buying power; Robinhood rejections are accepted as
+the effective cap (clean standdowns, nothing left behind — recorded in BACKLOG for reference). The two SPY
+12-11 rungs are LEFT TO THE ENGINE Monday; no manual close planned at the open.
+
+**Current state (2026-11-20 22:31Z, DB read-only).** Census **3 abandoned / 55 closed / 10 open**.
+Open rungs: IWM 12-18 ×2 (262/259-297/300 ×2ct, 250/247-289/292 ×1ct), IWM 12-24 263/260-293/296 ×1ct,
+IWM 12-31 ×2 (252/249-287/290 ×1ct, 234/231-277/280 ×2ct), SPY 12-11 ×2 (715/710-787/792 ×2ct,
+715/710-786/791 ×2ct — both disposition=riding), SPY 12-18 ×3 (713/710-790/793 ×2ct, 685/680-773/778
+×1ct ×2 rungs). All-time realized **−$39.00**: SPY +714.00 (30 closed), IWM +146.00 (5), IBIT −74.00 (1),
+XLE −159.00 (11), GDX −666.00 (8). Box disk **89%** (55G of 62G, 7.2G free).
+
+**Next MACE agent — Monday 11-23.**
+- **09:42 ET check:** first manage tick completed; every rung priced; SPY spot present and from which
+  source (`mace_spot_fallback` = candle, none = direct); tick duration vs Friday's ~405 s; any
+  `mace_spot_unavailable` / `mace_spot_fallback` / `mace_mark_stop_pending` / `mace_stop_quote_evidence` /
+  `mace_ride_escape` rows since 11-20 22:17Z; for the two SPY 12-11 rungs: mark, natural, spot, distance to
+  stops **3.22** (787/792 rung, credit 1.61) and **3.18** (786/791 rung, credit 1.59).
+- **15:45 ET check:** `mace_time_exit_forced` fired for each of the two rungs (expected at the first tick
+  at/after 15:30 ET: threatened — spot ≈690 vs short put 715 — and losing); fills vs Robinhood leg sums;
+  booked P&L. **ALERT if either rung is still open with no working order.**
+- **Rollback backups on the box (all KEEP):** `mace_fillfix_graft_backup_20261119T214017Z` (pre fill-fix),
+  `mace_markq_graft_backup_20261119T225820Z` (pre mark-quality), `mace_spot_graft_backup_20261120T212332Z`
+  (pre SPY-spot), `mace_timeforce_graft_backup_20261120T221656Z` (pre 21-DTE force; restores manager
+  16c18715 + config ca45b0f9), plus DB pre-image `mace_rung_backup_fill_20261119T214326Z` (pre 28-row
+  correction). Each dir has md5s.txt; restore = cp -p back + one restart via restart_tc.ps1; wired line
+  must still log config_hash=158ea99b2a97.
+- **Standing rules:** no Robinhood login or auth call; no dashboard re-login button; Robinhood reads via
+  the MCP connector only; deploy/graft/restart/push/DB writes are Jack's unless he authorizes a run in the
+  brief; plain fast-forward pushes only; sqlite always `-readonly`; a classifier block means STOP and
+  report it verbatim.
+
+---
+
 ## 2026-11-16 → 2026-11-18 — MACE DAY SUMMARY (jack-log): return-from-leave triage — false dead-wing stops guarded, two real GDX stops, cooldown OFF, three deploys GREEN
 
 **11-16 (return).** Jack back after three weeks away; the engine had run unattended since 10-27 with the book

@@ -8,6 +8,55 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## MACE — 2x stop under-reads on wide deep-ITM quotes  *(2026-11-20 — filed with the 21-DTE force deploy)*
+
+**Problem.** On 11-20 the two SPY 12-11 715/710 rungs (fully ITM) carried mids of 2.51 and 1.99 — UNDER
+their stop levels 3.22 / 3.18 — while their executable naturals read 3.29 / 3.48 (after hours 4.76): the
+deep-ITM put book is $0.4-3.5 wide and the mid deflates below the level, so the mark-path stop never fires
+even as the real loss approaches max. The 11-19 mark-quality check guards the opposite direction (wide
+quotes INFLATING the mid over the level). The 21-DTE force closes the time-exit gap; a mid-deflated stop
+before the time window remains possible.
+**Proposed:** consider an anti-natural/natural-aware stop test (fire when even the far touch can't get you
+out under the level) — same evidence rows (`mace_stop_quote_evidence`) feed the design. **Priority:** Board
+decision; measure from the evidence rows first.
+
+---
+
+## MACE — mark-quality width threshold tuning  *(2026-11-19 — filed with the mark-quality deploy)*
+
+**Problem.** `management.stop_quote_width_max_pct` shipped at the code default **0.15** on ONE measured
+trigger (the 11-19 false stop fired at >= 21.5% wide). Every stop trigger now writes a
+`mace_stop_quote_evidence` row with per-leg bid/ask; the threshold should be re-derived from that data
+once enough rows exist.
+**Proposed:** after a few weeks of evidence rows, fit the wide/tight boundary and set the value in
+mace.yaml (config_hash change — deploy window). **Priority:** low; the one-tick confirmation bounds the
+cost of a wrong threshold.
+
+---
+
+## MACE — sizing basis is gross 2:1 while Robinhood enforces overnight (1x)  *(2026-11-20 — RULED: leave alone; recorded for reference)*
+
+**Fact.** The engine's `available_buying_power` deliberately carries GROSS margin BP
+(`overnight_buying_power / overnight_ratio`, Jack's 2026-08-26 ruling; brokers/robinhood.py:594-607), and
+the reserve gate deploys against 0.95 x that. Robinhood enforces the OVERNIGHT (1x) figure at order
+submission — about half. On 11-20 the entry round fit the engine's cap (722 of 1,250 committed) but blew
+through overnight capacity (~658 after IWM consumed ~398): GDX and SPY rejected, clean standdowns, nothing
+left behind.
+**Ruling (Jack, 2026-11-20):** basis STAYS gross; rejections are accepted as the effective cap. Recorded
+here so the next "why did RH reject" investigation starts from this, not from zero. No code change planned.
+
+---
+
+## platform — box disk at 89%  *(2026-11-20 — EOS housekeeping measurement)*
+
+**Fact.** `/dev/root` 62G, 55G used, **7.2G free (89%)** at 2026-11-20 22:31Z. Four graft backup dirs +
+one DB pre-image from 11-19/11-20 are intentionally KEPT (small, .py files + one table dump); the growth
+driver is elsewhere (WAL guard already filed above).
+**Proposed:** when it crosses ~92%, a Jack-run cleanup pass (old logs, apt cache, stale backups older than
+the current deploy chain). **Priority:** watch; nothing urgent at 7.2G free.
+
+---
+
 ## MACE — slow per-leg chain fetch dominates the manage tick  *(2026-11-20 — filed with the SPY-spot deploy)*
 
 **Problem.** Rung marks are fetched per-leg through the options chain; on 11-20 a 10-rung manage tick took
