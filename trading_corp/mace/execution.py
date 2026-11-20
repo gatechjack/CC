@@ -337,6 +337,27 @@ class RungStore:
             return None
         return (_f(r["mark"]), r["ts"])
 
+    def latest_candle_close(self, symbol: str) -> Optional[tuple]:
+        """Freshest positive close for `symbol` from the mace_candle cache (any
+        interval), as (bar_time_sec, close), or None. Read-only; used by the
+        manage loop's spot fallback (SPY-spot fix 2026-11-20). The dxFeed 5m bars
+        are the fresh rows; the age gate in manager._spot rejects anything stale
+        (a 1d bar is hours old by mid-session), so no interval filter is needed
+        here. FAIL-SAFE: any read error -> None (no fallback, never a bad price)."""
+        try:
+            row = self.conn.execute(
+                "SELECT bar_time, close FROM mace_candle "
+                "WHERE symbol=? AND close IS NOT NULL AND close > 0 "
+                "ORDER BY bar_time DESC LIMIT 1", (symbol,)).fetchone()
+        except Exception:  # noqa: BLE001 — table absent / read error -> no fallback
+            return None
+        if row is None:
+            return None
+        try:
+            return (int(row["bar_time"]), float(row["close"]))
+        except Exception:  # noqa: BLE001
+            return None
+
     def clear_pt(self, rung_id: str) -> None:
         self.conn.execute(
             "UPDATE mace_rung SET pt_order_id=NULL WHERE rung_id=?", (rung_id,)

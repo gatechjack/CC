@@ -117,6 +117,12 @@ class MaceManager:
         # prior evaluation. In-memory like the structural set; a restart clears it -> worst
         # case ONE extra tick of delay, never a missed stop.
         self._mark_stop_pending: set[str] = set()
+        # SPY-spot fix (2026-11-20): symbols already audited for spot-source trouble
+        # THIS tick (mace_spot_fallback / mace_spot_unavailable) -> at most ONE row
+        # per symbol per tick. Cleared at each manage-tick start; the CLOSING
+        # self-heal calls _spot outside the per-tick cache, so without this it
+        # could double-audit a symbol within one tick.
+        self._spot_audited: set[str] = set()
 
     # ── small helpers ────────────────────────────────────────────────────
     def _audit(self, kind: str, **payload) -> None:
@@ -430,6 +436,7 @@ class MaceManager:
         # cache one spot per distinct symbol (ex-div ITM test)
         spot_cache: dict[str, Optional[float]] = {}
         self._tick_marked_ok = 0   # durability watchdog: # open rungs priced this tick (reset per tick)
+        self._spot_audited.clear()  # spot-source audits: at most one per symbol per tick
         for rung in rungs:
             try:
                 out = await self._manage_one(rung, now, spot_cache)
@@ -900,19 +907,79 @@ class MaceManager:
         return "marketable", False       # stop / exdiv / gap / manual: unchanged
 
     async def _spot(self, symbol: str) -> Optional[float]:
-        # Bounded by leg_quote_timeout_sec (2026-10-23 durability fix): spot also goes through the
-        # broker (quote/chain), so an un-timed-out await here could hang the tick just like leg_quote.
+        """Underlying spot, best-effort. Bounded by leg_quote_timeout_sec (2026-10-23
+        durability fix): an un-timed-out await here could hang the tick like leg_quote.
+
+        SPY-spot fix (2026-11-20): prefer the port's DIRECT equity quote (one light
+        call). The old path rode the FULL chain fetch — expiries + both strike grids
+        of the target expiry — which SPY routinely pushed past the 30s bound, so SPY's
+        spot came back None on every slow tick and the failure was silent. A price
+        <= 0 is a data failure, not a price (the 11-16 dying session returned 0.0) ->
+        treated as unavailable. When the broker yields nothing, fall back to the
+        freshest mace_candle close if younger than spot_candle_max_age_sec; else spot
+        stays None. Audited via _audit_spot: at most one row per symbol per tick."""
         t = self.cfg.management.leg_quote_timeout_sec
+        reason = "error"
         try:
-            return float(await asyncio.wait_for(self.port.quote(symbol), timeout=t))  # type: ignore[attr-defined]
+            px = float(await asyncio.wait_for(self.port.quote(symbol), timeout=t))  # type: ignore[attr-defined]
+            if px > 0:
+                return px
+            reason = "non_positive"
         except AttributeError:
+            # Port without quote() (other ports / old fakes): legacy chain ride.
             try:
                 ch = await asyncio.wait_for(self.port.chain(symbol), timeout=t)
-                return ch.spot
-            except Exception:  # noqa: BLE001 (incl. TimeoutError) -> no spot this tick
-                return None
-        except Exception:  # noqa: BLE001 (incl. TimeoutError) -> no spot this tick
-            return None
+                sp = ch.spot
+                if sp is not None and float(sp) > 0:
+                    return float(sp)
+                reason = "non_positive" if sp is not None else "chain_no_spot"
+            except asyncio.TimeoutError:
+                reason = "timeout"
+            except Exception:  # noqa: BLE001 -> no broker spot this tick
+                reason = "error"
+        except asyncio.TimeoutError:
+            reason = "timeout"
+        except Exception:  # noqa: BLE001 -> no broker spot this tick
+            reason = "error"
+        return self._spot_from_candle(symbol, broker_reason=reason)
+
+    def _spot_from_candle(self, symbol: str, *, broker_reason: str) -> Optional[float]:
+        """Candle-cache fallback for a failed broker spot (2026-11-20). Uses the
+        freshest positive mace_candle close only when its bar is younger than
+        spot_candle_max_age_sec (code default 600s); a stale or missing bar leaves
+        spot unavailable — never a fabricated price. Emits exactly one audit row:
+        mace_spot_fallback when the candle is used, mace_spot_unavailable when no
+        source produced a price (both capped at one per symbol per tick)."""
+        max_age = float(self.cfg.management.spot_candle_max_age_sec)
+        row = None
+        try:
+            row = self.store.latest_candle_close(symbol)
+        except Exception:  # noqa: BLE001 — a cache read error must not sink the tick
+            row = None
+        age: Optional[float] = None
+        if row is not None:
+            bar_time, close = row
+            age = self._now_utc().timestamp() - float(bar_time)
+            # Small negative tolerance: a forming bar's start can sit marginally
+            # ahead of a skewed clock; a genuinely future bar is garbage.
+            if -60.0 <= age <= max_age and close > 0:
+                self._audit_spot(symbol, "mace_spot_fallback", source="mace_candle",
+                                 bar_age_sec=round(age), price=float(close),
+                                 broker_reason=broker_reason)
+                return float(close)
+        self._audit_spot(symbol, "mace_spot_unavailable", reason=broker_reason,
+                         candle=("missing" if age is None else "stale"),
+                         bar_age_sec=(None if age is None else round(age)))
+        return None
+
+    def _audit_spot(self, symbol: str, kind: str, **fields) -> None:
+        """At most ONE spot-source audit row per symbol per tick (the CLOSING
+        self-heal re-eval calls _spot outside the per-tick cache; without this cap
+        it could double-audit). _spot_audited is cleared at manage-tick start."""
+        if symbol in self._spot_audited:
+            return
+        self._spot_audited.add(symbol)
+        self._audit(kind, symbol=symbol, **fields)
 
     # ── reconcile ────────────────────────────────────────────────────────
     async def reconcile_tick(self, session_date: Optional[date] = None) -> None:

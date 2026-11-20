@@ -129,6 +129,10 @@ class ManagementConfig:
     # natural sits more than this fraction above the mid (SPY 11-19: 21% -> the mid was quote
     # geometry, not value). Optional-with-default -> absent from mace.yaml, config_hash preserved.
     stop_quote_width_max_pct: float = 0.15
+    # SPY-spot fix (2026-11-20): max age of a mace_candle close usable as the spot
+    # fallback when the broker price is unavailable. Older -> spot stays None.
+    # Optional-with-default -> absent from mace.yaml, config_hash preserved.
+    spot_candle_max_age_sec: int = 600
 
 
 @dataclass(frozen=True)
@@ -431,6 +435,9 @@ def load_mace_config(
     # Mark-quality width threshold (2026-11-19) — optional-with-default (config_hash preserved).
     sqw = (num(m, "stop_quote_width_max_pct", "management", lo=0.0, lo_excl=True)
            if "stop_quote_width_max_pct" in m else 0.15)
+    # Spot candle-fallback age bound (2026-11-20) — optional-with-default (config_hash preserved).
+    scma = (num(m, "spot_candle_max_age_sec", "management", typ=int, lo=1)
+            if "spot_candle_max_age_sec" in m else 600)
     wd = m.get("watchdog")
     if wd is None:
         wd = {}
@@ -618,6 +625,7 @@ def load_mace_config(
             manage_tick_timeout_sec=int(mtt),
             leg_quote_timeout_sec=int(lqt),
             stop_quote_width_max_pct=float(sqw),
+            spot_candle_max_age_sec=int(scma),
             watchdog=WatchdogConfig(
                 enabled=bool(wd_enabled),
                 poll_interval_sec=int(wd_poll),

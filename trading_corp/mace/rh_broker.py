@@ -138,6 +138,15 @@ class RobinhoodOptionsBroker(OptionsBrokerPort):
         return orders
 
     # ── market data ──────────────────────────────────────────────────────
+    async def quote(self, symbol: str) -> float:
+        """Underlying last-trade price, DIRECT — one light equity-quote call, no
+        chain fetch. manager._spot prefers this over chain() (SPY-spot fix
+        2026-11-20: spot used to ride the FULL chain fetch, which SPY's strike
+        grid pushed past the 30s bound -> silent None on every tick). Returns 0.0
+        on an empty price response (RobinhoodBroker.quote contract); the caller
+        treats <= 0 as unavailable (the 11-16 dying-session guard)."""
+        return float(await self._broker.quote(symbol))
+
     async def chain(self, symbol: str) -> ChainView:
         spot: float | None
         try:
