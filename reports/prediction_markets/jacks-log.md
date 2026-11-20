@@ -1648,3 +1648,91 @@ NOT TOUCHED / NOT AUTHORIZED: the ts->spirit alias (staged cs2-leg-alias-ts-2026
       (reported + closed), the engine. The legacy trading_corp.db was NEVER written. bitunix/MACE out of scope --
       nothing surfaced. Still outstanding (Jack's): the cfb whale 0x27f738fe...44b0 grounding report, awaiting an
       Analyze click, will carry a backfill_complete=0 partial-data caveat.
+
+
+2026-11-16 → 2026-11-20 — PM WEEK: FEED RESTORED (v1→v2) + CHASE & FLOOR GATES + HONEST LOSS SCORING + ROSTER CLEANED
+---------------------------------------------------------------------------------------------------------------------
+
+A. WHAT BROKE (the 11-16 state). Two independent failures, both quiet by shape:
+   - Kalshi location attestation had lapsed: trey 10-22, marc 10-28 (each auth-latched on all 22
+     categories at the first 403); karen's lapsed mid-recovery 11-18 05:33Z. Jack's stayed valid.
+   - Polymarket Data API v1 was retired 11-02: every v1 call had returned HTTP 410 since, so the
+     whale feed — paper farm AND live signals — was dead division-wide for two weeks.
+   Money was safe throughout: the book was flat and nothing could fire; no losses from either failure.
+
+B. WHAT SHIPPED (all verified GREEN; full records in runbooks/deploy_log.md):
+   - 11-17 21:08Z — Polymarket v2 client + CHASE GATE (gate C: skip any copy priced more than 2c
+     above the whale's own entry, fees included). First night: 73 chase-blocks, zero chased entries,
+     farm writing paper rows again (first since 11-02).
+     Branch pm-polyv2-migration-2026-11-17 @ 776ff4a8; prod-live FF f82d5be6→13725707;
+     tag pvc-deploy-2026-11-17.
+   - 11-18 22:54Z — NBA spreads ON (jack+karen; first two spread fills audited clean); F1 LASV26
+     date-join fix + race_winner ON (jack) — Vegas-ready; FLOOR GATE (gate F, log-only: flag entries
+     priced under 1/4 of the whale's entry); ts→spirit leg-audit alias.
+     Branch pm-f1fix-floor-2026-11-18; FF a698ea2e→e6624f3d; tag pm-f1floor-deploy-2026-11-18.
+   - 11-19 21:06Z — REDEEMABLE_LOST loss grounding for Analyze (skill v6, pm_web only): held-to-zero
+     losers now counted. Then a one-time global re-Analyze: 1,616 pairs, 0 failed, $6.52, done
+     2026-11-20 01:54Z; pm_whale_score recomputed. The batch was OOM-killed once (21:31Z) and rebuilt
+     with guardrails (oom_score_adj 1000, 2 GB address cap, 3-wallet chunk subprocesses, free-memory
+     floor) — ran clean to the end, engine untouched.
+     Branch pm-rl-grounding-2026-11-19; base 28ebc19f pushed + tag pm-rl-grounding-deploy-2026-11-19;
+     3 commits still unpushed (merge against today's prod-live re-verified clean; commands with Jack).
+
+C. ROSTER CHANGES (all via sanctioned pm_cli paths; ids = pm_subdivision_attachment_event):
+   - 11-18 23:49Z — 6 promotions to jack (events 140-145): wta 0xe7870d0e, mex+mls 0xa797d6bd,
+     cs2 0x87188658, atp 0xe954ddb0, nfl 0xd6966eb1.
+   - 11-18 23:50Z — 16 dead-weight detaches: atp 0x5f301781, cfb 0x12508466 (x4), wnba 0xe6bff499,
+     epl 0x62ca7dc9, nfl 0x054964a9 (trey), bra+sea 0x629c2844 (x5), cs2 0xd27cc742, nba 0xf28e42d2 (x2).
+   - 11-19 00:32Z — 0x0d6a1ada backfilled complete (11,959 rows) + PINNED to the nba watchlist (Jack).
+   - 11-20 14:19-14:29Z — Jack's own changes (events 162-169): attach jack/nba 0x081e1455,
+     trey/nfl 0x226bf122, jack+karen/lal 0x9913d9fc, jack+karen/cfb 0x7b1036b6, jack/mls 0xe5f0ae9c;
+     detach jack/cfb 0xf3a6ac44.
+   - 11-20 14:47Z — the 12 Board-ordered detaches (events 170-181, agent-run): epl 0x31706006 (jack),
+     epl 0x91feec8a (karen/marc/trey — its mex+mls attachments stay), atp 0xdb859a55 (all four),
+     bra 0xf5f92940 (all four). Verified: exactly 12 rows flipped active=0, the four whales' signal
+     reads went to zero within one driver cycle, no open positions existed so nothing rides.
+
+D. FINDINGS WORTH REMEMBERING:
+   - F-1 mechanism PROVEN: a loser held to zero stays OPEN forever (it never reaches the CLOSED
+     feed), so CLOSED-based scoring missed every one. v2's REDEEMABLE_LOST filter lists them
+     directly; the global pass added 6,383 such losses with 0 false losses against the referee.
+   - ITF 0x74629585 live record: +$44.11 gross, $53.68 fees, −$9.57 net; the signal itself is
+     ~breakeven since 10-16. Status WATCH — the live record governs, not the Analyze flag.
+   - Maker orders on ITF: DON'T BUILD. Simulated on our own 412 ITF signals against Kalshi's public
+     tape (last-in-queue assumption, fills only on prints below our rest price): a resting bid fills
+     exactly when sellers arrive with bad news. Every variant and hold time is negative out-of-sample
+     even though ITF has NO maker fee — maker-filled win rate 42-53% vs 56% for our taker fills on
+     the same split. The agent's written pre-prediction (maker turns ITF positive) was wrong.
+   - Engine Polymarket 429s: BENIGN. All on position reads; the client's retry ladder absorbs them
+     (~0.3% of reads see a retry, ~16 hard failures/day = 0.005%, each isolated to one whale for one
+     cycle); zero late exits traced to a 429.
+   - Marc and trey never traded epl (nor bun/ucl; karen+marc never wta) while karen placed 51 epl
+     entries from the same whale, same config: config, funding, and account capability all check out,
+     so by elimination those (account,category) pairs were never ARMED. Unprovable from records —
+     arm.py overwrites a single state row and keeps no history. See open item 2.
+
+E. STATE AT WRAP (read 2026-11-20 22:38-22:45Z):
+   - Arm: global ARMED (by jack, 11-18 01:20Z). jack 26/26 armed; karen 22/22 armed;
+     marc 0/22 (22 auth-latched, 10-28); trey 0/22 (22 auth-latched, 10-22).
+   - Attachments: 138 active across the 4 accounts (243 rows). Zero-whale categories with an active
+     sub-division: bra, fed, nhl, sea on ALL FOUR accounts; fl1 on karen/marc/trey; nba on marc/trey;
+     soccer + tennis on jack (legacy rows).
+   - Engine: PID 1041875, ActiveEnter 2026-11-20 22:17:39Z (Jack's MACE 21-DTE timeforce restart).
+     pm_web: PID 1020846, ActiveEnter 2026-11-19 21:09:02Z (the RL deploy restart).
+   - Git: origin/prod-live = 4945e5b8. Box PM files == origin/prod-live except the two unpushed
+     batch-runner commits' files (blob-sha sweep: 91 match, 1 differ, remainder repo-only artifacts).
+   - Balances (engine's own shard snapshots, 22:38Z, no Key Vault): jack $318.94, karen $375.20,
+     marc $44.29, trey $53.53 — total $791.96.
+
+F. OPEN ITEMS for the next session:
+   1. Renew marc + trey attestation in the Kalshi UI; then Jack picks their category list (some
+      categories were apparently never armed — see D).
+   2. Arm/disarm audit logging (Defect 2 from 10-06): small build; would have made D's last finding
+      provable from records.
+   3. ITF roster search: new ITF whales with positive paper since 10-16.
+   4. Watch F1 at Las Vegas (Nov 20-22): first chance for race_winner to fire; only if a whale enters.
+   5. First live floor-gate block and the first NBA spread settlements: confirm they behave.
+   6. Hygiene: 9 legacy aggregate watchlist rows (8 soccer, 1 tennis); the 09-20 marc/trey mirror
+      attaches have no attachment events.
+   7. Standing rules: run a read-only cross-division reconcile before ANY engine restart; Kalshi bulk
+      public reads go from Jack's local IP, never the box.
