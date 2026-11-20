@@ -90,6 +90,10 @@ class CloseabilityConfig:
     max_closing_redrives: int = 8    # committed-CLOSING re-drive cap before parking (~40 min)
     park_retry_ticks: int = 12       # while parked, pulse one re-drive every N ticks (~hourly at 300s)
     ride_shorts_buffer_pct: float = 0.02  # a short within this % of spot -> drop ride, re-manage (pin risk)
+    time_force_when_threatened: bool = True  # 2026-11-20: a TIME exit blocked natural_above_cap on a
+                                             # THREATENED (spot at/through/within buffer of a short) or
+                                             # LOSING (mark >= credit) rung takes the DTE-floor forced
+                                             # marketable path instead of riding. True OTM winners ride.
 
 
 @dataclass(frozen=True)
@@ -426,6 +430,11 @@ def load_mace_config(
                  if "park_retry_ticks" in cc else 12)
     cc_buf = (num(cc, "ride_shorts_buffer_pct", "management.closeability", lo=0.0, hi=1.0,
                   hi_excl=True) if "ride_shorts_buffer_pct" in cc else 0.02)
+    # 21-DTE force (2026-11-20) — optional-with-default (config_hash preserved).
+    cc_tf = cc.get("time_force_when_threatened", True)
+    if not isinstance(cc_tf, bool):
+        errs.append("management.closeability.time_force_when_threatened: "
+                    f"not a bool: {cc_tf!r}")
     # Durability fix (2026-10-23) — manage-tick/leg-quote timeouts + liveness watchdog.
     # Optional-with-defaults (mirrors closeability); absent -> defaults, config_hash preserved.
     mtt = (num(m, "manage_tick_timeout_sec", "management", typ=int, lo=1)
@@ -621,6 +630,7 @@ def load_mace_config(
                 max_closing_redrives=int(cc_maxrd),
                 park_retry_ticks=int(cc_parkrt),
                 ride_shorts_buffer_pct=float(cc_buf),
+                time_force_when_threatened=bool(cc_tf),
             ),
             manage_tick_timeout_sec=int(mtt),
             leg_quote_timeout_sec=int(lqt),

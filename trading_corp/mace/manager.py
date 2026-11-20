@@ -123,6 +123,12 @@ class MaceManager:
         # self-heal calls _spot outside the per-tick cache, so without this it
         # could double-audit a symbol within one tick.
         self._spot_audited: set[str] = set()
+        # 21-DTE force (2026-11-20): one RIDING breaker push per rung per SESSION. The
+        # shorts-threatened escape + a still-failing gate can leave and re-enter ride on
+        # every tick after 15:30 ET; audits record every transition, but the Telegram
+        # push fires at most once per rung per session. In-memory (restart -> at most
+        # one extra push).
+        self._ride_alert_session: dict[str, "date"] = {}
 
     # ── small helpers ────────────────────────────────────────────────────
     def _audit(self, kind: str, **payload) -> None:
@@ -587,15 +593,50 @@ class MaceManager:
         # (Commit 3 turns this hold into a first-class RIDE-to-expiry). STOP/EXDIV are risk-reducing
         # -> NEVER gated (they price off stop_natural, dead wings given away). The mark-trust guard
         # above stays as defense-in-depth for a corrupt SHORT-leg mid the gate cannot see.
+        force_time = False
         if decision.exit_reason in (EXIT_PT, EXIT_TIME):
             target = self._closeability_target(decision.exit_reason, rung, snap, now)
             gate = st.assess_closeability(rung, snap, self.cfg,
                                           exit_reason=decision.exit_reason, target_debit=target)
             if not gate.closeable:
-                if riding:
-                    return None                       # already riding -> suppress re-alert, stay riding
-                self._enter_ride(rung, gate, decision.exit_reason)   # open -> riding (one alert)
-                return None
+                # 21-DTE FORCE (2026-11-20): the winner cap exists to stop overpaying on a
+                # near-worthless OTM condor; it must not defer the TIME exit on a rung that is
+                # THREATENED (spot at/through/within buffer of a short) or LOSING (this tick's
+                # mark at/over the credit). Such a rung takes the SAME forced path the DTE
+                # floor already uses: liveness-only gate + marketable pricing (no new ladder).
+                # A true OTM winner (neither condition) rides exactly as before; the DTE-floor
+                # close itself (target None -> gate cannot read natural_above_cap) is untouched.
+                cc = self.cfg.management.closeability
+                threatened = self._ride_shorts_threatened(rung, spot)
+                losing = (mark is not None and rung.credit_actual is not None
+                          and mark >= rung.credit_actual)
+                if (decision.exit_reason == EXIT_TIME
+                        and gate.reason == "natural_above_cap"
+                        and cc.time_force_when_threatened
+                        and (threatened or losing)):
+                    live_gate = st.assess_closeability(
+                        rung, snap, self.cfg, exit_reason=decision.exit_reason,
+                        target_debit=None)      # liveness-only: wings sellable + computable
+                    if live_gate.closeable:
+                        cap = (target + self.cfg.management.exit_winner_band + cc.slack_usd
+                               if target is not None else None)
+                        self._audit("mace_time_exit_forced", rung_id=rung.rung_id,
+                                    symbol=rung.symbol,
+                                    condition=("both" if threatened and losing
+                                               else "threatened" if threatened else "losing"),
+                                    spot=spot,
+                                    short_put=(rung.spec.short_put if rung.spec else None),
+                                    short_call=(rung.spec.short_call if rung.spec else None),
+                                    mark=mark, credit=rung.credit_actual,
+                                    natural=(round(gate.natural, 4)
+                                             if gate.natural is not None else None),
+                                    cap=(round(cap, 4) if cap is not None else None))
+                        force_time = True
+                if not force_time:
+                    if riding:
+                        return None                   # already riding -> suppress re-alert, stay riding
+                    self._enter_ride(rung, gate, decision.exit_reason)   # open -> riding (one alert)
+                    return None
         # Proceeding to an actual close (PT/TIME now executable, or an ungated STOP/EXDIV): if the
         # rung was riding, the position is being resolved -> clear the disposition.
         if riding:
@@ -609,6 +650,8 @@ class MaceManager:
                     line=exit_disposition_line(rung.spec, decision.exit_reason,
                                                phase="decision"))
         pricing, defer = self._close_pricing(decision.exit_reason, rung, now)
+        if force_time:
+            pricing, defer = "marketable", False   # 21-DTE force: same path as the DTE floor
         # trigger_mid = the mid the exit decision was made on (this tick's mark). The winner
         # ladder anchors its mid+band cap to THIS value and holds it fixed for the whole walk
         # (2026-09-18), so an adverse re-inflation during the ~2-min close cannot chase the
@@ -806,11 +849,17 @@ class MaceManager:
                     reason=trigger_reason, gate=gate.reason,
                     natural=(round(gate.natural, 4) if gate.natural is not None else None),
                     detail=gate.detail)
-        self.notifier.breaker(
-            condition=f"{rung.symbol} RIDING to expiry — close not executable ({gate.reason})",
-            lines=[f"rung {rung.rung_id}", f"trigger {trigger_reason}", gate.detail],
-            suggested_action="holding OTM defined-risk to expiry; auto-revives if the wing market returns",
-            urgent=False)
+        # 21-DTE force follow-up (2026-11-20): the escape/re-enter cycle on a threatened
+        # rung may re-enter ride every tick after 15:30 ET. Audits above record each
+        # transition; the Telegram push fires at most ONCE per rung per session.
+        sess = self._now_et().date()
+        if self._ride_alert_session.get(rung.rung_id) != sess:
+            self._ride_alert_session[rung.rung_id] = sess
+            self.notifier.breaker(
+                condition=f"{rung.symbol} RIDING to expiry — close not executable ({gate.reason})",
+                lines=[f"rung {rung.rung_id}", f"trigger {trigger_reason}", gate.detail],
+                suggested_action="holding OTM defined-risk to expiry; auto-revives if the wing market returns",
+                urgent=False)
 
     def _ride_shorts_threatened(self, rung: RungState, spot: Optional[float]) -> bool:
         """A riding condor is OTM; if spot approaches/crosses EITHER short (within
