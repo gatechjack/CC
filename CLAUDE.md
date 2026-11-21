@@ -23,6 +23,18 @@ the Board's profile, communication style, and hard constraints, see
 [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md). For deliberate-but-surprising
 properties of the codebase, see [docs/sharp_edges.md](docs/sharp_edges.md).
 
+## Second brain vault (keep it current)
+
+A living "second brain" for Trading Corp lives at `C:\Users\AA Incorporado\SecondBrain`
+(Jack's PC; an Obsidian vault, not a git repo). It holds cited Current State notes,
+imported-doc snapshots, decisions, runbooks, and conflicts for Platform + every division,
+built against prod-live and kept honest by a weekly incremental sweep.
+
+**Before reporting any task done, update the vault per `00 Meta/AGENTS.md`:** bump the
+Current State note(s) + division MOC for whatever you touched, record the change (a Build
+or Handoff note), and set the new `source_commit` / `last_verified`. A code, config, or
+prod change is **not done until the vault reflects it.**
+
 ## STOP AND READ — non-negotiable invariants
 
 Before you change anything:
