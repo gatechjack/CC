@@ -27,6 +27,9 @@ cp -a /usr/local/bin/authelia "$BK/authelia.bin.bak" 2>/dev/null
 cp -a "$AUCFG" "$BK/authelia.configuration.yml.bak" 2>/dev/null
 echo "[backup] dir=$BK"
 ls -l "$BK" | awk '{print "  "$0}'
+# Pin the FIRST backup of the night as the ORIGINAL (pre-change 2.11.4/4.39.19) state; never overwrite it.
+PIN=/home/azureuser/secrev_batch1_ORIGINAL
+if [ ! -f "$PIN" ]; then echo "$BK" > "$PIN"; echo "[backup] PINNED ORIGINAL pre-change state -> $BK"; else echo "[backup] ORIGINAL already pinned -> $(cat "$PIN") (this run's backup $BK is NOT the rollback target)"; fi
 
 # ---------- CADDY ----------
 CUR_CADDY=$(/usr/bin/caddy version 2>/dev/null | awk '{print $1}')

@@ -3,8 +3,14 @@
 # Restores Caddy (previous deb version + Caddyfile) and Authelia (previous binary) from the newest
 # secrev_batch1_backup_* dir (or pass a specific dir as $1). Does NOT restart trading-corp.
 set -u
+# Rollback target: an explicit $1, else the PINNED ORIGINAL (first backup of the night = pre-change
+# 2.11.4/4.39.19 state), else the OLDEST backup dir. NEVER "newest" (which could be a partial-upgrade state).
 BK=${1:-}
-[ -z "$BK" ] && BK=$(ls -dt /home/azureuser/secrev_batch1_backup_* 2>/dev/null | head -1)
+PIN=/home/azureuser/secrev_batch1_ORIGINAL
+if [ -z "$BK" ]; then
+  if [ -f "$PIN" ] && [ -d "$(cat "$PIN")" ]; then BK=$(cat "$PIN"); echo "[rollback] using PINNED ORIGINAL backup";
+  else BK=$(ls -dtr /home/azureuser/secrev_batch1_backup_* 2>/dev/null | head -1); echo "[rollback] no valid pin; using OLDEST backup dir"; fi
+fi
 echo "=== BATCH1 ROLLBACK from $BK ==="
 if [ -z "$BK" ] || [ ! -d "$BK" ]; then echo "no backup dir found -- cannot roll back"; exit 1; fi
 
