@@ -8,6 +8,39 @@ Active session work lives in chat — not duplicated here.
 
 ---
 
+## MACE — holiday + early-close awareness  *(✅ DONE 2026-11-24 — deployed; pending Thu/Fri live proof)*
+
+**Done.** `management.session_close_aware` (code-default True; config_hash 158ea99b2a97 preserved) deployed
+2026-11-24 00:43Z (prod-live `03a83df1`, PID 1060188). Full closures skip every clock-gated loop; afternoon gates
+anchor to the day's actual close (13:00 → time-exit 12:30 / snapshot 12:40 / entry 12:45 / summary 12:50 / window
+12:55); calendar = `utils/market_hours.default_calendar()` (read-only import). Suite 501 pass / 5 pre-existing-stale.
+Ref: runbooks/deploy_log.md 2026-11-24 00:43 UTC entry. **Pending live proof:** Thu 11-26 full-holiday skip and
+Fri 11-27 13:00 early-close shift (armed session-only checks). CLOSE this item after Friday confirms the five 12-18
+rungs' time-exit opened at 12:30 and nothing clock-gated ran after 12:55.
+
+---
+
+## MACE — 21-DTE forced time exit not yet exercised live  *(2026-11-24 — filed after the 11-23 health check)*
+
+**Fact.** The 2026-11-20 forced time-exit path (`mace_time_exit_forced`: a threatened/losing 21-DTE rung takes a
+marketable close instead of riding) has NOT fired live. On 11-23 the two SPY 12-11 rungs it was built for closed as
+ordinary winners (SPY recovered to ~722 → marks under credit by 15:32 → normal winner path). It is unit-tested only
+(`tests/test_mace_time_force.py` + the half-day variant in `tests/test_mace_session_gates.py`). **Watch:** the next
+genuinely threatened/losing rung at 21 DTE after the time gate is the first live exercise. **Priority:** watch, no
+action — just confirm the path behaves when it finally triggers.
+
+---
+
+## MACE — per-tick manage start times are not individually logged  *(2026-11-24 — filed after the 11-23 health check)*
+
+**Problem.** Only COMPLETED manage ticks write a heartbeat; individual tick START times are not logged, so tick
+DURATION cannot be measured directly from the journal/DB (the 11-23 health check could not time today's ticks — only
+infer from Friday's ~405 s figure and the heartbeat age). This also makes the "slow per-leg chain fetch" item (below)
+hard to size from evidence. **Proposed:** emit a tick-start audit row (ts + open_count) so duration = next heartbeat
+− start; observability-only, no behaviour change. **Priority:** low; pairs with the slow-leg-fetch item.
+
+---
+
 ## MACE — 2x stop under-reads on wide deep-ITM quotes  *(2026-11-20 — filed with the 21-DTE force deploy)*
 
 **Problem.** On 11-20 the two SPY 12-11 715/710 rungs (fully ITM) carried mids of 2.51 and 1.99 — UNDER

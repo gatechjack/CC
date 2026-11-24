@@ -180,6 +180,64 @@ rungs' time-exit opens 12:30, snapshot 12:40, entry 12:45, nothing after 12:55, 
 
 ---
 
+## 2026-11-23 — MACE DAY SUMMARY (jack-log): health check GREEN, both SPY 12-11 rungs closed as winners through the ordinary time exit, and holiday/early-close awareness built + deployed
+
+**Health check (read-only).** Engine healthy all day — PID 1041875, boot 2026-11-20 22:17:39Z, NRestarts 0,
+healthz/`/mace` 200, config_hash 158ea99b2a97; all five MACE schedulers online; six divisions alive. Robinhood
+session authenticated throughout (0 RH-scoped unauthorized/expired lines since Friday's restart and today —
+the "767/2,897" a raw grep showed were polymarket-data-api + kalshi lines, not Robinhood). git == box: all 19
+MACE source files + `brokers/robinhood.py` + `config/mace.yaml` matched prod-live (then 4945e5b8) exactly.
+The 2026-11-20 SPY-spot fix was confirmed WORKING on a live day: zero `mace_spot_unavailable` / zero
+`mace_spot_fallback` rows — spot came from the direct quote on every tick.
+
+**The two SPY 12-11 rungs closed as small WINNERS through the ORDINARY time exit.** SPY recovered from
+Friday's 690.91 crash low back to ~722 over the weekend, so by the 15:32 ET time-exit both fully-ITM-on-Friday
+rungs were OTM winners (marks under credit). They closed via the normal 21-DTE winner path (`pricing: winner`):
+the 10-30 rung (715/710-787/792 ×2) at exit debit **1.48** for **+$26.00**, the 11-02 rung (715/710-786/791 ×2)
+at **1.45** for **+$28.00**; booked == fill, not the limit. **`mace_time_exit_forced` did NOT fire** — correctly,
+because neither rung was threatened or losing by 15:32. **The 11-20 forced path has therefore still not run live.**
+
+**Entries (15:47 ET, auto_execute).** SPY 12-31 676/673-761/764 ×2 filled at **credit 1.07**, IWM 12-31
+247/244-281/284 ×2 filled at **credit 0.98** — **no Robinhood rejections**. Per-symbol skips: IBIT credit_floor
+(credit 0.28 < 0.30), XLE credit_floor (0.21 < 0.30), GDX credit_floor (1.38 < 1.50), FXI unpriceable standdown
+(2 attempts, no fill). Snapshot 15:40: available buying power $3,347.54 (recovered from Friday's $519.90 after
+the two 12-11 closes freed margin).
+
+**Finding.** MACE had NO market-holiday or early-close awareness: every clock gate was a fixed ET wall-clock time
+and the only non-macro gate was a weekday check. On the Labor Day 2026-09-07 full-holiday precedent (the only
+holiday since the division launched) the engine ran the whole daily cycle and placed non-filling order attempts
+off stale quotes. Fri 2026-11-27 (NYSE early close 13:00 ET) the five open 12-18 rungs reach 21 DTE and their
+time-exit would have fired at 15:30 — 2.5 h after the close — into a dead book.
+
+**Deploy (2026-11-24 00:43 UTC, GREEN — see the entry above for full detail).** `management.session_close_aware`
+(code-default True; mace.yaml untouched → config_hash **158ea99b2a97** preserved). Full closures skip every
+clock-gated loop cleanly; afternoon gates anchor to the day's actual close (13:00 → time-exit 12:30 / snapshot
+12:40 / entry 12:45 / summary 12:50 / window-end 12:55); a normal 16:00 close reproduces 15:30/15:40/15:45/15:50/
+15:55 exactly. prod-live **cf035381 → 03a83df1**, engine PID **1060188** (boot 2026-11-24 00:43:29Z). Rollback
+backup `/home/azureuser/mace_hours_graft_backup_20261124T003128Z`; rollback runner
+`C:\Users\AA Incorporado\cc\mh_hours_rollback.ps1` + one restart.
+
+**Jack's rulings today.** (1) Build **Option 2** — full-day closures skip cleanly; afternoon gates anchored to
+the actual close. (2) **Entries ARE taken on early-close days**, at the shifted time. (3) Calendar source is the
+existing **`trading_corp/utils/market_hours.py`** (`default_calendar()` / `close_time_et`), imported read-only.
+
+**Current state (fresh `-readonly` read, 2026-11-24 01:08Z).** Census **3 abandoned / 57 closed / 10 open**.
+Open rungs by symbol/expiry: IWM 12-18 250/247-289/292 ×1 (0.96), IWM 12-18 262/259-297/300 ×2 (0.94),
+IWM 12-24 263/260-293/296 ×1 (0.91), IWM 12-31 234/231-277/280 ×2 (1.01), IWM 12-31 247/244-281/284 ×2 (0.98),
+IWM 12-31 252/249-287/290 ×1 (0.93), SPY 12-18 685/680-773/778 ×1 (1.66), SPY 12-18 685/680-773/778 ×1 (1.61),
+SPY 12-18 713/710-790/793 ×2 (0.95), SPY 12-31 676/673-761/764 ×2 (1.07). Day P&L (11-23) **+$54.00** (2 closes).
+**All-time realized +$15.00** (57 closed) — flipped positive today from −$39.00. By symbol: SPY **+$768** (32),
+IWM +$146 (5), IBIT −$74 (1), XLE −$159 (11), GDX −$666 (8).
+
+**Armed checks (session-only — a new agent must run them by hand if this session closes).**
+Tue 11-24 **09:42 ET** (id e13b43c7) normal-day regression: gates at 15:30/15:40/15:45/15:50, window 15:55.
+Tue 11-24 **15:52 ET** (id e8f1c337) first live afternoon: gates fired at the fixed times; booked == fill.
+Thu 11-26 **16:05 ET** (id 19a9f031) full holiday: zero ticks/quotes/orders/alerts; skip log lines; RH orders empty.
+Fri 11-27 **13:05 ET** (id 3db66fb1) early close: the five 12-18 rungs' time-exit opens 12:30 (closed/forced/riding
++ reason); fills vs RH; snapshot 12:40; entry 12:45; nothing after 12:55; no watchdog trip.
+
+---
+
 ## 2026-11-20 22:17 UTC — MACE: 21-DTE time exit forces the marketable close on a threatened or losing rung DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
 
 **Commits:** 8c2e3408 on branch `mace-timeforce-2026-11-20` (BASE 3ad31ee2)
