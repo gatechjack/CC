@@ -45,9 +45,14 @@ else
   if [ -z "$DEB" ]; then echo "[caddy] NO deb downloaded -- ABORT (authelia untouched)"; exit 2; fi
   TMPD=$(mktemp -d)
   dpkg-deb -x "$DEB" "$TMPD"
-  NEWCADDY=$(find "$TMPD" -type f -name caddy | head -1)
-  if [ -z "$NEWCADDY" ]; then echo "[caddy] could not extract new binary -- ABORT (authelia untouched)"; exit 2; fi
-  echo "[caddy] new-binary version: $("$NEWCADDY" version 2>/dev/null | head -1)"
+  # The deb ships TWO files named 'caddy' (usr/bin/caddy binary + etc/bash_completion.d/caddy script).
+  # Select the BINARY explicitly, never the completion script.
+  NEWCADDY="$TMPD/usr/bin/caddy"
+  [ -x "$NEWCADDY" ] || NEWCADDY=$(find "$TMPD" -type f -name caddy -path '*bin*' ! -path '*completion*' 2>/dev/null | head -1)
+  if [ -z "$NEWCADDY" ] || [ ! -x "$NEWCADDY" ]; then echo "[caddy] could not locate executable caddy BINARY in deb (got: $NEWCADDY) -- ABORT (authelia untouched)"; exit 2; fi
+  NV=$("$NEWCADDY" version 2>/dev/null | head -1)
+  if [ -z "$NV" ]; then echo "[caddy] new binary reported no version (wrong file selected?) -- ABORT (authelia untouched)"; exit 2; fi
+  echo "[caddy] new-binary version: $NV"
   echo "[caddy] VALIDATE live config with NEW binary (before install) ..."
   if "$NEWCADDY" validate --config "$CADDYFILE" --adapter "$ADAPTER" > "$BK/caddy_validate.out" 2>&1; then
     echo "[caddy] validate OK -> installing deb"
