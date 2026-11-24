@@ -137,6 +137,18 @@ class ManagementConfig:
     # fallback when the broker price is unavailable. Older -> spot stays None.
     # Optional-with-default -> absent from mace.yaml, config_hash preserved.
     spot_candle_max_age_sec: int = 600
+    # Holiday / early-close awareness (2026-11-23, Option 2): when True, the clock-gated MACE
+    # loops (daily-slots, manage, watchdog) skip FULL market closures for the day and anchor
+    # their afternoon gates to that day's ACTUAL close -- a 13:00 half-day shifts time-exit /
+    # snapshot / entry / summary / window-end earlier by the SAME offset each sits before a
+    # 16:00 close (time-exit close-30m, snapshot close-20m, entry close-15m, summary close-10m,
+    # window-end close-5m). A normal 16:00 close reproduces the fixed ET times EXACTLY (the
+    # regression guard); False restores the pre-2026-11-23 fixed-wall-clock behaviour on every
+    # day type. Calendar source is utils.market_hours.default_calendar() (read-only); if it is
+    # unavailable/raises the loops fall back to today's fixed behaviour. DTE, 2x stop, PT, the
+    # DTE-14 floor and the 11-20 forced time-exit are all UNCHANGED apart from WHEN the time gate
+    # opens. Optional-with-default -> absent from mace.yaml, config_hash preserved.
+    session_close_aware: bool = True
 
 
 @dataclass(frozen=True)
@@ -462,6 +474,10 @@ def load_mace_config(
                 if "stall_alert_sec" in wd else 900)
     wd_marks = (num(wd, "marks_dead_alert_sec", "management.watchdog", typ=int, lo=1)
                 if "marks_dead_alert_sec" in wd else 900)
+    # Holiday / early-close awareness (2026-11-23) — optional-with-default (config_hash preserved).
+    sca = m.get("session_close_aware", True)
+    if not isinstance(sca, bool):
+        errs.append(f"management.session_close_aware: not a bool: {sca!r}")
 
     x = sect("execution")
     start_off = num(x, "entry_start_offset_usd", "execution", lo=0.0)
@@ -642,6 +658,7 @@ def load_mace_config(
                 stall_alert_sec=int(wd_stall),
                 marks_dead_alert_sec=int(wd_marks),
             ),
+            session_close_aware=bool(sca),
         ),
         execution=ExecutionConfig(
             entry_start_offset_usd=float(start_off),

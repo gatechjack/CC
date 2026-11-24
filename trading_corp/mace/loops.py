@@ -22,11 +22,52 @@ import asyncio
 import logging
 from datetime import datetime, time as dtime, timezone
 
+from trading_corp.mace import strategy as st
+from trading_corp.utils.market_hours import default_calendar
 from trading_corp.utils.time import now_et, now_utc
 
 _LOG = logging.getLogger("mace.loops")
 
 _DEFAULT_SLOTS = (((15, 40), "snapshot"), ((15, 45), "entry"), ((15, 50), "summary"))
+
+
+# ── holiday / early-close awareness (2026-11-23, Option 2) ───────────────────
+# Shared day-resolver for the clock-gated loops (daily-slots, manage, watchdog). When
+# cfg.management.session_close_aware is False it returns today's FIXED behaviour verbatim
+# (the regression guard); when True it uses the injected NYSE calendar to skip full closures
+# and anchor the afternoon gates to that day's close. Reconcile + weekly-calendar loops are
+# unchanged. The single calendar touch lives in strategy.resolve_close_hhmm.
+
+def _close_aware(division) -> bool:
+    mgmt = getattr(getattr(getattr(division, "manager", None), "cfg", None), "management", None)
+    return bool(getattr(mgmt, "session_close_aware", False))
+
+
+def _log_skip_once(logged: set, now, loop_name: str, reason: str, *, warn: bool = False) -> None:
+    """One log line per (date, loop) explaining a full-day skip or a calendar fallback."""
+    key = now.date().isoformat()
+    if key in logged:
+        return
+    logged.add(key)
+    (_LOG.warning if warn else _LOG.info)("MACE %s %s: %s", loop_name, key, reason)
+
+
+def _resolve_day(division, cal, now):
+    """Return (run_today, close_hhmm, skip_note, warn) for a clock-gated loop.
+      - flag off -> (weekday<5, None, None, False): today's FIXED behaviour exactly
+      - closed   -> (False, None, 'market closed...', False): skip the whole day
+      - fallback -> (weekday<5, None, 'calendar unavailable...', True): fixed hours + one warn
+      - open day -> (True, <close hh:mm>, None, False): close-relative gates
+    close_hhmm None means 'use the fixed configured times'; a time means 'shift to this close'."""
+    weekday = now.weekday() < 5
+    if not _close_aware(division):
+        return weekday, None, None, False
+    res = st.resolve_close_hhmm(cal, now.date())
+    if res == st.CLOSE_CLOSED:
+        return False, None, "market closed (holiday/weekend) -> loop skipped for the day", False
+    if res == st.CLOSE_FALLBACK:
+        return weekday, None, "calendar unavailable -> fixed normal-hours behaviour", True
+    return True, res, None, False
 
 
 def _log_event(logger_agent, kind: str, payload: dict) -> None:
@@ -56,41 +97,58 @@ async def _fire_slot(division, name: str, session_date, logger_agent) -> None:
         _log_event(logger_agent, "mace_daily_summary", {"date": session_date.isoformat()})
 
 
-def _entry_window_closed(division, now: datetime) -> bool:
+def _entry_window_closed(division, now: datetime, close_hhmm=None) -> bool:
     """True iff `now` (ET) is at/after the configured entry cutoff — i.e. the entry
     window for `now`'s session has already closed, so an entry catch-up would be
     STALE (P1.5). The daily-slots `fired` set resets on every restart, so without
     this an off-hours restart re-runs the entry slot for a session whose 15:58
     window closed hours ago. Fail-OPEN (return False) if the cutoff is unreadable;
-    run_entry's session-date-aware cutoff is the hard backstop either way."""
+    run_entry's session-date-aware cutoff is the hard backstop either way.
+
+    When `close_hhmm` is given (session-close-aware, early-close day) the cutoff is
+    shifted by the same offset it sits before a 16:00 close (15:58 -> 12:58 on a 13:00
+    close), so a post-close restart never re-fires an entry into the closed market."""
     entry = getattr(getattr(getattr(division, "manager", None), "cfg", None), "entry", None)
     raw = getattr(entry, "entry_cutoff_et", None)
     if not raw:
         return False
     try:
-        return now.time() >= dtime.fromisoformat(raw)
+        cutoff = dtime.fromisoformat(raw)
+        if close_hhmm is not None:
+            cutoff = st.shift_gate_to_close(cutoff, close_hhmm)
+        return now.time() >= cutoff
     except Exception:  # noqa: BLE001 — a config hiccup must never break the loop
         return False
 
 
 async def mace_daily_slots_loop(division, logger_agent, *, now_et_fn=now_et,
-                                slots=_DEFAULT_SLOTS, poll_interval_sec: int = 5) -> None:
+                                slots=_DEFAULT_SLOTS, poll_interval_sec: int = 5,
+                                calendar=None) -> None:
     """15:40 snapshot -> 15:45 entry -> 15:50 summary, ET weekdays, deduped per
-    (date, slot). Fires a slot's op once `now >= slot time` on that date."""
+    (date, slot). Fires a slot's op once `now >= slot time` on that date. When
+    session_close_aware, full closures skip (one log line) and the slot times shift to
+    that day's close (12:40/12:45/12:50 on a 13:00 half-day)."""
     fired: set = set()
+    skip_logged: set = set()
+    cal = calendar if calendar is not None else default_calendar()
     _LOG.info("MACE daily-slots scheduler online.")
     while True:
         try:
             if division.active:
                 now = now_et_fn()
-                if now.weekday() < 5:
+                run_today, close_hhmm, note, warn = _resolve_day(division, cal, now)
+                if note:
+                    _log_skip_once(skip_logged, now, "daily-slots", note, warn=warn)
+                if run_today:
                     for (h, m), name in slots:
                         key = (now.date().isoformat(), name)
-                        if now.time() >= dtime(h, m) and key not in fired:
+                        eff = (dtime(h, m) if close_hhmm is None
+                               else st.shift_gate_to_close(dtime(h, m), close_hhmm))
+                        if now.time() >= eff and key not in fired:
                             # P1.5: never re-fire a STALE entry catch-up after the
                             # cutoff (an off-hours restart resets `fired`). The entry
                             # slot places real capital; snapshot/summary catch-up is safe.
-                            if name == "entry" and _entry_window_closed(division, now):
+                            if name == "entry" and _entry_window_closed(division, now, close_hhmm):
                                 fired.add(key)          # mark so we don't re-check
                                 continue
                             fired.add(key)
@@ -106,16 +164,25 @@ async def mace_daily_slots_loop(division, logger_agent, *, now_et_fn=now_et,
 
 async def mace_manage_loop(division, logger_agent, *, now_et_fn=now_et,
                            interval_sec: int = 300,
-                           window=((9, 35), (15, 55))) -> None:
+                           window=((9, 35), (15, 55)), calendar=None) -> None:
     """5-min management ticks inside the ET window. manager.manage_tick computes
-    the pure precedence and drives exits (fail-safe under the cancel-path block)."""
+    the pure precedence and drives exits (fail-safe under the cancel-path block). When
+    session_close_aware, full closures skip (one log line) and the window END shifts to
+    that day's close-5m (12:55 on a 13:00 half-day); the window START stays 09:35."""
     (ws_h, ws_m), (we_h, we_m) = window
+    cal = calendar if calendar is not None else default_calendar()
+    skip_logged: set = set()
     _LOG.info("MACE manage scheduler online.")
     while True:
         try:
             if division.active:
                 now = now_et_fn()
-                if now.weekday() < 5 and dtime(ws_h, ws_m) <= now.time() <= dtime(we_h, we_m):
+                run_today, close_hhmm, note, warn = _resolve_day(division, cal, now)
+                if note:
+                    _log_skip_once(skip_logged, now, "manage", note, warn=warn)
+                we_eff = (dtime(we_h, we_m) if close_hhmm is None
+                          else st.shift_gate_to_close(dtime(we_h, we_m), close_hhmm))
+                if run_today and dtime(ws_h, ws_m) <= now.time() <= we_eff:
                     mgr = division.manager
                     if mgr is not None:
                         # Durability fix (2026-10-23): BOUND the whole tick. The 2026-10-13 9-day
@@ -214,7 +281,7 @@ def _alert_watchdog(mgr, logger_agent, kind: str, condition: str, action: str, *
 
 
 async def mace_watchdog_loop(division, logger_agent, *, now_et_fn=now_et, now_utc_fn=now_utc,
-                             window=((9, 35), (15, 55))) -> None:
+                             window=((9, 35), (15, 55)), calendar=None) -> None:
     """Manage-loop liveness WATCHDOG (2026-10-23 durability fix). A SIBLING, BROKER-FREE scheduler --
     it must NOT live inside the loop it watches (a hung loop cannot page about itself) and it makes NO
     broker calls (only a DB heartbeat read + the clock), so it can never hang the way the manage loop
@@ -228,6 +295,8 @@ async def mace_watchdog_loop(division, logger_agent, *, now_et_fn=now_et, now_ut
     re-arms cleanly. The manage loop writes its heartbeat only on a COMPLETED tick, so a hung/cancelled
     tick leaves last_tick_ts stale and this watchdog catches it."""
     (ws_h, ws_m), (we_h, we_m) = window
+    cal = calendar if calendar is not None else default_calendar()
+    skip_logged: set = set()
     _LOG.info("MACE watchdog scheduler online.")
     active = None   # None | "stall" | "marks_dead" -- in-memory de-dupe (one alert per episode)
 
@@ -251,10 +320,15 @@ async def mace_watchdog_loop(division, logger_agent, *, now_et_fn=now_et, now_ut
                 poll = wd.poll_interval_sec
             if mgr is not None and wd is not None and wd.enabled:
                 now = now_et_fn()
-                in_window = (now.weekday() < 5
-                             and dtime(ws_h, ws_m) <= now.time() <= dtime(we_h, we_m))
+                run_today, close_hhmm, note, warn = _resolve_day(division, cal, now)
+                if note:
+                    _log_skip_once(skip_logged, now, "watchdog", note, warn=warn)
+                we_eff = (dtime(we_h, we_m) if close_hhmm is None
+                          else st.shift_gate_to_close(dtime(we_h, we_m), close_hhmm))
+                in_window = (run_today
+                             and dtime(ws_h, ws_m) <= now.time() <= we_eff)
                 if not in_window:
-                    active = None   # market closed -> silence expected; re-arm for the next session
+                    active = None   # market closed / after the early close -> silence expected; re-arm next session
                 else:
                     # Warmup grace: at market open the heartbeat is ~overnight-stale and the first tick
                     # takes minutes, so don't judge a stall until a full stall-window has elapsed SINCE

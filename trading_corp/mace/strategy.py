@@ -887,11 +887,51 @@ def stop_triggered(rung: RungState, mark: float | None, spot: float | None,
     return False
 
 
+# ── session-close gates (2026-11-23, Option 2: holiday / early-close awareness) ──────
+# PURE given an injected calendar (utils.market_hours.MarketHoursCalendar-shaped:
+# `.close_time_et(date|datetime) -> datetime|None`). No globals, no clock reads — the
+# calendar is a neutral injected input exactly like now_et_fn elsewhere.
+
+_BASELINE_CLOSE = dtime(16, 0)   # the ET close the fixed mace.yaml gate times assume
+CLOSE_CLOSED = "closed"          # full market closure (close_time_et -> None): holiday/weekend
+CLOSE_FALLBACK = "fallback"      # calendar unavailable/raised -> behave exactly as today
+
+
+def resolve_close_hhmm(calendar, day: date):
+    """Return the ET close time-of-day for `day` as a naive `time`, or CLOSE_CLOSED on a full
+    closure (`close_time_et` -> None: holiday OR weekend), or CLOSE_FALLBACK if the calendar is
+    missing/raises. The ONLY calendar touch; everything downstream is pure minute-math so the
+    gate logic is fully unit-testable with a fake calendar."""
+    if calendar is None:
+        return CLOSE_FALLBACK
+    try:
+        close_dt = calendar.close_time_et(day)
+    except Exception:            # noqa: BLE001 — a broken calendar must fail OPEN to today's behaviour
+        return CLOSE_FALLBACK
+    if close_dt is None:
+        return CLOSE_CLOSED
+    return dtime(close_dt.hour, close_dt.minute)
+
+
+def shift_gate_to_close(configured: dtime, close_hhmm: dtime) -> dtime:
+    """Offset `configured` by the SAME minutes it sits before a 16:00 close, applied to the
+    actual `close_hhmm`. A 16:00 close returns `configured` EXACTLY (the regression guard);
+    a 13:00 close shifts earlier by the identical offset (15:30->12:30, 15:40->12:40,
+    15:45->12:45, 15:50->12:50, 15:55->12:55)."""
+    base_min = _BASELINE_CLOSE.hour * 60 + _BASELINE_CLOSE.minute
+    conf_min = configured.hour * 60 + configured.minute
+    close_min = close_hhmm.hour * 60 + close_hhmm.minute
+    eff_min = close_min - (base_min - conf_min)
+    eff_min = max(0, min(23 * 60 + 59, eff_min))
+    return dtime(eff_min // 60, eff_min % 60)
+
+
 def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
                         now_et: datetime, cfg: MaceConfig, symbol_cfg: SymbolConfig,
                         *, exdiv_within: bool,
                         structural_confirmed: bool = True,
-                        mark_stop_confirmed: bool = True) -> ManageDecision:
+                        mark_stop_confirmed: bool = True,
+                        time_exit_at_override: "dtime | None" = None) -> ManageDecision:
     """Precedence: stop > PT > time > exdiv. `mark` = cost-to-close at mid (net
     debit to exit). The 09:35 tick IS the gap rule (no separate branch).
     `exdiv_within` is the calendar side (caller uses mace.exdiv.MaceExDiv).
@@ -925,10 +965,16 @@ def evaluate_management(rung: RungState, mark: float | None, spot: float | None,
             return ManageDecision(rung.rung_id, EXIT_PT,
                                   f"mark {mark:.2f} <= {m.pt_pct_of_credit}x credit "
                                   f"{rung.credit_actual:.2f} (synthetic PT)")
-    # time: DTE <= time_exit_dte AND now >= time_exit_at_et
+    # time: DTE <= time_exit_dte AND now >= the time-exit gate. The gate is the fixed
+    # m.time_exit_at_et UNLESS the caller passes a close-relative override (2026-11-23
+    # session-close awareness: close-30m on a 13:00 half-day). override None -> byte-identical
+    # to the pre-2026-11-23 fixed-wall-clock behaviour.
     dte = (rung.expiry - now_et.date()).days
-    if dte <= m.time_exit_dte and now_et.time() >= dtime.fromisoformat(m.time_exit_at_et):
-        return ManageDecision(rung.rung_id, EXIT_TIME, f"DTE {dte} at/after {m.time_exit_at_et}")
+    te_gate = (time_exit_at_override if time_exit_at_override is not None
+               else dtime.fromisoformat(m.time_exit_at_et))
+    if dte <= m.time_exit_dte and now_et.time() >= te_gate:
+        return ManageDecision(rung.rung_id, EXIT_TIME,
+                              f"DTE {dte} at/after {te_gate.strftime('%H:%M')}")
     # exdiv: guard on AND short call ITM (spot > short-call strike) AND ex-div near
     if (symbol_cfg.exdiv_guard and exdiv_within and spot is not None
             and spot > rung.spec.short_call):

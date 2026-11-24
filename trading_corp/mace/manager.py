@@ -38,6 +38,7 @@ from trading_corp.mace.domain import (
 )
 from trading_corp.mace.execution import EntryOutcome, ExitOutcome, MaceExecutor, RungStore
 from trading_corp.mace.notify import MaceNotifier
+from trading_corp.utils.market_hours import default_calendar
 from trading_corp.utils.time import now_et, now_utc
 
 _LOG = logging.getLogger("mace.manager")
@@ -76,6 +77,7 @@ class MaceManager:
         audit: Optional[Callable[..., None]] = None,
         now_utc_fn: Callable[[], datetime] = now_utc,
         now_et_fn: Callable[[], datetime] = now_et,
+        session_calendar=None,
     ) -> None:
         self.cfg = cfg
         self.port = port
@@ -89,6 +91,11 @@ class MaceManager:
         self._audit_fn = audit
         self._now_utc = now_utc_fn
         self._now_et = now_et_fn
+        # Holiday / early-close awareness (2026-11-23): the NYSE calendar used to anchor the
+        # time-exit gate to that day's close. Injected for tests; defaults to the shared
+        # utils.market_hours singleton (read-only). Only consulted when cfg.management
+        # .session_close_aware is True; otherwise the fixed time_exit_at_et is used verbatim.
+        self._session_calendar = session_calendar if session_calendar is not None else default_calendar()
         # PT mark-trust guard (2026-09-18): per-rung {last_mark, repeat, last_trusted} for the
         # frozen (timeliness) + fallback-baseline checks. In-memory (resets on restart — benign:
         # the sibling/structural checks are stateless; frozen also seeds off persisted mace_rung_live).
@@ -156,6 +163,19 @@ class MaceManager:
 
     def _enabled_symbols(self) -> list[str]:
         return [s for s, c in self.cfg.symbols.items() if c.enabled]
+
+    def _time_exit_override(self, now_et: datetime) -> "dtime | None":
+        """The close-relative time-exit gate for `now_et`'s date, or None to use the fixed
+        m.time_exit_at_et (flag off, a full-closure day, or a calendar fallback). On a normal
+        16:00 close this returns 15:30 exactly (== fixed) so passing it changes NOTHING; on a
+        13:00 half-day it returns 12:30 so the 21-DTE time-exit opens before the early close."""
+        m = self.cfg.management
+        if not m.session_close_aware:
+            return None
+        res = st.resolve_close_hhmm(self._session_calendar, now_et.date())
+        if res in (st.CLOSE_CLOSED, st.CLOSE_FALLBACK):
+            return None
+        return st.shift_gate_to_close(dtime.fromisoformat(m.time_exit_at_et), res)
 
     def _snapshot_symbols(self, rungs) -> list[str]:
         """A4 (UI rebuild 2026-08-14): the daily IV-snapshot symbol set — EVERY
@@ -576,7 +596,8 @@ class MaceManager:
         decision = st.evaluate_management(rung, mark, spot, now, self.cfg, sym_cfg,
                                           exdiv_within=exdiv_within,
                                           structural_confirmed=structural_confirmed,
-                                          mark_stop_confirmed=mark_stop_confirmed)
+                                          mark_stop_confirmed=mark_stop_confirmed,
+                                          time_exit_at_override=self._time_exit_override(now))
         if not decision.should_exit:
             return None     # hold; a riding rung stays riding silently (sticky to close/escape/expiry)
         # PT MARK-TRUST GUARD (2026-09-18): gate ONLY the synthetic PT fire on a TIMELY + SANE mark.
