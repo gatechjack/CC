@@ -78,13 +78,16 @@ else
   V=4.39.28
   BASE=authelia-v$V-linux-amd64.tar.gz
   URL=https://github.com/authelia/authelia/releases/download/v$V/$BASE
+  SUMURL=https://github.com/authelia/authelia/releases/download/v$V/checksums.sha256
   echo "[authelia] download $URL"
   if ! curl -fsSL -o "$BASE" "$URL"; then echo "[authelia] tarball download FAILED -- authelia untouched (caddy stands)"; exit 4; fi
-  if ! curl -fsSL -o "$BASE.sha256" "$URL.sha256"; then echo "[authelia] sha256 download FAILED -- authelia untouched"; exit 5; fi
-  EXP=$(awk '{print $1}' "$BASE.sha256")
+  echo "[authelia] download $SUMURL (combined checksums)"
+  if ! curl -fsSL -o checksums.sha256 "$SUMURL"; then echo "[authelia] checksums.sha256 download FAILED -- authelia untouched"; exit 5; fi
+  EXP=$(grep -E "authelia-v$V-linux-amd64\.tar\.gz$" checksums.sha256 | awk '{print $1}' | head -1)
   ACT=$(sha256sum "$BASE" | awk '{print $1}')
   echo "[authelia] expected=$EXP"
   echo "[authelia] actual  =$ACT"
+  if [ -z "$EXP" ]; then echo "[authelia] tarball line not found in checksums.sha256 -- authelia untouched"; exit 6; fi
   if [ "$EXP" != "$ACT" ]; then echo "[authelia] SHA256 MISMATCH -- authelia untouched"; exit 6; fi
   echo "[authelia] sha256 OK -> extract + swap"
   tar xzf "$BASE"
