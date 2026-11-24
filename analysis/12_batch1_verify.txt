@@ -1,0 +1,14 @@
+=== box: versions + service health (read-only) ===
+  caddy=v2.11.9 h1:bhZtcRKQOq0fuLvEgCdPYvUxXyGn9kzjG4lh2332DTE=
+  authelia=authelia version v4.39.28
+  svc caddy=active authelia=active trading-corp=active
+  authelia health200=200
+  authelia errors(last50)=14
+  newest batch1 backup: /home/azureuser/secrev_batch1_backup_20261124T042839Z
+=== PC curl: dashboard redirects to Authelia when unauthenticated (expect 302) ===
+  / -> HTTP/1.1 302 Found
+  Location: https://auth.jacksumner.com/?rd=https%3A%2F%2Ftrading.jacksumner.com%2F&rm=GET
+=== PC curl: webhook path still reachable (GET -> expect 405/404, NOT 502/refused) ===
+  GET /webhook/tradingview/lord-otter -> HTTP/1.1 405 Method Not Allowed
+=== PC curl: malformed Host still rejected at edge (expect 400) ===
+  malformed-Host -> HTTP/1.1 400 Bad Request: malformed Host header
