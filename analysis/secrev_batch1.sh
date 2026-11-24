@@ -89,12 +89,18 @@ else
   echo "[authelia] actual  =$ACT"
   if [ -z "$EXP" ]; then echo "[authelia] tarball line not found in checksums.sha256 -- authelia untouched"; exit 6; fi
   if [ "$EXP" != "$ACT" ]; then echo "[authelia] SHA256 MISMATCH -- authelia untouched"; exit 6; fi
-  echo "[authelia] sha256 OK -> extract + swap"
-  tar xzf "$BASE"
-  NB=$(find . -maxdepth 1 -type f -name 'authelia-linux-amd64' | head -1)
-  [ -z "$NB" ] && NB=$(find . -maxdepth 2 -type f -name 'authelia-linux-amd64' | head -1)
-  if [ -z "$NB" ]; then echo "[authelia] new binary not found in tarball -- authelia untouched"; exit 6; fi
-  echo "[authelia] new-binary: $("$NB" --version 2>/dev/null | head -1)"
+  echo "[authelia] sha256 OK -> extract"
+  EXDIR=$(mktemp -d)
+  tar xzf "$BASE" -C "$EXDIR"
+  echo "[authelia] tarball contents:"
+  ( cd "$EXDIR" && find . -maxdepth 3 -type f 2>/dev/null | sed 's/^/    /' )
+  # Locate the real binary by name candidates, confirmed by a working --version (tarball is sha256-verified).
+  NB=""
+  for cand in $(find "$EXDIR" -maxdepth 3 -type f \( -name 'authelia-linux-amd64' -o -name 'authelia' \) 2>/dev/null); do
+    if "$cand" --version >/dev/null 2>&1; then NB="$cand"; break; fi
+  done
+  if [ -z "$NB" ]; then echo "[authelia] could not locate a runnable authelia binary in tarball (see listing above) -- authelia untouched"; exit 6; fi
+  echo "[authelia] new-binary: $NB -> $("$NB" --version 2>/dev/null | head -1)"
   # ---- CONFIG-VALIDATION GATE: NEW binary validates the LIVE config BEFORE we stop the running Authelia ----
   EFPATH=$(systemctl show authelia -p EnvironmentFiles --value 2>/dev/null | head -1 | awk '{print $1}')
   if "$NB" validate-config --help >/dev/null 2>&1; then VCCMD="validate-config"
