@@ -1,0 +1,307 @@
+{
+    "defaultSecurityRules":  [
+                                 {
+                                     "access":  "Allow",
+                                     "description":  "Allow inbound traffic from all VMs in VNET",
+                                     "destinationAddressPrefix":  "VirtualNetwork",
+                                     "destinationAddressPrefixes":  [
+
+                                                                    ],
+                                     "destinationPortRange":  "*",
+                                     "destinationPortRanges":  [
+
+                                                               ],
+                                     "direction":  "Inbound",
+                                     "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                                     "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/defaultSecurityRules/AllowVnetInBound",
+                                     "name":  "AllowVnetInBound",
+                                     "priority":  65000,
+                                     "protocol":  "*",
+                                     "provisioningState":  "Succeeded",
+                                     "resourceGroup":  "rg-shared-prod",
+                                     "sourceAddressPrefix":  "VirtualNetwork",
+                                     "sourceAddressPrefixes":  [
+
+                                                               ],
+                                     "sourcePortRange":  "*",
+                                     "sourcePortRanges":  [
+
+                                                          ],
+                                     "type":  "Microsoft.Network/networkSecurityGroups/defaultSecurityRules"
+                                 },
+                                 {
+                                     "access":  "Allow",
+                                     "description":  "Allow inbound traffic from azure load balancer",
+                                     "destinationAddressPrefix":  "*",
+                                     "destinationAddressPrefixes":  [
+
+                                                                    ],
+                                     "destinationPortRange":  "*",
+                                     "destinationPortRanges":  [
+
+                                                               ],
+                                     "direction":  "Inbound",
+                                     "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                                     "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/defaultSecurityRules/AllowAzureLoadBalancerInBound",
+                                     "name":  "AllowAzureLoadBalancerInBound",
+                                     "priority":  65001,
+                                     "protocol":  "*",
+                                     "provisioningState":  "Succeeded",
+                                     "resourceGroup":  "rg-shared-prod",
+                                     "sourceAddressPrefix":  "AzureLoadBalancer",
+                                     "sourceAddressPrefixes":  [
+
+                                                               ],
+                                     "sourcePortRange":  "*",
+                                     "sourcePortRanges":  [
+
+                                                          ],
+                                     "type":  "Microsoft.Network/networkSecurityGroups/defaultSecurityRules"
+                                 },
+                                 {
+                                     "access":  "Deny",
+                                     "description":  "Deny all inbound traffic",
+                                     "destinationAddressPrefix":  "*",
+                                     "destinationAddressPrefixes":  [
+
+                                                                    ],
+                                     "destinationPortRange":  "*",
+                                     "destinationPortRanges":  [
+
+                                                               ],
+                                     "direction":  "Inbound",
+                                     "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                                     "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/defaultSecurityRules/DenyAllInBound",
+                                     "name":  "DenyAllInBound",
+                                     "priority":  65500,
+                                     "protocol":  "*",
+                                     "provisioningState":  "Succeeded",
+                                     "resourceGroup":  "rg-shared-prod",
+                                     "sourceAddressPrefix":  "*",
+                                     "sourceAddressPrefixes":  [
+
+                                                               ],
+                                     "sourcePortRange":  "*",
+                                     "sourcePortRanges":  [
+
+                                                          ],
+                                     "type":  "Microsoft.Network/networkSecurityGroups/defaultSecurityRules"
+                                 },
+                                 {
+                                     "access":  "Allow",
+                                     "description":  "Allow outbound traffic from all VMs to all VMs in VNET",
+                                     "destinationAddressPrefix":  "VirtualNetwork",
+                                     "destinationAddressPrefixes":  [
+
+                                                                    ],
+                                     "destinationPortRange":  "*",
+                                     "destinationPortRanges":  [
+
+                                                               ],
+                                     "direction":  "Outbound",
+                                     "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                                     "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/defaultSecurityRules/AllowVnetOutBound",
+                                     "name":  "AllowVnetOutBound",
+                                     "priority":  65000,
+                                     "protocol":  "*",
+                                     "provisioningState":  "Succeeded",
+                                     "resourceGroup":  "rg-shared-prod",
+                                     "sourceAddressPrefix":  "VirtualNetwork",
+                                     "sourceAddressPrefixes":  [
+
+                                                               ],
+                                     "sourcePortRange":  "*",
+                                     "sourcePortRanges":  [
+
+                                                          ],
+                                     "type":  "Microsoft.Network/networkSecurityGroups/defaultSecurityRules"
+                                 },
+                                 {
+                                     "access":  "Allow",
+                                     "description":  "Allow outbound traffic from all VMs to Internet",
+                                     "destinationAddressPrefix":  "Internet",
+                                     "destinationAddressPrefixes":  [
+
+                                                                    ],
+                                     "destinationPortRange":  "*",
+                                     "destinationPortRanges":  [
+
+                                                               ],
+                                     "direction":  "Outbound",
+                                     "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                                     "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/defaultSecurityRules/AllowInternetOutBound",
+                                     "name":  "AllowInternetOutBound",
+                                     "priority":  65001,
+                                     "protocol":  "*",
+                                     "provisioningState":  "Succeeded",
+                                     "resourceGroup":  "rg-shared-prod",
+                                     "sourceAddressPrefix":  "*",
+                                     "sourceAddressPrefixes":  [
+
+                                                               ],
+                                     "sourcePortRange":  "*",
+                                     "sourcePortRanges":  [
+
+                                                          ],
+                                     "type":  "Microsoft.Network/networkSecurityGroups/defaultSecurityRules"
+                                 },
+                                 {
+                                     "access":  "Deny",
+                                     "description":  "Deny all outbound traffic",
+                                     "destinationAddressPrefix":  "*",
+                                     "destinationAddressPrefixes":  [
+
+                                                                    ],
+                                     "destinationPortRange":  "*",
+                                     "destinationPortRanges":  [
+
+                                                               ],
+                                     "direction":  "Outbound",
+                                     "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                                     "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/defaultSecurityRules/DenyAllOutBound",
+                                     "name":  "DenyAllOutBound",
+                                     "priority":  65500,
+                                     "protocol":  "*",
+                                     "provisioningState":  "Succeeded",
+                                     "resourceGroup":  "rg-shared-prod",
+                                     "sourceAddressPrefix":  "*",
+                                     "sourceAddressPrefixes":  [
+
+                                                               ],
+                                     "sourcePortRange":  "*",
+                                     "sourcePortRanges":  [
+
+                                                          ],
+                                     "type":  "Microsoft.Network/networkSecurityGroups/defaultSecurityRules"
+                                 }
+                             ],
+    "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+    "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg",
+    "location":  "eastus",
+    "name":  "tc-prod-nsg",
+    "provisioningState":  "Succeeded",
+    "resourceGroup":  "rg-shared-prod",
+    "resourceGuid":  "3cbf82a9-f4c6-4e48-9f99-d8d4c0499e3b",
+    "securityRules":  [
+                          {
+                              "access":  "Allow",
+                              "description":  "98.231.16.63/32",
+                              "destinationAddressPrefix":  "*",
+                              "destinationAddressPrefixes":  [
+
+                                                             ],
+                              "destinationPortRange":  "22",
+                              "destinationPortRanges":  [
+
+                                                        ],
+                              "direction":  "Inbound",
+                              "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                              "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/securityRules/AllowSSHFromHome",
+                              "name":  "AllowSSHFromHome",
+                              "priority":  1000,
+                              "protocol":  "TCP",
+                              "provisioningState":  "Succeeded",
+                              "resourceGroup":  "rg-shared-prod",
+                              "sourceAddressPrefix":  "98.231.16.63/32",
+                              "sourceAddressPrefixes":  [
+
+                                                        ],
+                              "sourcePortRange":  "*",
+                              "sourcePortRanges":  [
+
+                                                   ],
+                              "type":  "Microsoft.Network/networkSecurityGroups/securityRules"
+                          },
+                          {
+                              "access":  "Allow",
+                              "destinationAddressPrefix":  "*",
+                              "destinationAddressPrefixes":  [
+
+                                                             ],
+                              "destinationPortRange":  "80",
+                              "destinationPortRanges":  [
+
+                                                        ],
+                              "direction":  "Inbound",
+                              "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                              "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/securityRules/AllowHTTP",
+                              "name":  "AllowHTTP",
+                              "priority":  1010,
+                              "protocol":  "Tcp",
+                              "provisioningState":  "Succeeded",
+                              "resourceGroup":  "rg-shared-prod",
+                              "sourceAddressPrefix":  "Internet",
+                              "sourceAddressPrefixes":  [
+
+                                                        ],
+                              "sourcePortRange":  "*",
+                              "sourcePortRanges":  [
+
+                                                   ],
+                              "type":  "Microsoft.Network/networkSecurityGroups/securityRules"
+                          },
+                          {
+                              "access":  "Allow",
+                              "destinationAddressPrefix":  "*",
+                              "destinationAddressPrefixes":  [
+
+                                                             ],
+                              "destinationPortRange":  "443",
+                              "destinationPortRanges":  [
+
+                                                        ],
+                              "direction":  "Inbound",
+                              "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                              "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/securityRules/AllowHTTPS",
+                              "name":  "AllowHTTPS",
+                              "priority":  1020,
+                              "protocol":  "Tcp",
+                              "provisioningState":  "Succeeded",
+                              "resourceGroup":  "rg-shared-prod",
+                              "sourceAddressPrefix":  "Internet",
+                              "sourceAddressPrefixes":  [
+
+                                                        ],
+                              "sourcePortRange":  "*",
+                              "sourcePortRanges":  [
+
+                                                   ],
+                              "type":  "Microsoft.Network/networkSecurityGroups/securityRules"
+                          },
+                          {
+                              "access":  "Allow",
+                              "destinationAddressPrefix":  "*",
+                              "destinationAddressPrefixes":  [
+
+                                                             ],
+                              "destinationPortRange":  "22",
+                              "destinationPortRanges":  [
+
+                                                        ],
+                              "direction":  "Inbound",
+                              "etag":  "W/\"6eab96d0-2c7a-4684-bdd8-ba2610fa6732\"",
+                              "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg/securityRules/home-operator-ssh",
+                              "name":  "home-operator-ssh",
+                              "priority":  110,
+                              "protocol":  "TCP",
+                              "provisioningState":  "Succeeded",
+                              "resourceGroup":  "rg-shared-prod",
+                              "sourceAddressPrefix":  "98.231.16.63/32",
+                              "sourceAddressPrefixes":  [
+
+                                                        ],
+                              "sourcePortRange":  "*",
+                              "sourcePortRanges":  [
+
+                                                   ],
+                              "type":  "Microsoft.Network/networkSecurityGroups/securityRules"
+                          }
+                      ],
+    "subnets":  [
+                    {
+                        "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/RG-SHARED-PROD/providers/Microsoft.Network/virtualNetworks/TC-PROD-VNET/subnets/TC-PROD-SUBNET",
+                        "resourceGroup":  "RG-SHARED-PROD"
+                    }
+                ],
+    "type":  "Microsoft.Network/networkSecurityGroups"
+}

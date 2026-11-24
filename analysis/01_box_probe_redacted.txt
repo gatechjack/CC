@@ -1,0 +1,468 @@
+===HOST===
+tc-prod-vm
+2026-11-24T00:00:22Z
+00:00:22 up 88 days,  8:34,  0 users,  load average: 0.61, 0.57, 0.66
+2026-08-27 15:25:33
+reboot   system boot  6.8.0-1064-azure Thu Aug 27 15:25   still running
+reboot   system boot  6.8.0-1064-azure Tue Aug 25 21:51 - 15:25 (1+17:33)
+reboot   system boot  6.8.0-1059-azure Tue Jun 30 02:45 - 21:51 (56+19:06)
+===OS_RELEASE===
+PRETTY_NAME="Ubuntu 22.04.5 LTS"
+NAME="Ubuntu"
+VERSION_ID="22.04"
+VERSION="22.04.5 LTS (Jammy Jellyfish)"
+VERSION_CODENAME=jammy
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=jammy
+===KERNEL===
+[running]
+6.8.0-1064-azure
+#72~22.04.1-Ubuntu SMP Wed Jul 22 23:39:45 UTC 2026
+[installed kernel packages]
+linux-image-6.8.0-1064-azure 6.8.0-1064.72~22.04.1
+linux-image-6.8.0-1073-azure 6.8.0-1073.82~22.04.1
+linux-image-azure 6.8.0-1073.82~22.04.1
+/boot/vmlinuz-6.8.0-1064-azure
+/boot/vmlinuz-6.8.0-1073-azure
+[reboot-required]
+*** System restart required ***
+linux-image-6.8.0-1065-azure
+linux-base
+libc6
+linux-image-6.8.0-1067-azure
+linux-base
+linux-image-6.8.0-1068-azure
+linux-base
+linux-image-6.8.0-1070-azure
+linux-base
+linux-image-6.8.0-1073-azure
+linux-base
+libc6
+===APT_CACHE_AGE===
+drwx------ 2 _apt root    12288 2026-11-23 04:42 partial
+-rw-r--r-- 1 root root   127185 2026-11-22 12:54 azure.archive.ubuntu.com_ubuntu_dists_jammy-backports_InRelease
+-rw-r--r-- 1 root root   128049 2026-11-22 12:53 azure.archive.ubuntu.com_ubuntu_dists_jammy-updates_InRelease
+update-success-stamp: 2026-11-23 04:42:59.625277656 +0000
+===APT_UPGRADABLE===
+Listing...
+caddy/any-version 2.11.9 amd64 [upgradable from: 2.11.4]
+chrony/jammy-updates 4.2-2ubuntu2.1 amd64 [upgradable from: 4.2-2ubuntu2]
+distro-info/jammy-updates 1.1ubuntu0.3 amd64 [upgradable from: 1.1ubuntu0.2]
+iproute2/jammy-updates 5.15.0-1ubuntu2.2 amd64 [upgradable from: 5.15.0-1ubuntu2.1]
+libaudit-common/jammy-updates 1:3.0.7-1ubuntu0.1 all [upgradable from: 1:3.0.7-1build1]
+libaudit1/jammy-updates 1:3.0.7-1ubuntu0.1 amd64 [upgradable from: 1:3.0.7-1build1]
+libglib2.0-0/jammy-updates 2.72.4-0ubuntu2.11 amd64 [upgradable from: 2.72.4-0ubuntu2.10]
+libglib2.0-bin/jammy-updates 2.72.4-0ubuntu2.11 amd64 [upgradable from: 2.72.4-0ubuntu2.10]
+libglib2.0-data/jammy-updates 2.72.4-0ubuntu2.11 all [upgradable from: 2.72.4-0ubuntu2.10]
+libgssapi-krb5-2/jammy-updates 1.19.2-2ubuntu0.10 amd64 [upgradable from: 1.19.2-2ubuntu0.8]
+libk5crypto3/jammy-updates 1.19.2-2ubuntu0.10 amd64 [upgradable from: 1.19.2-2ubuntu0.8]
+libkrb5-3/jammy-updates 1.19.2-2ubuntu0.10 amd64 [upgradable from: 1.19.2-2ubuntu0.8]
+libkrb5support0/jammy-updates 1.19.2-2ubuntu0.10 amd64 [upgradable from: 1.19.2-2ubuntu0.8]
+libnetplan0/jammy-updates 0.107.1-3ubuntu0.22.04.5 amd64 [upgradable from: 0.107.1-3ubuntu0.22.04.4]
+libopeniscsiusr/jammy-updates 2.1.5-1ubuntu1.3 amd64 [upgradable from: 2.1.5-1ubuntu1.1]
+libpython3.12-dev/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+libpython3.12-stdlib/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+libpython3.12/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+nano/jammy-updates 6.2-1ubuntu0.3 amd64 [upgradable from: 6.2-1ubuntu0.2]
+netplan-generator/jammy-updates 0.107.1-3ubuntu0.22.04.5 amd64 [upgradable from: 0.107.1-3ubuntu0.22.04.4]
+netplan.io/jammy-updates 0.107.1-3ubuntu0.22.04.5 amd64 [upgradable from: 0.107.1-3ubuntu0.22.04.4]
+open-iscsi/jammy-updates 2.1.5-1ubuntu1.3 amd64 [upgradable from: 2.1.5-1ubuntu1.1]
+open-vm-tools/jammy-updates 2:12.3.5-3~ubuntu0.22.04.4 amd64 [upgradable from: 2:12.3.5-3~ubuntu0.22.04.3]
+python3-distro-info/jammy-updates 1.1ubuntu0.3 all [upgradable from: 1.1ubuntu0.2]
+python3-distupgrade/jammy-updates 1:22.04.21 all [upgradable from: 1:22.04.20]
+python3-netplan/jammy-updates 0.107.1-3ubuntu0.22.04.5 amd64 [upgradable from: 0.107.1-3ubuntu0.22.04.4]
+python3.12-dev/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+python3.12-venv/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+python3.12/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+snapd/jammy-updates 2.78+ubuntu22.04 amd64 [upgradable from: 2.76.3+ubuntu22.04.1]
+tmux/jammy-updates 3.2a-4ubuntu0.3 amd64 [upgradable from: 3.2a-4ubuntu0.2]
+ubuntu-advantage-tools/jammy-updates 38ubuntu0~22.04 all [upgradable from: 37.2ubuntu~22.04.1]
+ubuntu-pro-client-l10n/jammy-updates 38ubuntu0~22.04 amd64 [upgradable from: 37.2ubuntu~22.04.1]
+ubuntu-pro-client/jammy-updates 38ubuntu0~22.04 amd64 [upgradable from: 37.2ubuntu~22.04.1]
+ubuntu-release-upgrader-core/jammy-updates 1:22.04.21 all [upgradable from: 1:22.04.20]
+xfsprogs/jammy-updates 5.13.0-1ubuntu2.2 amd64 [upgradable from: 5.13.0-1ubuntu2.1]
+xrdp/jammy-updates 0.9.17-2ubuntu3.1 amd64 [upgradable from: 0.9.17-2ubuntu3]
+===APT_SIM===
+Conf python3.12-dev (3.12.16-1+jammy1 New Python Versions:22.04/jammy [amd64])
+Conf libpython3.12-dev (3.12.16-1+jammy1 New Python Versions:22.04/jammy [amd64])
+Conf libpython3.12 (3.12.16-1+jammy1 New Python Versions:22.04/jammy [amd64])
+Conf python3.12 (3.12.16-1+jammy1 New Python Versions:22.04/jammy [amd64])
+Conf libpython3.12-stdlib (3.12.16-1+jammy1 New Python Versions:22.04/jammy [amd64])
+Conf snapd (2.78+ubuntu22.04 Ubuntu:22.04/jammy-updates [amd64])
+Conf tmux (3.2a-4ubuntu0.3 Ubuntu:22.04/jammy-updates [amd64])
+Conf xfsprogs (5.13.0-1ubuntu2.2 Ubuntu:22.04/jammy-updates [amd64])
+===SECURITY_STATUS===
+WARNING: this output is intended to be human readable, and subject to change.
+In scripts, prefer using machine readable data from the `pro api` command,
+or use `pro security-status --format json`.
+
+
+[94m[info][0m A new version is available: 38ubuntu0~22.04
+Please run:
+    sudo apt install ubuntu-pro-client
+to get the latest bug fixes and new features.
+1279 packages installed:
+     1077 packages from Ubuntu Main/Restricted repository
+     195 packages from Ubuntu Universe/Multiverse repository
+     7 packages from third parties
+
+To get more information about the packages, run
+    pro security-status --help
+for a list of available options.
+
+This machine is receiving security patching for Ubuntu Main/Restricted
+repository until 2027.
+This machine is NOT attached to an Ubuntu Pro subscription.
+
+Ubuntu Pro with 'esm-infra' enabled provides security updates for
+Main/Restricted packages until 2032.
+
+Ubuntu Pro with 'esm-apps' enabled provides security updates for
+Universe/Multiverse packages until 2032. There are 25 pending security updates.
+
+Try Ubuntu Pro with a free personal subscription on up to 5 machines.
+Learn more at https://ubuntu.com/pro
+
+===UNATTENDED===
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+Unattended-Upgrade::Allowed-Origins {
+	"${distro_id}:${distro_codename}";
+	"${distro_id}:${distro_codename}-security";
+	"${distro_id}ESMApps:${distro_codename}-apps-security";
+	"${distro_id}ESM:${distro_codename}-infra-security";
+};
+Unattended-Upgrade::Package-Blacklist {
+};
+Unattended-Upgrade::DevRelease "auto";
+total 228
+-rw-r--r-- 1 root adm  125948 2026-11-21 06:24 unattended-upgrades-dpkg.log
+-rw-r--r-- 1 root adm    5831 2026-10-31 06:55 unattended-upgrades-dpkg.log.1.gz
+-rw-r--r-- 1 root adm    7010 2026-09-30 06:15 unattended-upgrades-dpkg.log.2.gz
+-rw-r--r-- 1 root adm    5227 2026-08-29 06:50 unattended-upgrades-dpkg.log.3.gz
+-rw-r--r-- 1 root adm    5575 2026-07-29 06:12 unattended-upgrades-dpkg.log.4.gz
+-rw-r--r-- 1 root adm    3895 2026-06-27 06:57 unattended-upgrades-dpkg.log.5.gz
+-rw-r--r-- 1 root adm    2208 2026-05-28 06:44 unattended-upgrades-dpkg.log.6.gz
+Tue 2026-11-24 01:26:12 UTC 1h 25min left Mon 2026-11-23 13:30:58 UTC 10h ago apt-daily.timer         apt-daily.service
+Tue 2026-11-24 06:44:39 UTC 6h left       Mon 2026-11-23 06:03:12 UTC 17h ago apt-daily-upgrade.timer apt-daily-upgrade.service
+===PORTS===
+[tcp listeners]
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                              
+LISTEN 0      4096       127.0.0.1:2019      0.0.0.0:*                                        
+LISTEN 0      2048         0.0.0.0:8000      0.0.0.0:*    users:(("python",pid=1041889,fd=66))
+LISTEN 0      4096       127.0.0.1:9091      0.0.0.0:*                                        
+LISTEN 0      2048       127.0.0.1:8081      0.0.0.0:*    users:(("python",pid=1020846,fd=14))
+LISTEN 0      4096   127.0.0.53%lo:53        0.0.0.0:*                                        
+LISTEN 0      128          0.0.0.0:22        0.0.0.0:*                                        
+LISTEN 0      2                  *:3389            *:*                                        
+LISTEN 0      2              [::1]:3350         [::]:*                                        
+LISTEN 0      128             [::]:22           [::]:*                                        
+LISTEN 0      4096               *:80              *:*                                        
+LISTEN 0      4096               *:443             *:*                                        
+[udp listeners]
+State  Recv-Q Send-Q Local Address:Port  Peer Address:PortProcess
+UNCONN 0      0            0.0.0.0:5353       0.0.0.0:*          
+UNCONN 0      0      127.0.0.53%lo:53         0.0.0.0:*          
+UNCONN 0      0            0.0.0.0:41024      0.0.0.0:*          
+UNCONN 0      0      10.0.0.4%eth0:68         0.0.0.0:*          
+UNCONN 0      0          127.0.0.1:323        0.0.0.0:*          
+UNCONN 0      0               [::]:5353          [::]:*          
+UNCONN 0      0               [::]:52440         [::]:*          
+UNCONN 0      0              [::1]:323           [::]:*          
+UNCONN 0      0                  *:443              *:*          
+===SERVICE_VERSIONS===
+caddy at /usr/bin/caddy: v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=
+authelia at /usr/local/bin/authelia: authelia version v4.39.19
+caddy PATH: v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=
+authelia PATH: authelia version v4.39.19
+bash: line 39: docker: command not found
+[related services]
+authelia.service                                            loaded    active   running Authelia authentication server (forward_auth backend for Caddy)
+caddy.service                                               loaded    active   running Caddy
+chrony.service                                              loaded    active   running chrony, an NTP client/server
+ssh.service                                                 loaded    active   running OpenBSD Secure Shell server
+● sshd-keygen.service                                         not-found inactive dead    sshd-keygen.service
+unattended-upgrades.service                                 loaded    active   running Unattended Upgrades Shutdown
+walinuxagent-network-setup.service                          loaded    active   exited  Setup network rules for WALinuxAgent
+walinuxagent.service                                        loaded    active   running Azure Linux Agent
+[dpkg versions of interest]
+ca-certificates 20260816ubuntu0.22.04.2
+caddy 2.11.4
+chrony 4.2-2ubuntu2
+curl 7.81.0-1ubuntu1.30
+git 1:2.34.1-1ubuntu1.18
+libc6:amd64 2.35-0ubuntu3.18
+libc6-dev:amd64 2.35-0ubuntu3.18
+libexpat1:amd64 2.4.7-1ubuntu0.9
+libexpat1-dev:amd64 2.4.7-1ubuntu0.9
+libsqlite3-0:amd64 3.37.2-2ubuntu0.8
+libssl3:amd64 3.0.2-0ubuntu1.30
+libxml2:amd64 2.9.13+dfsg-1ubuntu0.14
+openssh-client 1:8.9p1-3ubuntu0.18
+openssh-server 1:8.9p1-3ubuntu0.18
+openssl 3.0.2-0ubuntu1.30
+python3 3.10.6-1~22.04.1
+python3.10 3.10.12-1~22.04.18
+python3.12 3.12.13-1+jammy1
+sqlite3 3.37.2-2ubuntu0.8
+sudo 1.9.9-1ubuntu2.7
+systemd 249.11-0ubuntu3.23
+ufw 0.36.1-4ubuntu0.1
+walinuxagent 2.15.0.1-0ubuntu1~22.04.1
+wget 1.21.2-2ubuntu1.5
+xvfb 2:21.1.4-2ubuntu1.7~22.04.16
+OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)
+3.37.2 2022-01-06 13:25:41 872ba256cbf61d9290b571c0e6d82a20c224ca3ad82
+===SNAPS===
+Name               Version                         Rev    Tracking       Publisher    Notes
+bare               1.0                             5      latest/stable  canonical**  base
+core20             20260901                        2922   latest/stable  canonical**  base
+core22             20260909                        2987   latest/stable  canonical**  base
+core24             20260824                        2124   latest/stable  canonical**  base
+firefox            159.0.1-1                       9171   latest/stable  mozilla**    -
+gnome-46-2404      0+git.b31ceab-sdk0+git.ef6f7e9  177    latest/stable  canonical**  -
+gtk-common-themes  0.1-81-g442e511                 1535   latest/stable  canonical**  -
+lxd                5.0.11-e42d773                  41283  5.0/stable/…   canonical**  -
+mesa-2404          25.2.8-snap288                  1839   latest/stable  canonical**  -
+snapd              2.78                            28332  latest/stable  canonical**  snapd
+===SSHD_CONFIG===
+(sshd_config unreadable as azureuser)
+--- /etc/ssh/sshd_config.d/50-cloud-init.conf ---
+--- /etc/ssh/sshd_config.d/50-cloudimg-settings.conf ---
+ClientAliveInterval 120
+--- /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ---
+PasswordAuthentication no
+===PYTHON===
+Python 3.12.13
+Python 3.10.12
+pip 26.1 from /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/pip (python 3.12)
+[other venvs under /home/azureuser]
+/home/azureuser/trading_corp/venv
+(none besides trading_corp)
+===PIP_FREEZE_BEGIN===
+aiodns==4.0.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.5
+aiosignal==1.4.0
+aiosqlite==0.22.1
+altair==6.1.0
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anthropic==0.97.0
+anyio==4.13.0
+attrs==26.1.0
+azure-core==1.39.0
+azure-identity==1.25.3
+azure-keyvault-secrets==4.11.0
+beautifulsoup4==4.14.3
+bitarray==3.8.1
+blinker==1.9.0
+cachetools==7.0.6
+ccxt==4.5.51
+certifi==2026.4.22
+cffi==2.0.0
+charset-normalizer==3.4.7
+ckzg==2.1.7
+click==8.3.3
+coincurve==21.0.0
+cryptography==47.0.0
+curl_cffi==0.15.0
+cytoolz==1.1.0
+distro==1.9.0
+docstring_parser==0.18.0
+eth-account==0.13.1
+eth-hash==0.8.0
+eth-keyfile==0.9.1
+eth-keys==0.7.0
+eth-rlp==2.2.0
+eth-typing==6.0.0
+eth-utils==6.0.0
+eth_abi==5.2.0
+exchange_calendars==4.13.2
+fastapi==0.136.1
+frozendict==2.4.7
+frozenlist==1.8.0
+gitdb==4.0.12
+GitPython==3.1.49
+greenlet==3.5.0
+h11==0.16.0
+hexbytes==1.3.1
+httpcore==1.0.9
+httptools==0.7.1
+httpx==0.28.1
+httpx-ws==0.9.0
+idna==3.13
+iniconfig==2.3.0
+isodate==0.7.2
+itsdangerous==2.2.0
+Jinja2==3.1.6
+jiter==0.14.0
+jsonpatch==1.33
+jsonpointer==3.1.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+korean-lunar-calendar==0.3.1
+langchain-anthropic==1.4.2
+langchain-core==1.3.2
+langchain-protocol==0.0.14
+langgraph==1.1.10
+langgraph-checkpoint==4.0.3
+langgraph-checkpoint-sqlite==3.0.3
+langgraph-prebuilt==1.0.13
+langgraph-sdk==0.3.13
+langsmith==0.7.38
+lru-dict==1.4.1
+Markdown==3.10.2
+markdown-it-py==4.0.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+msal==1.36.0
+msal-extensions==1.3.1
+multidict==6.7.1
+multitasking==0.0.13
+narwhals==2.20.0
+nest-asyncio==1.6.0
+numpy==2.4.4
+orjson==3.11.8
+ormsgpack==1.12.2
+packaging==26.2
+pandas==3.0.2
+pandas_market_calendars==5.3.2
+parsimonious==0.10.0
+peewee==4.0.5
+pillow==12.2.0
+platformdirs==4.9.6
+playwright==1.59.0
+pluggy==1.6.0
+poly_eip712_structs==0.0.1
+propcache==0.4.1
+protobuf==7.34.1
+py-ecc==8.0.0
+py_clob_client==0.17.5
+py_order_utils==0.3.2
+pyarrow==24.0.0
+pycares==5.0.1
+pycparser==3.0
+pycryptodome==3.23.0
+pydantic==2.13.3
+pydantic_core==2.46.3
+pydeck==0.9.2
+pyee==13.0.1
+Pygments==2.20.0
+PyJWT==2.12.1
+pykalshi==1.0.6
+pyluach==2.3.0
+pyotp==2.9.0
+pytest==9.0.3
+pytest-asyncio==1.3.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.27
+python-telegram-bot==22.7
+pytz==2026.1.post1
+pyunormalize==17.0.0
+PyYAML==6.0.3
+referencing==0.37.0
+regex==2026.5.9
+requests==2.33.1
+requests-toolbelt==1.0.0
+rich==15.0.0
+rlp==4.1.0
+robin-stocks==3.4.0
+rpds-py==0.30.0
+setuptools==80.10.2
+six==1.17.0
+smmap==5.0.3
+sniffio==1.3.1
+soupsieve==2.8.3
+sqlite-vec==0.1.9
+starlette==1.0.0
+streamlit==1.57.0
+tastytrade==12.4.1
+tenacity==9.1.4
+toml==0.10.2
+toolz==1.1.0
+tradingview-ta==3.3.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2026.2
+urllib3==2.6.3
+uuid_utils==0.14.1
+uvicorn==0.46.0
+uvloop==0.22.1
+watchdog==6.0.0
+watchfiles==1.1.1
+web3==6.11.0
+websockets==16.0
+wsproto==1.3.2
+xxhash==3.7.0
+yarl==1.23.0
+yfinance==1.3.0
+zstandard==0.25.0
+===PIP_FREEZE_END===
+===RUNTIMES===
+[azure vm agent]
+walinuxagent 2.15.0.1-0ubuntu1~22.04.1
+WALinuxAgent-2.15.0.1 running on ubuntu 22.04
+Python: 3.10.12
+[node/npm]
+no node
+no npm
+[xvfb]
+Unrecognized option: -version
+use: X [:<display>] [option]
+[playwright browser cache]
+ffmpeg-1011
+firefox-1511
+===HYGIENE===
+[disk]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root        62G   51G   11G  83% /
+/dev/sda15      105M  6.1M   99M   6% /boot/efi
+/dev/sdb1        16G   28K   15G   1% /mnt
+/dev/root      8257536 244640 8012896    3% /
+Archived and active journals take up 4.0G in the file system.
+[home top dirs]
+35G	/home/azureuser
+17G	/home/azureuser/trading_corp
+621M	/home/azureuser/.cache
+376M	/home/azureuser/pm_analyze_backup_20260913T011517Z
+375M	/home/azureuser/pm_deploy11_backup_20260912T181850Z
+289M	/home/azureuser/kcv2_archive_stage
+176M	/home/azureuser/snap
+103M	/home/azureuser/pm_r4_karencaps_backup_20260902T112102Z
+103M	/home/azureuser/pm_lossomit_deploy_backup_20260902T023308Z
+103M	/home/azureuser/pm_liveness_stage1b_backup_20260906T030140Z
+103M	/home/azureuser/pm_bundle_backup_20260903T201551Z
+103M	/home/azureuser/pm_bundle_backup_20260903T200119Z
+[var log top]
+7.8G	/var/log
+4.1G	/var/log/journal
+60M	/var/log/azure
+8.9M	/var/log/sysstat
+232K	/var/log/unattended-upgrades
+220K	/var/log/apt
+4.0K	/var/log/private
+4.0K	/var/log/landscape
+[firewall]
+enabled
+active
+ii ufw 0.36.1-4ubuntu0.1
+inactive
+[time sync]
+               Local time: Tue 2026-11-24 00:00:44 UTC
+           Universal time: Tue 2026-11-24 00:00:44 UTC
+                 RTC time: Tue 2026-11-24 00:00:45
+                Time zone: Etc/UTC (UTC, +0000)
+System clock synchronized: yes
+              NTP service: active
+          RTC in local TZ: no
+[tls cert expiry via local handshake]
+subject=CN = trading.jacksumner.com
+notAfter=Jan 25 01:37:19 2027 GMT
+===END===

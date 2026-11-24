@@ -1,0 +1,59 @@
+{
+    "auxiliaryMode":  "None",
+    "auxiliarySku":  "None",
+    "disableTcpStateTracking":  false,
+    "dnsSettings":  {
+                        "appliedDnsServers":  [
+
+                                              ],
+                        "dnsServers":  [
+
+                                       ],
+                        "internalDomainNameSuffix":  "dbnhpnhd5jme1oamszdfy44zmf.bx.internal.cloudapp.net"
+                    },
+    "enableIPForwarding":  false,
+    "etag":  "W/\"a9631415-43d2-4eed-b9b1-3a54e59bfa70\"",
+    "hostedWorkloads":  [
+
+                        ],
+    "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkInterfaces/tc-prod-nic",
+    "ipConfigurations":  [
+                             {
+                                 "etag":  "W/\"a9631415-43d2-4eed-b9b1-3a54e59bfa70\"",
+                                 "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkInterfaces/tc-prod-nic/ipConfigurations/ipconfig1",
+                                 "name":  "ipconfig1",
+                                 "primary":  true,
+                                 "privateIPAddress":  "10.0.0.4",
+                                 "privateIPAddressVersion":  "IPv4",
+                                 "privateIPAllocationMethod":  "Dynamic",
+                                 "provisioningState":  "Succeeded",
+                                 "publicIPAddress":  {
+                                                         "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/NetworkWatcherRG/providers/Microsoft.Network/publicIPAddresses/New_PKC_Karen",
+                                                         "resourceGroup":  "NetworkWatcherRG"
+                                                     },
+                                 "resourceGroup":  "rg-shared-prod",
+                                 "subnet":  {
+                                                "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/virtualNetworks/tc-prod-vnet/subnets/tc-prod-subnet",
+                                                "resourceGroup":  "rg-shared-prod"
+                                            },
+                                 "type":  "Microsoft.Network/networkInterfaces/ipConfigurations"
+                             }
+                         ],
+    "location":  "eastus",
+    "macAddress":  "00-22-48-20-7A-B6",
+    "name":  "tc-prod-nic",
+    "nicType":  "Standard",
+    "primary":  true,
+    "provisioningState":  "Succeeded",
+    "resourceGroup":  "rg-shared-prod",
+    "resourceGuid":  "53a65c73-7904-48a0-9d33-c45802e507c8",
+    "tapConfigurations":  [
+
+                          ],
+    "type":  "Microsoft.Network/networkInterfaces",
+    "virtualMachine":  {
+                           "id":  "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Compute/virtualMachines/tc-prod-vm",
+                           "resourceGroup":  "rg-shared-prod"
+                       },
+    "vnetEncryptionSupported":  false
+}

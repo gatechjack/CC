@@ -1,0 +1,27 @@
+=== AZ ACCOUNT ===
+subscription: Azure subscription 1  id=6f20f2e1-28ec-4857-857c-457c7f5212ca  state=Enabled
+=== VM LOCATE (-d) ===
+vm=tc-prod-vm  rg=RG-SHARED-PROD  size=Standard_D2s_v3  location=eastus  power=VM running
+publicIps=172.171.189.116  privateIps=10.0.0.4  fqdns=
+=== VM SHOW (image / osdisk / patch settings) ===
+image: publisher=Canonical offer=0001-com-ubuntu-server-jammy sku=22_04-lts-gen2 version=latest exactVersion=22.04.202604250
+osDisk: name=tc-prod-vm_OsDisk_1_a0e824d3d7494920ad026f25461c339a createOption=FromImage sizeGb=64 osType=Linux
+osDisk.managedDisk.id=/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Compute/disks/tc-prod-vm_OsDisk_1_a0e824d3d7494920ad026f25461c339a storageAccountType=Standard_LRS
+linux: disablePasswordAuth=True provisionVMAgent=True
+patchSettings: patchMode=ImageDefault assessmentMode=ImageDefault
+securityProfile: securityType= encryptionAtHost=
+=== NICS / NSG / SUBNET / PUBLIC-IP ===
+nic=tc-prod-nic privateIp=10.0.0.4 ipForwarding=False
+publicIP=172.171.189.116 fqdn= sku=Standard alloc=Static
+nic-level NSG: (none)
+subnet=tc-prod-subnet subnet-level NSG: /subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Network/networkSecurityGroups/tc-prod-nsg
+--- NSG tc-prod-nsg : INBOUND custom rules (by priority) ---
+  [110] home-operator-ssh  Allow TCP  src=98.231.16.63/32  dport=22
+  [1000] AllowSSHFromHome  Allow TCP  src=98.231.16.63/32  dport=22
+  [1010] AllowHTTP  Allow Tcp  src=Internet  dport=80
+  [1020] AllowHTTPS  Allow Tcp  src=Internet  dport=443
+--- NSG tc-prod-nsg : OUTBOUND custom rules (by priority) ---
+  (no custom outbound rules; only Azure defaults)
+=== INSTANCE VIEW (agent + any existing patch assessment; read-only) ===
+vmAgent version=2.16.0.2  status=Ready
+patchStatus: none cached in instance view. (To populate: 'az vm assess-patches -g RG -n VM' = read-only ASSESSMENT, installs nothing -- Phase-2 Jack-approved step.)
