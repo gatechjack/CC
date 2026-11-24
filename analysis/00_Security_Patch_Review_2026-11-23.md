@@ -16,6 +16,11 @@ tags: [current-state, platform, security, patch-review, unverified]
 > Evidence: `cc-secrev-2026-11-23-wt\analysis\{01_box_probe_redacted.txt, 02_requirements_box.txt, 03_azure_summary.txt, 04_advisory_research.md, 05_synthesis_notes.md}`.
 > Citations: `(box:NN)` = line in 01_box_probe_redacted.txt; `(az)` = 03_azure_summary.txt; advisories by URL.
 
+## STATUS -- BATCH 0 + BATCH 1 EXECUTED (2026-11-24)
+- **Batch 0 DONE:** Azure OS-disk snapshot `tc-prod-os-20261124` (Succeeded, rollback point) + `az vm assess-patches` (29 crit+sec, reboot pending) + dpkg/pip baselines (`10_`/`11_`).
+- **Batch 1 DONE (H1 + Authelia remediated):** **Caddy 2.11.4 -> 2.11.9** (validate-before-install, graceful reload) and **Authelia 4.39.19 -> 4.39.28** (sha256-verified, validate-config gated, `/api/health` 200 + 0 errors-since-start). trading-corp NOT restarted. Executed via `az vm run-command` running the staged+hash-verified `secrev_batch1.sh`. Evidence `13_batch1_result.md`. Rollback: snapshot + pinned binary backup `secrev_batch1_backup_20261124T040003Z` (ORIGINAL 2.11.4/4.39.19).
+- **Remaining tonight:** Jack's one 2FA login to confirm end-to-end. Batches 2-5 NOT executed (plan below, updated).
+
 ## PROVENANCE / CONFIDENCE (read first)
 - **Box version strings + ports + NSG rules are directly observed** = high confidence.
 - **CVE/advisory details were gathered by web-research agents on 2026-11-24** in a late-2026 timeline. Citations to `ubuntu.com/security/notices`, `github.com/<project>/security/advisories`, `python.org`, `nvd.nist.gov`, `osv.dev` are authoritative; a few package citations point to third-party mirror URLs and are **FLAGGED -> re-verify at source before any Phase-2 action** (04_advisory_research.md).
@@ -75,8 +80,8 @@ tags: [current-state, platform, security, patch-review, unverified]
 ### HIGH
 | # | Item | Current | Fixed/Target | CVE / advisory | Exposure | Risk (incl. AI-assisted attacker) | Fix |
 |---|---|---|---|---|---|---|---|
-| H1 | **Caddy** reverse proxy (TLS term + forward_auth) | v2.11.4 (box:179) | v2.11.9 (apt, box:53) | GHSA-6365-7ppr-5r92 (Moderate, fixed 2.11.5); GHSA-r766-rf9f-588h (High, fixed 2.11.8) -- `github.com/caddyserver/caddy/security/advisories` | **Internet-facing (80/443, src=Internet)** (az) | forward_auth+reverse_proxy race can route an auth check to the wrong upstream -> intermittent auth-bypass of the dashboard, which fronts live order-execution routes. An LLM-assisted attacker mass-scans for the exact Caddy+forward_auth fingerprint and replays the race automatically. | `apt upgrade caddy` to 2.11.9 + `systemctl reload caddy` (root; web-only blip). |
-| H2 | **Authelia** (sole auth gateway) **[Phase-2 re-rate -> MEDIUM: CVE is Low 1.3 per A1; kept in Batch 1 as cheap auth-gate hardening]** | v4.39.19 (box:180) | v4.39.28 | CVE-2026-48794 / GHSA-j748-h363-wqj8 (ACL domain canonicalization miss -> possible 1FA downgrade, fixed 4.39.20) -- `github.com/authelia/authelia/security/advisories` | **Internet-facing** (gates all of `trading.jacksumner.com`) (az) | Uppercase-subdomain request can fall through to a more-permissive access-control rule = auth-bypass class on the one component standing between the Internet and the trading UI. 9 releases behind. AI attacker enumerates ACL case-variants at machine speed. | Replace `/usr/local/bin/authelia` binary with 4.39.28 (verify checksum/signature) + `systemctl restart authelia` (root; auth blip, no trading impact). |
+| H1 | **Caddy** reverse proxy (TLS term + forward_auth) **[REMEDIATED 2026-11-24 -> v2.11.9 active]** | v2.11.4 (box:179) | v2.11.9 (apt, box:53) | GHSA-6365-7ppr-5r92 (Moderate, fixed 2.11.5); GHSA-r766-rf9f-588h (High, fixed 2.11.8) -- `github.com/caddyserver/caddy/security/advisories` | **Internet-facing (80/443, src=Internet)** (az) | forward_auth+reverse_proxy race can route an auth check to the wrong upstream -> intermittent auth-bypass of the dashboard, which fronts live order-execution routes. An LLM-assisted attacker mass-scans for the exact Caddy+forward_auth fingerprint and replays the race automatically. | `apt upgrade caddy` to 2.11.9 + `systemctl reload caddy` (root; web-only blip). |
+| H2 | **Authelia** (sole auth gateway) **[Phase-2 re-rate -> MEDIUM: CVE is Low 1.3 per A1] [REMEDIATED 2026-11-24 -> v4.39.28 active+healthy]** | v4.39.19 (box:180) | v4.39.28 | CVE-2026-48794 / GHSA-j748-h363-wqj8 (ACL domain canonicalization miss -> possible 1FA downgrade, fixed 4.39.20) -- `github.com/authelia/authelia/security/advisories` | **Internet-facing** (gates all of `trading.jacksumner.com`) (az) | Uppercase-subdomain request can fall through to a more-permissive access-control rule = auth-bypass class on the one component standing between the Internet and the trading UI. 9 releases behind. AI attacker enumerates ACL case-variants at machine speed. | Replace `/usr/local/bin/authelia` binary with 4.39.28 (verify checksum/signature) + `systemctl restart authelia` (root; auth blip, no trading impact). |
 | H3 | **Starlette** (under FastAPI) | 1.0.0 (box:384) | 1.0.1 | CVE-2026-48710 "BadHost" / GHSA-86qp-5c8j-p5mr -- **in CISA KEV (actively exploited)** -- `github.com/advisories/GHSA-86qp-5c8j-p5mr` (verify KEV listing) | **Internet-reachable via the Caddy webhook bypass** (`/webhook/tradingview/*` skip Authelia) (Web&Auth note) | Host header with `/` or `?` makes path-based middleware see a different path than the router -> auth/validation bypass. Reachable pre-auth on the webhook paths. KEV = exploit code is public; automated scanners already weaponize it. | `venv/bin/pip install 'starlette>=1.0.1'` (+ fastapi, see H/M below); **engine restart required** -> Robinhood-closed window. |
 | H4 | **Kernel + glibc reboot pending** | running `6.8.0-1064-azure`, 88d uptime; `libc6 2.35-0ubuntu3.18` loaded (box:24,199) | boot installed `6.8.0-1073` + activate new libc6 (box:29,43-45) | USN-8761-3/8817-1/8904-1/9026-1 (linux-azure) -- `ubuntu.com/security/notices` | Local (post-access) + availability | 5 kernel USNs' worth of fixes are installed-but-not-running; glibc patched-but-not-active. *Note:* the ARM-TLB LPE (CVE-2025-10263) and AMD-SEV (CVE-2023-20585) do **NOT** apply to this x86-64 Intel D2s_v3; driver is the aggregate + glibc + 88d uptime, not those two. Availability risk: an unplanned reboot (crash) on a 24/7 money-mover is worse than a planned one. | `reboot` in a planned window (root); bounces box + all divisions (~several min). |
 
@@ -117,8 +122,8 @@ tags: [current-state, platform, security, patch-review, unverified]
 | Dimension | Current | Recommended |
 |---|---|---|
 | Internet-exposed ports | 80/443 (Caddy), 22 (home /32) (az) | unchanged -- already minimal |
-| Caddy | 2.11.4 | 2.11.9 |
-| Authelia | 4.39.19 | 4.39.28 |
+| Caddy | **2.11.9 (DONE 2026-11-24)** | 2.11.9 |
+| Authelia | **4.39.28 (DONE 2026-11-24)** | 4.39.28 |
 | Running kernel | 6.8.0-1064 (88d) | 6.8.0-1073 (reboot) |
 | glibc active | 2.35-0ubuntu3.18 loaded pre-update | reboot to activate patched libc6 |
 | App bind | 0.0.0.0:8000 | 127.0.0.1:8000 |
@@ -141,16 +146,13 @@ General rule: a `trading-corp.service` restart or a reboot **bounces ALL divisio
 - Capture rollback baselines: `dpkg -l > ~/pkgs_pre.txt`; `venv/bin/pip freeze > ~/pip_pre.txt`.
 - Rollback path: swap OS disk back to the snapshot; `pip install -r ~/pip_pre.txt` for venv regressions.
 
-**Batch 1 -- Internet-facing proxy/auth (HIGH; root; NO engine restart; ~seconds of auth/web blip).**
-- `apt-get update && apt-get install --only-upgrade caddy` -> 2.11.9; `systemctl reload caddy`.
-- Replace Authelia binary with 4.39.28 (download release, **verify checksum/GPG**, swap `/usr/local/bin/authelia`, `systemctl restart authelia`).
-- Needs root (az vm run-command = Jack). Verify: `caddy version`=2.11.9; `authelia --version`=4.39.28; `curl -sI https://trading.jacksumner.com/healthz` 200; a real login still works; webhook path still 200s.
+**Batch 1 -- Internet-facing proxy/auth -- DONE 2026-11-24.** Caddy 2.11.4 -> 2.11.9 (validate-before-install + graceful reload) and Authelia 4.39.19 -> 4.39.28 (sha256 + narrow validate-config gate + /api/health 200 + 0 errors-since-start, auto-rollback armed). Ran via `az vm run-command` on staged+hash-verified `secrev_batch1.sh`; trading-corp NOT restarted. Verified: caddy 2.11.9 + authelia 4.39.28 active+healthy, dashboard 302, webhook 405, Host 400. Evidence `13_batch1_result.md`. Rollback: snapshot `tc-prod-os-20261124` + `secrev_batch1_rollback.sh` (pinned original).
 
-**Batch 2 -- App dependency security (HIGH/MED; venv pip; REQUIRES engine restart; Robinhood-closed window).**
-- Stage in a scratch venv first; pin exact versions; keep `~/pip_pre.txt`.
-- `venv/bin/pip install 'starlette>=1.0.1' 'fastapi>=0.163.2' 'pyjwt>=2.13.0' 'cryptography>=49.0.0' 'aiohttp>=3.14.4' 'urllib3>=2.6.4' 'pillow>=12.3.0'`.
-- **web3 6->7 is EXCLUDED here** (breaking; separate dev task M3).
-- Restart engine via canonical `restart_tc.ps1` (Jack). Verify: `/healthz` 200; boot log shows all divisions armed; `pip freeze` shows targets; smoke the PM/web paths.
+**Batch 2 -- App dependency security (TIGHTENED per Jack D: minimal KEV fix + bind; venv pip; REQUIRES engine restart; Robinhood-closed window; NOT executed).**
+- **Minimal set first:** `starlette>=1.0.1` (CVE-2026-48710 BadHost, CISA KEV) **plus whatever FastAPI pin that Starlette requires** (test in a scratch venv ON THE PC first; do not blanket-bump fastapi). Keep `~/pip_pre.txt` baseline.
+- **Bind uvicorn to 127.0.0.1** (M5) at the same engine restart (code/systemd one-liner) so the dashboard stops listening on 0.0.0.0:8000.
+- **Deferred to a later Batch-2b (not the minimal KEV pass):** pyjwt>=2.13.0, cryptography>=49.0.0, aiohttp>=3.14.4, urllib3>=**2.7.0** (fix ver corrected per A5), pillow>=12.3.0, fastapi>=0.163.2 (DoS). web3 6->7 EXCLUDED (breaking; M3 dev task; note M3 is LOW/not-live-reachable per B4).
+- Restart engine via canonical `restart_tc.ps1` (Jack). Verify: `/healthz` 200; boot log shows all divisions armed; `pip freeze` shows targets; app bound 127.0.0.1; smoke PM/web paths.
 
 **Batch 3 -- OS security debs, non-kernel (MED/LOW; root; NO reboot; run live, low impact).**
 - `apt-get install --only-upgrade python3.12 libpython3.12 libpython3.12-stdlib python3.12-venv krb5* libglib2.0-* chrony snapd open-vm-tools netplan.io` (hold linux-image/libc6 for Batch 4).
