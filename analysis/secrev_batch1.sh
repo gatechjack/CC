@@ -112,34 +112,66 @@ else
   if [ -z "$VCCMD" ]; then
     echo "[authelia] WARNING: new binary exposes no validate-config subcommand -- gate skipped (sha256 already verified)"
   else
-    ( set -a; [ -n "$EFPATH" ] && [ -f "$EFPATH" ] && . "$EFPATH" 2>/dev/null; set +a; "$NB" $VCCMD --config "$AUCFG" ) > "$BK/authelia_validate.out" 2>&1
+    VCOUT="$BK/authelia_validate.out"
+    ( set -a; [ -n "$EFPATH" ] && [ -f "$EFPATH" ] && . "$EFPATH" 2>/dev/null; set +a; "$NB" $VCCMD --config "$AUCFG" ) > "$VCOUT" 2>&1
     VCRC=$?
-    ERRS=$(grep -ciE 'error|fatal|panic' "$BK/authelia_validate.out" 2>/dev/null)
-    echo "[authelia] validate-config ($VCCMD) exit=$VCRC errorlines=$ERRS (full output in $BK, not printed)"
-    if [ "$VCRC" != "0" ]; then
-      echo "[authelia] CONFIG VALIDATION FAILED with new binary -- NOT swapping; 4.39.19 left RUNNING. (caddy upgrade stands)"
-      echo "=== BATCH1 authelia SKIPPED at config-validate (4.39.19 running) ==="
+    echo "[authelia] validate-config ($VCCMD) exit=$VCRC -- classifying error lines (key names only, never values):"
+    # Advisory filter: ignore ONLY the two EXACT runtime-injected-secret errors confirmed 2026-11-24.
+    # jwt_secret (identity_validation.reset_password) + encryption_key (storage) are injected via the
+    # service inline Environment= (which validate-config cannot see here and which we must not read).
+    # ANY other error is BLOCKING and aborts the Authelia swap, as before.
+    IGN_JWT="identity_validation: reset_password: option 'jwt_secret' is required"
+    IGN_ENC="storage: option 'encryption_key' is required"
+    BLOCK=0
+    while IFS= read -r eline; do
+      case "$eline" in *"- "*) : ;; *) continue ;; esac
+      emsg=$(printf '%s' "$eline" | sed -E 's/^[[:space:]]*-[[:space:]]*//')
+      if printf '%s' "$emsg" | grep -qF "$IGN_JWT"; then echo "    IGNORED: identity_validation.reset_password.jwt_secret required (runtime Environment=)"
+      elif printf '%s' "$emsg" | grep -qF "$IGN_ENC"; then echo "    IGNORED: storage.encryption_key required (runtime Environment=)"
+      else
+        ekey=$(printf '%s' "$emsg" | sed -E "s/ option .*//; s/'[^']*'//g; s/[[:space:]]+$//")
+        echo "    BLOCKING: $ekey"
+        BLOCK=$((BLOCK + 1))
+      fi
+    done < "$VCOUT"
+    if [ "$BLOCK" -gt 0 ]; then
+      echo "[authelia] $BLOCK BLOCKING validate-config error(s) -- NOT swapping; 4.39.19 left RUNNING. (caddy upgrade stands)"
+      echo "=== BATCH1 authelia SKIPPED at config-validate (blocking errors) ==="
       exit 8
     fi
-    echo "[authelia] config validate OK -> proceed to swap"
+    echo "[authelia] validate-config: only the 2 known runtime-secret errors (or none) -> proceed; REAL gate = start+health below"
   fi
   systemctl stop authelia
   cp -a "$NB" /usr/local/bin/authelia
   chmod 755 /usr/local/bin/authelia
   chown root:root /usr/local/bin/authelia
+  START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
   systemctl start authelia
-  sleep 4
-  if systemctl is-active --quiet authelia; then
-    echo "[authelia] active; now=$(/usr/local/bin/authelia --version 2>/dev/null | head -1)"
+  # Success requires BOTH: /api/health 200 within 30s AND zero level=error in the journal since start.
+  # "active" alone is not sufficient.
+  HEALTHY=0
+  for i in $(seq 1 15); do
+    sleep 2
+    systemctl is-active --quiet authelia || continue
+    CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:9091/api/health 2>/dev/null)
+    if [ "$CODE" = "200" ]; then HEALTHY=1; break; fi
+  done
+  ERRSINCE=$(journalctl -u authelia --since "$START_TS" --no-pager 2>/dev/null | grep -c 'level=error')
+  echo "[authelia] post-start: service=$(systemctl is-active authelia) health200=$HEALTHY errorsSinceStart=$ERRSINCE"
+  if [ "$HEALTHY" = "1" ] && [ "$ERRSINCE" = "0" ]; then
+    echo "[authelia] HEALTHY; now=$(/usr/local/bin/authelia --version 2>/dev/null | head -1)"
   else
-    echo "[authelia] FAILED TO START with new binary -> ROLLING BACK to backup binary"
+    echo "[authelia] UNHEALTHY (health=$HEALTHY errorsSinceStart=$ERRSINCE) -> ROLLING BACK to PINNED ORIGINAL 4.39.19"
+    journalctl -u authelia --since "$START_TS" --no-pager 2>/dev/null | grep 'level=error' | tail -5 | sed 's/^/    err: /'
+    PINDIR=$(cat /home/azureuser/secrev_batch1_ORIGINAL 2>/dev/null)
+    [ -d "$PINDIR" ] || PINDIR="$BK"
     systemctl stop authelia
-    cp -a "$BK/authelia.bin.bak" /usr/local/bin/authelia
+    cp -a "$PINDIR/authelia.bin.bak" /usr/local/bin/authelia
     chmod 755 /usr/local/bin/authelia
     systemctl start authelia
     sleep 3
-    echo "[authelia] rolled back; service=$(systemctl is-active authelia) ver=$(/usr/local/bin/authelia --version 2>/dev/null | head -1)"
-    echo "=== BATCH1 authelia ROLLED BACK (caddy upgrade stands) ==="
+    echo "[authelia] rolled back from $PINDIR; service=$(systemctl is-active authelia) ver=$(/usr/local/bin/authelia --version 2>/dev/null | head -1)"
+    echo "=== BATCH1 authelia ROLLED BACK (health/errors) -- caddy upgrade stands ==="
     exit 7
   fi
 fi

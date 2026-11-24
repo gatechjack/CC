@@ -14,7 +14,8 @@ $sh = @'
 echo "caddy=$(/usr/bin/caddy version 2>/dev/null | head -1)"
 echo "authelia=$(/usr/local/bin/authelia --version 2>/dev/null | head -1)"
 echo "svc caddy=$(systemctl is-active caddy) authelia=$(systemctl is-active authelia) trading-corp=$(systemctl is-active trading-corp)"
-echo "authelia errors(last200)=$(journalctl -u authelia -n 200 --no-pager 2>/dev/null | grep -c 'level=error')"
+echo "authelia health200=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 http://127.0.0.1:9091/api/health 2>/dev/null)"
+echo "authelia errors(last50)=$(journalctl -u authelia -n 50 --no-pager 2>/dev/null | grep -c 'level=error')"
 echo "newest batch1 backup: $(ls -dt /home/azureuser/secrev_batch1_backup_* 2>/dev/null | head -1)"
 '@
 $res = $sh | ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $hostt "tr -d '\r\357\273\277'|bash"
