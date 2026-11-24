@@ -1,0 +1,7 @@
+{
+  "created": "2026-11-24T02:50:35.8545176+00:00",
+  "name": "tc-prod-os-20261124",
+  "sizeGb": null,
+  "src": "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Compute/disks/tc-prod-vm_OsDisk_1_a0e824d3d7494920ad026f25461c339a",
+  "state": "Succeeded"
+}

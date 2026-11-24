@@ -1,0 +1,38 @@
+{
+  "creationData": {
+    "createOption": "Copy",
+    "sourceResourceId": "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Compute/disks/tc-prod-vm_OsDisk_1_a0e824d3d7494920ad026f25461c339a",
+    "sourceUniqueId": "a0e824d3-d749-4920-ad02-6f25461c339a"
+  },
+  "diskSizeBytes": 68719476736,
+  "diskSizeGB": 64,
+  "diskState": "Unattached",
+  "encryption": {
+    "type": "EncryptionAtRestWithPlatformKey"
+  },
+  "hyperVGeneration": "V2",
+  "id": "/subscriptions/6f20f2e1-28ec-4857-857c-457c7f5212ca/resourceGroups/rg-shared-prod/providers/Microsoft.Compute/snapshots/tc-prod-os-20261124",
+  "incremental": false,
+  "location": "eastus",
+  "name": "tc-prod-os-20261124",
+  "networkAccessPolicy": "AllowAll",
+  "osType": "Linux",
+  "provisioningState": "Succeeded",
+  "publicNetworkAccess": "Enabled",
+  "resourceGroup": "rg-shared-prod",
+  "sku": {
+    "name": "Standard_LRS",
+    "tier": "Standard"
+  },
+  "snapshotAccessState": "Available",
+  "supportedCapabilities": {
+    "acceleratedNetwork": true,
+    "architecture": "x64",
+    "diskControllerTypes": "SCSI, NVMe"
+  },
+  "supportsHibernation": true,
+  "tags": {},
+  "timeCreated": "2026-11-24T02:50:35.8545176+00:00",
+  "type": "Microsoft.Compute/snapshots",
+  "uniqueId": "81c18a0c-9c54-446c-8803-3430e359c94c"
+}
