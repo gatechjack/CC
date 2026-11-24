@@ -116,6 +116,70 @@ when prod observation warrants a tuning loop.
 
 ---
 
+## 2026-11-24 00:43 UTC — MACE: holiday + early-close awareness (session_close_aware, Option 2) DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
+
+**Commits:** `9fc27f4e` (code) + this ledger on branch `mace-hours-2026-11-23` (BASE `cf035381` = origin/prod-live;
+the brief's expected `4945e5b8` had moved — branched from the new tip, MACE files identical across the advance).
+**config_hash `158ea99b2a97` UNCHANGED** (flag is a code-default in `config.py`; `config/mace.yaml` untouched).
+
+**What + why.** Before this, MACE knew nothing about market holidays or early closes: every clock gate was a
+fixed ET wall-clock time (manage 09:35–15:55, time-exit 15:30, snapshot 15:40, entry 15:45, summary 15:50) and
+the only non-macro gate was a weekday check. On Fri 2026-11-27 (NYSE closes 13:00 ET) the five open 12-18 rungs
+hit 21 DTE and their time-exit would have fired at 15:30 — 2.5 h after the close — into a dead book (Labor Day
+2026-09-07 precedent: non-filling orders off stale quotes). Thu 11-26 (Thanksgiving, full close) the engine would
+have run the whole daily cycle against a closed market.
+
+**The change (Jack's rulings).** `management.session_close_aware` (optional-with-default **True**; absent from
+mace.yaml → config_hash preserved). When on: (1) full closures (`close_time_et` → None) skip every clock-gated
+loop for the day with one log line, no quotes/orders/alerts — reconcile + weekly-calendar unchanged; (2) the
+afternoon gates anchor to that day's ACTUAL close by the same offset each sits before a 16:00 close — time-exit
+close−30m, snapshot close−20m, entry close−15m, summary close−10m, manage+watchdog window-end close−5m. A normal
+16:00 close reproduces 15:30/15:40/15:45/15:50/15:55 EXACTLY; a 13:00 half-day → 12:30/12:40/12:45/12:50/12:55.
+Entries ARE taken on early-close days, at the shifted time. DTE (calendar days), the 2× stop, PT, the DTE-14 floor
+and the 11-20 forced time-exit are unchanged apart from WHEN the time gate opens. Flag False reproduces today's
+behaviour on all day types. Calendar = `utils/market_hours.default_calendar()` (read-only import, NOT edited);
+unavailable/raises → falls back to today's fixed behaviour + one warning/day (safe default = normal hours).
+
+**Files (MACE-only + a read-only import of the shared oracle):** `trading_corp/mace/config.py` (flag),
+`trading_corp/mace/strategy.py` (pure `resolve_close_hhmm`/`shift_gate_to_close` + `evaluate_management`
+`time_exit_at_override`), `trading_corp/mace/manager.py` (inject calendar + `_time_exit_override`),
+`trading_corp/mace/loops.py` (`_resolve_day` + shifted gates). New test `tests/test_mace_session_gates.py` (24).
+No edit to main.py/brokers/robinhood.py/agents/data_exec.py/persistence/db.py/utils/market_hours.py.
+
+**Tests.** Full MACE suite **501 passed / 5 pre-existing-stale failed** (identical set on base, proven by stash:
+test_mace_config::test_shipped_config_loads, test_mace_loops::test_manage_loop_fires_in_window,
+test_mace_sizing::test_size_floor_and_cap, test_mace_strategy_entry::{test_clean_entry,test_capacity_skip}). The
+24 new tests cover: shift identity on 16:00 + shift on 13:00; closed/fallback sentinels; the three loops on
+normal/half/holiday/after-close/flag-off; the time-exit override incl. the 11-20 forced path firing before 13:00;
+flag-off and calendar-unavailable falling back to 15:30.
+
+**Pre-flight (RO, all passed).** Box md5 == BASE on all 4 files + market_hours.py; **STOP gate CLEARED** —
+`pandas_market_calendars` present in the box engine venv and `close_time_et` returns **2026-11-27 → 13:00,
+2026-11-26 → CLOSED**, 11-24/11-30 → 16:00 (so the box runs the REAL schedule, not the silent fallback); engine
+PID 1041875 / config_hash 158ea99b2a97 / 200s; census 3/57/10; entry_halt false; no in-flight MACE rung; nothing
+order-related in the prior 5 min; no restart/batch in flight.
+
+**Graft → restart → boot-verify.** scp+tar staged binary-exact, staged CR-md5 == target, drift-gate box == base,
+backup `/home/azureuser/mace_hours_graft_backup_20261124T003128Z` (+ md5s.txt), CR-stripped apply, post-verify
+box == target, py_compile OK. One restart via `restart_tc.ps1` (Jack-run; az-root). Boot-verify GREEN: NEW PID
+**1060188**, start **2026-11-24 00:43:29 UTC**; wired config_hash **158ea99b2a97**; box md5 == TARGET
+(config `0c0a7330`, strategy `239b6064`, manager `ffe975db`, loops `52440ec8`); 5/5 MACE schedulers online;
+**0 MACE tracebacks**; six divisions alive; census 3/57/10; entry_halt false; RH-scoped auth failures since restart
+**0**; live-code proof helpers_present=True, session_close_aware default True, calendar 11-27=13:00 / 11-26=CLOSED.
+
+**prod-live:** `cf035381` → (this entry's commit) — plain fast-forward, MACE files == box (md5 == TARGET).
+
+**Rollback (if ever needed):** `powershell -ep bypass -f "C:\Users\AA Incorporado\cc\mh_hours_rollback.ps1"`
+(restores the 4 files to BASE from `mace_hours_graft_backup_20261124T003128Z`, py_compiles) THEN one restart via
+restart_tc.ps1. Base md5s: config `677e669b` / strategy `cf32df67` / manager `601b590d` / loops `765e3360`.
+
+**Watch (timers armed this session):** Tue 11-24 09:42 ET (normal-day regression: gates at 15:30/15:40/15:45/15:50,
+window 15:55), Tue 11-24 15:52 ET (first live afternoon under the new code), Thu 11-26 16:05 ET (full-holiday skip:
+zero ticks/quotes/orders/alerts, skip log lines, RH order list empty), Fri 11-27 13:05 ET (early close: five 12-18
+rungs' time-exit opens 12:30, snapshot 12:40, entry 12:45, nothing after 12:55, no watchdog trip).
+
+---
+
 ## 2026-11-20 22:17 UTC — MACE: 21-DTE time exit forces the marketable close on a threatened or losing rung DEPLOYED + VERIFIED LIVE (agent-driven, autonomous under explicit Board authorization; after-close window; all-division restart)
 
 **Commits:** 8c2e3408 on branch `mace-timeforce-2026-11-20` (BASE 3ad31ee2)
