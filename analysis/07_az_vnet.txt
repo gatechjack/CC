@@ -1,0 +1,14 @@
+=== ALL VMs IN SUBSCRIPTION ===
+VM count in subscription: 
+  vm=tc-prod-vm rg=RG-SHARED-PROD size=Standard_D2s_v3 power=VM running priv=10.0.0.4 pub=172.171.189.116
+=== VNETS + SUBNETS + PEERINGS ===
+vnet=tc-prod-vnet rg=rg-shared-prod space=10.0.0.0/16
+   subnet=tc-prod-subnet prefix=10.0.0.0/24 ipConfigs=1 nsg=tc-prod-nsg
+   subnet=AzureBastionSubnet prefix=10.0.1.0/26 ipConfigs=0 nsg=(none)
+   peerings: (none)
+=== NICS ON TARGET SUBNET (tc-prod-subnet) ===
+NICs on tc-prod-subnet: 1
+  nic=tc-prod-nic vm=tc-prod-vm priv=10.0.0.4 hasPublicIp=yes
+=== VERDICT ===
+tc-prod-vm appears ALONE on tc-prod-subnet (no other attached NICs). => 0.0.0.0:8000 and xrdp:3389 stay MEDIUM (defense-in-depth; no co-tenant on subnet).
+NOTE: also weigh VNet peerings above; a peered VNet can reach intra-VNet-allowed ports too.
