@@ -4,6 +4,9 @@
 # Fail-safe: any failure aborts BEFORE touching the next component; authelia start-failure auto-rolls-back.
 # Does NOT restart trading-corp. Prints a clear trail. No secrets printed.
 set -u
+# Tee ALL output to a box-side log so the full trail is readable read-only via ssh,
+# independent of whether the az/!-invocation surfaces stdout.
+exec > >(tee /home/azureuser/secrev_batch1_lastrun.log) 2>&1
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 BK=/home/azureuser/secrev_batch1_backup_$TS
 mkdir -p "$BK"
