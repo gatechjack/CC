@@ -28,7 +28,9 @@ echo "[apt] exit=$RC; installed linux-image-azure now: $(dpkg-query -W -f='${Ver
 echo "[boot] installed kernels on disk:"; ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's/^/    /'
 if [ "$RC" != "0" ]; then echo "[ABORT] apt failed -- NOT rebooting"; exit 4; fi
 
-echo "[reboot] scheduling reboot in 6s (backgrounded so this run-command returns with output) ..."
-nohup bash -c 'sleep 6; systemctl reboot' >/dev/null 2>&1 &
-disown 2>/dev/null || true
-echo "=== BATCH4 UPGRADE DONE $TS -- box reboots in ~6s; VERIFY after boot (uname 1074, units active, reboot-required cleared) ==="
+echo "[reboot] scheduling reboot via systemd transient timer (survives run-command exit) ..."
+systemctl stop secrev-batch4-reboot.timer secrev-batch4-reboot.service 2>/dev/null || true
+systemd-run --on-active=20 --unit=secrev-batch4-reboot --timer-property=AccuracySec=1s systemctl reboot 2>&1 | sed 's/^/    /'
+sleep 1
+echo "[reboot] timer active=$(systemctl is-active secrev-batch4-reboot.timer 2>/dev/null) (fires ~20s from now)"
+echo "=== BATCH4 UPGRADE DONE $TS -- box reboots in ~20s via systemd timer; VERIFY after boot (uname 1074, units active, reboot-required cleared) ==="
