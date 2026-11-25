@@ -1,0 +1,67 @@
+===CONNECTIVITY===
+[DNS]
+  api.github.com -> 140.82.112.6
+  robinhood.com -> 3.170.19.80
+  fapi.bitunix.com -> 104.18.0.177
+  api.elections.kalshi.com -> 3.171.61.29
+[HTTPS outbound status]
+  https://api.github.com -> 200
+  https://files.pythonhosted.org -> 404
+===TRADING_CORP_JOURNAL_SINCE_BATCH3===
+[window since 2026-11-25 00:46:00]
+  total lines: 102602
+  connection/websocket/reconnect/timeout/error counts:
+    connection = 2
+    websocket = 0
+    reconnect = 0
+    timeout = 0
+    ERROR = 13
+    Traceback = 1
+    refused = 0
+    unreachable = 0
+  sample error/exception lines (up to 6):
+    Nov 25 01:25:33 tc-prod-vm xvfb-run[1060201]: 2026-11-25 01:25:33,876 ERROR trading_corp.data.polymarket_data_api_client: polymarket-data-api HARD-FAIL data-api/v2/positions: positions[0x91feec8a…, limit=500, page=2]: HTTP error RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read) (+2 similar suppressed in last 60s)
+    Nov 25 01:25:33 tc-prod-vm xvfb-run[1060201]: 2026-11-25 01:25:33,877 WARNING trading_corp.prediction_markets.live_driver: pm_live_driver: /positions fetch failed for 0x91feec8af2 (mls): positions[0x91feec8a…, limit=500, page=2]: HTTP error RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)
+    Nov 25 02:45:18 tc-prod-vm xvfb-run[1060201]: 2026-11-25 02:45:18,159 ERROR trading_corp.data.polymarket_data_api_client: polymarket-data-api HARD-FAIL data-api/v2/positions: positions[0xd6966eb1…, limit=500, page=3]: HTTP 429 after 4 attempts
+    Nov 25 02:46:18 tc-prod-vm xvfb-run[1060201]: 2026-11-25 02:46:18,292 ERROR trading_corp.data.polymarket_data_api_client: polymarket-data-api HARD-FAIL data-api/v2/positions: positions[0x1610db79…, limit=500, page=0]: HTTP 429 after 4 attempts (+4 similar suppressed in last 60s)
+    Nov 25 03:06:32 tc-prod-vm xvfb-run[1060201]: 2026-11-25 03:06:32,799 INFO trading_corp.prediction_markets.live_driver: pm_live_driver cycle kalshi_karen/nba: {'account_id': 'kalshi_karen', 'category': 'nba', 'n_signals': 32, 'n_would_place': 1, 'placed': 1, 'n_disarm_blocked': 0, 'errors': 0, 'n_skip': 31, 'n_reject': 0, 'n_shard_underfunded': 0, 'posts_sent': 1, 'ceiling_latched': False, 'chase_skips': 1, 'floor_skips': 0}
+    Nov 25 03:07:02 tc-prod-vm xvfb-run[1060201]: 2026-11-25 03:07:02,132 INFO trading_corp.prediction_markets.live_driver: pm_live_driver cycle kalshi_jack/nba: {'account_id': 'kalshi_jack', 'category': 'nba', 'n_signals': 36, 'n_would_place': 1, 'placed': 1, 'n_disarm_blocked': 0, 'errors': 0, 'n_skip': 35, 'n_reject': 0, 'n_shard_underfunded': 0, 'posts_sent': 1, 'ceiling_latched': False, 'chase_skips': 1, 'floor_skips': 0}
+===JOURNAL_RETENTION===
+  usage: Archived and active journals take up 988.0M in the file system.
+  oldest: 2026-11-24T01:25:01+0000 tc-prod-vm
+  newest: 2026-11-25T03:13:39+0000 tc-prod-vm
+  boots: 1
+===MAIN_PY_DRIFT===
+  box main.py md5(CR-stripped): f486de42afc540b3a0cbdebe344fb13d  (expect f486de42afc540b3a0cbdebe344fb13d == prod-live 50aea132)
+===STARLETTE_VENV===
+  Name: starlette
+  Version: 1.0.0
+  fastapi Version: 0.136.1
+  require-hashes in deploy? (grep runbook/unit):
+===NONLOCAL_8000===
+[crontab :8000]
+[systemd units :8000]
+[non-repo scripts/home :8000 non-localhost refs]
+  /home/azureuser/pm_r2c_deploy_backup_20260831T185330Z/trading_corp/scripts/pm_web.py:7:0.0.0.0:8000
+  /home/azureuser/mace_baseline_scratch/trading_corp/scripts/pm_web.py:7:0.0.0.0:8000
+  /home/azureuser/pm_r2c_deploy_backup_20260831T185617Z/trading_corp/scripts/pm_web.py:7:0.0.0.0:8000
+  /home/azureuser/mace_trigmid_scratch/trading_corp/scripts/pm_web.py:7:0.0.0.0:8000
+===POSITIONS_ACTIVITY_BASELINE===
+  mace open rungs: 12
+  pm open positions: 66619
+  pm active subdivisions: 92
+  agent_state arm rows by agent (live divisions):
+    bitunix_futures=3
+    bitunix_sfp=2
+    kalshi_copy_trader=30
+    pm_live=93
+    pmcc_robinhood=324
+    robinhood_mace=2
+    robinhood_pead=1
+  newest audit_event ts: Error: in prepare, no such column: created_ts (1)
+  newest audit_event age: Error: in prepare, no such column: created_ts (1)
+===CADDY_UPSTREAM===
+  [readable: /etc/caddy/Caddyfile] -- lines mentioning 8000 / reverse_proxy to the engine:
+    45:        reverse_proxy localhost:8000
+    62:        reverse_proxy localhost:8000
+===END===
