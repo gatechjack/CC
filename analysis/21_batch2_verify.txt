@@ -1,0 +1,24 @@
+  [engine] PID=1085473 active=active NRestarts=0 started=Wed 2026-11-25 03:37:10 UTC
+  [bind] ss :8000 (MUST be 127.0.0.1, NOT 0.0.0.0):
+  LISTEN 0      2048       127.0.0.1:8000 0.0.0.0:*
+  [venv] starlette=1.0.1 fastapi=0.136.1 python=Python 3.12.16
+  [tracebacks since restart (2026-11-25 03:37:10 UTC)]: 0
+  [live divisions initialized since restart] (expect all 6):
+  bitunix_sfp: 10 log refs
+  robinhood_pead: 1 log refs
+  bitunix_futures: 4 log refs
+  kalshi_copy_trading: 0 log refs
+  robinhood_pmcc: 1 log refs
+  robinhood_mace: 3 log refs
+  [other services still active]:
+  prediction-markets-web=active
+  sfp-card-watcher=active
+  market-context-recorder=active
+  caddy=active
+  authelia=active
+  chrony=active
+  [authelia health]=200
+[PC curl via Caddy -- expect 302 / 405 / 400]
+    / -> HTTP/1.1 302 Found
+    webhook GET -> HTTP/1.1 405 Method Not Allowed
+    malformed-Host -> HTTP/1.1 400 Bad Request: malformed Host header
