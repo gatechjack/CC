@@ -13981,3 +13981,18 @@ green). A quote timeout is still classified as a dead wing — now bounded by th
 eliminated. `entry_max_attempts: 2` stood XLE down at 0.35 on 11-18 (mid 0.385; a third attempt is
 config-forbidden) — Board owns any change. Cooldown-off first live entry round: 11-19 15:45 ET (watch: zero
 `cooldown` skip rows).
+
+**11-24/25 — SECURITY SWEEP (Jack-approved; Security Patch Review 2026-11-23).** A multi-batch platform
+security pass. Box-only batches (no repo change): Batch 1 Caddy 2.11.4→2.11.9 + Authelia 4.39.19→4.39.28;
+Batch 3 26 OS security debs (chrony/krb5/glib/snapd/open-vm-tools/netplan/…, excl. kernel/libc6/python3.12*/xrdp,
+needrestart list-only so nothing bounced); Batch 5(non-Pro) xrdp stop+disable+mask + journald capped 1G.
+**Batch 2 is the one CODE deploy (this commit, `73b83e4a`, one engine restart 11-25 03:37:10Z, PID 1060188→1085473):**
+(1) `trading_corp/main.py:2799` dashboard bind `0.0.0.0`→`127.0.0.1` (Caddy reverse-proxies `localhost:8000`;
+removes the unauthenticated intra-VNet exposure of the command center). (2) `starlette` 1.0.0→**1.0.1** pinned in
+`requirements.lock` (+hashes) and `requirements.txt` — CVE-2026-48710 "BadHost" (CISA KEV); fastapi stays 0.136.1
+(accepts starlette ≥0.46.0). (3) held python3.12 deadsnakes debs applied in the same window: venv interpreter
+3.12.13→**3.12.16** (ssl/tarfile/XML CVEs). Verified GREEN: ss shows `127.0.0.1:8000` only, 0 tracebacks/5min,
+all 6 live divisions up (pm_live_driver cycling all 4 Kalshi accts), dashboard 302 / webhook 405 / malformed-Host 400,
+authelia /api/health 200. Pre-deploy drift gate (box main.py == prod-live `f486de42`), quiet-60s gate, hash-gated
+graft + py_compile, auto-restore armed. Rollback: snapshots `tc-prod-os-20261124{,b}` + `secrev_batch2_rollback.sh`.
+prod-live advanced `50aea132 → 73b83e4a`. Still pending same session: Batch 4 (kernel 1074 + libc6 + reboot).
