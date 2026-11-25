@@ -2796,7 +2796,7 @@ async def _start_web_server(
     tasty_pending_combo_registry: Any = None,
     mace_division: Any = None,
     mace_manager: Any = None,
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",  # secrev M5 2026-11-24: bind dashboard to localhost; Caddy reverse-proxies it. Do not expose 0.0.0.0:8000.
     port: int = 8000,
 ):
     """Start the FastAPI command center as an asyncio task in this loop.

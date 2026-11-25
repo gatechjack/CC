@@ -39,6 +39,7 @@ nest_asyncio>=1.6.0
 # Web command center (FastAPI + HTMX + Jinja templates).
 # Dark trading-desk dashboard hosted in-process alongside trading_corp.
 fastapi>=0.115.0
+starlette==1.0.1  # secrev 2026-11-24: pin >= KEV fix CVE-2026-48710 (BadHost); fastapi 0.136.1 accepts it (>=0.46.0)
 uvicorn[standard]>=0.32.0
 jinja2>=3.1.4
 python-multipart>=0.0.12   # form parsing for HTMX POSTs
