@@ -1,0 +1,23 @@
+  [kernel] running uname -r=6.8.0-1074-azure  (expect 6.8.0-1074-azure)
+  [uptime] up 5 minutes; booted 2026-11-25 04:04:46
+  [reboot-required] cleared
+  [units active?]:
+  trading-corp=active
+  prediction-markets-web=active
+  sfp-card-watcher=active
+  market-context-recorder=active
+  caddy=active
+  authelia=active
+  chrony=active
+  walinuxagent=active
+  [engine] PID=696 NRestarts=0 started=Wed 2026-11-25 04:05:13 UTC
+  [bind] ss :8000 (expect 127.0.0.1):
+  LISTEN 0      2048       127.0.0.1:8000 0.0.0.0:*
+  [venv] starlette=1.0.1 python=Python 3.12.16
+  [crontab lines] 6
+  [tracebacks since boot] 0
+  [authelia health] 200
+[PC curl via Caddy -- expect 302 / 405 / 400]
+    / -> HTTP/1.1 302 Found
+    webhook GET -> HTTP/1.1 405 Method Not Allowed
+    malformed-Host -> HTTP/1.1 400 Bad Request: malformed Host header
