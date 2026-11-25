@@ -1,0 +1,491 @@
+===ITEM0_DISK_RECLAIM_EVIDENCE===
+[df / now]
+/dev/root        62G   52G   10G  84% /
+[unattended-upgrades log mtimes]
+  total 248
+  drwxr-x---  2 root adm      4096 2026-11-01 00:00 .
+  drwxr-xr-x 12 root syslog   4096 2026-11-25 00:00 ..
+  -rw-r--r--  1 root adm    136258 2026-11-24 06:17 unattended-upgrades-dpkg.log
+  -rw-r--r--  1 root adm      5831 2026-10-31 06:55 unattended-upgrades-dpkg.log.1.gz
+  -rw-r--r--  1 root adm      7010 2026-09-30 06:15 unattended-upgrades-dpkg.log.2.gz
+  -rw-r--r--  1 root adm      5227 2026-08-29 06:50 unattended-upgrades-dpkg.log.3.gz
+  -rw-r--r--  1 root adm      5575 2026-07-29 06:12 unattended-upgrades-dpkg.log.4.gz
+  -rw-r--r--  1 root adm      3895 2026-06-27 06:57 unattended-upgrades-dpkg.log.5.gz
+  -rw-r--r--  1 root adm      2208 2026-05-28 06:44 unattended-upgrades-dpkg.log.6.gz
+  -rw-r--r--  1 root root        0 2026-08-28 00:00 unattended-upgrades-shutdown.log
+  -rw-r--r--  1 root root      129 2026-08-27 15:23 unattended-upgrades-shutdown.log.1.gz
+  -rw-r--r--  1 root root      129 2026-06-30 02:45 unattended-upgrades-shutdown.log.2.gz
+  -rw-r--r--  1 root root    21882 2026-11-24 06:17 unattended-upgrades.log
+  -rw-r--r--  1 root root     2986 2026-10-31 16:55 unattended-upgrades.log.1.gz
+  -rw-r--r--  1 root root     2865 2026-09-30 09:22 unattended-upgrades.log.2.gz
+  -rw-r--r--  1 root root     2551 2026-08-31 10:39 unattended-upgrades.log.3.gz
+  -rw-r--r--  1 root root     2805 2026-07-31 07:31 unattended-upgrades.log.4.gz
+  -rw-r--r--  1 root root     2618 2026-06-30 06:09 unattended-upgrades.log.5.gz
+  -rw-r--r--  1 root root     2813 2026-05-31 06:52 unattended-upgrades.log.6.gz
+[u-u dpkg.log clean/autoclean/remove lines]
+  0 added, 0 removed; done.
+  Removing linux-headers-6.8.0-1070-azure (6.8.0-1070.78~22.04.1) ...
+  Removing linux-azure-6.8-headers-6.8.0-1070 (6.8.0-1070.78~22.04.1) ...
+  Removing linux-tools-6.8.0-1070-azure (6.8.0-1070.78~22.04.1) ...
+  Removing linux-cloud-tools-6.8.0-1070-azure (6.8.0-1070.78~22.04.1) ...
+  Removing linux-azure-6.8-cloud-tools-6.8.0-1070 (6.8.0-1070.78~22.04.1) ...
+  Removing linux-image-6.8.0-1070-azure (6.8.0-1070.78~22.04.1) ...
+  Removing linux-modules-6.8.0-1070-azure (6.8.0-1070.78~22.04.1) ...
+  Removing linux-azure-6.8-tools-6.8.0-1070 (6.8.0-1070.78~22.04.1) ...
+[APT Periodic autoclean config]
+  APT::Periodic::Update-Package-Lists "1";
+  APT::Periodic::Unattended-Upgrade "1";
+  APT::Periodic::Update-Package-Lists "1";
+  APT::Periodic::Download-Upgradeable-Packages "0";
+  APT::Periodic::AutocleanInterval "0";
+[apt-daily timers last/next]
+  Wed 2026-11-25 06:47:18 UTC 6h left  Tue 2026-11-24 06:17:05 UTC 18h ago      apt-daily-upgrade.timer apt-daily-upgrade.service
+  Wed 2026-11-25 14:33:25 UTC 14h left Tue 2026-11-24 22:00:46 UTC 2h 28min ago apt-daily.timer         apt-daily.service
+[apt history clean/autoremove w/ dates]
+  Start-Date: 2026-11-12  06:09:55
+  Remove: linux-headers-6.8.0-1070-azure:amd64 (6.8.0-1070.78~22.04.1), linux-azure-6.8-headers-6.8.0-1070:amd64 (6.8.0-1070.78~22.04.1)
+  Start-Date: 2026-11-12  06:10:07
+  Remove: linux-tools-6.8.0-1070-azure:amd64 (6.8.0-1070.78~22.04.1)
+  Start-Date: 2026-11-12  06:10:14
+  Remove: linux-cloud-tools-6.8.0-1070-azure:amd64 (6.8.0-1070.78~22.04.1), linux-azure-6.8-cloud-tools-6.8.0-1070:amd64 (6.8.0-1070.78~22.04.1)
+  Start-Date: 2026-11-12  06:10:21
+  Remove: linux-image-6.8.0-1070-azure:amd64 (6.8.0-1070.78~22.04.1)
+  Start-Date: 2026-11-12  06:10:31
+  Remove: linux-modules-6.8.0-1070-azure:amd64 (6.8.0-1070.78~22.04.1)
+  Start-Date: 2026-11-12  06:10:38
+  Remove: linux-azure-6.8-tools-6.8.0-1070:amd64 (6.8.0-1070.78~22.04.1)
+  Start-Date: 2026-11-13  06:41:37
+  --
+[apt archive cache now]
+  18M	/var/cache/apt/archives
+[journald usage + cap config]
+  Archived and active journals take up 3.8G in the file system.
+[journald vacuum/rotate events since 11-20]
+===BATCH3_UPGRADABLE===
+Listing...
+chrony/jammy-updates 4.2-2ubuntu2.1 amd64 [upgradable from: 4.2-2ubuntu2]
+distro-info/jammy-updates 1.1ubuntu0.3 amd64 [upgradable from: 1.1ubuntu0.2]
+iproute2/jammy-updates 5.15.0-1ubuntu2.2 amd64 [upgradable from: 5.15.0-1ubuntu2.1]
+libaudit-common/jammy-updates 1:3.0.7-1ubuntu0.1 all [upgradable from: 1:3.0.7-1build1]
+libaudit1/jammy-updates 1:3.0.7-1ubuntu0.1 amd64 [upgradable from: 1:3.0.7-1build1]
+libglib2.0-0/jammy-updates 2.72.4-0ubuntu2.11 amd64 [upgradable from: 2.72.4-0ubuntu2.10]
+libglib2.0-bin/jammy-updates 2.72.4-0ubuntu2.11 amd64 [upgradable from: 2.72.4-0ubuntu2.10]
+libglib2.0-data/jammy-updates 2.72.4-0ubuntu2.11 all [upgradable from: 2.72.4-0ubuntu2.10]
+libgssapi-krb5-2/jammy-updates 1.19.2-2ubuntu0.10 amd64 [upgradable from: 1.19.2-2ubuntu0.8]
+libk5crypto3/jammy-updates 1.19.2-2ubuntu0.10 amd64 [upgradable from: 1.19.2-2ubuntu0.8]
+libkrb5-3/jammy-updates 1.19.2-2ubuntu0.10 amd64 [upgradable from: 1.19.2-2ubuntu0.8]
+libkrb5support0/jammy-updates 1.19.2-2ubuntu0.10 amd64 [upgradable from: 1.19.2-2ubuntu0.8]
+libnetplan0/jammy-updates 0.107.1-3ubuntu0.22.04.5 amd64 [upgradable from: 0.107.1-3ubuntu0.22.04.4]
+libopeniscsiusr/jammy-updates 2.1.5-1ubuntu1.3 amd64 [upgradable from: 2.1.5-1ubuntu1.1]
+libpython3.12-dev/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+libpython3.12-stdlib/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+libpython3.12/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+linux-azure/jammy-updates 6.8.0-1074.83~22.04.1 amd64 [upgradable from: 6.8.0-1073.82~22.04.1]
+linux-cloud-tools-azure/jammy-updates 6.8.0-1074.83~22.04.1 amd64 [upgradable from: 6.8.0-1073.82~22.04.1]
+linux-headers-azure/jammy-updates 6.8.0-1074.83~22.04.1 amd64 [upgradable from: 6.8.0-1073.82~22.04.1]
+linux-image-azure/jammy-updates 6.8.0-1074.83~22.04.1 amd64 [upgradable from: 6.8.0-1073.82~22.04.1]
+linux-tools-azure/jammy-updates 6.8.0-1074.83~22.04.1 amd64 [upgradable from: 6.8.0-1073.82~22.04.1]
+nano/jammy-updates 6.2-1ubuntu0.3 amd64 [upgradable from: 6.2-1ubuntu0.2]
+netplan-generator/jammy-updates 0.107.1-3ubuntu0.22.04.5 amd64 [upgradable from: 0.107.1-3ubuntu0.22.04.4]
+netplan.io/jammy-updates 0.107.1-3ubuntu0.22.04.5 amd64 [upgradable from: 0.107.1-3ubuntu0.22.04.4]
+open-iscsi/jammy-updates 2.1.5-1ubuntu1.3 amd64 [upgradable from: 2.1.5-1ubuntu1.1]
+open-vm-tools/jammy-updates 2:12.3.5-3~ubuntu0.22.04.4 amd64 [upgradable from: 2:12.3.5-3~ubuntu0.22.04.3]
+python3-distro-info/jammy-updates 1.1ubuntu0.3 all [upgradable from: 1.1ubuntu0.2]
+python3-distupgrade/jammy-updates 1:22.04.21 all [upgradable from: 1:22.04.20]
+python3-netplan/jammy-updates 0.107.1-3ubuntu0.22.04.5 amd64 [upgradable from: 0.107.1-3ubuntu0.22.04.4]
+python3.12-dev/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+python3.12-venv/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+python3.12/jammy 3.12.16-1+jammy1 amd64 [upgradable from: 3.12.13-1+jammy1]
+snapd/jammy-updates 2.78+ubuntu22.04 amd64 [upgradable from: 2.76.3+ubuntu22.04.1]
+tmux/jammy-updates 3.2a-4ubuntu0.3 amd64 [upgradable from: 3.2a-4ubuntu0.2]
+ubuntu-release-upgrader-core/jammy-updates 1:22.04.21 all [upgradable from: 1:22.04.20]
+xfsprogs/jammy-updates 5.13.0-1ubuntu2.2 amd64 [upgradable from: 5.13.0-1ubuntu2.1]
+xrdp/jammy-updates 0.9.17-2ubuntu3.1 amd64 [upgradable from: 0.9.17-2ubuntu3]
+===SECURITY_STATUS===
+  1279 packages installed:
+       1077 packages from Ubuntu Main/Restricted repository
+       195 packages from Ubuntu Universe/Multiverse repository
+       7 packages from third parties
+  To get more information about the packages, run
+  This machine is receiving security patching for Ubuntu Main/Restricted
+  This machine is NOT attached to an Ubuntu Pro subscription.
+  Ubuntu Pro with 'esm-infra' enabled provides security updates for
+===NEEDRESTART===
+  needrestart 3.5-5ubuntu2.6
+===SERVICE_PID_BASELINE===
+--- trading-corp ---
+  MainPID=1060188
+  NRestarts=0
+  ExecMainStartTimestamp=Tue 2026-11-24 00:43:29 UTC
+  Id=trading-corp.service
+  ActiveState=active
+  SubState=running
+--- sfp-card-watcher ---
+  MainPID=656
+  NRestarts=0
+  ExecMainStartTimestamp=Thu 2026-08-27 15:25:45 UTC
+  Id=sfp-card-watcher.service
+  ActiveState=active
+  SubState=running
+--- caddy ---
+  MainPID=1067704
+  NRestarts=0
+  ExecMainStartTimestamp=Tue 2026-11-24 04:04:21 UTC
+  Id=caddy.service
+  ActiveState=active
+  SubState=running
+--- authelia ---
+  MainPID=1070681
+  NRestarts=0
+  ExecMainStartTimestamp=Tue 2026-11-24 04:28:42 UTC
+  Id=authelia.service
+  ActiveState=active
+  SubState=running
+[pm/prediction web service units + what serves 8081/8000]
+  unit:   market-context-recorder.service                             loaded    active   running Market-Context Recorder (isolated; READ-ONLY on the engine DB, sole writer of its OWN market_context.db; captures exogenous market context per SFP trade fire + on a heartbeat). SEPARATE from trading-corp.service - cannot affect the engine.
+  unit:   prediction-markets-web.service                              loaded    active   running Prediction Markets web (pm_web) -- standalone, reads only prediction_markets.db
+  listen: LISTEN 0      2048         0.0.0.0:8000 0.0.0.0:*
+  listen: LISTEN 0      2048       127.0.0.1:8081 0.0.0.0:*
+===PM_BACKUPS===
+  2026-09-02 22:58  4096B  /home/azureuser/pm_a_deploy_backup_20260902T225807Z
+  2026-09-02 23:03  4096B  /home/azureuser/pm_a_deploy_backup_20260902T230350Z
+  2026-09-13 01:15  4096B  /home/azureuser/pm_analyze_backup_20260913T011517Z
+  2026-09-08 20:36  155B  /home/azureuser/pm_arm_backup_20260908T203633Z.json
+  2026-09-27 22:49  4096B  /home/azureuser/pm_bandC_backup_20260927T224915Z
+  2026-09-15 02:43  4096B  /home/azureuser/pm_boxing_graft_backup_20260915T024303Z
+  2026-09-03 19:58  4096B  /home/azureuser/pm_bundle_backup_20260903T195811Z
+  2026-09-03 20:01  4096B  /home/azureuser/pm_bundle_backup_20260903T200119Z
+  2026-09-03 20:15  4096B  /home/azureuser/pm_bundle_backup_20260903T201551Z
+  2026-08-30 18:04  106450944B  /home/azureuser/pm_caps_set_backup_20260830T180415Z.db
+  2026-08-30 18:04  32768B  /home/azureuser/pm_caps_set_backup_20260830T180415Z.db-shm
+  2026-08-30 18:04  0B  /home/azureuser/pm_caps_set_backup_20260830T180415Z.db-wal
+  2026-08-31 02:22  106463232B  /home/azureuser/pm_caps_write_backup_20260831T022238Z.db
+  2026-09-06 20:11  4096B  /home/azureuser/pm_cfb_deploy_backup_20260906T201119Z
+  2026-09-11 18:59  4096B  /home/azureuser/pm_cfb_enable_backup_20260911T185918Z
+  2026-08-30 02:47  4096B  /home/azureuser/pm_cli_search_deploy_backup_20260830T024732Z
+  2026-09-20 15:51  466B  /home/azureuser/pm_contracts_backup_20260920T155118Z.json
+  2026-08-24 16:05  8014B  /home/azureuser/pm_cp3a_gate2_pmcli_backup_20260825T151528Z.py.bak
+  2026-09-07 03:10  4096B  /home/azureuser/pm_cs2_deploy_backup_20260907T031048Z
+  2026-09-18 18:09  4096B  /home/azureuser/pm_cs2_tl_graft_backup_20260918T180923Z
+  2026-09-18 18:01  683B  /home/azureuser/pm_cs2_tl_reclassify_backup_1789754504.json
+  2026-09-11 23:09  4096B  /home/azureuser/pm_ctxfix_backup_20260911T230937Z
+  2026-09-25 20:17  4096B  /home/azureuser/pm_d17_backup_20260925T201753Z
+  2026-09-25 20:59  4096B  /home/azureuser/pm_d18_backup_20260925T205926Z
+  2026-09-25 22:50  4096B  /home/azureuser/pm_d19_backup_20260925T225031Z
+  2026-09-10 12:03  4096B  /home/azureuser/pm_datejoin_backup_20260910T120304Z
+  2026-09-12 16:38  4096B  /home/azureuser/pm_deploy10_backup_20260912T163854Z
+  2026-09-12 18:18  4096B  /home/azureuser/pm_deploy11_backup_20260912T181850Z
+  2026-09-20 20:34  4096B  /home/azureuser/pm_deploy12_backup_20260920T203451Z
+  2026-09-20 22:07  4096B  /home/azureuser/pm_deploy13_backup_20260920T220721Z
+  2026-09-20 22:12  4096B  /home/azureuser/pm_deploy13_backup_20260920T221244Z
+  2026-09-20 23:06  4096B  /home/azureuser/pm_deploy13_backup_20260920T230612Z
+  2026-09-21 02:12  4096B  /home/azureuser/pm_deploy14_backup_20260921T021214Z
+  2026-09-21 20:06  4096B  /home/azureuser/pm_deploy15_backup_20260921T200659Z
+  2026-09-22 12:40  4096B  /home/azureuser/pm_deploy16_backup_20260922T124001Z
+  2026-09-02 17:29  4096B  /home/azureuser/pm_deploy2_backup_20260902T172914Z
+  2026-09-02 23:01  4096B  /home/azureuser/pm_deploy3_backup_20260902T230137Z
+  2026-09-04 11:21  4096B  /home/azureuser/pm_deploy4_backup_20260904T112138Z
+  2026-09-04 12:32  4096B  /home/azureuser/pm_deploy5_backup_20260904T123253Z
+  2026-09-07 17:52  4096B  /home/azureuser/pm_deploy6_backup_20260907T175044Z
+  2026-09-10 14:31  4096B  /home/azureuser/pm_deploy71_backup_20260910T143113Z
+  2026-09-10 17:51  4096B  /home/azureuser/pm_deploy72_backup_20260910T175147Z
+  2026-09-10 10:36  4096B  /home/azureuser/pm_deploy7_backup_20260910T103627Z
+  2026-09-11 03:27  4096B  /home/azureuser/pm_deploy8_backup_20260911T032739Z
+  2026-09-10 15:15  334471168B  /home/azureuser/pm_enable_nfljack_backup_20260910T151553Z.db
+  2026-09-10 15:38  334479360B  /home/azureuser/pm_enable_nflkaren_backup_20260910T153856Z.db
+  2026-09-15 18:17  18034B  /home/azureuser/pm_enable_subgames_backup_20260915T181709Z.json
+  2026-09-15 02:53  4096B  /home/azureuser/pm_f1_graft_backup_20260915T025316Z
+  2026-09-05 23:22  4096B  /home/azureuser/pm_farmsearch_deploy_backup_20260905T232220Z
+  2026-09-07 05:01  4096B  /home/azureuser/pm_fed_deploy_backup_20260907T050148Z
+  2026-09-16 02:33  4096B  /home/azureuser/pm_g1_graft_backup_20260916T023311Z
+  2026-09-16 10:17  4096B  /home/azureuser/pm_g2g3_graft_backup_20260916T101743Z
+  2026-09-25 23:39  4096B  /home/azureuser/pm_gridtb_backup_20260925T233946Z
+  2026-09-15 15:41  121408B  /home/azureuser/pm_heal_backup_20260915T154119Z.json
+  2026-09-15 15:57  2B  /home/azureuser/pm_heal_backup_20260915T155730Z.json
+  2026-09-18 13:20  1121B  /home/azureuser/pm_itf_enable_backup_1789737607.json
+  2026-09-16 12:25  4096B  /home/azureuser/pm_itf_graft_backup_20260916T122547Z
+  2026-09-18 13:16  1101B  /home/azureuser/pm_itf_sizing_backup_1789737375.json
+  2026-09-27 22:14  39485B  /home/azureuser/pm_itfcap_backup_1790547283.json
+  2026-09-22 22:02  2198B  /home/azureuser/pm_journalfix_backup_20260922T220232Z.json
+  2026-10-08 00:10  670683136B  /home/azureuser/pm_legaudit_clear_backup_20261008T000933Z.db
+  2026-09-17 20:12  532B  /home/azureuser/pm_legaudit_clear_lg_backup_20260917T201246Z.json
+  2026-09-17 19:48  4096B  /home/azureuser/pm_legaudit_engine_backup_20260917T194839Z
+  2026-09-17 19:28  4096B  /home/azureuser/pm_legaudit_pmweb_backup_20260917T192827Z
+  2026-09-10 18:16  4096B  /home/azureuser/pm_legfix_backup_20260910T181645Z
+  2026-08-30 23:13  4096B  /home/azureuser/pm_live_deploy_backup_20260830T231313Z
+  2026-09-06 03:01  4096B  /home/azureuser/pm_liveness_stage1b_backup_20260906T030140Z
+  2026-09-06 04:30  4096B  /home/azureuser/pm_liveness_stage2_backup_20260906T043038Z
+  2026-09-02 02:33  4096B  /home/azureuser/pm_lossomit_deploy_backup_20260902T023308Z
+  2026-09-01 12:15  4096B  /home/azureuser/pm_m2_deploy_backup_20260901T121507Z
+  2026-09-01 12:21  4096B  /home/azureuser/pm_m2_deploy_backup_20260901T122104Z
+  2026-09-06 19:11  4096B  /home/azureuser/pm_m3_restore_backup_20260906T191136Z
+  2026-09-06 00:28  4096B  /home/azureuser/pm_mainpy_restore_backup_20260906T002846Z
+  2026-08-31 02:00  106459136B  /home/azureuser/pm_mig014_backup_20260831T020430Z.db
+  2026-09-10 18:16  334499840B  /home/azureuser/pm_mig021_backup_20260910T181605Z.db
+  2026-09-12 13:21  4096B  /home/azureuser/pm_milestone_backup_20260912T132107Z
+  2026-09-01 05:33  4096B  /home/azureuser/pm_multiacct_deploy_backup_20260901T053314Z
+  2026-09-15 14:16  21278B  /home/azureuser/pm_ordercap_backup_20260915T141635Z.json
+  2026-09-22 14:17  279B  /home/azureuser/pm_ozx_legaudit_backup_20260922T141717Z.txt
+  2026-09-22 04:31  4096B  /home/azureuser/pm_p1_deploy_backup_20260922T043141Z
+  2026-09-22 13:55  4096B  /home/azureuser/pm_padrule_h1_backup_20260922T135553Z
+  2026-09-22 14:08  4096B  /home/azureuser/pm_padrule_h2_backup_20260922T140845Z
+  2026-09-13 06:32  4096B  /home/azureuser/pm_pd_backup2_20260913T063200Z
+  2026-09-13 03:21  4096B  /home/azureuser/pm_pd_backup_20260913T032138Z
+  2026-09-22 16:14  608B  /home/azureuser/pm_periodenable_backup_20260922T161407Z.json
+  2026-09-07 06:37  4096B  /home/azureuser/pm_perleague_deploy_backup_20260907T063709Z
+  2026-09-14 19:12  4096B  /home/azureuser/pm_pmweb_graft_backup_20260914T191217Z
+  2026-09-22 22:46  1310B  /home/azureuser/pm_propenable_backup_20260922T224644Z.json
+  2026-09-22 20:01  4096B  /home/azureuser/pm_props_deploy_backup_20260922T200158Z
+  2026-09-02 04:33  4096B  /home/azureuser/pm_prospanalyze_backup_20260902T043321Z
+  2026-09-15 17:03  4096B  /home/azureuser/pm_prospects_graft_backup_20260915T170316Z
+  2026-08-31 18:53  4096B  /home/azureuser/pm_r2c_deploy_backup_20260831T185330Z
+  2026-08-31 18:56  4096B  /home/azureuser/pm_r2c_deploy_backup_20260831T185617Z
+  2026-09-02 11:21  4096B  /home/azureuser/pm_r4_karencaps_backup_20260902T112102Z
+  2026-08-31 21:47  106614784B  /home/azureuser/pm_r5_caps_backup_20260831T214753Z.db
+  2026-08-31 21:15  4096B  /home/azureuser/pm_r5_deploy_backup_20260831T211517Z
+  2026-08-31 16:09  106561536B  /home/azureuser/pm_rd_deploy_backup_20260831T160923Z.db
+  2026-08-31 16:14  4096B  /home/azureuser/pm_rd_deploy_files_backup_20260831T161414Z
+  2026-08-31 02:22  106463232B  /home/azureuser/pm_reattach_backup_20260831T022934Z.db
+  2026-10-07 03:26  670158848B  /home/azureuser/pm_recovery_backup_20261007T032558Z.db
+  2026-10-07 03:26  32768B  /home/azureuser/pm_recovery_backup_20261007T032558Z.db-shm
+  2026-10-07 03:26  0B  /home/azureuser/pm_recovery_backup_20261007T032558Z.db-wal
+  2026-09-14 19:33  17986B  /home/azureuser/pm_rfi_enable_backup_20260914T193332Z.json
+  2026-09-14 18:02  4096B  /home/azureuser/pm_rfi_graft_backup_20260914T180212Z
+  2026-09-14 18:10  4096B  /home/azureuser/pm_rfi_graft_backup_20260914T181023Z
+  2026-08-27 19:03  25137152B  /home/azureuser/pm_rollup2_dbbackup_20260827T190346Z.db
+  2026-08-27 19:03  32768B  /home/azureuser/pm_rollup2_dbbackup_20260827T190346Z.db-shm
+  2026-08-27 19:03  0B  /home/azureuser/pm_rollup2_dbbackup_20260827T190346Z.db-wal
+  2026-10-11 00:20  296960B  /home/azureuser/pm_rollupfix_backup_20261011T002054Z.tar
+  2026-09-20 15:39  51298B  /home/azureuser/pm_roster_backup_20260920T153918Z.json
+  2026-09-12 14:36  4096B  /home/azureuser/pm_roster_deploy9_backup_20260912T143619Z
+  2026-08-31 01:18  4096B  /home/azureuser/pm_rulingA_backup_20260831T011834Z
+  2026-09-07 00:16  4096B  /home/azureuser/pm_rung1_deploy_backup_20260907T001625Z
+  2026-09-07 00:17  4096B  /home/azureuser/pm_rung1_deploy_backup_20260907T001732Z
+  2026-10-08 11:49  11870B  /home/azureuser/pm_settclose_backup_20261008T114934Z.settlement.py
+  2026-08-30 20:30  4096B  /home/azureuser/pm_shard_deploy_backup_20260830T203025Z
+  2026-08-30 20:58  4096B  /home/azureuser/pm_shard_deploy_backup_20260830T205833Z
+  2026-08-30 21:42  4096B  /home/azureuser/pm_shard_deploy_backup_20260830T214244Z
+  2026-09-08 19:56  17448B  /home/azureuser/pm_sizing_backup_20260908T195617Z.json
+  2026-08-31 02:07  4096B  /home/azureuser/pm_sizing_code_backup_20260831T020713Z
+  2026-09-07 04:27  4096B  /home/azureuser/pm_soccer_deploy_backup_20260907T042734Z
+  2026-09-10 13:53  4096B  /home/azureuser/pm_sprtot_backup_20260910T135344Z
+  2026-09-10 14:15  4096B  /home/azureuser/pm_sprtot_backup_20260910T141505Z
+  2026-08-27 13:07  25137152B  /home/azureuser/pm_stage0_rung3_dbbackup_20260827T130737Z.db
+  2026-08-27 14:22  32768B  /home/azureuser/pm_stage0_rung3_dbbackup_20260827T130737Z.db-shm
+  2026-08-27 13:32  0B  /home/azureuser/pm_stage0_rung3_dbbackup_20260827T130737Z.db-wal
+  2026-08-27 16:25  25137152B  /home/azureuser/pm_stage1_rung1_dbbackup_20260827T162523Z.db
+  2026-08-27 16:25  32768B  /home/azureuser/pm_stage1_rung1_dbbackup_20260827T162523Z.db-shm
+  2026-08-27 16:25  0B  /home/azureuser/pm_stage1_rung1_dbbackup_20260827T162523Z.db-wal
+  2026-08-27 17:39  25137152B  /home/azureuser/pm_stage1_rung3_adj_dbbackup_20260827T173915Z.db
+  2026-08-27 17:39  32768B  /home/azureuser/pm_stage1_rung3_adj_dbbackup_20260827T173915Z.db-shm
+  2026-08-27 17:39  0B  /home/azureuser/pm_stage1_rung3_adj_dbbackup_20260827T173915Z.db-wal
+  2026-08-27 17:26  25137152B  /home/azureuser/pm_stage1_rung3_poll_dbbackup_20260827T172646Z.db
+  2026-08-27 17:26  32768B  /home/azureuser/pm_stage1_rung3_poll_dbbackup_20260827T172646Z.db-shm
+  2026-08-27 17:26  0B  /home/azureuser/pm_stage1_rung3_poll_dbbackup_20260827T172646Z.db-wal
+  2026-09-14 20:58  4096B  /home/azureuser/pm_subgame_graft_backup_20260914T205804Z
+  2026-08-27 18:52  25137152B  /home/azureuser/pm_t1_rung2_poll_dbbackup_20260827T185228Z.db
+  2026-08-27 18:52  32768B  /home/azureuser/pm_t1_rung2_poll_dbbackup_20260827T185228Z.db-shm
+  2026-08-27 18:52  0B  /home/azureuser/pm_t1_rung2_poll_dbbackup_20260827T185228Z.db-wal
+  2026-09-04 03:49  4096B  /home/azureuser/pm_tennis_backup_20260904T034942Z
+  2026-08-30 06:23  4096B  /home/azureuser/pm_tilefix_deploy_backup_20260830T062306Z
+  2026-09-22 16:12  1162B  /home/azureuser/pm_ttenable_backup_20260922T161225Z.json
+  2026-09-18 13:52  1083B  /home/azureuser/pm_uel_sizing_backup_1789739537.json
+  2026-09-12 01:24  4096B  /home/azureuser/pm_ufc_backup_20260912T012431Z
+  2026-09-12 01:31  4096B  /home/azureuser/pm_ufc_backup_20260912T013131Z
+  2026-09-12 01:47  4435B  /home/azureuser/pm_ufc_enable_backup_20260912T014729Z.json
+  2026-09-12 01:53  4464B  /home/azureuser/pm_ufc_enable_backup_20260912T015356Z.json
+  2026-09-03 18:45  32211B  /home/azureuser/pm_ufc_matcher_backup_20260903T225120Z.py
+  2026-10-09 02:21  4096B  /home/azureuser/pm_wlrefresh_backup_20261009T022131Z
+[sizes]
+  640M	/home/azureuser/pm_recovery_backup_20261007T032558Z.db
+  640M	/home/azureuser/pm_legaudit_clear_backup_20261008T000933Z.db
+  376M	/home/azureuser/pm_analyze_backup_20260913T011517Z
+  375M	/home/azureuser/pm_deploy11_backup_20260912T181850Z
+  320M	/home/azureuser/pm_mig021_backup_20260910T181605Z.db
+  319M	/home/azureuser/pm_enable_nflkaren_backup_20260910T153856Z.db
+  319M	/home/azureuser/pm_enable_nfljack_backup_20260910T151553Z.db
+  103M	/home/azureuser/pm_r4_karencaps_backup_20260902T112102Z
+  103M	/home/azureuser/pm_lossomit_deploy_backup_20260902T023308Z
+  103M	/home/azureuser/pm_liveness_stage1b_backup_20260906T030140Z
+  103M	/home/azureuser/pm_bundle_backup_20260903T201551Z
+  103M	/home/azureuser/pm_bundle_backup_20260903T200119Z
+  103M	/home/azureuser/pm_bundle_backup_20260903T195811Z
+  102M	/home/azureuser/pm_reattach_backup_20260831T022934Z.db
+  102M	/home/azureuser/pm_rd_deploy_backup_20260831T160923Z.db
+  102M	/home/azureuser/pm_r5_caps_backup_20260831T214753Z.db
+  102M	/home/azureuser/pm_mig014_backup_20260831T020430Z.db
+  102M	/home/azureuser/pm_caps_write_backup_20260831T022238Z.db
+  102M	/home/azureuser/pm_caps_set_backup_20260830T180415Z.db
+  24M	/home/azureuser/pm_t1_rung2_poll_dbbackup_20260827T185228Z.db
+  24M	/home/azureuser/pm_stage1_rung3_poll_dbbackup_20260827T172646Z.db
+  24M	/home/azureuser/pm_stage1_rung3_adj_dbbackup_20260827T173915Z.db
+  24M	/home/azureuser/pm_stage1_rung1_dbbackup_20260827T162523Z.db
+  24M	/home/azureuser/pm_stage0_rung3_dbbackup_20260827T130737Z.db
+  24M	/home/azureuser/pm_rollup2_dbbackup_20260827T190346Z.db
+  368K	/home/azureuser/pm_a_deploy_backup_20260902T230350Z
+  368K	/home/azureuser/pm_a_deploy_backup_20260902T225807Z
+  348K	/home/azureuser/pm_deploy12_backup_20260920T203451Z
+  336K	/home/azureuser/pm_itf_graft_backup_20260916T122547Z
+  324K	/home/azureuser/pm_props_deploy_backup_20260922T200158Z
+  304K	/home/azureuser/pm_g2g3_graft_backup_20260916T101743Z
+  296K	/home/azureuser/pm_p1_deploy_backup_20260922T043141Z
+  292K	/home/azureuser/pm_rollupfix_backup_20261011T002054Z.tar
+  292K	/home/azureuser/pm_m3_restore_backup_20260906T191136Z
+  284K	/home/azureuser/pm_mainpy_restore_backup_20260906T002846Z
+  284K	/home/azureuser/pm_deploy14_backup_20260921T021214Z
+  276K	/home/azureuser/pm_d19_backup_20260925T225031Z
+  276K	/home/azureuser/pm_d18_backup_20260925T205926Z
+  272K	/home/azureuser/pm_d17_backup_20260925T201753Z
+  260K	/home/azureuser/pm_subgame_graft_backup_20260914T205804Z
+  260K	/home/azureuser/pm_deploy10_backup_20260912T163854Z
+  236K	/home/azureuser/pm_f1_graft_backup_20260915T025316Z
+  232K	/home/azureuser/pm_sprtot_backup_20260910T135344Z
+  232K	/home/azureuser/pm_pd_backup_20260913T032138Z
+  228K	/home/azureuser/pm_legfix_backup_20260910T181645Z
+  228K	/home/azureuser/pm_boxing_graft_backup_20260915T024303Z
+  220K	/home/azureuser/pm_rfi_graft_backup_20260914T181023Z
+  220K	/home/azureuser/pm_rfi_graft_backup_20260914T180212Z
+  216K	/home/azureuser/pm_deploy15_backup_20260921T200659Z
+  212K	/home/azureuser/pm_ufc_backup_20260912T013131Z
+  212K	/home/azureuser/pm_deploy7_backup_20260910T103627Z
+  208K	/home/azureuser/pm_deploy6_backup_20260907T175044Z
+  208K	/home/azureuser/pm_deploy13_backup_20260920T230612Z
+  208K	/home/azureuser/pm_deploy13_backup_20260920T221244Z
+  208K	/home/azureuser/pm_deploy13_backup_20260920T220721Z
+  204K	/home/azureuser/pm_roster_deploy9_backup_20260912T143619Z
+  200K	/home/azureuser/pm_sprtot_backup_20260910T141505Z
+  192K	/home/azureuser/pm_deploy4_backup_20260904T112138Z
+  176K	/home/azureuser/pm_gridtb_backup_20260925T233946Z
+  164K	/home/azureuser/pm_soccer_deploy_backup_20260907T042734Z
+  164K	/home/azureuser/pm_rung1_deploy_backup_20260907T001732Z
+  164K	/home/azureuser/pm_rung1_deploy_backup_20260907T001625Z
+  164K	/home/azureuser/pm_fed_deploy_backup_20260907T050148Z
+  160K	/home/azureuser/pm_milestone_backup_20260912T132107Z
+  156K	/home/azureuser/pm_deploy16_backup_20260922T124001Z
+  156K	/home/azureuser/pm_cs2_deploy_backup_20260907T031048Z
+  152K	/home/azureuser/pm_pmweb_graft_backup_20260914T191217Z
+  152K	/home/azureuser/pm_m2_deploy_backup_20260901T122104Z
+  144K	/home/azureuser/pm_wlrefresh_backup_20261009T022131Z
+  144K	/home/azureuser/pm_g1_graft_backup_20260916T023311Z
+  136K	/home/azureuser/pm_sizing_code_backup_20260831T020713Z
+  136K	/home/azureuser/pm_rd_deploy_files_backup_20260831T161414Z
+  136K	/home/azureuser/pm_r2c_deploy_backup_20260831T185617Z
+  136K	/home/azureuser/pm_r2c_deploy_backup_20260831T185330Z
+  136K	/home/azureuser/pm_liveness_stage2_backup_20260906T043038Z
+  132K	/home/azureuser/pm_tennis_backup_20260904T034942Z
+  132K	/home/azureuser/pm_prospects_graft_backup_20260915T170316Z
+  132K	/home/azureuser/pm_padrule_h2_backup_20260922T140845Z
+  132K	/home/azureuser/pm_farmsearch_deploy_backup_20260905T232220Z
+  128K	/home/azureuser/pm_legaudit_engine_backup_20260917T194839Z
+  128K	/home/azureuser/pm_deploy72_backup_20260910T175147Z
+  128K	/home/azureuser/pm_bandC_backup_20260927T224915Z
+  124K	/home/azureuser/pm_cs2_tl_graft_backup_20260918T180923Z
+  120K	/home/azureuser/pm_r5_deploy_backup_20260831T211517Z
+  120K	/home/azureuser/pm_heal_backup_20260915T154119Z.json
+  116K	/home/azureuser/pm_deploy8_backup_20260911T032739Z
+  104K	/home/azureuser/pm_m2_deploy_backup_20260901T121507Z
+  100K	/home/azureuser/pm_prospanalyze_backup_20260902T043321Z
+  96K	/home/azureuser/pm_deploy5_backup_20260904T123253Z
+  96K	/home/azureuser/pm_deploy3_backup_20260902T230137Z
+  92K	/home/azureuser/pm_ctxfix_backup_20260911T230937Z
+  88K	/home/azureuser/pm_multiacct_deploy_backup_20260901T053314Z
+  88K	/home/azureuser/pm_deploy2_backup_20260902T172914Z
+  76K	/home/azureuser/pm_shard_deploy_backup_20260830T214244Z
+  72K	/home/azureuser/pm_shard_deploy_backup_20260830T205833Z
+  68K	/home/azureuser/pm_pd_backup2_20260913T063200Z
+  64K	/home/azureuser/pm_shard_deploy_backup_20260830T203025Z
+  56K	/home/azureuser/pm_tilefix_deploy_backup_20260830T062306Z
+  56K	/home/azureuser/pm_live_deploy_backup_20260830T231313Z
+  52K	/home/azureuser/pm_roster_backup_20260920T153918Z.json
+  44K	/home/azureuser/pm_ufc_backup_20260912T012431Z
+  40K	/home/azureuser/pm_rulingA_backup_20260831T011834Z
+  40K	/home/azureuser/pm_perleague_deploy_backup_20260907T063709Z
+  40K	/home/azureuser/pm_itfcap_backup_1790547283.json
+  32K	/home/azureuser/pm_ufc_matcher_backup_20260903T225120Z.py
+  32K	/home/azureuser/pm_t1_rung2_poll_dbbackup_20260827T185228Z.db-shm
+  32K	/home/azureuser/pm_stage1_rung3_poll_dbbackup_20260827T172646Z.db-shm
+  32K	/home/azureuser/pm_stage1_rung3_adj_dbbackup_20260827T173915Z.db-shm
+  32K	/home/azureuser/pm_stage1_rung1_dbbackup_20260827T162523Z.db-shm
+  32K	/home/azureuser/pm_stage0_rung3_dbbackup_20260827T130737Z.db-shm
+  32K	/home/azureuser/pm_rollup2_dbbackup_20260827T190346Z.db-shm
+  32K	/home/azureuser/pm_recovery_backup_20261007T032558Z.db-shm
+  32K	/home/azureuser/pm_cfb_deploy_backup_20260906T201119Z
+  32K	/home/azureuser/pm_caps_set_backup_20260830T180415Z.db-shm
+  28K	/home/azureuser/pm_cli_search_deploy_backup_20260830T024732Z
+  24K	/home/azureuser/pm_ordercap_backup_20260915T141635Z.json
+  24K	/home/azureuser/pm_cfb_enable_backup_20260911T185918Z
+  20K	/home/azureuser/pm_sizing_backup_20260908T195617Z.json
+  20K	/home/azureuser/pm_rfi_enable_backup_20260914T193332Z.json
+  20K	/home/azureuser/pm_padrule_h1_backup_20260922T135553Z
+  20K	/home/azureuser/pm_legaudit_pmweb_backup_20260917T192827Z
+  20K	/home/azureuser/pm_enable_subgames_backup_20260915T181709Z.json
+  20K	/home/azureuser/pm_datejoin_backup_20260910T120304Z
+  12K	/home/azureuser/pm_settclose_backup_20261008T114934Z.settlement.py
+  12K	/home/azureuser/pm_deploy71_backup_20260910T143113Z
+  8.0K	/home/azureuser/pm_ufc_enable_backup_20260912T015356Z.json
+  8.0K	/home/azureuser/pm_ufc_enable_backup_20260912T014729Z.json
+  8.0K	/home/azureuser/pm_cp3a_gate2_pmcli_backup_20260825T151528Z.py.bak
+  4.0K	/home/azureuser/pm_uel_sizing_backup_1789739537.json
+  4.0K	/home/azureuser/pm_ttenable_backup_20260922T161225Z.json
+  4.0K	/home/azureuser/pm_propenable_backup_20260922T224644Z.json
+  4.0K	/home/azureuser/pm_periodenable_backup_20260922T161407Z.json
+  4.0K	/home/azureuser/pm_ozx_legaudit_backup_20260922T141717Z.txt
+  4.0K	/home/azureuser/pm_legaudit_clear_lg_backup_20260917T201246Z.json
+  4.0K	/home/azureuser/pm_journalfix_backup_20260922T220232Z.json
+  4.0K	/home/azureuser/pm_itf_sizing_backup_1789737375.json
+  4.0K	/home/azureuser/pm_itf_enable_backup_1789737607.json
+  4.0K	/home/azureuser/pm_heal_backup_20260915T155730Z.json
+  4.0K	/home/azureuser/pm_cs2_tl_reclassify_backup_1789754504.json
+  4.0K	/home/azureuser/pm_contracts_backup_20260920T155118Z.json
+  4.0K	/home/azureuser/pm_arm_backup_20260908T203633Z.json
+  0	/home/azureuser/pm_t1_rung2_poll_dbbackup_20260827T185228Z.db-wal
+  0	/home/azureuser/pm_stage1_rung3_poll_dbbackup_20260827T172646Z.db-wal
+  0	/home/azureuser/pm_stage1_rung3_adj_dbbackup_20260827T173915Z.db-wal
+  0	/home/azureuser/pm_stage1_rung1_dbbackup_20260827T162523Z.db-wal
+  0	/home/azureuser/pm_stage0_rung3_dbbackup_20260827T130737Z.db-wal
+  0	/home/azureuser/pm_rollup2_dbbackup_20260827T190346Z.db-wal
+  0	/home/azureuser/pm_recovery_backup_20261007T032558Z.db-wal
+  0	/home/azureuser/pm_caps_set_backup_20260830T180415Z.db-wal
+[total]
+  4.3G	total
+===XRDP_STATE===
+  is-active=active is-enabled=enabled
+  sesman is-active=active
+  listen: LISTEN 0      2                  *:3389       *:*
+  listen: LISTEN 0      2              [::1]:3350    [::]:*
+===END===
+===NSG_INBOUND_RULES===
+[
+  {
+    "access": "Allow",
+    "dport": "22",
+    "name": "AllowSSHFromHome",
+    "prio": 1000,
+    "proto": "TCP",
+    "src": "98.231.16.63/32"
+  },
+  {
+    "access": "Allow",
+    "dport": "80",
+    "name": "AllowHTTP",
+    "prio": 1010,
+    "proto": "Tcp",
+    "src": "Internet"
+  },
+  {
+    "access": "Allow",
+    "dport": "443",
+    "name": "AllowHTTPS",
+    "prio": 1020,
+    "proto": "Tcp",
+    "src": "Internet"
+  },
+  {
+    "access": "Allow",
+    "dport": "22",
+    "name": "home-operator-ssh",
+    "prio": 110,
+    "proto": "TCP",
+    "src": "98.231.16.63/32"
+  }
+]
