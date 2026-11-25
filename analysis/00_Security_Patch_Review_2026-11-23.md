@@ -16,10 +16,13 @@ tags: [current-state, platform, security, patch-review, unverified]
 > Evidence: `cc-secrev-2026-11-23-wt\analysis\{01_box_probe_redacted.txt, 02_requirements_box.txt, 03_azure_summary.txt, 04_advisory_research.md, 05_synthesis_notes.md}`.
 > Citations: `(box:NN)` = line in 01_box_probe_redacted.txt; `(az)` = 03_azure_summary.txt; advisories by URL.
 
-## STATUS -- BATCH 0 + BATCH 1 EXECUTED (2026-11-24)
-- **Batch 0 DONE:** Azure OS-disk snapshot `tc-prod-os-20261124` (Succeeded, rollback point) + `az vm assess-patches` (29 crit+sec, reboot pending) + dpkg/pip baselines (`10_`/`11_`).
-- **Batch 1 DONE (H1 + Authelia remediated):** **Caddy 2.11.4 -> 2.11.9** (validate-before-install, graceful reload) and **Authelia 4.39.19 -> 4.39.28** (sha256-verified, validate-config gated, `/api/health` 200 + 0 errors-since-start). trading-corp NOT restarted. Executed via `az vm run-command` running the staged+hash-verified `secrev_batch1.sh`. Evidence `13_batch1_result.md`. Rollback: snapshot + pinned binary backup `secrev_batch1_backup_20261124T040003Z` (ORIGINAL 2.11.4/4.39.19).
-- **Remaining tonight:** Jack's one 2FA login to confirm end-to-end. Batches 2-5 NOT executed (plan below, updated).
+## STATUS -- BATCHES 0,1,3,5(non-Pro) EXECUTED (2026-11-24)
+- **Batch 0 DONE:** snapshot `tc-prod-os-20261124` (Succeeded) + `az vm assess-patches` (29 crit+sec) + dpkg/pip baselines (`10_`/`11_`). (2nd snapshot `tc-prod-os-20261124b` Succeeded before the 2026-11-24 evening batches, `15_`.)
+- **Batch 1 DONE (Caddy + Authelia remediated):** **Caddy 2.11.4 -> 2.11.9** + **Authelia 4.39.19 -> 4.39.28** (validate-before-install / sha256 + validate-config gate + `/api/health` 200). trading-corp NOT restarted. Login w/ 2FA confirmed by Jack. Evidence `13_`.
+- **Batch 3 DONE (26 OS security debs; `16_`):** chrony/krb5/glib/snapd/open-vm-tools/netplan/etc. upgraded; **EXCLUDED** kernel(1074)/libc6/python3.12*/xrdp. `NEEDRESTART_MODE=l` -> **nothing auto-restarted**; all 6 protected services' PIDs unchanged (trading-corp 1060188, pm-web 1020846, sfp 656, mcr 645, caddy, authelia). Remaining upgradable=12 (the excluded set).
+- **Batch 5 non-Pro DONE (`17_`):** **xrdp stop+disable+mask** (3389/3350 closed, not purged); **journald capped SystemMaxUse=1G** (3.9G->1008M), disk 84%->80%. Protected PIDs unchanged.
+- **Disk-reclaim open question ANSWERED:** the earlier 89%->83% was **automatic** (unattended-upgrades autoremoving old azure kernels + journald rotation; NOT apt-cache autoclean, which is disabled), and my first probe already read 83% -> nothing I ran caused it. Evidence `14_recon.txt`.
+- **Deferred to weekend (Robinhood-closed) window:** Batch 2 (starlette 1.0.0->**1.0.1** only, fastapi UNCHANGED 0.136.1 -- confirmed by scratch-venv `pip check` + identical web-test results; `18_`) + uvicorn **127.0.0.1 bind** (`main.py:2799`) + Batch 4 (kernel 1074 + libc6 + reboot). **Ubuntu Pro** when Jack has the token. **pm_* backup prune** proposal awaiting Jack's ruling (`19_`). **NSG** duplicate SSH rules = functional-but-not-exact duplicates -> reported, NOT changed.
 
 ## PROVENANCE / CONFIDENCE (read first)
 - **Box version strings + ports + NSG rules are directly observed** = high confidence.
@@ -93,14 +96,14 @@ tags: [current-state, platform, security, patch-review, unverified]
 | M3->**LOW** | **web3 CCIP-read SSRF** **[Phase-2 re-rate -> LOW per B4: no prod code imports web3 + no live division touches Polymarket; CVE is 1.7 Low per A5]** | web3==6.11.0 (box:400) | 7.15.0 (MAJOR bump) | CVE-2026-40072 (CVSS 1.7, ApeWorX/web3.py) -- `osv.dev/vulnerability/CVE-2026-40072` | **Not live-reachable** (inv:106,110-115); outbound unrestricted (az) | Theoretical: CCIP-read default-on could fetch `169.254.169.254` (IMDS) -> managed-identity token -> Key Vault, BUT no live division reaches the Polymarket/web3 path so it is not exploitable today. **Do NOT egress-block IMDS** (breaks Key Vault, see A2). | Optional Batch-2 code change: disable CCIP-read or drop web3 when the Polymarket path is next worked. No urgent action. |
 | M4 | **PyJWT** | 2.12.1 (box:357) | 2.13.0 | CVE-2026-48526 (RSA-pub-as-HMAC forgery), CVE-2026-48523 (alg allowlist bypass) -- `github.com/advisories/GHSA-xgmm-8j9v-c9wx` | Reachability-dependent (any externally-sourced JWT verify) | Complete token forgery if a public key is accepted as an HMAC secret. Impact depends on whether the app verifies untrusted JWTs (vs only internal). | `venv/bin/pip install 'pyjwt>=2.13.0'`; engine restart. |
 | M5 | **App binds `0.0.0.0:8000`** (bypasses Authelia for anything that reaches 10.0.0.4) | uvicorn on `0.0.0.0:8000` (box:157) | bind `127.0.0.1:8000` | config/defense-in-depth | **NOT internet-exposed** (NSG denies 8000) but **intra-VNet reachable** (az) | Any co-tenant VM on the VNet, or any future NSG slip, reaches the full trading dashboard -- incl. order-exec POSTs -- with **no auth** (Authelia is only enforced at Caddy). Zero-trust violation. | Set uvicorn host to 127.0.0.1 (code/systemd); engine restart. (Confirm no other VNet VM -- see Questions.) |
-| M6 | **xrdp / RDP listening `*:3389`** on a headless trading box | 0.9.17-2ubuntu3 (box:89,162) | 0.9.17-2ubuntu3.1 (ESM) + ideally remove | USN-8476-1: CVE-2024-39917 (MaxLoginRetry not enforced), CVE-2025-68670, CVE-2023-42822/40184 -- `ubuntu.com/security/notices/USN-8476-1` | **NOT internet-exposed** (NSG denies 3389); intra-VNet only | Needless attack surface + brute-forceable (login-retry cap unenforced) + patch is Pro-gated. No reason for RDP on this VM. | `systemctl disable --now xrdp xrdp-sesman` and/or `apt purge xrdp` (root). Decide why it exists first. |
+| M6 | **xrdp / RDP listening `*:3389`** on a headless trading box **[REMEDIATED 2026-11-24: stop+disable+mask; 3389/3350 closed; not purged]** | 0.9.17-2ubuntu3 (box:89,162) | 0.9.17-2ubuntu3.1 (ESM) + ideally remove | USN-8476-1: CVE-2024-39917 (MaxLoginRetry not enforced), CVE-2025-68670, CVE-2023-42822/40184 -- `ubuntu.com/security/notices/USN-8476-1` | **NOT internet-exposed** (NSG denies 3389); intra-VNet only | Needless attack surface + brute-forceable (login-retry cap unenforced) + patch is Pro-gated. No reason for RDP on this VM. | `systemctl disable --now xrdp xrdp-sesman` and/or `apt purge xrdp` (root). Decide why it exists first. |
 | M7 | **cryptography / aiohttp** (broker/data clients) | cryptography 47.0.0 (box:273); aiohttp 3.13.5 (box:250) | cryptography 49.0.0; aiohttp 3.14.4 | CVE-2026-69248 (wildcard-SAN name-constraint bypass); CVE-2026-69244 (aiohttp C-parser OOB read) -- `osv.dev` / `github.com/aio-libs/aiohttp/security/advisories` | Network client paths | Cert name-constraint bypass weakens TLS verification; aiohttp OOB read crashes the client on a malicious response. Mostly DoS/verification-weakening, not RCE. | pip bump in venv; engine restart; test (cryptography 47->49 is a notable jump). |
-| M8 | **Disk / log hygiene** | `/` 83% (11G free) (box:425); journald 4.0G (box:429); stale `pm_*` backups ~2G+ (box:434-442) | <75%, journald capped, backups pruned | availability | Host | A 24/7 trader that fills `/` stops writing its SQLite WAL/audit -> silent data loss / crash. Improved from 89% (2026-11-21) but the levers (journald vacuum, backup prune) are untouched. | `journalctl --vacuum-size=1G` (root); archive+rm old `/home/azureuser/pm_*_backup_*`; keep <75%. |
+| M8 | **Disk / log hygiene** **[PARTIAL 2026-11-24: journald capped 1G (3.9G->1008M), disk 84%->80%, Batch 5; pm_* prune proposal `19_` pending Jack]** | `/` 80% (13G free, 2026-11-24); journald **1008M capped**; `pm_*` backups 4.3G (`14_`) | <75%, journald capped (done), backups pruned (pending) | availability | Host | A 24/7 trader that fills `/` stops writing SQLite WAL/audit. journald now bounded by `SystemMaxUse=1G` drop-in; pm_* prune (~0.78-3.1G reclaim) awaits Jack's ruling. | journald DONE; pm_* prune per `19_pm_backups_proposal.md`. |
 
 ### LOW
 | # | Item | Current | Note | Fix |
 |---|---|---|---|---|
-| L1 | OS security debs behind (non-kernel) | krb5 0.8->0.10 (BUGFIX only, no CVE delta -- USN-8585-1 already in 0.8), glib/chrony/snapd/misc (box:54-88) | Mostly bugfix; patch for hygiene with the apt batch. | `apt upgrade` (root). |
+| L1 | OS security debs behind (non-kernel) **[REMEDIATED 2026-11-24 Batch 3: 26 debs upgraded]** | krb5 0.8->0.10, glib/chrony/snapd/open-vm-tools/netplan/misc (box:54-88) | Patched via Batch 3 (`16_`); nothing restarted. | done |
 | L2 | **Trusted Launch off** | `securityType` empty on a gen2 image (az) | No vTPM/secure-boot/boot-integrity at the Azure layer. | Enable Trusted Launch (requires VM reconfig/redeploy; plan). |
 | L3 | encryptionAtHost off | empty (az); OS disk Standard_LRS, platform SSE still on by default | Temp/cache disk not encrypted at host. | Enable encryption-at-host (redeploy). |
 | L4 | urllib3 / pillow / fastapi | urllib3 2.6.3 (Brotli bomb, fixed-ver TBC), pillow 12.2.0->12.3.0, fastapi 0.136.1 param-DoS->0.163.2 (box:394,338,287) | Client-side DoS class. Verify fixed versions at source (some mirror-cited). | pip bump; engine restart. |
@@ -154,22 +157,16 @@ General rule: a `trading-corp.service` restart or a reboot **bounces ALL divisio
 - **Deferred to a later Batch-2b (not the minimal KEV pass):** pyjwt>=2.13.0, cryptography>=49.0.0, aiohttp>=3.14.4, urllib3>=**2.7.0** (fix ver corrected per A5), pillow>=12.3.0, fastapi>=0.163.2 (DoS). web3 6->7 EXCLUDED (breaking; M3 dev task; note M3 is LOW/not-live-reachable per B4).
 - Restart engine via canonical `restart_tc.ps1` (Jack). Verify: `/healthz` 200; boot log shows all divisions armed; `pip freeze` shows targets; app bound 127.0.0.1; smoke PM/web paths.
 
-**Batch 3 -- OS security debs, non-kernel (MED/LOW; root; NO reboot; run live, low impact).**
-- `apt-get install --only-upgrade python3.12 libpython3.12 libpython3.12-stdlib python3.12-venv krb5* libglib2.0-* chrony snapd open-vm-tools netplan.io` (hold linux-image/libc6 for Batch 4).
-- python3.12 patch only takes effect in the venv after the Batch 2 engine restart (order Batch 3 before/with Batch 2's restart).
-- Verify: `apt list --upgradable` shrinks; services still green.
+**Batch 3 -- OS security debs, non-kernel -- DONE 2026-11-24 (`16_`).** 26 debs upgraded (chrony/krb5/glib/snapd/open-vm-tools/netplan/iproute2/libaudit/open-iscsi/xfsprogs/tmux/nano/etc.) via `NEEDRESTART_MODE=l` (restarted nothing); all 6 protected PIDs unchanged. **python3.12\* was NOT included** (deadsnakes; moved to the Batch 2 weekend restart with the engine); kernel/libc6 held for Batch 4. Remaining upgradable=12 (= the excluded kernel+python3.12*+xrdp).
 
 **Batch 4 -- Kernel + glibc + reboot (HIGH; root; full reboot; biggest window).**
 - `apt-get install --only-upgrade linux-image-azure libc6` then `reboot` (or rely on already-installed 1073 + reboot).
 - Bounces box + all divisions (~several min). Do in the Robinhood-closed window after confirming Bitunix/Kalshi exposure is flat/managed.
 - Verify: `uname -r`=6.8.0-1073; `[ -f /var/run/reboot-required ]` gone; engine + Caddy + Authelia back; `/healthz` 200; division boot-reconcile clean.
 
-**Batch 5 -- Hardening/hygiene (MED/LOW; root; low/no trading impact).**
-- Bind app to 127.0.0.1 (M5; code/systemd + engine restart -- fold into Batch 2's restart).
-- Disable/remove xrdp (M6): `systemctl disable --now xrdp xrdp-sesman` (no restart of engine).
-- `journalctl --vacuum-size=1G`; prune `~/pm_*_backup_*` (M8).
-- `pro attach` (M1) -- Jack decision; then `apt upgrade` picks up esm-apps incl. xrdp fix.
-- De-dupe NSG SSH rule (L6) via `az`.
+**Batch 5 -- Hardening/hygiene (split; `17_`).**
+- **DONE 2026-11-24:** xrdp stop+disable+**mask** (M6; 3389/3350 closed, not purged); journald **SystemMaxUse=1G** drop-in + vacuum (M8; 3.9G->1008M, disk 84%->80%).
+- **Pending:** bind app to 127.0.0.1 (M5) -- fold into the Batch-2 weekend engine restart (draft `18_`: `main.py:2799`). pm_* backup prune (M8) -- proposal `19_` awaiting Jack's ruling. `pro attach` (M1) -- needs Jack's token. NSG SSH de-dupe (L6) -- the two rules are functional-but-NOT-exact duplicates (same match, different name+priority) so per Jack's rule they were reported, not changed. Optional: `systemctl reset-failed xrdp-sesman` to clear its cosmetic failed state.
 
 Suggested order by urgency-vs-disruption: **Batch 0 -> 1** (now, no trading impact) -> **3** (live) -> **2+5bind** (one Robinhood-closed restart) -> **4** (reboot, same or adjacent window) -> **5 rest** -> **M3 web3** (scheduled dev task).
 
