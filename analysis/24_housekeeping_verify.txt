@@ -1,0 +1,18 @@
+  [journald] cap=SystemMaxUse=2G active=active usage=Archived and active journals take up 1012.0M in the file system.
+  [pm-delete] Tier A present-count (expect 0 of 12):
+  present=0 (0 = all deleted)
+  [pm-delete] kept rollback points still present:
+  PRESENT: /home/azureuser/pm_recovery_backup_20261007T032558Z.db
+  PRESENT: /home/azureuser/pm_legaudit_clear_backup_20261008T000933Z.db
+  PRESENT: /home/azureuser/pm_rollupfix_backup_20261011T002054Z.tar
+  [xrdp] xrdp active=inactive enabled=masked; sesman active=inactive enabled=masked; failed-units=0
+  [xrdp] 3389/3350 listeners (expect 0): 0
+  [protected services] (compare to before):
+  trading-corp MainPID=696 NRestarts=0 active=active
+  prediction-markets-web MainPID=663 NRestarts=0 active=active
+  sfp-card-watcher MainPID=672 NRestarts=0 active=active
+  market-context-recorder MainPID=660 NRestarts=0 active=active
+  caddy MainPID=651 NRestarts=0 active=active
+  authelia MainPID=649 NRestarts=0 active=active
+  [authelia health]=200
+  [df /]=/dev/root        62G   47G   16G  76% /
