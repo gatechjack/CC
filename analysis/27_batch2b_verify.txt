@@ -1,0 +1,26 @@
+  [engine] PID=8931 active=active NRestarts=0 started=Thu 2026-11-26 00:26:07 UTC
+  [venv] pyjwt=2.15.1 urllib3=2.8.0 pillow=12.3.0 starlette=1.0.1 fastapi=0.136.1 python=Python 3.12.16
+  [bind]  LISTEN 0      2048       127.0.0.1:8000 0.0.0.0:*
+  [tracebacks since restart] 0
+  [other services] pm-web=active sfp=active mcr=active caddy=active authelia=active
+  [authelia health] 200
+  === BROKER AUTH evidence (since restart; the engine holds the Key Vault creds) ===
+  [Robinhood] activity=30 ; sample:
+  Nov 26 00:26:47 tc-prod-vm xvfb-run[8945]: 2026-11-26 00:26:47,285 INFO trading_corp.agents.logger: [audit] robinhood_mace/mace_daily_summary {"session_date": "2026-11-25", "equity": 303.5497, "open": 12, "day_pnl": 0, "breakers": []}
+  [Bitunix] activity=59 ; sample:
+  Nov 26 00:26:50 tc-prod-vm xvfb-run[8945]: 2026-11-26 00:26:50,378 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bitunix_position_reconciler: starting (interval=60s, trail_atr_mult=1.50, timeframe=3m)
+  [Kalshi] pm_live_driver cycles per account:
+  kalshi_jack cycles=0
+  kalshi_karen cycles=0
+  kalshi_marc cycles=0
+  kalshi_trey cycles=0
+  [AUTH ERRORS since restart (excl. benign Polymarket data-api 429/incomplete)]:
+  count=4
+  ERR: Nov 26 00:26:08 tc-prod-vm xvfb-run[8945]: 2026-11-26 00:26:08,773 INFO azure.core.pipeline.policies.http_logging_policy: Response status: 401
+  ERR: Nov 26 00:26:12 tc-prod-vm xvfb-run[8945]: 2026-11-26 00:26:12,401 INFO trading_corp.main: BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True, execution_mode=live
+  ERR: Nov 26 00:26:12 tc-prod-vm xvfb-run[8945]: 2026-11-26 00:26:12,401 INFO trading_corp.main: BitUnix staleness-reject gate (C): enabled=True margin_s=120
+  ERR: Nov 26 00:26:12 tc-prod-vm xvfb-run[8945]: 2026-11-26 00:26:12,401 INFO trading_corp.main: BitUnix concurrent-position guard (D4): enabled=True
+[PC curl via Caddy -- expect 302 / 405 / 400]
+    / -> HTTP/1.1 302 Found
+    webhook GET -> HTTP/1.1 405 Method Not Allowed
+    malformed-Host -> HTTP/1.1 400 Bad Request: malformed Host header
