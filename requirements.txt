@@ -38,8 +38,8 @@ nest_asyncio>=1.6.0
 
 # Web command center (FastAPI + HTMX + Jinja templates).
 # Dark trading-desk dashboard hosted in-process alongside trading_corp.
-fastapi>=0.115.0
-starlette==1.0.1  # secrev 2026-11-24: pin >= KEV fix CVE-2026-48710 (BadHost); fastapi 0.136.1 accepts it (>=0.46.0)
+fastapi>=0.163.2  # secrev 2026-11-25 Batch 2c-1: quadratic-param DoS GHSA-f56c; pulls opentelemetry-api; box-resolved 0.165.0
+starlette==1.10.0  # secrev 2026-11-25 Batch 2c-1: fastapi 0.165 needs starlette>=1.6; 1.10.0 >= 1.0.1 keeps BadHost KEV CVE-2026-48710 fixed; streamlit 1.57 accepts it (>=0.40)
 pyjwt==2.15.1  # secrev 2026-11-25 Batch 2b: CVE-2026-48523/48526 (JWT alg-bypass + RSA-pub-as-HMAC forgery)
 urllib3==2.8.0  # secrev 2026-11-25 Batch 2b: CVE-2026-9375 (Brotli decompression-bomb bypass)
 pillow==12.3.0  # secrev 2026-11-25 Batch 2b: CVE-2026-54058 (McIdas OOB read); <13 keeps streamlit compatible
