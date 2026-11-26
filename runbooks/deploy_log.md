@@ -13996,3 +13996,16 @@ all 6 live divisions up (pm_live_driver cycling all 4 Kalshi accts), dashboard 3
 authelia /api/health 200. Pre-deploy drift gate (box main.py == prod-live `f486de42`), quiet-60s gate, hash-gated
 graft + py_compile, auto-restore armed. Rollback: snapshots `tc-prod-os-20261124{,b}` + `secrev_batch2_rollback.sh`.
 prod-live advanced `50aea132 → 73b83e4a`. Still pending same session: Batch 4 (kernel 1074 + libc6 + reboot).
+
+**11-26 00:26Z — SECURITY Batch 2b (defense-in-depth deps; one engine restart, PID 696→8931).** `pip install
+pyjwt==2.15.1 urllib3==2.8.0 pillow==12.3.0` into the prod venv (this commit pins them with hashes in
+`requirements.lock` + `requirements.txt`). CVEs: PyJWT CVE-2026-48523/48526 (alg-bypass + RSA-pub-as-HMAC forgery);
+urllib3 CVE-2026-9375 (Brotli decompression-bomb); Pillow CVE-2026-54058 (McIdas OOB read). **HELD** (reported, not
+deployed): **cryptography** (CVE-2026-69248 fix needs ≥49 but `msal 1.36.0` caps `<49` → would break Key Vault auth);
+**aiohttp** (3.14.4+ forces `yarl` 1.25.1, beyond scope); **fastapi** (0.163.2+ forces `starlette`≥1.6.0 off the 1.0.1
+pin + adds `opentelemetry-api`). Pre-deploy: PC scratch-venv (freeze-minus-uvloop) full suite ran identical to baseline
+(no new deterministic failures; the one diff was a pre-existing Windows/ordering test failing in BOTH); `pip check`
+clean; starlette 1.0.1 / fastapi 0.136.1 unchanged. Deploy gated: box==prod-live `f742c377`, venv-baseline, quiet-60s,
+NEW-pip-conflict abort+auto-restore. Verified GREEN: ss `127.0.0.1:8000`, 0 tracebacks/5min, 6 divisions up, broker
+auth OK (RH equity+12 pos; Bitunix reconciler; Kalshi all 4 accts, 0 auth errors; Key Vault 277 success), 302/405/400,
+authelia 200. Rollback: `secrev_batch2b_rollback.sh` (reinstalls backed-up freeze). prod-live advanced `f742c377 → <this commit>`.
