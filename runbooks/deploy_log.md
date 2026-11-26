@@ -14026,3 +14026,22 @@ clears their pre-2b stale-in-memory libs. Verified GREEN: interpreter import smo
 0 tracebacks/5min, 0 deleted-mapped, healthz `8000`+`8081`=200, 302/405/302, authelia 200. PC per-set full suite = 0 new
 failures vs 176-id baseline. Rollback: `secrev_batch2c_rollback.sh <backup>` (backup
 `secrev_batch2c1_backup_20261126T051110Z`) + snapshot `tc-prod-os-20261124c`. prod-live advanced `110d735c → <this commit>`.
+
+**11-26 17:44Z — SECURITY Batch 2c-2 (cryptography auth-path group; one 4-service restart).** `pip install
+--require-hashes --no-deps` of `cryptography==50.0.2 msal==1.39.0` into the shared prod venv (this commit pins them
+with REAL manylinux-cp312-x86_64 + sdist hashes in `requirements.lock`; both are transitive -> `.lock` only, not
+`requirements.txt`). CVE: cryptography **CVE-2026-69248** (x509 name-constraint bypass — **NOT reachable here**: the app
+never calls `cryptography.x509.verification`, client TLS is stdlib ssl/OpenSSL; patched as defense-in-depth). `msal`
+1.36.0→**1.39.0** is the REQUIRED companion (msal 1.36.0 pinned `cryptography<49`). **azure-identity 1.25.3 /
+azure-core 1.39.0 / azure-keyvault-secrets 4.11.0 UNCHANGED.** Deploy gated: box==prod-live `825f43d2` (2c-1 applied +
+crypto 47/msal 1.36 baseline), sha256-gated pins, quiet-60s (2034s), `--require-hashes --no-deps` + **freeze-diff**
+(only `cryptography msal` changed) + pip-check diff; restore+abort armed. Restarted all 4 services (trading-corp
+12148→17947, pm-web 12178→17975, sfp 12209→18009, mcr 12225→18024). Verified GREEN (0g): **Key Vault 277 refs / 0
+azure+msal+KV errors** across trading-corp + pm-web (managed-identity → IMDS → Key Vault works under msal 1.39 +
+cryptography 50); **Kalshi all 4 accounts LIVE, 0 auth/signature errors** — `pykalshi` RSA-signs with cryptography, so
+this is a *live* positive test of the signing path; Bitunix ws+reconciler live; live-engine import smoke
+pykalshi+cryptography+robin_stocks OK; 0 tracebacks; healthz 8000+8081=200. **RH live-equity read DEFERRED to Fri
+11-27 ~09:30 ET first MACE reconcile** (market closed Thanksgiving; robin_stocks imports cleanly under cryptography 50;
+open item + rollback command in the resume handoff). Rollback: `secrev_batch2c_rollback.sh <backup>` (backup
+`secrev_batch2c2_backup_20261126T174440Z`; reverts cryptography/msal only, keeps 2c-1) + snapshot `tc-prod-os-20261124c`.
+prod-live advanced `825f43d2 → <this commit>`.
