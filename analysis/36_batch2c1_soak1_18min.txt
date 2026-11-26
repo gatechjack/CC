@@ -1,0 +1,47 @@
+soak window since=2026-11-26 05:11:27 UTC  now=2026-11-26 05:31:46Z  (deploy 05:11:27Z)
+=====services (active / tracebacks)=====
+  trading-corp active=active tracebacks=0
+  prediction-markets-web active=active tracebacks=0
+  sfp-card-watcher active=active tracebacks=0
+  market-context-recorder active=active tracebacks=0
+=====trading-corp level=error lines (classify benign vs new)=====
+  count=4
+    Nov 26 05:11:35 tc-prod-vm xvfb-run[12162]: 2026-11-26 05:11:35,710 ERROR trading_corp.agents.data_exec: Broker connect failed for division=fidelity_joint broker=paper-exec: BrowserType.launch: ENOENT: no such file or directory, stat '/home/azureuser/.cache/ms-playwright/firefox-1511/firefox/lock'
+    Nov 26 05:11:35 tc-prod-vm xvfb-run[12162]: 2026-11-26 05:11:35,713 ERROR trading_corp.agents.data_exec: Broker connect failed for division=fidelity_401k broker=paper-exec: Fidelity shared session bootstrap previously failed: BrowserType.launch: ENOENT: no such file or directory, stat '/home/azureuser/.cache/ms-playwright/firefox-1511/firefox/lock'. Restart the process to retry.
+    Nov 26 05:11:46 tc-prod-vm xvfb-run[12162]: 2026-11-26 05:11:46,064 ERROR trading_corp.data.earnings_provider: EODHD HTTP 404 for BTC/USD.US: HTTP Error 404: Not Found -- RAISING (quota/API failure, not a data gap)
+    Nov 26 05:11:46 tc-prod-vm xvfb-run[12162]: 2026-11-26 05:11:46,695 ERROR yfinance: BTC/USD: No earnings dates found, symbol may be delisted
+=====broker auth=====
+  Robinhood activity=28
+    Nov 26 05:11:34 tc-prod-vm xvfb-run[12162]: 2026-11-26 05:11:34,662 INFO trading_corp.brokers.paper: PaperBroker connected (account=paper_robinhood_ira, equity=$0.00)
+  Bitunix reconciler activity=5
+    Nov 26 05:12:13 tc-prod-vm xvfb-run[12162]: 2026-11-26 05:12:13,122 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bitunix_position_reconciler: starting (interval=60s, trail_atr_mult=1.50, timeframe=3m)
+  Kalshi pm_live_driver cycles/account:
+    kalshi_jack cycles=0
+    kalshi_karen cycles=0
+    kalshi_marc cycles=0
+    kalshi_trey cycles=0
+=====6 divisions up (distinct division activity)=====
+    bitunix activity=59
+    mace activity=12
+    pead activity=5
+    robinhood_pmcc activity=1
+    tasty_options_iron_condor activity=0
+    kalshi activity=167
+    polymarket activity=13038
+=====Key Vault / managed-identity=====
+  trading-corp azure Response-200=42
+  pm-web azure Response-200=0
+  azure/msal/KV ERRORS (excl http-logging + ,401/403 ms coincidences)=0
+    tc azure      42 Response status: 200
+    tc azure       1 Response status: 400
+    tc azure       1 Response status: 401
+    tc azure       4 Response status: 404
+=====ccxt / Coinbase WS feed receiving data since 05:11Z=====
+  market-context-recorder coinbase/ccxt.pro/watch_ticker refs=0
+    MCR: Nov 26 05:11:46 tc-prod-vm python[12225]: 2026-11-26 05:11:46,313 INFO market_context_recorder: LLM streams: enabled=True shadow=claude-sonnet-4-6 news=claude-haiku-4-5-20251001 cost_guard={'day': '2026-11-26', 'spent_usd': 0.0, 'ceiling_usd': 2.0, 'calls': 0}
+    MCR: Nov 26 05:11:51 tc-prod-vm python[12225]: 2026-11-26 05:11:51,859 INFO llm_client: LLM news ok: model=claude-haiku-4-5-20251001 in=940 out=106 cost=$0.0015 (day {'day': '2026-11-26', 'spent_usd': 0.0015, 'ceiling_usd': 2.0, 'calls': 1})
+    MCR: Nov 26 05:11:51 tc-prod-vm python[12225]: 2026-11-26 05:11:51,941 INFO market_context_recorder: heartbeat snapshot 13111 (+news)
+  mcr WS gap/disconnect warnings=0
+  trading-corp bitunix ws feed refs=2
+    TC-WS: Nov 26 05:12:11 tc-prod-vm xvfb-run[12162]: 2026-11-26 05:12:11,632 INFO trading_corp.data.bitunix_ws_feed: bitunix ws feed connected (11 channels)
+=====END SOAK=====
