@@ -1,0 +1,38 @@
+=====versions on disk (==loaded by the fresh processes)=====
+   aiohttp=3.14.5
+   yarl=1.25.1
+   fastapi=0.165.0
+   starlette=1.10.0
+   opentelemetry-api=1.45.2
+   cryptography=47.0.0
+   msal=1.36.0
+   pyjwt=2.15.1
+   urllib3=2.8.0
+   pillow=12.3.0
+=====services: new PID + 0 tracebacks(5min) + fresh-load evidence=====
+### trading-corp active=active pid=12148 (was 8931 -> CHANGED) NRestarts=0 start=Thu 2026-11-26 05:11:27 UTC tracebacks_5min=0 deleted-mapped=0
+### prediction-markets-web active=active pid=12178 (was 663 -> CHANGED) NRestarts=0 start=Thu 2026-11-26 05:11:34 UTC tracebacks_5min=0 deleted-mapped=0
+### sfp-card-watcher active=active pid=12209 (was 672 -> CHANGED) NRestarts=0 start=Thu 2026-11-26 05:11:40 UTC tracebacks_5min=0 deleted-mapped=0
+### market-context-recorder active=active pid=12225 (was 660 -> CHANGED) NRestarts=0 start=Thu 2026-11-26 05:11:46 UTC tracebacks_5min=0 deleted-mapped=0
+=====health + peers=====
+   healthz:8000=200 healthz:8081=200
+   caddy=active authelia=active authelia_health=200
+=====engine import smoke (versions the INTERPRETER resolves)=====
+   import: aiohttp=3.14.5 yarl=1.25.1 fastapi=0.165.0 starlette=1.10.0 opentelemetry-api=1.45.2
+[PC curl via Caddy -- expect 302 / 405 / 400]
+   trading / -> HTTP/1.1 302 Found
+   webhook GET -> HTTP/1.1 405 Method Not Allowed
+   predictions / -> HTTP/1.1 302 Found
+
+===== JACK CLICK-THROUGH (log in via Authelia first) =====
+trading.jacksumner.com PAGES (each auto-loads its HTMX partials):
+   /  (home: market-ribbon, stat-cards, trade-flow, equity-curve partials)
+   /trades   /approvals   /research   /system
+   /mace     (mace/partials: prices, candles, rungs, halt)
+   /sfp  /sfp/construct  /sfp/llm   (sfp/partials: equity,header,mode-split,near-miss,recon,state-board; construct/partials board+summary; llm/partials/body)
+   /telemetry/iron_condor   /telemetry/pead   (pead/partials/live)
+   each DIVISION tile on the home page -> /division/<slug> (loads division-equity-curve, donchian-chart, scout, llm-analysis, pair-analysis, pmcc-pricing)
+   parametrized (open from a live tile so the id is real): /partials/kalshi-analysis/<event_id>, /partials/polymarket-analysis/<event_id>
+predictions.jacksumner.com PAGES:
+   /   /live   /live/events   /farm   /farm/<category>   /whale/<wallet>   /account/<account_id>
+Confirm: every page renders (no 500), partials fill (no broken HTMX swaps), no console/network errors.
