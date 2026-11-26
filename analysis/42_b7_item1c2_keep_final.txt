@@ -1,0 +1,18 @@
+purge set = 392
+=====1c-Xvfb. ldd /usr/bin/Xvfb -> any lib in the purge set?=====
+  Xvfb links 10 packages; IN purge set: []
+=====1c-dlopen. firefox RUNTIME deps (playwright firefox host list) -> which are in the purge set?=====
+  playwright-firefox host deps that ARE in the purge set (-> must KEEP if browser matters):
+    IN-PURGE: libgtk-3-0 (installed=yes)
+  KEEP-additions (dlopen): [libgtk-3-0]
+=====recompute final purge = 392 - (xvfb-pkgs + dlopen KEEP + their Depends closure)=====
+  FINAL purge count: 381  (from 392)
+  heavy hitters still removed: [ffmpeg gstreamer1.0-plugins-bad libgtk-4-1 libwebkit2gtk-4.0-37 mousepad pulseaudio ristretto thunar xfce4 xfce4-goodies xorgxrdp xrdp yelp ]
+  firefox dlopen KEEP survived (not in final)? 0 in-final (expect 0)
+  libgtk-3-0 in final purge? no -- KEPT
+=====FINAL explicit purge dry-run: removes exactly the list? touches any KEEP?=====
+  summary: 0 upgraded, 0 newly installed, 381 to remove and 0 not upgraded.
+  extra beyond the list: 0 (expect 0)
+  KEEP touched (xvfb/xserver-common/libgtk-3-0/software-properties/firefox-deps)? []
+  disk freed (installed-size of final set): ~540 MB
+  (final list saved on box: /tmp/b7_final.txt -- will be the staged purge list)

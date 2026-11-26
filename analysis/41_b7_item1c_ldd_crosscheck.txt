@@ -1,0 +1,35 @@
+=====build the 392 surgical purge set (apt-get -s purge --autoremove ROOTS)=====
+  purge set size: 392
+=====ldd firefox binary + all firefox/*.so + ffmpeg -> resolved system libs + NOT-FOUND=====
+  distinct resolved system libs firefox links: 83
+  NOT-FOUND libs (firefox needs but missing -> explains launch failure):
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libnss3.so: /lib/x86_64-linux-gnu/libnssutil3.so: version `NSSUTIL_3.101' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libnss3.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libsmime3.so: /lib/x86_64-linux-gnu/libnss3.so: version `NSS_3.101' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libsmime3.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libsmime3.so: /lib/x86_64-linux-gnu/libnss3.so: version `NSS_3.117' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libsmime3.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libsmime3.so: /lib/x86_64-linux-gnu/libnssutil3.so: version `NSSUTIL_3.101' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libsmime3.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libsoftokn3.so: /lib/x86_64-linux-gnu/libnssutil3.so: version `NSSUTIL_3.108' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libsoftokn3.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libssl3.so: /lib/x86_64-linux-gnu/libnss3.so: version `NSS_3.101' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libssl3.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libssl3.so: /lib/x86_64-linux-gnu/libnss3.so: version `NSS_3.115' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libssl3.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libssl3.so: /lib/x86_64-linux-gnu/libnss3.so: version `NSS_3.117' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libssl3.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libxul.so: /lib/x86_64-linux-gnu/libnss3.so: version `NSS_3.101' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libxul.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libxul.so: /lib/x86_64-linux-gnu/libnss3.so: version `NSS_3.107' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libxul.so)
+    /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libxul.so: /lib/x86_64-linux-gnu/libnss3.so: version `NSS_3.113' not found (required by /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/libxul.so)
+    libgkcodecs.so => not found
+    liblgpllibs.so => not found
+    libmozavutil.so => not found
+    libmozgtk.so => not found
+    libmozsandbox.so => not found
+    libmozsqlite3.so => not found
+    libmozwayland.so => not found
+=====map resolved libs -> owning package -> in the 392 purge set?=====
+  distinct packages providing firefox's libs: 10
+  *** KEEP-ADDITIONS: firefox-needed packages that ARE in the 392 purge set (MUST move to KEEP) ***
+  KEEP-additions count: 0
+=====recompute: final purge = 392 - firefox-needed (+ what those pull, via depends closure)=====
+  final purge count after removing firefox-needed closure: 392  (was 392)
+  still-removed heavy hitters (sanity): ffmpeg gstreamer1.0-plugins-bad libwebkit2gtk-4.0-37 thunar xfce4 xorgxrdp xrdp
+  did any firefox-needed pkg survive in final? 0 (expect 0)
+=====does the FINAL explicit purge dry-run remove exactly the list (no extra, no firefox lib)?=====
+  dry-run summary: Use 'apt autoremove' to remove them.
+  dry-run removes anything NOT in the final list (extra)? 0 (expect 0)
+  dry-run touches a firefox lib / xvfb / xserver-common / software-properties?

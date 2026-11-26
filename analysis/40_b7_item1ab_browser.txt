@@ -1,0 +1,54 @@
+=====1a. display :99 -- Xvfb + who is attached=====
+  Xvfb:     PID    PPID USER     COMMAND         COMMAND
+  Xvfb:   17958   17947 azureus+ Xvfb            Xvfb :99 -screen 0 1280x800x24 -nolisten tcp -auth /tmp/xvfb-run.LnAaHw/Xauthority
+  xvfb-run/trading-corp process tree (ppid chain):
+      17947       1 azureus+ xvfb-run        /bin/sh /usr/bin/xvfb-run --auto-servernum --server-args=-screen 0 1280x800x24 /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+      17958   17947 azureus+ Xvfb            Xvfb :99 -screen 0 1280x800x24 -nolisten tcp -auth /tmp/xvfb-run.LnAaHw/Xauthority
+      17961   17947 azureus+ python          /home/azureuser/trading_corp/venv/bin/python -X utf8 -m trading_corp --live --brokers bitunix robinhood kalshi --live-divisions bitunix_sfp robinhood_pead bitunix_futures kalshi_copy_trading robinhood_pmcc robinhood_mace
+      17975       1 azureus+ python          /home/azureuser/trading_corp/venv/bin/python trading_corp/scripts/pm_web.py
+      17977   17961 azureus+ MainThread      /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/playwright/driver/node /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/playwright/driver/package/cli.js run-driver
+      18009       1 azureus+ python          /home/azureuser/trading_corp/venv/bin/python /home/azureuser/card_assets/card_watcher.py
+      18024       1 azureus+ python          /home/azureuser/trading_corp/venv/bin/python /home/azureuser/market_context/market_context_recorder.py
+  processes with the :99 X socket open (fuser -- PIDs only, no env):
+  (trading-corp ExecStart uses xvfb-run -> the WHOLE engine runs on :99; Fidelity fidelity.py:829 spawns firefox there)
+=====1b. browser binaries on the box=====
+  -- ms-playwright caches (all standard locations) --
+    DIR /home/azureuser/.cache/ms-playwright: ffmpeg-1011 firefox-1511
+    DIR /home/azureuser/.cache/ms-playwright: ffmpeg-1011 firefox-1511
+  -- playwright firefox binary actually present + runnable? --
+    firefox bin: /home/azureuser/.cache/ms-playwright/firefox-1511/firefox/firefox (564816 bytes mode=755)
+    version: Mozilla Firefox 148.0.2
+    firefox-1511 dir tree (top):
+      total 12
+      drwxrwxr-x 3 azureuser azureuser 4096 Apr 30  2026 .
+      drwxrwxr-x 5 azureuser azureuser 4096 Apr 30  2026 ..
+      -rw-r--r-- 1 azureuser azureuser    0 Apr 30  2026 DEPENDENCIES_VALIDATED
+      -rw-rw-r-- 1 azureuser azureuser    0 Apr 30  2026 INSTALLATION_COMPLETE
+      drwxr-xr-x 8 azureuser azureuser 4096 May 30 17:33 firefox
+    chromium/webkit under ms-playwright?
+  -- playwright bundled ffmpeg --
+    /home/azureuser/.cache/ms-playwright/ffmpeg-1011/ffmpeg-linux
+  -- apt/snap browsers --
+    firefox -> /usr/bin/firefox (update.go:193: cannot change mount namespace according to change mount (/var/lib/snapd/hostfs/usr/local/share/doc /usr/local/share/doc none bind,ro 0 0): cannot write to "/var/lib/snapd/hostfs/usr/local/share/doc" because it would affect the host in "/var/lib/snapd")
+    snap browsers: firefox=159.0.1-1
+    dpkg browsers: firefox
+  -- playwright python pkg version (venv) --
+    playwright-py 1.59.0
+=====1d. browser-launch history (journal, last 7 days)=====
+  firefox/playwright/Fidelity launch + outcome lines:
+    Nov 26 20:25:06 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:06,741 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 106ms
+    Nov 26 20:25:06 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:06,820 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=1]: 1 rows in 46ms
+    Nov 26 20:25:06 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:06,849 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 199ms
+    Nov 26 20:25:06 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:06,932 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 282ms
+    Nov 26 20:25:06 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:06,951 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 108ms
+    Nov 26 20:25:06 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:06,989 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 29ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,020 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 26ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,078 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 172ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,103 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=2]: 1 rows in 397ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,245 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=1]: 1 rows in 270ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,360 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 262ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,458 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 54ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,511 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=0]: 1 rows in 412ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,560 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=3]: 1 rows in 417ms
+    Nov 26 20:25:07 tc-prod-vm xvfb-run[17961]: 2026-11-26 20:25:07,584 INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[0x<R>…, limit=500, page=1]: 1 rows in 106ms
+  counts (7d): playwright-launch-attempts=5, fidelity-broker-fail=10, browser-success=0
