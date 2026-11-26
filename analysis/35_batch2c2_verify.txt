@@ -1,0 +1,36 @@
+=====versions=====
+   cryptography=50.0.2
+   msal=1.39.0
+   azure-identity=1.25.3
+   azure-core=1.39.0
+   azure-keyvault-secrets=4.11.0
+=====services new PID + tracebacks(5min)=====
+### trading-corp active=active pid=17947 start=Thu 2026-11-26 17:44:52 UTC tracebacks_5min=0
+### prediction-markets-web active=active pid=17975 start=Thu 2026-11-26 17:44:58 UTC tracebacks_5min=0
+### sfp-card-watcher active=active pid=18009 start=Thu 2026-11-26 17:45:04 UTC tracebacks_5min=0
+### market-context-recorder active=active pid=18024 start=Thu 2026-11-26 17:45:11 UTC tracebacks_5min=0
+=====Key Vault / managed-identity (per service that uses azure-identity)=====
+### trading-corp azure_200=42 kv_refs=277 mi_refs=6 azure/msal/kv_errors=0
+   azure status-code distribution:
+          42 Response status: 200
+           1 Response status: 400
+           1 Response status: 401
+           4 Response status: 404
+### prediction-markets-web azure_200=0 kv_refs=13 mi_refs=6 azure/msal/kv_errors=0
+   azure status-code distribution:
+           2 Response status: 200
+           1 Response status: 400
+           1 Response status: 401
+=====broker auth (engine holds the KV creds)=====
+   Robinhood activity=28; sample:
+     Nov 26 17:44:58 tc-prod-vm xvfb-run[17961]: 2026-11-26 17:44:58,934 INFO trading_corp.brokers.paper: PaperBroker connected (account=paper_robinhood_ira, equity=$0.00)
+   Bitunix activity=59; sample:
+     Nov 26 17:45:37 tc-prod-vm xvfb-run[17961]: 2026-11-26 17:45:37,460 INFO trading_corp.agents.divisions.bitunix_position_reconciler: bitunix_position_reconciler: starting (interval=60s, trail_atr_mult=1.50, timeframe=3m)
+   Kalshi cycles per account:
+     kalshi_jack cycles=0
+     kalshi_karen cycles=0
+     kalshi_marc cycles=0
+     kalshi_trey cycles=0
+   broker auth errors (excl benign Polymarket data-api): 0
+=====import smoke=====
+      import OK: cryptography 50.0.2 msal 1.39.0
