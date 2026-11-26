@@ -14009,3 +14009,20 @@ clean; starlette 1.0.1 / fastapi 0.136.1 unchanged. Deploy gated: box==prod-live
 NEW-pip-conflict abort+auto-restore. Verified GREEN: ss `127.0.0.1:8000`, 0 tracebacks/5min, 6 divisions up, broker
 auth OK (RH equity+12 pos; Bitunix reconciler; Kalshi all 4 accts, 0 auth errors; Key Vault 277 success), 302/405/400,
 authelia 200. Rollback: `secrev_batch2b_rollback.sh` (reinstalls backed-up freeze). prod-live advanced `f742c377 → <this commit>`.
+
+**11-26 05:11Z — SECURITY Batch 2c-1 (aiohttp + fastapi group; one 4-service restart).** `pip install
+--require-hashes --no-deps` of `aiohttp==3.14.5 yarl==1.25.1 fastapi==0.165.0 starlette==1.10.0
+opentelemetry-api==1.45.2` into the shared prod venv (this commit pins them with REAL manylinux-cp312-x86_64 + sdist
+hashes in `requirements.lock`; `requirements.txt` bumps `fastapi>=0.163.2` + `starlette==1.10.0`). CVEs: aiohttp
+CVE-2026-69244/128124/128128 (client OOB-read on malformed chunked response + ws max-size bypass — **transitive via
+ccxt only**, trusted exchange peers over TLS, low reach); fastapi **GHSA-f56c** quadratic-param DoS (**NOT reachable
+unauthenticated** — only Authelia-gated routes parse params; the webhooks take a raw `Request` + 4 KB cap). `starlette`
+1.10.0 ≥ 1.0.1 so BadHost KEV CVE-2026-48710 **stays fixed**; `streamlit` 1.57 accepts it; `opentelemetry-api` is a new
+transitive dep of fastapi 0.165 (sole dep typing-extensions already satisfied). **cryptography/msal HELD for Batch 2c-2.**
+Deploy gated: box==prod-live `110d735c`, **sha256-gated pins file**, venv-baseline, quiet-60s (1681s),
+`--require-hashes --no-deps` + **freeze-diff** (only the 5 expected names changed) + pip-check diff; restore+abort armed.
+Restarted all 4 shared-venv services (trading-corp 8931→12148, pm-web 663→12178, sfp 672→12209, mcr 660→12225) — also
+clears their pre-2b stale-in-memory libs. Verified GREEN: interpreter import smoke confirms the 5 loaded versions,
+0 tracebacks/5min, 0 deleted-mapped, healthz `8000`+`8081`=200, 302/405/302, authelia 200. PC per-set full suite = 0 new
+failures vs 176-id baseline. Rollback: `secrev_batch2c_rollback.sh <backup>` (backup
+`secrev_batch2c1_backup_20261126T051110Z`) + snapshot `tc-prod-os-20261124c`. prod-live advanced `110d735c → <this commit>`.
