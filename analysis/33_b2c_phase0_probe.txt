@@ -1,0 +1,44 @@
+=====0a SERVICES (loaded-lib state)=====
+site-packages=/home/azureuser/trading_corp/venv/lib/python3.12/site-packages
+-- current on-disk dist-info mtimes (when each CURRENT version was installed) --
+   pyjwt==2.15.1 installed_at=2026-11-26 00:26:02
+   urllib3==2.8.0 installed_at=2026-11-26 00:26:02
+   pillow==12.3.0 installed_at=2026-11-26 00:26:02
+   starlette==1.0.1 installed_at=2026-11-25 03:37:08
+   aiohttp==3.13.5 installed_at=2026-04-30 17:08:16
+   yarl==1.23.0 installed_at=2026-05-24 15:14:10
+   fastapi==0.136.1 installed_at=2026-05-24 15:14:20
+   cryptography==47.0.0 installed_at=2026-05-24 15:14:19
+   msal==1.36.0 installed_at=2026-04-30 17:05:21
+### prediction-markets-web pid=663 NRestarts=0 start=Wed 2026-11-25 04:05:12 UTC
+    venv=/home/azureuser/trading_corp/venv/bin/python
+    maps: readable; compiled libs loaded (pillow/crypto/aiohttp/yarl .so):
+      /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/cryptography/hazmat/bindings/_rust.abi3.so
+      /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/watchfiles/_rust_notify.cpython-312-x86_64-linux-gnu.so
+      venv-files-mapped-but-deleted-on-disk: 0
+### sfp-card-watcher pid=672 NRestarts=0 start=Wed 2026-11-25 04:05:12 UTC
+    venv=/home/azureuser/trading_corp/venv/bin/python
+    maps: readable; compiled libs loaded (pillow/crypto/aiohttp/yarl .so):
+      /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/~IL/_imaging.cpython-312-x86_64-linux-gnu.so (deleted)
+      /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/~IL/_imagingft.cpython-312-x86_64-linux-gnu.so (deleted)
+      venv-files-mapped-but-deleted-on-disk: 76
+### market-context-recorder pid=660 NRestarts=0 start=Wed 2026-11-25 04:05:12 UTC
+    venv=/home/azureuser/trading_corp/venv/bin/python
+    maps: readable; compiled libs loaded (pillow/crypto/aiohttp/yarl .so):
+      /home/azureuser/trading_corp/venv/lib/python3.12/site-packages/cryptography/hazmat/bindings/_rust.abi3.so
+      venv-files-mapped-but-deleted-on-disk: 0
+### trading-corp pid=8931 NRestarts=0 start=Thu 2026-11-26 00:26:07 UTC
+    venv=/home/azureuser/trading_corp/venv/bin/python
+    maps: readable; compiled libs loaded (pillow/crypto/aiohttp/yarl .so):
+      venv-files-mapped-but-deleted-on-disk: 0
+2b_install_ref: pyjwt/urllib3/pillow replaced 2026-11-26 ~00:26Z. A service whose start < its dist-info mtime runs the OLD version in memory.
+=====0b FREEZE DIFF (2b backup pre vs now)=====
+2b_backup_dir=/home/azureuser/secrev_batch2b_backup_20261126T002555Z/
+pre_count=159  now_count=159
+--- diff (< = 2b-pre value, > = now) ---
+   < PyJWT==2.12.1
+   > PyJWT==2.15.1
+   < pillow==12.2.0
+   > pillow==12.3.0
+   < urllib3==2.6.3
+   > urllib3==2.8.0
