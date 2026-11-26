@@ -1,0 +1,283 @@
+=== test run [set_a] start Thu Nov 26 02:04:33 UTC 2026 ===
+--- installed target versions ---
+aiohttp==3.13.5
+cryptography==50.0.2
+fastapi==0.136.1
+msal==1.39.0
+starlette==1.0.1
+yarl==1.23.0
+--- pip check ---
+No broken requirements found.
+--- pytest ---
+....................FFF................................................. [  1%]
+........................................................................ [  3%]
+........................................................................ [  5%]
+.........................FFFFFFFFFFFF.F..F.............................. [  7%]
+........................................................................ [  8%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+.........................................................F............F. [ 14%]
+........................................................................ [ 16%]
+..FF.....F....F......................................................... [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 28%]
+............................F........................................... [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+..............................................................FFFFFFFF.F [ 35%]
+..................................F..................................... [ 37%]
+........................................................................ [ 39%]
+....F.............................................F..................... [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+...............................................F........................ [ 46%]
+...................................................FF................F.. [ 48%]
+..............................FF........................................ [ 50%]
+........................................................................ [ 52%]
+............................F........................................... [ 53%]
+........................................................................ [ 55%]
+...........................................F............................ [ 57%]
+........................................................................ [ 59%]
+...............................................F........................ [ 61%]
+.............F..F....................................................... [ 62%]
+........................................................................ [ 64%]
+........................................................................ [ 66%]
+............................FFF......................................... [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+...................F.................................................... [ 73%]
+........................................................................ [ 75%]
+......................................................................FF [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+......................................FFF.....FFFFFFFFF................. [ 84%]
+.......................FFFFFFFFF...FFFFF.FFFFFFFFFF..FFFFFFFFFFFF....... [ 86%]
+........................FFFFFFF............................EEEEEFFF..... [ 87%]
+......EEFFEE.....................FFFFFFF.F.FFFFFFFFFF................... [ 89%]
+.........................FFFF.FFFFFFFFFFF..........FFFFFFFF............. [ 91%]
+........................................................................ [ 93%]
+......................................................F................. [ 95%]
+...............FF....................................................... [ 96%]
+........................................................................ [ 98%]
+............................FFFFF.................                       [100%]
+============================== warnings summary ===============================
+tests/prediction_markets/test_settlement_close_class.py::test_scalar_books_at_value
+  C:\Users\AA Incorporado\cc\b2c_mirror\Lib\site-packages\_pytest\python.py:170: PytestReturnNotNoneWarning: Test functions should return None, but tests/prediction_markets/test_settlement_close_class.py::test_scalar_books_at_value returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/prediction_markets/test_settlement_close_class.py::test_yes_no_void_unchanged
+  C:\Users\AA Incorporado\cc\b2c_mirror\Lib\site-packages\_pytest\python.py:170: PytestReturnNotNoneWarning: Test functions should return None, but tests/prediction_markets/test_settlement_close_class.py::test_yes_no_void_unchanged returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/prediction_markets/test_settlement_close_class.py::test_unknown_fails_loud_and_books_flat
+  C:\Users\AA Incorporado\cc\b2c_mirror\Lib\site-packages\_pytest\python.py:170: PytestReturnNotNoneWarning: Test functions should return None, but tests/prediction_markets/test_settlement_close_class.py::test_unknown_fails_loud_and_books_flat returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/prediction_markets/test_settlement_close_class.py::test_absent_value_books_worthless_not_avgcost
+  C:\Users\AA Incorporado\cc\b2c_mirror\Lib\site-packages\_pytest\python.py:170: PytestReturnNotNoneWarning: Test functions should return None, but tests/prediction_markets/test_settlement_close_class.py::test_absent_value_books_worthless_not_avgcost returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/prediction_markets/test_settlement_close_class.py::test_idempotent_rerun
+  C:\Users\AA Incorporado\cc\b2c_mirror\Lib\site-packages\_pytest\python.py:170: PytestReturnNotNoneWarning: Test functions should return None, but tests/prediction_markets/test_settlement_close_class.py::test_idempotent_rerun returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+tests/prediction_markets/test_settlement_close_class.py::test_outage_regression_latch_before_clean_after
+  C:\Users\AA Incorporado\cc\b2c_mirror\Lib\site-packages\_pytest\python.py:170: PytestReturnNotNoneWarning: Test functions should return None, but tests/prediction_markets/test_settlement_close_class.py::test_outage_regression_latch_before_clean_after returned <class 'str'>.
+  Did you mean to use `assert` instead of `return`?
+  See https://docs.pytest.org/en/stable/how-to/assert.html#return-not-none for more information.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/prediction_markets/test_accounts_m2.py::test_accounts_overview_lists_both_with_honest_pnl
+FAILED tests/prediction_markets/test_accounts_m2.py::test_account_page_jack_shows_subdivision_pnl
+FAILED tests/prediction_markets/test_accounts_m2.py::test_account_page_karen_states_display_only
+FAILED tests/prediction_markets/test_live_r3.py::test_live_list_honest_empty_when_tables_absent_schema9
+FAILED tests/prediction_markets/test_live_r3.py::test_live_list_honest_empty_when_no_subdivisions_schema10
+FAILED tests/prediction_markets/test_live_r3.py::test_live_tile_on_create_schema10
+FAILED tests/prediction_markets/test_live_r3.py::test_live_tile_shows_trade_count_once_traded
+FAILED tests/prediction_markets/test_live_r3.py::test_live_subdivision_honest_empty_wording
+FAILED tests/prediction_markets/test_live_r3.py::test_live_subdivision_shows_real_filled_order
+FAILED tests/prediction_markets/test_live_r3.py::test_live_shows_plain_language_description_and_keeps_raw_ticker
+FAILED tests/prediction_markets/test_live_r3.py::test_settlement_close_renders_as_SETTLED_not_EXIT
+FAILED tests/prediction_markets/test_live_r3.py::test_real_whale_exit_still_renders_EXIT_not_settled
+FAILED tests/prediction_markets/test_live_r3.py::test_sizing_display_states_behaviour_not_misleading_cent
+FAILED tests/prediction_markets/test_live_r3.py::test_live_subdivision_config_visible
+FAILED tests/prediction_markets/test_live_r3.py::test_dashboard_card_enabled
+FAILED tests/prediction_markets/test_live_r3.py::test_vocabulary_no_internal_name_leak
+FAILED tests/prediction_markets/test_live_r3.py::test_live_tile_count_increments_with_two_orders
+FAILED tests/prediction_markets/test_rung3_observability.py::test_audit_name_family_team_liquid_is_soft_not_alarm
+FAILED tests/prediction_markets/test_scorer_skill_g3.py::test_skill_version_and_token_cap_bumped
+FAILED tests/prediction_markets/test_stage2_nav.py::test_dashboard_route_resolves
+FAILED tests/prediction_markets/test_stage2_nav.py::test_farm_league_tiles_are_the_allowlist
+FAILED tests/prediction_markets/test_stage2_phase3.py::test_root_serves_dashboard
+FAILED tests/prediction_markets/test_stage2_phase3.py::test_whale_pages_render_under_one_shell
+FAILED tests/test_bitunix_observer_execution_mode.py::test_prod_strategies_yaml_ships_paper_default
+FAILED tests/test_bitunix_sfp_observer.py::test_proposed_order_fields_and_extra
+FAILED tests/test_bitunix_sfp_observer.py::test_per_mode_sizing_independent
+FAILED tests/test_bitunix_sfp_observer.py::test_risk_gate_always_called_and_reject_blocks
+FAILED tests/test_bitunix_sfp_observer.py::test_resize_applies_new_qty - asse...
+FAILED tests/test_bitunix_sfp_observer.py::test_drawdown_flatten_blocks - Ass...
+FAILED tests/test_bitunix_sfp_observer.py::test_paper_fork_never_places - Ass...
+FAILED tests/test_bitunix_sfp_observer.py::test_live_fork_places_and_tags_path_c
+FAILED tests/test_bitunix_sfp_observer.py::test_concurrent_position_guard_blocks_same_side
+FAILED tests/test_bitunix_sfp_observer.py::test_no_phantom_equity_on_snapshot_fail
+FAILED tests/test_bitunix_sfp_wiring.py::test_divisions_yaml_has_bitunix_sfp
+FAILED tests/test_bitunix_two_state_collapse.py::test_shipped_yaml_futures_halted_sfp_trading
+FAILED tests/test_boot_smoke.py::test_two_state_sfp_comes_up_trading_and_replay_disabled
+FAILED tests/test_ic_grader.py::test_route_returns_html_fragment_with_grader_result
+FAILED tests/test_iron_condor_config.py::test_divisions_yaml_wires_strategy_to_robinhood_joint
+FAILED tests/test_iron_condor_config.py::test_strategy_instantiates_cleanly_from_production_yaml
+FAILED tests/test_iron_condor_strategy.py::test_scan_constructs_ic_on_happy_path
+FAILED tests/test_iron_condor_strategy.py::test_chain_shallow_call_side_skips_symbol
+FAILED tests/test_iron_condor_strategy.py::test_chain_shallow_put_side_skips_symbol
+FAILED tests/test_mace_config.py::test_shipped_config_loads - AssertionError:...
+FAILED tests/test_mace_loops.py::test_manage_loop_fires_in_window - assert 0 ...
+FAILED tests/test_mace_sizing.py::test_size_floor_and_cap - assert 11 == 12
+FAILED tests/test_mace_strategy_entry.py::test_clean_entry - AssertionError: ...
+FAILED tests/test_mace_strategy_entry.py::test_capacity_skip - AssertionError...
+FAILED tests/test_paper_run_tooling.py::test_readiness_check_all_blocking_pass_on_production_config
+FAILED tests/test_paper_run_tooling.py::test_readiness_check_reports_block_status_correctly
+FAILED tests/test_paper_run_tooling.py::test_readiness_check_handles_db_path_override
+FAILED tests/test_pending_registry.py::test_list_pending_returns_entries_newest_first
+FAILED tests/test_pmcc_paper_run_readiness.py::test_pmcc_readiness_all_blocking_pass_on_production_config
+FAILED tests/test_pmcc_paper_run_readiness.py::test_pmcc_readiness_formatter_and_known_limitations_block
+FAILED tests/test_polymarket_per_division_wallets.py::test_factory_distinct_instances_and_keys
+FAILED tests/test_polymarket_per_division_wallets.py::test_arb_resolves_to_legacy_keys
+FAILED tests/test_polymarket_per_division_wallets.py::test_unmapped_division_stubs
+FAILED tests/test_polymarket_watch_only_sort.py::test_default_sort_preserves_rank_order
+FAILED tests/test_polymarket_watch_only_sort.py::test_sort_by_avg_entry_price_desc
+FAILED tests/test_polymarket_watch_only_sort.py::test_sort_by_avg_entry_price_asc
+FAILED tests/test_polymarket_watch_only_sort.py::test_sort_by_share_below_70_desc
+FAILED tests/test_polymarket_watch_only_sort.py::test_sort_by_realized_pnl_desc_matches_default
+FAILED tests/test_polymarket_watch_only_sort.py::test_sort_key_alias_pnl_resolves_to_realized_pnl_usdc
+FAILED tests/test_polymarket_watch_only_sort.py::test_unknown_sort_key_falls_back_to_default
+FAILED tests/test_polymarket_watch_only_sort.py::test_sort_handles_none_values_gracefully
+FAILED tests/test_polymarket_watch_only_sort.py::test_pmdashboardview_carries_sort_state
+FAILED tests/test_prediction_markets_dashboard.py::test_pm_venue_kalshi_prefix
+FAILED tests/test_prediction_markets_dashboard.py::test_pm_venue_polymarket_default
+FAILED tests/test_prediction_markets_dashboard.py::test_query_round_trips_kalshi_only
+FAILED tests/test_prediction_markets_dashboard.py::test_query_round_trips_polymarket_only
+FAILED tests/test_prediction_markets_dashboard.py::test_query_round_trips_all_mode_unions_and_sorts
+FAILED tests/test_prediction_markets_dashboard.py::test_query_round_trips_filters_kalshi_by_division
+FAILED tests/test_prediction_markets_dashboard.py::test_query_round_trips_void_normalizes
+FAILED tests/test_prediction_markets_dashboard.py::test_query_equity_curve_unions_both_venues
+FAILED tests/test_prediction_markets_dashboard.py::test_query_equity_curve_respects_days_cutoff
+FAILED tests/test_prediction_markets_dashboard.py::test_summary_zero_state_clean
+FAILED tests/test_prediction_markets_dashboard.py::test_summary_win_rate_excludes_voids
+FAILED tests/test_prediction_markets_dashboard.py::test_build_view_invalid_slug_returns_none
+FAILED tests/test_prediction_markets_dashboard.py::test_build_view_single_division
+FAILED tests/test_prediction_markets_dashboard.py::test_build_view_all_mode_aggregates
+FAILED tests/test_prediction_markets_dashboard.py::test_open_trades_kalshi_llm_payload
+FAILED tests/test_prediction_markets_dashboard.py::test_open_trades_kalshi_temporal_bucket_leg_prefix
+FAILED tests/test_prediction_markets_dashboard.py::test_open_trades_polymarket
+FAILED tests/test_prediction_markets_dashboard.py::test_open_trades_excludes_resolved
+FAILED tests/test_prediction_markets_dashboard.py::test_open_trades_all_mode_unions_and_sorts
+FAILED tests/test_prediction_markets_dashboard.py::test_open_trade_parses_llm_reasoning_from_payload
+FAILED tests/test_prediction_markets_dashboard.py::test_open_trade_structural_arb_has_rationale_no_llm
+FAILED tests/test_prediction_markets_dashboard.py::test_round_trip_parses_extra_json_analysis_fields
+FAILED tests/test_prediction_markets_dashboard.py::test_round_trip_handles_legacy_empty_extra_json
+FAILED tests/test_prediction_markets_dashboard.py::test_round_trip_handles_malformed_extra_json
+FAILED tests/test_prediction_markets_dashboard.py::test_resolved_stats_filters_pre_cutoff_kalshi_rows
+FAILED tests/test_prediction_markets_dashboard.py::test_resolved_stats_does_not_filter_division_without_cutoff
+FAILED tests/test_prediction_markets_dashboard.py::test_round_trips_history_list_filters_pre_cutoff
+FAILED tests/test_prediction_markets_dashboard.py::test_summary_attaches_cutoff_label_for_filtered_division
+FAILED tests/test_prediction_markets_dashboard.py::test_summary_no_cutoff_in_combined_view
+FAILED tests/test_prediction_markets_dashboard.py::test_kalshi_copy_mode_clause_fragments
+FAILED tests/test_prediction_markets_dashboard.py::test_get_kalshi_copy_live_epoch_defaults_to_constant
+FAILED tests/test_prediction_markets_dashboard.py::test_get_kalshi_copy_live_epoch_honors_override
+FAILED tests/test_prediction_markets_dashboard.py::test_wr_mode_live_counts_only_post_epoch
+FAILED tests/test_prediction_markets_dashboard.py::test_wr_mode_paper_counts_only_pre_epoch
+FAILED tests/test_prediction_markets_dashboard.py::test_wr_mode_all_counts_both
+FAILED tests/test_prediction_markets_dashboard.py::test_wr_mode_does_not_affect_non_kalshi_division
+FAILED tests/test_promote_demote_fixes.py::test_pm_whales_filters_demoted_whale_with_open_positions
+FAILED tests/test_promote_demote_fixes.py::test_pm_whales_includes_promoted_whale_with_no_activity
+FAILED tests/test_promote_demote_fixes.py::test_kalshi_watch_only_reads_watch_only_whales_slot
+FAILED tests/test_promote_demote_fixes.py::test_kalshi_watch_only_enriches_with_watch_only_stats
+FAILED tests/test_promote_demote_fixes.py::test_kalshi_watch_only_filters_out_currently_selected
+FAILED tests/test_promote_demote_fixes.py::test_polymarket_watch_only_filters_out_currently_selected
+FAILED tests/test_promote_demote_fixes.py::test_kalshi_watch_only_excludes_handle_only_in_stats
+FAILED tests/test_research_cost_caps.py::test_soft_cap_fires_warning_once - T...
+FAILED tests/test_research_cost_caps.py::test_hard_cap_aborts_with_no_action
+FAILED tests/test_research_cost_caps.py::test_under_cap_no_warning - TypeErro...
+FAILED tests/test_research_engagement_e2e.py::test_e2e_out_of_scope_aborts_for_nonexistent_starter
+FAILED tests/test_research_engagement_e2e.py::test_e2e_analyst_refusal_storm_still_synthesizes
+FAILED tests/test_research_post_product_validator.py::test_layer2_accepts_well_formed_product
+FAILED tests/test_research_post_product_validator.py::test_layer2_rejects_target_key_drift
+FAILED tests/test_research_post_product_validator.py::test_layer2_rejects_overflow_n_candidates
+FAILED tests/test_research_post_product_validator.py::test_layer2_rejects_symbol_in_both_add_and_drop
+FAILED tests/test_research_post_product_validator.py::test_layer2_rejects_missing_rationale
+FAILED tests/test_research_post_product_validator.py::test_layer2_rejects_schema_mismatch
+FAILED tests/test_research_schemas.py::test_watchlist_scope_caps_n_candidates_at_5
+FAILED tests/test_research_schemas.py::test_analyst_report_refusal_requires_reason
+FAILED tests/test_research_schemas.py::test_engagement_spec_accepts_matching_scope
+FAILED tests/test_research_schemas.py::test_watchlist_recommendation_round_trip
+FAILED tests/test_research_schemas.py::test_trade_proposal_size_capped_at_10pct
+FAILED tests/test_research_schemas.py::test_audit_kind_constants_exist - Attr...
+FAILED tests/test_research_scope_check.py::test_layer1_accepts_valid_watchlist_spec
+FAILED tests/test_research_scope_check.py::test_layer1_rejects_missing_starter_file
+FAILED tests/test_research_scope_check.py::test_layer1_rejects_unknown_target_universe_key
+FAILED tests/test_research_scope_check.py::test_layer1_thesis_routes_to_phase_pointer
+FAILED tests/test_research_scope_check.py::test_layer1_position_context_phase_pointer
+FAILED tests/test_research_scope_check.py::test_layer1_trade_proposal_phase_pointer
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_submits_one_combo_with_correct_shape
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_attributes_fills_by_identity_when_rh_reorders
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_identity_match_is_order_independent
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_falls_back_to_positional_without_identity_fields
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_synthesizes_fill_prices_when_legs_missing
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_handles_partial_legs_array
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_handles_executions_shape
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_handles_malformed_price_strings
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_handles_none_response
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_resting_confirmed_times_out_pending
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_polls_confirmed_to_filled_then_books
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_rejected_state_raises_books_nothing
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_transient_partial_polls_through_to_filled_and_books
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_persistent_partial_raises_combo_partial
+FAILED tests/test_robinhood_multi_leg.py::test_place_multi_leg_propagates_network_failure
+FAILED tests/test_robinhood_multi_leg.py::test_get_option_greeks_happy_path_dict_response
+FAILED tests/test_robinhood_multi_leg.py::test_get_option_greeks_handles_list_response
+FAILED tests/test_robinhood_multi_leg.py::test_get_option_greeks_prefers_adjusted_mark_over_mark_price
+FAILED tests/test_robinhood_multi_leg.py::test_get_option_greeks_falls_back_to_mark_price_when_adjusted_missing
+FAILED tests/test_robinhood_multi_leg.py::test_get_option_greeks_handles_malformed_values
+FAILED tests/test_robinhood_multi_leg.py::test_get_option_greeks_handles_empty_list
+FAILED tests/test_robinhood_multi_leg.py::test_get_option_greeks_handles_none_response
+FAILED tests/test_robinhood_multi_leg.py::test_get_option_greeks_propagates_network_failure
+FAILED tests/test_tasty_options_iron_condor.py::test_scan_constructs_ic_on_happy_path
+FAILED tests/test_tasty_options_iron_condor.py::test_chain_shallow_call_side_skips_symbol
+FAILED tests/test_tasty_options_iron_condor.py::test_chain_shallow_put_side_skips_symbol
+FAILED tests/test_webhooks_return_fast.py::test_otter_valid_alert_returns_accepted_body
+FAILED tests/test_webhooks_return_fast.py::test_webhook_received_audit_written_synchronously
+FAILED tests/test_webhooks_return_fast.py::test_alert_ignored_audit_writes_after_background_runs
+FAILED tests/test_webhooks_return_fast.py::test_background_crash_audits_and_notifies_telegram
+FAILED tests/test_webhooks_return_fast.py::test_cypher_valid_alert_returns_accepted_body
+ERROR tests/test_backtest_polymarket_arbitrage.py - FileNotFoundError: [Errno...
+ERROR tests/test_kalshi_whale_intel.py
+ERROR tests/test_research_prime.py
+ERROR tests/test_research_trade_confirmation_consult.py
+ERROR tests/test_webhook_research_consult_integration.py
+ERROR tests/test_research_audit_writes.py::test_every_research_audit_row_carries_canonical_tags
+ERROR tests/test_research_audit_writes.py::test_product_audit_kind_emitted - ...
+ERROR tests/test_research_audit_writes.py::test_engagement_started_row_written_after_kill_switch_passes
+ERROR tests/test_research_audit_writes.py::test_data_fetch_audit_per_analyst
+ERROR tests/test_research_audit_writes.py::test_analyst_refused_rows_for_stub_analysts
+ERROR tests/test_research_engagement_e2e.py::test_e2e_happy_path_emits_watchlist
+ERROR tests/test_research_engagement_e2e.py::test_e2e_kill_switch_aborts_before_any_analyst
+ERROR tests/test_research_engagement_e2e.py::test_e2e_post_validator_rejection
+ERROR tests/test_research_engagement_e2e.py::test_e2e_board_approval_records_audit_no_yaml_write
+=== test run [set_a] end Thu Nov 26 02:12:56 UTC 2026 ===

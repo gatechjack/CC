@@ -1,0 +1,149 @@
+{
+  "version": "1",
+  "pip_version": "26.3",
+  "install": [
+    {
+      "download_info": {
+        "url": "https://files.pythonhosted.org/packages/9a/4f/adfc442765721292fff86d314ce385d3249d22db42295c0dd057727b60f3/cryptography-50.0.2-cp311-abi3-win_amd64.whl",
+        "archive_info": {
+          "hashes": {
+            "sha256": "7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c"
+          },
+          "hash": "sha256=7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c"
+        }
+      },
+      "is_direct": false,
+      "is_yanked": false,
+      "requested": true,
+      "metadata": {
+        "metadata_version": "2.4",
+        "name": "cryptography",
+        "version": "50.0.2",
+        "summary": "cryptography is a package which provides cryptographic recipes and primitives to Python developers.",
+        "description": "pyca/cryptography\n=================\n\n.. image:: https://img.shields.io/pypi/v/cryptography.svg\n    :target: https://pypi.org/project/cryptography/\n    :alt: Latest Version\n\n.. image:: https://readthedocs.org/projects/cryptography/badge/?version=latest\n    :target: https://cryptography.io\n    :alt: Latest Docs\n\n.. image:: https://github.com/pyca/cryptography/actions/workflows/ci.yml/badge.svg\n    :target: https://github.com/pyca/cryptography/actions/workflows/ci.yml?query=branch%3Amain\n\n``cryptography`` is a package which provides cryptographic recipes and\nprimitives to Python developers. Our goal is for it to be your \"cryptographic\nstandard library\". It supports Python 3.9+ and PyPy3 7.3.11+.\n\n``cryptography`` includes both high level recipes and low level interfaces to\ncommon cryptographic algorithms such as symmetric ciphers, message digests, and\nkey derivation functions. For example, to encrypt something with\n``cryptography``'s high level symmetric encryption recipe:\n\n.. code-block:: pycon\n\n    >>> from cryptography.fernet import Fernet\n    >>> # Put this somewhere safe!\n    >>> key = Fernet.generate_key()\n    >>> f = Fernet(key)\n    >>> token = f.encrypt(b\"A really secret message. Not for prying eyes.\")\n    >>> token\n    b'...'\n    >>> f.decrypt(token)\n    b'A really secret message. Not for prying eyes.'\n\nYou can find more information in the `documentation`_.\n\nYou can install ``cryptography`` with:\n\n.. code-block:: console\n\n    $ pip install cryptography\n\nFor full details see `the installation documentation`_.\n\nDiscussion\n~~~~~~~~~~\n\nIf you run into bugs, you can file them in our `issue tracker`_.\n\nWe maintain a `cryptography-dev`_ mailing list for development discussion.\n\nYou can also join ``#pyca`` on ``irc.libera.chat`` to ask questions or get\ninvolved.\n\nSecurity\n~~~~~~~~\n\nNeed to report a security issue? Please consult our `security reporting`_\ndocumentation.\n\n\n.. _`documentation`: https://cryptography.io/\n.. _`the installation documentation`: https://cryptography.io/en/latest/installation/\n.. _`issue tracker`: https://github.com/pyca/cryptography/issues\n.. _`cryptography-dev`: https://mail.python.org/mailman/listinfo/cryptography-dev\n.. _`security reporting`: https://cryptography.io/en/latest/security/\n\n",
+        "description_content_type": "text/x-rst; charset=UTF-8",
+        "author_email": "The Python Cryptographic Authority and individual contributors <cryptography-dev@python.org>",
+        "license_expression": "Apache-2.0 OR BSD-3-Clause",
+        "license_file": [
+          "LICENSE",
+          "LICENSE.APACHE",
+          "LICENSE.BSD"
+        ],
+        "classifier": [
+          "Development Status :: 5 - Production/Stable",
+          "Intended Audience :: Developers",
+          "Natural Language :: English",
+          "Operating System :: MacOS :: MacOS X",
+          "Operating System :: POSIX",
+          "Operating System :: POSIX :: BSD",
+          "Operating System :: POSIX :: Linux",
+          "Operating System :: Microsoft :: Windows",
+          "Programming Language :: Python",
+          "Programming Language :: Python :: 3",
+          "Programming Language :: Python :: 3 :: Only",
+          "Programming Language :: Python :: 3.9",
+          "Programming Language :: Python :: 3.10",
+          "Programming Language :: Python :: 3.11",
+          "Programming Language :: Python :: 3.12",
+          "Programming Language :: Python :: 3.13",
+          "Programming Language :: Python :: 3.14",
+          "Programming Language :: Python :: 3.15",
+          "Programming Language :: Python :: Implementation :: CPython",
+          "Programming Language :: Python :: Implementation :: PyPy",
+          "Programming Language :: Python :: Free Threading :: 3 - Stable",
+          "Topic :: Security :: Cryptography"
+        ],
+        "requires_dist": [
+          "cffi>=2.0.0 ; platform_python_implementation != 'PyPy'",
+          "typing-extensions>=4.13.2 ; python_full_version < '3.11'",
+          "bcrypt>=3.1.5 ; extra == 'ssh'"
+        ],
+        "requires_python": ">=3.9, !=3.9.0, !=3.9.1",
+        "project_url": [
+          "changelog, https://cryptography.io/en/latest/changelog/",
+          "documentation, https://cryptography.io/",
+          "homepage, https://github.com/pyca/cryptography",
+          "issues, https://github.com/pyca/cryptography/issues",
+          "source, https://github.com/pyca/cryptography/"
+        ],
+        "provides_extra": [
+          "ssh"
+        ]
+      }
+    },
+    {
+      "download_info": {
+        "url": "https://files.pythonhosted.org/packages/a4/32/178457385925ce301c7b3232bd85665d4df57da39568b62dcfc74031873f/msal-1.39.0-py3-none-any.whl",
+        "archive_info": {
+          "hashes": {
+            "sha256": "2d2577886906cd7293850dffa2da29119966c213bfc6ec0cecf8bf7621e1ca77"
+          },
+          "hash": "sha256=2d2577886906cd7293850dffa2da29119966c213bfc6ec0cecf8bf7621e1ca77"
+        }
+      },
+      "is_direct": false,
+      "is_yanked": false,
+      "requested": true,
+      "metadata": {
+        "metadata_version": "2.1",
+        "name": "msal",
+        "version": "1.39.0",
+        "summary": "The Microsoft Authentication Library (MSAL) for Python library enables your app to access the Microsoft Cloud by supporting authentication of users with Microsoft Azure Active Directory accounts (AAD) and Microsoft Accounts (MSA) using industry standard OAuth2 and OpenID Connect.",
+        "description": "# Microsoft Authentication Library (MSAL) for Python\n\n| `dev` branch | Reference Docs | # of Downloads per different platforms | # of Downloads per recent MSAL versions | Benchmark Diagram |\n|:------------:|:--------------:|:--------------------------------------:|:---------------------------------------:|:-----------------:|\n [![Build status](https://github.com/AzureAD/microsoft-authentication-library-for-python/actions/workflows/python-package.yml/badge.svg?branch=dev)](https://github.com/AzureAD/microsoft-authentication-library-for-python/actions) | [![Documentation Status](https://readthedocs.org/projects/msal-python/badge/?version=latest)](https://msal-python.readthedocs.io/en/latest/?badge=latest) | [![Downloads](https://static.pepy.tech/badge/msal)](https://pypistats.org/packages/msal) | [![Download monthly](https://static.pepy.tech/badge/msal/month)](https://pepy.tech/project/msal) | [📉](https://azuread.github.io/microsoft-authentication-library-for-python/dev/bench/)\n\nThe Microsoft Authentication Library for Python enables applications to integrate with the [Microsoft identity platform](https://aka.ms/aaddevv2). It allows you to sign in users or apps with Microsoft identities ([Microsoft Entra ID](https://www.microsoft.com/security/business/identity-access/microsoft-entra-id), [External identities](https://www.microsoft.com/security/business/identity-access/microsoft-entra-external-id), [Microsoft Accounts](https://account.microsoft.com) and [Azure AD B2C](https://azure.microsoft.com/services/active-directory-b2c/) accounts) and obtain tokens to call Microsoft APIs such as [Microsoft Graph](https://graph.microsoft.io/) or your own APIs registered with the Microsoft identity platform. It is built using industry standard OAuth2 and OpenID Connect protocols\n\nNot sure whether this is the SDK you are looking for your app? There are other Microsoft Identity SDKs\n[here](https://github.com/AzureAD/microsoft-authentication-library-for-python/wiki/Microsoft-Authentication-Client-Libraries).\n\nQuick links:\n\n| [Getting Started](https://learn.microsoft.com/azure/active-directory/develop/web-app-quickstart?pivots=devlang-python)| [Docs](https://github.com/AzureAD/microsoft-authentication-library-for-python/wiki) | [Samples](https://aka.ms/aaddevsamplesv2) | [Support](README.md#community-help-and-support) | [Feedback](https://forms.office.com/r/TMjZkDbzjY) |\n| --- | --- | --- | --- | --- |\n\n## Scenarios supported\n\nClick on the following thumbnail to visit a large map with clickable links to proper samples.\n\n[![Map effect won't work inside github's markdown file, so we have to use a thumbnail here to lure audience to a real static website](https://raw.githubusercontent.com/AzureAD/microsoft-authentication-library-for-python/dev/docs/thumbnail.png)](https://msal-python.readthedocs.io/en/latest/)\n\n## Installation\n\nYou can find MSAL Python on [Pypi](https://pypi.org/project/msal/).\n\n1. If you haven't already, [install and/or upgrade the pip](https://pip.pypa.io/en/stable/installing/)\n   of your Python environment to a recent version. We tested with pip 18.1.\n1. As usual, just run `pip install msal`.\n\n## Versions\n\nThis library follows [Semantic Versioning](http://semver.org/).\n\nYou can find the changes for each version under\n[Releases](https://github.com/AzureAD/microsoft-authentication-library-for-python/releases).\n\n## Usage\n\nBefore using MSAL Python (or any MSAL SDKs, for that matter), you will have to\n[register your application with the Microsoft identity platform](https://docs.microsoft.com/azure/active-directory/develop/quickstart-v2-register-an-app).\n\nAcquiring tokens with MSAL Python follows this 3-step pattern.\n(Note: That is the high level conceptual pattern.\nThere will be some variations for different flows. They are demonstrated in\n[runnable samples hosted right in this repo](https://github.com/AzureAD/microsoft-authentication-library-for-python/tree/dev/sample).\n)\n\n\n1. MSAL proposes a clean separation between\n   [public client applications, and confidential client applications](https://tools.ietf.org/html/rfc6749#section-2.1).\n   So you will first create either a `PublicClientApplication` or a `ConfidentialClientApplication` instance,\n   and ideally reuse it during the lifecycle of your app. The following example shows a `PublicClientApplication`:\n\n   ```python\n   from msal import PublicClientApplication\n   app = PublicClientApplication(\n       \"your_client_id\",\n       authority=\"https://login.microsoftonline.com/Enter_the_Tenant_Name_Here\")\n   ```\n\n   Later, each time you would want an access token, you start by:\n   ```python\n   result = None  # It is just an initial value. Please follow instructions below.\n   ```\n\n2. The API model in MSAL provides you explicit control on how to utilize token cache.\n   This cache part is technically optional, but we highly recommend you to harness the power of MSAL cache.\n   It will automatically handle the token refresh for you.\n\n   ```python\n   # We now check the cache to see\n   # whether we already have some accounts that the end user already used to sign in before.\n   accounts = app.get_accounts()\n   if accounts:\n       # If so, you could then somehow display these accounts and let end user choose\n       print(\"Pick the account you want to use to proceed:\")\n       for a in accounts:\n           print(a[\"username\"])\n       # Assuming the end user chose this one\n       chosen = accounts[0]\n       # Now let's try to find a token in cache for this account\n       result = app.acquire_token_silent([\"your_scope\"], account=chosen)\n   ```\n\n3. Either there is no suitable token in the cache, or you chose to skip the previous step,\n   now it is time to actually send a request to AAD to obtain a token.\n   There are different methods based on your client type and scenario. Here we demonstrate a placeholder flow.\n\n   ```python\n   if not result:\n       # So no suitable token exists in cache. Let's get a new one from AAD.\n       result = app.acquire_token_by_one_of_the_actual_method(..., scopes=[\"User.Read\"])\n   if \"access_token\" in result:\n       print(result[\"access_token\"])  # Yay!\n   else:\n       print(result.get(\"error\"))\n       print(result.get(\"error_description\"))\n       print(result.get(\"correlation_id\"))  # You may need this when reporting a bug\n   ```\n\nRefer the [Wiki](https://github.com/AzureAD/microsoft-authentication-library-for-python/wiki) pages for more details on the MSAL Python functionality and usage.\n\n## Migrating from ADAL\n\nIf your application is using ADAL Python, we recommend you to update to use MSAL Python. No new feature work will be done in ADAL Python.\n\nSee the [ADAL to MSAL migration](https://github.com/AzureAD/microsoft-authentication-library-for-python/wiki/Migrate-to-MSAL-Python) guide.\n\n## Roadmap\n\nYou can follow the latest updates and plans for MSAL Python in the [Roadmap](https://github.com/AzureAD/microsoft-authentication-library-for-python/wiki/Roadmap) published on our Wiki.\n\n## Samples and Documentation\n\nMSAL Python supports multiple [application types and authentication scenarios](https://docs.microsoft.com/azure/active-directory/develop/authentication-flows-app-scenarios).\nThe generic documents on\n[Auth Scenarios](https://docs.microsoft.com/azure/active-directory/develop/authentication-scenarios)\nand\n[Auth protocols](https://docs.microsoft.com/azure/active-directory/develop/active-directory-v2-protocols)\nare recommended reading.\n\nWe provide a [full suite of sample applications](https://aka.ms/aaddevsamplesv2) and [documentation](https://aka.ms/aaddevv2) to help you get started with learning the Microsoft identity platform.\n\n## Community Help and Support\n\nWe leverage Stack Overflow to work with the community on supporting Microsoft Entra and its SDKs, including this one!\nWe highly recommend you ask your questions on Stack Overflow (we're all on there!)\nAlso browser existing issues to see if someone has had your question before.\n\nWe recommend you use the \"msal\" tag so we can see it!\nHere is the latest Q&A on Stack Overflow for MSAL:\n[http://stackoverflow.com/questions/tagged/msal](http://stackoverflow.com/questions/tagged/msal)\n\n## Submit Feedback\n\nWe'd like your thoughts on this library. Please complete [this short survey.](https://forms.office.com/r/TMjZkDbzjY)\n\n## Security Reporting\n\nIf you find a security issue with our libraries or services please report it to [secure@microsoft.com](mailto:secure@microsoft.com) with as much detail as possible. Your submission may be eligible for a bounty through the [Microsoft Bounty](http://aka.ms/bugbounty) program. Please do not post security issues to GitHub Issues or any other public site. We will contact you shortly upon receiving the information. We encourage you to get notifications of when security incidents occur by visiting [this page](https://technet.microsoft.com/security/dd252948) and subscribing to Security Advisory Alerts.\n\n## Contributing\n\nAll code is licensed under the MIT license and we triage actively on GitHub. We enthusiastically welcome contributions and feedback. Please read the [contributing guide](./contributing.md) before starting.\n\n## We Value and Adhere to the Microsoft Open Source Code of Conduct\n\nThis project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.\n",
+        "description_content_type": "text/markdown",
+        "home_page": "https://github.com/AzureAD/microsoft-authentication-library-for-python",
+        "author": "Microsoft Corporation",
+        "author_email": "nugetaad@microsoft.com",
+        "license": "MIT",
+        "license_file": [
+          "LICENSE"
+        ],
+        "classifier": [
+          "Development Status :: 5 - Production/Stable",
+          "Programming Language :: Python",
+          "Programming Language :: Python :: 3 :: Only",
+          "Programming Language :: Python :: 3",
+          "Programming Language :: Python :: 3.9",
+          "Programming Language :: Python :: 3.10",
+          "Programming Language :: Python :: 3.11",
+          "Programming Language :: Python :: 3.12",
+          "Programming Language :: Python :: 3.13",
+          "Programming Language :: Python :: 3.14",
+          "License :: OSI Approved :: MIT License",
+          "Operating System :: OS Independent"
+        ],
+        "requires_dist": [
+          "requests <3,>=2.0.0",
+          "PyJWT[crypto] <3,>=1.0.0",
+          "cryptography <51,>=2.5",
+          "pymsalruntime <0.21,>=0.20 ; (python_version >= \"3.9\" and platform_system == \"Darwin\") and extra == 'broker'",
+          "pymsalruntime <0.21,>=0.20 ; (python_version >= \"3.9\" and platform_system == \"Linux\") and extra == 'broker'",
+          "pymsalruntime <0.21,>=0.20 ; (python_version >= \"3.9\" and platform_system == \"Windows\") and extra == 'broker'"
+        ],
+        "requires_python": ">=3.9",
+        "project_url": [
+          "Changelog, https://github.com/AzureAD/microsoft-authentication-library-for-python/releases",
+          "Documentation, https://msal-python.readthedocs.io/",
+          "Questions, https://stackoverflow.com/questions/tagged/azure-ad-msal+python",
+          "Feature/Bug Tracker, https://github.com/AzureAD/microsoft-authentication-library-for-python/issues"
+        ],
+        "provides_extra": [
+          "broker"
+        ]
+      }
+    }
+  ],
+  "environment": {
+    "implementation_name": "cpython",
+    "implementation_version": "3.12.13",
+    "os_name": "nt",
+    "platform_machine": "AMD64",
+    "platform_release": "11",
+    "platform_system": "Windows",
+    "platform_version": "10.0.26200",
+    "python_full_version": "3.12.13",
+    "platform_python_implementation": "CPython",
+    "python_version": "3.12",
+    "sys_platform": "win32"
+  }
+}

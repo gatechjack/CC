@@ -1,0 +1,370 @@
+=====SECTION_A current prod freeze (post-2b)=====
+Python 3.12.16
+aiodns==4.0.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.5
+aiosignal==1.4.0
+aiosqlite==0.22.1
+altair==6.1.0
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anthropic==0.97.0
+anyio==4.13.0
+attrs==26.1.0
+azure-core==1.39.0
+azure-identity==1.25.3
+azure-keyvault-secrets==4.11.0
+beautifulsoup4==4.14.3
+bitarray==3.8.1
+blinker==1.9.0
+cachetools==7.0.6
+ccxt==4.5.51
+certifi==2026.4.22
+cffi==2.0.0
+charset-normalizer==3.4.7
+ckzg==2.1.7
+click==8.3.3
+coincurve==21.0.0
+cryptography==47.0.0
+curl_cffi==0.15.0
+cytoolz==1.1.0
+distro==1.9.0
+docstring_parser==0.18.0
+eth-account==0.13.1
+eth-hash==0.8.0
+eth-keyfile==0.9.1
+eth-keys==0.7.0
+eth-rlp==2.2.0
+eth-typing==6.0.0
+eth-utils==6.0.0
+eth_abi==5.2.0
+exchange_calendars==4.13.2
+fastapi==0.136.1
+frozendict==2.4.7
+frozenlist==1.8.0
+gitdb==4.0.12
+GitPython==3.1.49
+greenlet==3.5.0
+h11==0.16.0
+hexbytes==1.3.1
+httpcore==1.0.9
+httptools==0.7.1
+httpx==0.28.1
+httpx-ws==0.9.0
+idna==3.13
+iniconfig==2.3.0
+isodate==0.7.2
+itsdangerous==2.2.0
+Jinja2==3.1.6
+jiter==0.14.0
+jsonpatch==1.33
+jsonpointer==3.1.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+korean-lunar-calendar==0.3.1
+langchain-anthropic==1.4.2
+langchain-core==1.3.2
+langchain-protocol==0.0.14
+langgraph==1.1.10
+langgraph-checkpoint==4.0.3
+langgraph-checkpoint-sqlite==3.0.3
+langgraph-prebuilt==1.0.13
+langgraph-sdk==0.3.13
+langsmith==0.7.38
+lru-dict==1.4.1
+Markdown==3.10.2
+markdown-it-py==4.0.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+msal==1.36.0
+msal-extensions==1.3.1
+multidict==6.7.1
+multitasking==0.0.13
+narwhals==2.20.0
+nest-asyncio==1.6.0
+numpy==2.4.4
+orjson==3.11.8
+ormsgpack==1.12.2
+packaging==26.2
+pandas==3.0.2
+pandas_market_calendars==5.3.2
+parsimonious==0.10.0
+peewee==4.0.5
+pillow==12.3.0
+platformdirs==4.9.6
+playwright==1.59.0
+pluggy==1.6.0
+poly_eip712_structs==0.0.1
+propcache==0.4.1
+protobuf==7.34.1
+py-ecc==8.0.0
+py_clob_client==0.17.5
+py_order_utils==0.3.2
+pyarrow==24.0.0
+pycares==5.0.1
+pycparser==3.0
+pycryptodome==3.23.0
+pydantic==2.13.3
+pydantic_core==2.46.3
+pydeck==0.9.2
+pyee==13.0.1
+Pygments==2.20.0
+PyJWT==2.15.1
+pykalshi==1.0.6
+pyluach==2.3.0
+pyotp==2.9.0
+pytest==9.0.3
+pytest-asyncio==1.3.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.27
+python-telegram-bot==22.7
+pytz==2026.1.post1
+pyunormalize==17.0.0
+PyYAML==6.0.3
+referencing==0.37.0
+regex==2026.5.9
+requests==2.33.1
+requests-toolbelt==1.0.0
+rich==15.0.0
+rlp==4.1.0
+robin-stocks==3.4.0
+rpds-py==0.30.0
+setuptools==80.10.2
+six==1.17.0
+smmap==5.0.3
+sniffio==1.3.1
+soupsieve==2.8.3
+sqlite-vec==0.1.9
+starlette==1.0.1
+streamlit==1.57.0
+tastytrade==12.4.1
+tenacity==9.1.4
+toml==0.10.2
+toolz==1.1.0
+tradingview-ta==3.3.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2026.2
+urllib3==2.8.0
+uuid_utils==0.14.1
+uvicorn==0.46.0
+uvloop==0.22.1
+watchdog==6.0.0
+watchfiles==1.1.1
+web3==6.11.0
+websockets==16.0
+wsproto==1.3.2
+xxhash==3.7.0
+yarl==1.23.0
+yfinance==1.3.0
+zstandard==0.25.0
+=====SECTION_B reverse-deps (who Requires / Required-by)=====
+--- aiohttp ---
+Name: aiohttp
+Version: 3.13.5
+Requires: aiohappyeyeballs, aiosignal, attrs, frozenlist, multidict, propcache, yarl
+Required-by: ccxt, web3
+--- cryptography ---
+Name: cryptography
+Version: 47.0.0
+Requires: cffi
+Required-by: azure-identity, ccxt, msal, pykalshi, robin-stocks
+--- yarl ---
+Name: yarl
+Version: 1.23.0
+Requires: idna, multidict, propcache
+Required-by: aiohttp, ccxt
+--- ccxt ---
+Name: ccxt
+Version: 4.5.51
+Requires: aiodns, aiohttp, certifi, coincurve, cryptography, requests, setuptools, typing_extensions, yarl
+Required-by:
+--- msal ---
+Name: msal
+Version: 1.36.0
+Requires: cryptography, PyJWT, requests
+Required-by: azure-identity, msal-extensions
+--- azure-identity ---
+Name: azure-identity
+Version: 1.25.3
+Requires: azure-core, cryptography, msal, msal-extensions, typing-extensions
+Required-by:
+--- azure-core ---
+Name: azure-core
+Version: 1.39.0
+Requires: requests, typing-extensions
+Required-by: azure-identity, azure-keyvault-secrets
+--- fastapi ---
+Name: fastapi
+Version: 0.136.1
+Requires: annotated-doc, pydantic, starlette, typing-extensions, typing-inspection
+Required-by:
+--- starlette ---
+Name: starlette
+Version: 1.0.1
+Requires: anyio, typing-extensions
+Required-by: fastapi, streamlit
+--- opentelemetry-api ---
+=====SECTION_C /etc/caddy/Caddyfile REDACTED=====
+###############################################################################
+# Caddyfile — Authelia forward_auth in front of trading_corp.
+###############################################################################
+# Two vhosts:
+#
+#   trading.jacksumner.com — the dashboard. Most paths are gated through
+#       Authelia (forward_auth). The bypass list at the top covers paths
+#       that genuinely shouldn't require interactive auth: TradingView's
+#       webhook (HMAC-authenticated separately), the healthz endpoint,
+#       and PWA bootstrap files (service worker, manifest, icons) that
+#       must be fetchable WITHOUT a session cookie for iOS Add-to-Home-
+#       Screen install to succeed.
+#
+#   auth.jacksumner.com — Authelia's own login UI. Always public (you
+#       can't log in if the login page is gated by login!).
+#
+# Both auto-issue Let's Encrypt certs on first request to the new host.
+###############################################################################
+
+# ── trading.jacksumner.com — protected dashboard ──────────────────────────
+trading.jacksumner.com {
+    # Bypass list: paths that skip Authelia. Order matters — public matchers
+    # are evaluated first; anything not matched falls through to the
+    # forward_auth-protected handle below.
+    @public {
+        # TradingView webhook — HMAC + IP allowlist + replay protection live
+        # inside trading_corp. Authelia would block TV's POSTs since they
+        # don't carry our session cookie.
+        path /webhook/tradingview/lord-otter
+        path /webhook/tradingview/market-cypher
+
+        # Liveness probe. Health checks shouldn't depend on the auth backend
+        # — if Authelia is down we want trading_corp's own health visible.
+        path /healthz
+
+        # PWA bootstrap. iOS Add-to-Home-Screen fetches these WITHOUT
+        # session cookies during install. If they're gated, install breaks.
+        path /sw.js
+        path /manifest.webmanifest
+        path /offline.html
+        path /static/*
+    }
+
+    handle @public {
+        reverse_proxy localhost:8000
+    }
+
+    # Default handle — everything else goes through Authelia first.
+    # forward_auth: Caddy makes a sub-request to Authelia for every
+    # incoming request. If Authelia returns 200, Caddy proxies to
+    # trading_corp. If 401/302, Caddy follows Authelia's redirect to
+    # the login page (auth.jacksumner.com).
+    handle {
+        forward_auth localhost:9091 {
+            uri /api/authz/forward-auth
+
+            # Headers Authelia sets on success — pass them through to
+            # trading_corp so the dashboard could (later) read 'who am I'.
+            # Currently unused on the trading_corp side but harmless.
+            copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+        }
+        reverse_proxy localhost:8000
+    }
+
+    log {
+        output stderr
+        format console
+    }
+}
+
+# ── auth.jacksumner.com — Authelia login UI ───────────────────────────────
+auth.jacksumner.com {
+    reverse_proxy localhost:9091
+
+    log {
+        output stderr
+        format console
+    }
+}
+
+# predictions.jacksumner.com -> pm_web (loopback :8081)
+predictions.jacksumner.com {
+@public {
+path /healthz
+}
+handle @public {
+reverse_proxy localhost:8081
+}
+handle {
+forward_auth localhost:9091 {
+uri /api/authz/forward-auth
+copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+}
+reverse_proxy localhost:8081
+}
+log {
+output stderr
+format console
+}
+}
+--- imported Caddy fragments (if any) ---
+(no import directives)
+=====SECTION_D auth-line journal windows (unit=trading-corp)=====
+restart_raw=Thu 2026-11-26 00:26:07 UTC
+post_window=[1795652767,1795657291] len_s=4524   pre_window=[1795648243,1795652767]
+post_window_human=[2026-11-26 00:26:07 UTC .. 2026-11-26 01:41:31 UTC]
+pre_window_human=[2026-11-25 23:10:43 UTC .. 2026-11-26 00:26:07 UTC]
+[POST] total_auth_pattern=74 real_nonbenign=5 benign_excluded=69
+[POST] REAL (non-benign) distinct templates:
+          1 #-#-# #:#:#,# INFO trading_corp.prediction_markets.live_driver: pm_live_driver: # confirmed whale-EXIT(s) for #x#feec#af# (mls; reductions=# sells=#)
+          1 #-#-# #:#:#,# INFO trading_corp.main: BitUnix staleness-reject gate (C): enabled=True margin_s=#
+          1 #-#-# #:#:#,# INFO trading_corp.main: BitUnix observer wiring: scoring=True, pa_enabled=True, htf_gate_mode=enforce, htf_regime_enabled=True, trade_plan_active=True, execution_mode=live
+          1 #-#-# #:#:#,# INFO trading_corp.main: BitUnix concurrent-position guard (D#): enabled=True
+          1 #-#-# #:#:#,# INFO azure.core.pipeline.policies.http_logging_policy: Response status: #
+[POST] BENIGN-EXCLUDED distinct templates:
+         19 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#f#…, limit=#, page=#]: # rows in #ms
+          9 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xd#eb#…, limit=#, page=#]: # rows in #ms
+          8 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xe#c#d#a…, limit=#, page=#]: # rows in #ms
+          7 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#f#e…, limit=#, page=#]: # rows in #ms
+          3 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xf#aff#…, limit=#, page=#]: # rows in #ms
+          3 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xd#bf#d…, limit=#, page=#]: # rows in #ms
+          3 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#feec#a…, limit=#, page=#]: # rows in #ms
+          2 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xf#a#ac#…, limit=#, page=#]: # rows in #ms
+          2 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#f#fe…, limit=#, page=#]: # rows in #ms
+          2 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#baa#…, limit=#, page=#]: # rows in #ms
+          2 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#b#cd#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xeae#e#f#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xe#f#ae#c…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#e#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#db#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#d#efa#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#c#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#b#b#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#ae#…, limit=#, page=#]: # rows in #ms
+[PRE] total_auth_pattern=93 real_nonbenign=0 benign_excluded=93
+[PRE] REAL (non-benign) distinct templates:
+[PRE] BENIGN-EXCLUDED distinct templates:
+         24 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#f#…, limit=#, page=#]: # rows in #ms
+         16 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xd#eb#…, limit=#, page=#]: # rows in #ms
+         14 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xe#c#d#a…, limit=#, page=#]: # rows in #ms
+          9 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#f#e…, limit=#, page=#]: # rows in #ms
+          4 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xfb#f#…, limit=#, page=#]: # rows in #ms
+          3 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#feec#a…, limit=#, page=#]: # rows in #ms
+          3 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#db#…, limit=#, page=#]: # rows in #ms
+          3 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#ae#…, limit=#, page=#]: # rows in #ms
+          2 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xf#aff#…, limit=#, page=#]: # rows in #ms
+          2 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xe#ddb#…, limit=#, page=#]: # rows in #ms
+          2 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xd#bf#d…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xf#a#ac#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#xd#faf#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#f#fe…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#e#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#e#cf#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#dc#c#b…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#d#fc…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#c#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#b#cd#…, limit=#, page=#]: # rows in #ms
+          1 #-#-# #:#:#,# INFO trading_corp.data.polymarket_data_api_client: polymarket-data-api positions[#x#b#b#…, limit=#, page=#]: # rows in #ms
+=====END=====
