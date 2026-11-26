@@ -4,10 +4,12 @@
 # (Alternative rollback = restore the pre-Batch-7 OS snapshot.) Reads a saved `pkg=version` list; reinstalls exactly those.
 set -u
 exec > >(tee /home/azureuser/secrev_batch7_rollback_lastrun.log) 2>&1
-RE="${1:?usage: secrev_batch7_rollback.sh <reinstall_list_file>}"
+RE="${1:-}"
+if [ -z "$RE" ]; then RE=$(ls -t /home/azureuser/secrev_batch7_reinstall_*.txt 2>/dev/null | head -1); fi
 PROTECTED="trading-corp prediction-markets-web sfp-card-watcher market-context-recorder caddy authelia"
-echo "=== BATCH7 ROLLBACK $(date -u +%Y%m%dT%H%M%SZ) from $RE ==="
-[ -r "$RE" ] || { echo "[ABORT] no $RE"; exit 2; }
+echo "=== BATCH7 ROLLBACK $(date -u +%Y%m%dT%H%M%SZ) ==="
+[ -n "$RE" ] && [ -r "$RE" ] || { echo "[ABORT] no reinstall list (secrev_batch7_reinstall_*.txt) found/readable"; exit 2; }
+echo "[auto-select] reinstall list = $RE"
 N=$(grep -c . "$RE"); echo "[restore] reinstalling $N exact-version packages (NEEDRESTART_MODE=l) ..."
 PKGS=$(tr '\n' ' ' < "$RE")
 DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install --reinstall -y --allow-downgrades $PKGS 2>&1 | tail -20
