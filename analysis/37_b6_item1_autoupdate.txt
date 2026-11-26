@@ -1,0 +1,54 @@
+=====A. 20auto-upgrades (periodic enabled?)=====
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+=====B. 50unattended-upgrades: Allowed-Origins (uncommented) -- ESM included?=====
+  Unattended-Upgrade::Allowed-Origins {
+  	"${distro_id}:${distro_codename}";
+  	"${distro_id}:${distro_codename}-security";
+  	"${distro_id}ESMApps:${distro_codename}-apps-security";
+  	"${distro_id}ESM:${distro_codename}-infra-security";
+  };
+  -- explicit ESM origin refs (non-comment):
+    13:	"${distro_id}ESMApps:${distro_codename}-apps-security";
+    14:	"${distro_id}ESM:${distro_codename}-infra-security";
+=====C. 50unattended-upgrades: Automatic-Reboot + Blacklist + Minimal-Steps (uncommented)=====
+  21:Unattended-Upgrade::Package-Blacklist {
+  -- blacklist block contents (uncommented):
+=====D. conf.d overrides (unattended/esm/pro)=====
+  20apt-esm-hook.conf
+  20auto-upgrades
+  50unattended-upgrades
+  99needrestart
+=====E. apt timers -- next run=====
+  NEXT                        LEFT       LAST                        PASSED  UNIT                    ACTIVATES
+  Thu 2026-11-26 18:25:55 UTC 20min left Thu 2026-11-26 10:33:13 UTC 7h ago  apt-daily.timer         apt-daily.service
+  Fri 2026-11-27 06:22:10 UTC 12h left   Thu 2026-11-26 06:03:53 UTC 12h ago apt-daily-upgrade.timer apt-daily-upgrade.service
+
+  2 timers listed.
+  now: UTC=2026-11-26 18:05:42Z  ET=2026-11-26 13:05 EST
+  apt-daily.timer active=active NextElapseRealtime=Thu 2026-11-26 18:25:55 UTC
+  apt-daily-upgrade.timer active=active NextElapseRealtime=Fri 2026-11-27 06:22:10 UTC
+=====F. needrestart unattended mode=====
+  /etc/needrestart/needrestart.conf $nrconf{restart}:
+    38:#$nrconf{restart} = 'i';
+  conf.d overrides:
+    --- /etc/needrestart/conf.d/90-tc-noauto.conf ---
+      1:$nrconf{restart} = "l";
+    --- /etc/needrestart/conf.d/README.needrestart ---
+  apt hook /etc/apt/apt.conf.d/99needrestart:
+    # needrestart - Restart daemons after library updates.
+    #
+    # Call needrestart after package upgrades/installations and check
+    # for pending service restarts. Should only be triggered if there
+    # was no error during installation.
+    #
+    DPkg::Post-Invoke {"test -x /usr/lib/needrestart/apt-pinvoke && /usr/lib/needrestart/apt-pinvoke || true"; };
+  versions: needrestart=3.5-5ubuntu2.6 unattended-upgrades=2.8ubuntu1
+=====G. u-u needrestart integration + last run result=====
+  last unattended-upgrades runs (headers only):
+    2026-11-26 04:44:32,726 INFO Allowed origins are: o=Ubuntu,a=jammy, o=Ubuntu,a=jammy-security, o=UbuntuESMApps,a=jammy-apps-security, o=UbuntuESM,a=jammy-infra-security
+    2026-11-26 06:03:54,826 INFO Starting unattended upgrades script
+    2026-11-26 06:03:54,827 INFO Allowed origins are: o=Ubuntu,a=jammy, o=Ubuntu,a=jammy-security, o=UbuntuESMApps,a=jammy-apps-security, o=UbuntuESM,a=jammy-infra-security
+    2026-11-26 06:04:06,471 INFO Packages that will be upgraded: libdw1 libelf1 libexpat1 libexpat1-dev libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 libpcap0.8 libspeex1 libspeexdsp1 libxrender1
+=====H. is a reboot currently required?=====
+  no reboot-required flag

@@ -1,0 +1,112 @@
+=====ITEM2. canonical-livepatch status=====
+  client-version: v11.1.0
+  machine-id: bc80624dd0bc4c16860d4c9de265f5d9
+  architecture: amd64
+  cpu-model: Intel(R) Xeon(R) Platinum 8171M CPU @ 2.60GHz
+  last-check: 2026-11-26T18:00:30Z
+  boot-time: 2026-11-25T04:04:46Z
+  uptime: 38h4m17s
+  status:
+  - kernel: 6.8.0-1074.83~22.04.1-azure
+    running: true
+    livepatch:
+      checkState: checked
+      patchState: nothing-to-apply
+      version: ""
+      fixes: ""
+    supported: supported
+    upgradeRequiredDate: "2027-12-16"
+  tier: updates
+  fixed-cves:
+    timestamp: ""
+    kernel-package-fixes: []
+    installed-kernels: []
+    kernel-package-sources: {}
+    patched-cves: []
+    digest: ""
+  -- pro livepatch (from status):
+  livepatch        yes                enabled               Canonical Livepatch service
+  realtime-kernel* yes                disabled              Ubuntu kernel with PREEMPT_RT patches integrated
+  -- running kernel: 6.8.0-1074-azure
+=====ITEM3a. pro security-status (ESM coverage)=====
+  1279 packages installed:
+       1077 packages from Ubuntu Main/Restricted repository
+       195 packages from Ubuntu Universe/Multiverse repository
+       7 packages from third parties
+
+  To get more information about the packages, run
+      pro security-status --help
+  for a list of available options.
+
+  This machine is attached to an Ubuntu Pro subscription.
+
+  Main/Restricted packages are receiving security updates from
+  Ubuntu Pro with 'esm-infra' enabled until 2032.
+
+  Universe/Multiverse packages are receiving security updates from
+  Ubuntu Pro with 'esm-apps' enabled until 2032. You have received 1 security
+  update. There are 25 pending security updates.
+
+=====ITEM3b. apt list --upgradable (current lists; origin via suite)=====
+  exo-utils/jammy-apps-security 4.16.3-1ubuntu0.1~esm1 amd64 [upgradable from: 4.16.3-1]
+  ffmpeg/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  gstreamer1.0-plugins-bad/jammy-apps-security 1.20.3-0ubuntu1.1+esm4 amd64 [upgradable from: 1.20.3-0ubuntu1.1]
+  libaom3/jammy-apps-security 3.3.0-1ubuntu0.1+esm1 amd64 [upgradable from: 3.3.0-1ubuntu0.1]
+  libavcodec58/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  libavdevice58/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  libavfilter7/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  libavformat58/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  libavutil56/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  libde265-0/jammy-apps-security 1.0.8-1ubuntu0.3+esm3 amd64 [upgradable from: 1.0.8-1ubuntu0.3]
+  libexo-2-0/jammy-apps-security 4.16.3-1ubuntu0.1~esm1 amd64 [upgradable from: 4.16.3-1]
+  libexo-common/jammy-apps-security 4.16.3-1ubuntu0.1~esm1 all [upgradable from: 4.16.3-1]
+  libfluidsynth3/jammy-apps-security 2.2.5-1ubuntu0.1~esm1 amd64 [upgradable from: 2.2.5-1]
+  libgstreamer-plugins-bad1.0-0/jammy-apps-security 1.20.3-0ubuntu1.1+esm4 amd64 [upgradable from: 1.20.3-0ubuntu1.1]
+  libopenexr25/jammy-apps-security 2.5.7-1ubuntu0.1~esm2 amd64 [upgradable from: 2.5.7-1]
+  libpostproc55/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  libsoup-3.0-0/jammy-apps-security 3.0.7-0ubuntu1+esm10 amd64 [upgradable from: 3.0.7-0ubuntu1]
+  libsoup-3.0-common/jammy-apps-security 3.0.7-0ubuntu1+esm10 all [upgradable from: 3.0.7-0ubuntu1]
+  libsrt1.4-gnutls/jammy-apps-security 1.4.4-4ubuntu0.1~esm1 amd64 [upgradable from: 1.4.4-4]
+  libswresample3/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  libswscale5/jammy-apps-security 7:4.4.2-0ubuntu0.22.04.1+esm17 amd64 [upgradable from: 7:4.4.2-0ubuntu0.22.04.1]
+  libzbar0/jammy-apps-security 0.23.92-4ubuntu0.1~esm1 amd64 [upgradable from: 0.23.92-4build2]
+  libzvbi-common/jammy-apps-security 0.2.35-19ubuntu0.1~esm1 all [upgradable from: 0.2.35-19]
+  libzvbi0/jammy-apps-security 0.2.35-19ubuntu0.1~esm1 amd64 [upgradable from: 0.2.35-19]
+  xrdp/jammy-apps-security 0.9.17-2ubuntu3.1+esm1 amd64 [upgradable from: 0.9.17-2ubuntu3]
+  -- count: 25
+=====ITEM3c. origin per upgradable pkg (esm-apps / esm-infra / standard)=====
+  exo-utils -> 4.16.3-1ubuntu0.1~esm1  []
+  ffmpeg -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  gstreamer1.0-plugins-bad -> 1.20.3-0ubuntu1.1+esm4  []
+  libaom3 -> 3.3.0-1ubuntu0.1+esm1  []
+  libavcodec58 -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  libavdevice58 -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  libavfilter7 -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  libavformat58 -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  libavutil56 -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  libde265-0 -> 1.0.8-1ubuntu0.3+esm3  []
+  libexo-2-0 -> 4.16.3-1ubuntu0.1~esm1  []
+  libexo-common -> 4.16.3-1ubuntu0.1~esm1  []
+  libfluidsynth3 -> 2.2.5-1ubuntu0.1~esm1  []
+  libgstreamer-plugins-bad1.0-0 -> 1.20.3-0ubuntu1.1+esm4  []
+  libopenexr25 -> 2.5.7-1ubuntu0.1~esm2  []
+  libpostproc55 -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  libsoup-3.0-0 -> 3.0.7-0ubuntu1+esm10  []
+  libsoup-3.0-common -> 3.0.7-0ubuntu1+esm10  []
+  libsrt1.4-gnutls -> 1.4.4-4ubuntu0.1~esm1  []
+  libswresample3 -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  libswscale5 -> 7:4.4.2-0ubuntu0.22.04.1+esm17  []
+  libzbar0 -> 0.23.92-4ubuntu0.1~esm1  []
+  libzvbi-common -> 0.2.35-19ubuntu0.1~esm1  []
+  libzvbi0 -> 0.2.35-19ubuntu0.1~esm1  []
+  xrdp -> 0.9.17-2ubuntu3.1+esm1  []
+=====ITEM3d. flagged-sensitive upgradable (python3.12/openssl/libssl/libc/kernel/caddy/authelia)=====
+=====ITEM3e. which running services load an upgradable lib (-> would need restart)=====
+  upgradable lib-ish pkgs: libaom3|libavcodec58|libavdevice58|libavfilter7|libavformat58|libavutil56|libde265-0|libexo-2-0|libexo-common|libfluidsynth3|libgstreamer-plugins-bad1.0-0|libopenexr25|libpostproc55|libsoup-3.0-0|libsoup-3.0-common|libsrt1.4-gnutls|libswresample3|libswscale5|libzbar0|libzvbi-common|libzvbi0
+  trading-corp pid=17947 deleted-mapped-now=0 start=Thu 2026-11-26 17:44:52 UTC
+  prediction-markets-web pid=17975 deleted-mapped-now=0 start=Thu 2026-11-26 17:44:58 UTC
+  sfp-card-watcher pid=18009 deleted-mapped-now=0 start=Thu 2026-11-26 17:45:04 UTC
+  market-context-recorder pid=18024 deleted-mapped-now=0 start=Thu 2026-11-26 17:45:11 UTC
+  caddy pid=651 deleted-mapped-now= start=Wed 2026-11-25 04:05:12 UTC
+  authelia pid=649 deleted-mapped-now= start=Wed 2026-11-25 04:05:12 UTC
+  -- needrestart batch list (list-only; what IT thinks needs restart now):
