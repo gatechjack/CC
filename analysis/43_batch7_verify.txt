@@ -1,0 +1,29 @@
+=====services: new PID + NRestarts + tracebacks(5min) + missing-lib=====
+  trading-corp active=active pid=33075(was 17947=NEW) NRestarts=0 tb_5min=0 missing_lib=0
+  prediction-markets-web active=active pid=33118(was 17975=NEW) NRestarts=0 tb_5min=0 missing_lib=0
+  sfp-card-watcher active=active pid=33138(was 18009=NEW) NRestarts=0 tb_5min=0 missing_lib=0
+  market-context-recorder active=active pid=33144(was 18024=NEW) NRestarts=0 tb_5min=0 missing_lib=0
+  caddy pid=651 authelia pid=649 (expect UNCHANGED 651/649)
+=====Xvfb :99 + bind + reboot=====
+  Xvfb :99 pid=33086
+  ss 8000 (expect 127.0.0.1 only):
+    LISTEN 0      2048       127.0.0.1:8000 0.0.0.0:*
+  reboot-required=no
+=====health + peers=====
+  healthz:8000=200 :8081=200
+  caddy=active authelia=active authelia_health=200
+=====Key Vault / managed-identity (0 errors expected)=====
+  trading-corp azure_200=42 kv_refs=230 azure/msal/kv_errors=0
+  pm-web KV: 10 refs, errors=0
+=====brokers + divisions=====
+  RH startup live_brokers: live_brokers": ["bitunix", "robinhood", "kalshi"]
+  Bitunix ws feed=2 reconciler=3
+  Kalshi pm_live_driver lines=14; shard-snaps: kalshi_jack=1 kalshi_karen=1 kalshi_marc=1 kalshi_trey=1
+  divisions active: bitunix=59 mace=12 pead=5 robinhood_pmcc=1 kalshi=60 polymarket=553
+  broker auth errors (excl benign): 0
+=====box-wide missing-lib scan since trading-corp restart=====
+  cannot-open-shared-object / ImportError / undefined-symbol (all units): 0
+[PC curl via Caddy -- expect 302 / 405 / 400]
+   / -> HTTP/1.1 302 Found
+   webhook GET -> HTTP/1.1 405 Method Not Allowed
+   malformed-Host -> HTTP/1.1 400 Bad Request: malformed Host header
