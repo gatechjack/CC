@@ -29,3 +29,35 @@ pid 33075, NRestarts=0, boot 2026-11-26 21:34Z (Batch 7 restart), venv **cryptog
 1. **RH pickle re-auth (pre-existing, URGENT, predates the whole 2c batch):** the RH session has been down since ~Nov-24 (pickle 10.5 days old); MACE options are frozen (no RH entries/exits). Fix = the ~90s push-button re-auth (`POST /api/rh/refresh-session` / the dashboard "Refresh RH pickle" button) -- needs a human push approval; no cryptography/deploy change helps.
 2. **Snapshot cleanup deferred** (since the RH reconcile wasn't CLEAN, C1 did not run) -- the 3 old snapshots remain; delete them once RH is re-authed + a genuinely clean reconcile is observed.
 3. Nothing to push from this run (read-only).
+
+---
+
+## UPDATE -- CLOSED CLEAN + PHASE C1 EXECUTED (Fri 2026-11-27, after Jack re-authed the pickle)
+
+Jack re-authed the RH pickle at **15:26:58Z** (push-button). Re-verified RH under cryptography 50.0.2 / msal 1.39.0 across **15:27->15:49Z** (read-only), then ran **PHASE C1**.
+
+### Re-verify -- CLEAN (meets Jack's full bar)
+| criterion | evidence | verdict |
+|---|---|---|
+| MACE reads RH **equity** | `rh_auth_recovered reason=snapshot_ok` 15:27:09Z -> `load_portfolio_profile` succeeded, all 4 RH accounts restored (`680725082`,`461391328`,`934310442`,`116637293063`) | PASS |
+| + **open-position** reads | PMCC detected **6 legs** 15:43:17Z (IREN/TSLA/RIOT/BLSH/SMR/RKLB); MACE manager **live-marked** rung `mace-IWM-2026-12-18-250-247-289-292-20261105` @ **0.445** 15:45:56Z (reads the RH option legs) | PASS |
+| rungs<->RH **reconcile clean** (0 orphan/ghost/naked) | `mace_reconcile_open_orders_error` fired every 5-min tick 15:01->15:26 (session down), then **silent from 15:31** (reconcile logs only on error -> silence = clean); `mace_reconcile_ERRORS_after_reauth=0`; **0** real orphan/ghost/naked (the 2 grep hits = Bitunix startup `matched=0 orphan=0`) | PASS |
+| **0** robin_stocks auth/session errors 15 min after read | **0** across 15:27:10->15:49:29Z (~22 min, exceeds the 15-min bar); session **valid**, pickle 0h, last-good live-updating | PASS |
+| crypto-50 health | **0** cryptography exceptions since boot; crypto 50.0.2 / msal 1.39.0; session green | PASS |
+
+**2c-2 fully vindicated** -- the Phase-A DOWN state was the pre-existing weekly pickle expiry (predated the 2c-2 deploy by 9 days), and RH is fully healthy under cryptography 50 once the token is fresh.
+
+### PHASE C1 -- executed
+Pre-list (RO) confirmed 4 snapshots: `-20261124` (11-24), `-20261124b` (11-25), `-20261124c` (11-25), `-20261126` (11-26 21:25Z, pre-Batch-7 keep).
+
+```
+az snapshot delete -g rg-shared-prod -n tc-prod-os-20261124     -> [OK]
+az snapshot delete -g rg-shared-prod -n tc-prod-os-20261124b    -> [OK]
+az snapshot delete -g rg-shared-prod -n tc-prod-os-20261124c    -> [OK]
+az snapshot list   -g rg-shared-prod --query "[].name" -o tsv   -> tc-prod-os-20261126   (ONLY)
+```
+
+`tc-prod-os-20261126` retained as the sole rollback point; **never referenced in the delete loop**. Box unchanged, prod-live unchanged (`b1ade21c`), 0 drift. C1 is the explicitly pre-authorized clean-path outcome; executed per the standing autonomous authorization once CLEAN was conclusively met.
+
+### Left for Jack
+Nothing blocking from this run. RH healthy under crypto 50. Standing unrelated item (not a patch issue): the RH OAuth pickle still expires ~weekly and needs the manual push-button re-auth. Vault updated (handoff + Security Patch Review). Evidence commit local; Jack pushes.
